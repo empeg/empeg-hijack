@@ -56,7 +56,7 @@ extern unsigned int voladj_multiplier;
 static const char *voladj_names[] = {"[Off]", "Low", "Medium", "High"};
 unsigned int voladj_histx = 0, voladj_history[VOLADJ_HISTSIZE] = {0,};
 
-#define SCREEN_BLANKER_MULTIPLIER 30
+#define SCREEN_BLANKER_MULTIPLIER 15
 #define BLANKER_BITS (8 - VOLADJ_BITS)
 int blanker_timeout = 0;	// saved/restored in empeg_state.c
 
@@ -568,7 +568,7 @@ blanker_display (int firsttime)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
-	(void)draw_string(ROWCOL(0,0), "Screen inactivity timeout:", COLOR2);
+	(void)draw_string(ROWCOL(0,0), "Screen Inactivity Timeout", COLOR2);
 	rowcol = draw_string(ROWCOL(2,0), "Blank ", COLOR2);
 	if (blanker_timeout) {
 		rowcol = draw_string(rowcol, "after ", COLOR2);
@@ -578,6 +578,56 @@ blanker_display (int firsttime)
 		(void)draw_string(rowcol, "[Off]", COLOR3);
 	}
 	return NEED_REFRESH;
+}
+
+#define BLANKERFUZZ_BITS 2
+static int blankerfuzz_5pcts = 0;
+
+static void
+blankerfuzz_move (int direction)
+{
+	blankerfuzz_5pcts += direction;
+	if (blankerfuzz_5pcts < 0)
+		blankerfuzz_5pcts = 0;
+	else if (blankerfuzz_5pcts > ((1<<BLANKERFUZZ_BITS)-1))
+		blankerfuzz_5pcts  = ((1<<BLANKERFUZZ_BITS)-1);
+}
+
+static int
+blankerfuzz_display (int firsttime)
+{
+	unsigned int rowcol;
+
+	if (!firsttime && !hijack_last_moved)
+		return NO_REFRESH;
+	hijack_last_moved = 0;
+	clear_hijack_displaybuf(COLOR0);
+	(void)draw_string(ROWCOL(0,0), "Screen Blanker Sensitivity", COLOR2);
+	rowcol = draw_string(ROWCOL(2,0), "Examine ", COLOR2);
+	rowcol = draw_number(rowcol, 100 - (5 * blankerfuzz_5pcts), "%u%%", COLOR3);
+	(void)   draw_string(rowcol, " of screen", COLOR2);
+	return NEED_REFRESH;
+}
+
+static int
+screen_compare (unsigned char *screen1, unsigned char *screen2)
+{
+	// FIXME: compare in bigger chucks before looking at the smaller bits!
+	unsigned char *end = screen1 + EMPEG_SCREEN_BYTES;
+	int allowable_fuzz = blankerfuzz_5pcts * (5 * (2 * EMPEG_SCREEN_BYTES) / 100);
+	do {
+		unsigned char diff = *screen1 ^ *screen2;
+		if (diff) {
+			if (diff & 0xf0)		// check first pixel
+				--allowable_fuzz;
+			if (diff & 0x0f)		// check second pixel
+				--allowable_fuzz;
+			if (allowable_fuzz < 0)
+				return 1;	// not the same
+		}
+		++screen2;
+	} while (++screen1 < end);
+	return 0;	// the same
 }
 
 static void
@@ -632,7 +682,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v39 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v40 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -813,7 +863,7 @@ maxtemp_display (int firsttime)
 	unsigned int rowcol;
 
 	clear_hijack_displaybuf(COLOR0);
-	rowcol = draw_string(ROWCOL(0,0), "Max Temperature Warning", COLOR2);
+	rowcol = draw_string(ROWCOL(0,0), "High Temperature Warning", COLOR2);
 	rowcol = draw_string(ROWCOL(1,0), "Threshold: ", COLOR2);
 	if (maxtemp_threshold)
 		(void)draw_temperature(rowcol, maxtemp_threshold + MAXTEMP_OFFSET, COLOR3);
@@ -966,22 +1016,22 @@ typedef struct menu_item_s {
 static volatile short menu_item = 0, menu_size = 0, menu_top = 0;
 
 static menu_item_t menu_table [] = {
-	{"Break-Out Game",		game_display,		game_move,	0},
-	{"Auto Volume Adjust",		voladj_display,		voladj_move,	0},
-	{"Screen Inactivity Blanker",	blanker_display,	blanker_move,	0},
-	{"Font Display",		kfont_display,		NULL,		0},
-	{"Vital Signs",			vitals_display,		NULL,		0},
-	{"Max Temp Warning",		maxtemp_display,	maxtemp_move,	0},
-	{"Calculator",			calculator_display,	NULL,		0},
-	{"Knob Press Redefinition",	knobdata_display,	knobdata_move,	0},
-	{NULL,				NULL,			NULL,		0},
-	{NULL,				NULL,			NULL,		0},
-	{NULL,				NULL,			NULL,		0},
-	{NULL,				NULL,			NULL,		0},
-	{NULL,				NULL,			NULL,		0},
-	{NULL,				NULL,			NULL,		0},
-	{NULL,				NULL,			NULL,		0},
-	{NULL,				NULL,			NULL,		0}};
+	{"Auto Volume Adjust",		voladj_display,		voladj_move,		0},
+	{"Break-Out Game",		game_display,		game_move,		0},
+	{"Button Codes Display",	showbutton_display,	NULL,			0},
+	{"Calculator",			calculator_display,	NULL,			0},
+	{"Font Display",		kfont_display,		NULL,			0},
+	{"High Temperature Warning",	maxtemp_display,	maxtemp_move,		0},
+	{"Knob Press Redefinition",	knobdata_display,	knobdata_move,		0},
+	{"Screen Blanker Time-out",	blanker_display,	blanker_move,		0},
+	{"Screen Blanker Sensitivity",	blankerfuzz_display,	blankerfuzz_move,	0},
+	{NULL,				NULL,			NULL,			0},
+	{NULL,				NULL,			NULL,			0},
+	{NULL,				NULL,			NULL,			0},
+	{NULL,				NULL,			NULL,			0},
+	{NULL,				NULL,			NULL,			0},
+	{NULL,				NULL,			NULL,			0},
+	{NULL,				NULL,			NULL,			0}};
 
 #define MENU_MAX_SIZE (sizeof(menu_table) / sizeof(menu_table[0]))
 
@@ -1043,12 +1093,8 @@ userland_display (int firsttime)
 		userland_display_updated = 1;
 	}
 	save_flags_cli(flags);
-	if (firsttime) {
-		if (menu_table[menu_item].userdata)
-			wake_up(&hijack_menu_waitq);
-		else
-			hijack_dispfunc = NULL;	// exit from this selection
-	}
+	if (firsttime)
+		wake_up(&hijack_menu_waitq);
 	if (userland_display_updated) {
 		userland_display_updated = 0;
 		rc = NEED_REFRESH;
@@ -1187,9 +1233,9 @@ hijack_display (struct display_dev *dev, unsigned char *player_buf)
 		static unsigned char blanked = 0, last_buf[EMPEG_SCREEN_BYTES] = {0,};
 		if (!blanker_activated)
 			blanked = 0;
-		if (jiffies_since(blanker_lastpoll) >= HZ) {
+		if (jiffies_since(blanker_lastpoll) >= (4*HZ/3)) {  // use an oddball interval to avoid patterns
 			blanker_lastpoll = jiffies;
-			if (memcmp(last_buf, buf, EMPEG_SCREEN_BYTES)) {
+			if (screen_compare(last_buf, buf)) {
 				memcpy(last_buf, buf, EMPEG_SCREEN_BYTES);
 				blanker_activated = 0;
 			} else {
@@ -1199,8 +1245,8 @@ hijack_display (struct display_dev *dev, unsigned char *player_buf)
 			}
 		}
 		if (blanker_activated) {
-			if (jiffies_since(ir_lasttime) < jiffies_since(blanker_activated)) {
-				blanker_activated = ir_lasttime;
+			if (jiffies_since(blanker_activated) > jiffies_since(ir_lasttime)) {
+				blanker_activated = 0;
 			} else if (jiffies_since(blanker_activated) > (blanker_timeout * (SCREEN_BLANKER_MULTIPLIER * HZ))) {
 				if (!blanked) {
 					buf = player_buf;
@@ -1431,8 +1477,8 @@ static struct sa_struct {
 	unsigned voladj_dc_power	: VOLADJ_BITS;
 	unsigned maxtemp_threshold	: MAXTEMP_BITS;
 	unsigned knobdata_index		: KNOBDATA_BITS;
-	unsigned byte2			: (8 - KNOBDATA_BITS);
-	unsigned byte3			: 8;
+	unsigned blankerfuzz_5pcts	: BLANKERFUZZ_BITS;
+	unsigned leftover		: 4;
 	unsigned byte4			: 8;
 	unsigned byte5			: 8;
 	unsigned byte6			: 8;
@@ -1450,6 +1496,7 @@ hijack_save_settings (unsigned char *buf)
 	hijack_savearea.blanker_timeout		= blanker_timeout;
 	hijack_savearea.maxtemp_threshold	= maxtemp_threshold;
 	hijack_savearea.knobdata_index		= knobdata_index;
+	hijack_savearea.blankerfuzz_5pcts	= blankerfuzz_5pcts;
 	memcpy(buf, &hijack_savearea, sizeof(hijack_savearea));
 }
 
@@ -1464,7 +1511,8 @@ hijack_restore_settings (const unsigned char *buf)
 		voladj_enabled	= hijack_savearea.voladj_ac_power;
 	blanker_timeout		= hijack_savearea.blanker_timeout;
 	maxtemp_threshold	= hijack_savearea.maxtemp_threshold;
-	knobdata_index		= hijack_savearea.knobdata_index % (sizeof(knobdata_pressed)/sizeof(unsigned long));
+	knobdata_index		= hijack_savearea.knobdata_index;
+	blankerfuzz_5pcts	= hijack_savearea.blankerfuzz_5pcts;
 }
 
 static int
@@ -1474,7 +1522,7 @@ hijack_wait_on_menu (char *argv[])
 	int i, rc, index, num_items, indexes[MENU_MAX_SIZE];
 	unsigned long flags, userdata = (unsigned long)current->pid << 8;
 
-	// (re)create the menu items, with our waitq as userdata
+	// (re)create the menu items, with our pid/index as userdata
 	for (i = 0; *argv && i < MENU_MAX_SIZE; ++i) {
 		unsigned char label[32], size = 0, *argp = *argv++;
 		do {
@@ -1492,25 +1540,32 @@ hijack_wait_on_menu (char *argv[])
 	}
 	num_items = i;
 	save_flags_cli(flags);
+	if (hijack_dispfunc == userland_display && (menu_table[menu_item].userdata & ~0xff) == userdata)
+		hijack_dispfunc = NULL;		// restart the main menu
 	add_wait_queue(&hijack_menu_waitq, &wait);
 	while (1) {
-		unsigned long menudata = menu_table[menu_item].userdata;
+		unsigned long menudata;
 		current->state = TASK_INTERRUPTIBLE;
-		if ((menudata & ~0xff) == userdata && hijack_dispfunc == userland_display) {
-			rc = menudata & 0x7f;
-			break;
-		}
+		menudata = menu_table[menu_item].userdata;
 		if (signal_pending(current)) {
 			rc = -EINTR;
+			break;
+		}
+		if (hijack_dispfunc == userland_display && (menudata & ~0xff) == userdata) {
+			rc = menudata & 0x7f;
 			break;
 		}
 		restore_flags(flags);
 		schedule();
 		save_flags_cli(flags);
 	}
-	for (i = 0; i < num_items; ++i)	{	// disable our menu items until next time
-		menu_item_t *item = &menu_table[indexes[i]];
-		item->userdata = 0;
+	if (rc < 0) {
+		if (hijack_dispfunc == userland_display && (menu_table[menu_item].userdata & ~0xff) == userdata)
+			hijack_dispfunc = NULL;		// restart the main menu
+		for (i = 0; i < num_items; ++i)	{	// disable our menu items until next time
+			menu_item_t *item = &menu_table[indexes[i]];
+			item->dispfunc = NULL;		// disable the menu item
+		}
 	}
 	current->state = TASK_RUNNING;
 	remove_wait_queue(&hijack_menu_waitq, &wait);
@@ -1531,6 +1586,7 @@ hijack_ioctl (struct inode *inode, struct file *filp, unsigned int cmd, unsigned
 			// Invocation:  char *menulabels[] = {"Label1", "Label2", NULL};
 			//              rc = ioctl(fd, EMPEG_HIJACK_WAITMENU, &menu_labels)
 			//              if (rc < 0) perror(); else selected_index = rc;
+			// The screen is then YOURS until you issue another EMPEG_HIJACK_WAITMENU
 			return hijack_wait_on_menu((char **)arg);
 		}
 		case EMPEG_HIJACK_DISPWRITE:	// copy buffer to screen
@@ -1666,8 +1722,8 @@ hijack_ioctl (struct inode *inode, struct file *filp, unsigned int cmd, unsigned
 void
 hijack_init (void)
 {
-	menu_item_t item = {"Button Codes Display", showbutton_display, NULL, 0};
 	extern int getbitset(void);
+	menu_item_t item = {"Vital Signs", vitals_display, NULL, 0};
 	(void)extend_menu(&item);	// we need at least one call to extend_menu() to set the menu_size!!
 	hijack_on_dc_power = getbitset() & EMPEG_POWER_FLAG_DC;
 	init_temperature();

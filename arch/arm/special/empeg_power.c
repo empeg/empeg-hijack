@@ -173,7 +173,7 @@ int getbitset(void)
 		
 	/* Any activity on these bits indicates a presence, if they go
 	   low for a while then don't worry. */
-	static unsigned long last_lights_activity;
+	static unsigned long last_lights_activity = 0;
 	
 	
 	int bitset=0; // 6; // marvin hack
@@ -213,10 +213,14 @@ int getbitset(void)
 
 	if (bitset & EMPEG_POWER_FLAG_LIGHTS) {
 		/* We've got some activity on the lights. */
-		last_lights_activity = jiffies;
-	} else if (jiffies - last_lights_activity < HZ) {
-		/* We had some activity less than a quarter of a second ago. */
-		bitset |= EMPEG_POWER_FLAG_LIGHTS;
+		last_lights_activity = jiffies ? jiffies : -1;
+	} else if (last_lights_activity) {
+		if (jiffies - last_lights_activity < HZ) {
+			/* We had some activity less than a quarter of a second ago. */
+			bitset |= EMPEG_POWER_FLAG_LIGHTS;
+		} else {
+			last_lights_activity = 0;
+		}
 	}
 
 	return (bitset & ~unstable_bits) | saved_unstable;
@@ -446,6 +450,10 @@ static int power_ioctl(struct inode *inode, struct file *flip,
 
 		/* Swap over with IRQs disabled */
 		save_flags_cli(flags);
+
+		//if (dev->laststate != dev->newstate)
+		//	printk("\n**** power state changed: old=0x%04x new=0x%04x ****\n", dev->laststate, dev->newstate);
+
 		returnstate=dev->laststate=dev->newstate;
 		restore_flags(flags);
 

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v347"
+#define HIJACK_VERSION	"v348"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -2333,7 +2333,7 @@ knobdata_display (int firsttime)
 #endif // EMPEG_KNOB_SUPPORTED
 
 static unsigned long knobseek_lasttime;
-static int player_v3alpha3 = 0;
+static int player_v3alpha = 0;
 
 static void
 knobseek_move_visuals (int direction)
@@ -2342,7 +2342,7 @@ knobseek_move_visuals (int direction)
 
 	button = (direction > 0) ? IR_RIO_VISUAL_PRESSED : IR_PREV_VISUAL_PRESSED;
 #ifdef EMPEG_KNOB_SUPPORTED
-	if (button == IR_PREV_VISUAL_PRESSED && player_v3alpha3) {
+	if (button == IR_PREV_VISUAL_PRESSED && player_v3alpha) {
 		if ((empeg_tuner_present || hijack_fake_tuner) && get_current_mixer_source() != IR_FLAGS_TUNER) {
 			button = IR_KSNEXT_PRESSED;
 		}
@@ -5005,7 +5005,7 @@ set_fan_control (void)
 #endif // CONFIG_EMPEG_I2C_FAN_CONTROL
 
 #ifdef EMPEG_KNOB_SUPPORTED
-static void check_for_v3alpha3 (void)
+static void check_for_v3alpha (void)
 {
 	extern int sys_newstat(char *, struct stat *);
 	mm_segment_t old_fs = get_fs();
@@ -5014,8 +5014,8 @@ static void check_for_v3alpha3 (void)
 	set_fs(KERNEL_DS);
 	if (0 == sys_newstat("/empeg/bin/player", &st)) {
 		//printk("player_size = %lu\n", st.st_size);
-		if (st.st_size == 1900988) {
-			player_v3alpha3 = 1;
+		if (st.st_size == 1900988 || st.st_size == 1907572) {
+			player_v3alpha = 1;
 		}
 	}
 	set_fs(old_fs);
@@ -5031,7 +5031,7 @@ hijack_process_config_ini (char *buf, off_t f_pos)
 	static const char *acdc_labels[2] = {";@AC", ";@DC"};
 
 #ifdef EMPEG_KNOB_SUPPORTED
-	check_for_v3alpha3();
+	check_for_v3alpha();
 #endif
 	(void) edit_config_ini(buf, acdc_labels    [empeg_on_dc_power]);
 	(void) edit_config_ini(buf, homework_labels[hijack_homework]);

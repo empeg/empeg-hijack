@@ -655,6 +655,7 @@ extern int hijack_ioctl (struct inode *, struct file *, unsigned int, unsigned l
 /* Display the current top of queue. If there isn't anything in the
    queue then just re-use the last one. */
    
+static
 void display_queue_draw(struct display_dev *dev)
 {
 	unsigned long flags;
@@ -683,6 +684,8 @@ void display_queue_draw(struct display_dev *dev)
 	wake_up_interruptible(&dev->wq);
 }
 
+extern void trigger_display_redraw(void);
+
 static void display_refresh(struct display_dev *dev)
 {
 	/* We used to go through the complete motions here but this
@@ -693,7 +696,8 @@ static void display_refresh(struct display_dev *dev)
 	   then draw the queue - good code reuse too. MAC 1999/10/14 */
 	display_queue_flush(dev);
 	display_queue_add(dev);
-	display_queue_draw(dev);
+	//display_queue_draw(dev);
+	trigger_display_redraw(); // Redundant? (the audio layer does this on a fixed clock)
 }
 
 /* Display splash screen */
@@ -1131,7 +1135,8 @@ int real_display_ioctl(struct display_dev *dev, unsigned int cmd,
 
 	case EMPEG_DISPLAY_POPQUEUE:
 	case 7:
-	        display_queue_draw(dev);
+	        //display_queue_draw(dev);
+		trigger_display_redraw();
 		break;
 	case EMPEG_DISPLAY_FLUSHQUEUE:
 	case 8:

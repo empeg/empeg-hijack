@@ -1,7 +1,9 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v358"
+#define HIJACK_VERSION	"v359"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
+
+// mainline code is in hijack_handle_display() way down in this file
 
 #define __KERNEL_SYSCALLS__
 #include <linux/sched.h>
@@ -3856,6 +3858,10 @@ enum {poweringup, booting, booted, waiting, started} player_state = booting;
 //
 // This routine covertly intercepts all display updates,
 // giving us a chance to substitute our own display.
+//
+// Display updates are (usually) triggered from the audio drivers,
+// using the tq_immediate task queue.  So we are running here on
+// interrupt context, not process context.  This limits what we can do.
 //
 void	// invoked from empeg_display.c
 hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)

@@ -645,6 +645,13 @@ static struct tq_struct emit_task =
 	routine:	empeg_audio_emit_action
 };
 
+void trigger_display_redraw (void)
+{
+	/* Run the audio buffer emmitted action */
+	queue_task(&emit_task, &tq_immediate);
+	mark_bh(IMMEDIATE_BH);
+}
+
 static struct tq_struct i2c_queue =
 {
 	routine:	empeg_audio_beep_end_sched
@@ -1531,10 +1538,8 @@ static void empeg_audio_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 		}
 	}
 
-	/* Run the audio buffer emmitted action */
-	queue_task(&emit_task, &tq_immediate);
-	mark_bh(IMMEDIATE_BH);
-	
+	trigger_display_redraw();
+
 	/* Wake up waiter */
 	wake_up_interruptible(&dev->waitq);
 }

@@ -735,30 +735,37 @@ timer_move (int direction)
 static int
 timer_display (int firsttime)
 {
+	static int paused = 0;
 	unsigned int rowcol;
 	unsigned char *offmsg = "[Off]";
 
-	if (firsttime && timer_timeout) {  // was timer already running?
-		int remaining = (jiffies_since(timer_started) / HZ) - timer_timeout;
-		if (remaining > 0) {
-			timer_timeout = remaining;
-		} else {
-			timer_timeout = 0;  // turn alarm off if it was on
-			offmsg = "[Cancelled]";
+	if (firsttime) {
+		paused = 0;
+		if (timer_timeout) {  // was timer already running?
+			int remaining = timer_timeout - (jiffies_since(timer_started) / HZ);
+			if (remaining > 0) {
+				timer_timeout = remaining;
+				paused = 1;
+			} else {
+				timer_timeout = 0;  // turn alarm off if it was on
+				offmsg = "[Cancelled]";
+			}
 		}
+		ir_numeric_input = &timer_timeout;
 	}
 	timer_started = jiffies;
-	if (firsttime)
-		ir_numeric_input = &timer_timeout;
-	else if (!hijack_last_moved)
+	if (!firsttime && !hijack_last_moved)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
-	(void)draw_string(ROWCOL(0,0), "Countdown Timer Expiry", COLOR2);
-	rowcol = draw_string(ROWCOL(2,20), "Timeout: ", COLOR2);
+	(void)draw_string(ROWCOL(0,0), "Countdown Timer Timeout", COLOR2);
+	rowcol = draw_string(ROWCOL(2,0), "Duration: ", COLOR2);
 	if (timer_timeout) {
-		(void)draw_hhmmss(rowcol, timer_timeout, COLOR3);
+		rowcol = draw_hhmmss(rowcol, timer_timeout, COLOR3);
+		if (paused)
+			(void)draw_string(rowcol, " [paused]", COLOR2);
 	} else {
+		paused = 0;
 		(void)draw_string(rowcol, offmsg, COLOR3);
 	}
 	return NEED_REFRESH;
@@ -786,51 +793,9 @@ timeraction_display (int firsttime)
 	return NEED_REFRESH;
 }
 
-static int
-timer_check_expiry (struct display_dev *dev)
-{
-	static unsigned int beeping;
-	int color, elapsed = (jiffies_since(timer_started) / HZ) - timer_timeout;
-
-	if (!timer_timeout || elapsed < 0)
-		return 0;
-	if (dev->power) {
-		if (timer_action == 0) {  // Toggle Standby?
-			// Power down the player
-			(void)real_input_append_code(IR_RIO_SOURCE_PRESSED);
-			timer_timeout = 0; // cancel the timer
-			return 0;
-		}
-	} else {
-		// A harmless method of waking up the player
-		(void)real_input_append_code(IR_RIO_VOLPLUS_PRESSED);
-		(void)real_input_append_code(IR_RIO_VOLPLUS_RELEASED);
-		(void)real_input_append_code(IR_RIO_VOLMINUS_PRESSED);
-		(void)real_input_append_code(IR_RIO_VOLMINUS_RELEASED);
-		if (timer_action == 0) {  // Toggle Standby?
-			timer_timeout = 0; // cancel the timer
-			return 0;
-		}
-	}
-	// Beep Alarm
-	if (elapsed < 1) {
-		beeping = 0;
-	} else if (((elapsed >> 2) & 7) == (beeping & 7)) {
-		int volume = 3 * ((++beeping >> 2) & 15) + 15;
-		hijack_beep(80, 400, volume);
-	}
-	if (dev->power && hijack_status == HIJACK_INACTIVE && jiffies_since(ir_lasttime) > (HZ*4)) {
-		color = (elapsed & 1) ? -COLOR3 : COLOR3;
-		clear_hijack_displaybuf(-color);
-		(void) draw_string(ROWCOL(2,31), " Timer Expired ", color);
-		return 1;
-	}
-	return 0;
-}
-
 static int maxtemp_check_threshold (void)
 {
-	static unsigned int beeping;
+	static unsigned long beeping;
 	unsigned int elapsed = jiffies_since(ir_lasttime) / HZ;
  
 	if (!maxtemp_threshold || read_temperature() < (maxtemp_threshold + MAXTEMP_OFFSET))
@@ -1008,7 +973,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v55 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v56 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1546,6 +1511,58 @@ toggle_input_source (void)
 	}
 	(void)real_input_append_code(button);
 	(void)real_input_append_code(button|0x80000000);
+}
+
+static int
+timer_check_expiry (struct display_dev *dev)
+{
+	static unsigned long beeping, flags;
+	int color, elapsed = (jiffies_since(timer_started) / HZ) - timer_timeout;
+
+	if (!timer_timeout || elapsed < 0)
+		return 0;
+	if (dev->power) {
+		if (timer_action == 0) {  // Toggle Standby?
+			// Power down the player
+			(void)real_input_append_code(IR_RIO_SOURCE_PRESSED);
+			timer_timeout = 0; // cancel the timer
+			return 0;
+		}
+	} else {
+		// A harmless method of waking up the player
+		(void)real_input_append_code(IR_RIO_VOLPLUS_PRESSED);
+		(void)real_input_append_code(IR_RIO_VOLPLUS_RELEASED);
+		(void)real_input_append_code(IR_RIO_VOLMINUS_PRESSED);
+		(void)real_input_append_code(IR_RIO_VOLMINUS_RELEASED);
+		if (timer_action == 0) {  // Toggle Standby?
+			timer_timeout = 0; // cancel the timer
+			return 0;
+		}
+	}
+
+	// Preselect timer in the menu:
+	save_flags(flags);
+	if (hijack_status == HIJACK_INACTIVE) {
+		while (menu_table[menu_item].dispfunc != timer_display)
+			menu_move(+1);
+		menu_move(+1); menu_move(-1);
+	}
+	restore_flags(flags);
+
+	// Beep Alarm
+	if (elapsed < 1) {
+		beeping = 0;
+	} else if (((elapsed >> 2) & 7) == (beeping & 7)) {
+		int volume = 3 * ((++beeping >> 2) & 15) + 15;
+		hijack_beep(80, 400, volume);
+	}
+	if (dev->power && hijack_status == HIJACK_INACTIVE && jiffies_since(ir_lasttime) > (HZ*4)) {
+		color = (elapsed & 1) ? -COLOR3 : COLOR3;
+		clear_hijack_displaybuf(-color);
+		(void) draw_string(ROWCOL(2,31), " Timer Expired ", color);
+		return 1;
+	}
+	return 0;
 }
 
 // This routine covertly intercepts all display updates,

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v398"
+#define HIJACK_VERSION	"v399"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -2392,7 +2392,7 @@ get_player_version (void)
 	}
 	if (player_version == MK2_PLAYER_v3a8) {
 		unsigned char *empeg_statebuf = *empeg_state_writebuf;
-		if (empeg_statebuf[0x1c] == 0x19) {	// lavatory floor visual -- badly broken!
+		if (empeg_statebuf[0x1c] == 0x19 || empeg_statebuf[0x1c] == 0x18) {	// lavatory floor visual -- badly broken!
 			empeg_statebuf[0x1c] = 0x1a;
 			empeg_statebuf = hijack_get_state_read_buffer();
 			empeg_statebuf[0x1c] = 0x1a;

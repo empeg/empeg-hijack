@@ -191,8 +191,7 @@ int getbitset(void)
 		if (powerfail_enabled())  bitset|=EMPEG_POWER_FLAG_FAILENABLED;
 		if (gplr&EMPEG_ACCSENSE)  bitset|=EMPEG_POWER_FLAG_ACCESSORY;
 		if (power_firstboot)      bitset|=EMPEG_POWER_FLAG_FIRSTBOOT;
-		if (empeg_on_dc_power)
-			if (!(gplr&EMPEG_SERIALDCD)) bitset|=EMPEG_POWER_FLAG_EXTMUTE; /* Tel mute */
+		if (!(gplr&EMPEG_SERIALDCD)) bitset|=EMPEG_POWER_FLAG_EXTMUTE; /* Tel mute */
 		if (!(gplr&EMPEG_SERIALCTS)) bitset|=EMPEG_POWER_FLAG_LIGHTS; /* Dimmer sense - inverted */
 		if (dev->displaystate)	  bitset|=EMPEG_POWER_FLAG_DISPLAY;
 	}

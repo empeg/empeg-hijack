@@ -69,9 +69,11 @@ static unsigned long ir_menu_down = 0, ir_left_down = 0, ir_right_down = 0;
 static unsigned long ir_move_repeat_delay, ir_shifted = 0;
 static int *ir_numeric_input = NULL, player_menu_is_active = 0, player_sound_adjust_is_active = 0;
 
+#define IS_RELEASE(b)	(0 != ((b) & (((b) > 0xf) ? 0x80000000 : 1)))
+
 #define IR_FLAGS_LONGPRESS	1
-#define IR_FLAGS_CAR	2
-#define IR_FLAGS_HOME	4
+#define IR_FLAGS_CAR		2
+#define IR_FLAGS_HOME		4
 #define IR_FLAGS_SHIFTED	8
 
 typedef struct ir_translation_s {
@@ -178,6 +180,7 @@ static int hijack_button_pacing			=  8;	// minimum spacing between press/release
 static int hijack_temperature_correction	= -4;	// adjust all h/w temperature readings by this celcius amount
 static int hijack_supress_notify		=  0;	// 1 == supress player "notify" (and "dhcp") lines from serial port
 static int hijack_old_style			=  0;	// 1 == don't highlite menu items
+static int hijack_quicktimer_minutes		= 30;	// increment size for quicktimer function
 
 typedef struct hijack_option_s {
 	const char	*name;
@@ -189,13 +192,14 @@ typedef struct hijack_option_s {
 
 static const hijack_option_t hijack_option_table[] = {
 	// config.ini string		address-of-variable		howmany	min	max
-	{"supress_notify",		&hijack_supress_notify,	1,	0,	1},	// FIXME: delete this line
+	{"supress_notify",		&hijack_supress_notify,		1,	0,	1},	
 	{"button_pacing",		&hijack_button_pacing,		1,	0,	HZ},
 	{"old_style",			&hijack_old_style,		1,	0,	1},
 	{"temperature_correction",	&hijack_temperature_correction,	1,	-20,	+20},
 	{"voladj_low",			&hijack_voladj_parms[0][0],	5,	0,	0x7ffe},
 	{"voladj_medium",		&hijack_voladj_parms[1][0],	5,	0,	0x7ffe},
 	{"voladj_high",			&hijack_voladj_parms[2][0],	5,	0,	0x7ffe},
+ 	{"quicktimer_minutes",		&hijack_quicktimer_minutes,	1,	1,	120},
 	{NULL,NULL,0,0,0} // end-of-list
 	};
 
@@ -512,7 +516,6 @@ hijack_do_overlay (unsigned char *dest, unsigned char *src, const hijack_geom_t 
 	}
 }
 
-#ifdef EMPEG_KNOB_SUPPORTED
 static void
 draw_frame (unsigned char *dest, const hijack_geom_t *geom)
 {
@@ -555,7 +558,6 @@ clear_text_row (unsigned int rowcol, unsigned short last_col, int do_top_row)
 		} while (++offset < num_cols);
 	}
 }
-#endif // EMPEG_KNOB_SUPPORTED
 
 static unsigned char kfont_spacing = 0;  // 0 == proportional
 
@@ -681,7 +683,7 @@ hijack_button_enq (hijack_buttonq_t *q, unsigned long button, unsigned long dela
 	unsigned short head;
 
 	head = q->head;
-	if (head != q->tail && delay < hijack_button_pacing && (button & 0x80000001) == 0 && q == &hijack_playerq)
+	if (head != q->tail && delay < hijack_button_pacing && !IS_RELEASE(button) && q == &hijack_playerq)
 		delay = hijack_button_pacing;	// ensure we have sufficient delay between press/release pairs
 	if (++head >= HIJACK_BUTTONQ_SIZE)
 		head = 0;
@@ -1527,7 +1529,7 @@ knobjog_display (int firsttime)
 }
 
 static unsigned long knobmenu_pressed;
-static const unsigned long knobmenu_buttonlist[3] = {3, IR_KNOB_PRESSED, IR_KNOB_RELEASED};
+static const unsigned long knobmenu_buttonlist[] = {3, IR_KNOB_PRESSED, IR_KNOB_RELEASED};
 
 static void
 knobmenu_move (int direction)
@@ -1614,7 +1616,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v99 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,18), " Enhancements.v100 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1624,8 +1626,7 @@ game_finale (void)
 		return NEED_REFRESH;
 	}
 	if (jiffies_since(game_animtime) < (HZ/(ANIMATION_FPS-2))) {
-		//(void)draw_string(ROWCOL(2,44), "You Win!", COLOR3); // fixme!
-		(void)draw_string(ROWCOL(2,0), "Gretzky Shoots, He Scores!", COLOR3);
+		(void)draw_string(ROWCOL(2,44), "You Win!", COLOR3);
 		return NEED_REFRESH;
 	}
 	if (game_animtime == 0) { // first frame?
@@ -1889,7 +1890,6 @@ calculator_display (int firsttime)
 					}
 					// fall thru
 				case 12: // TOP or KNOB: Quit
-					hijack_buttonlist = NULL;
 					ir_selected = 1; // return to main menu
 					break;
 				default: // 0,1,2,3,4,5,6,7,8,9
@@ -1948,7 +1948,7 @@ reboot_display (int firsttime)
 				left_pressed = right_pressed = 1;
 				break;
 			default:
-				if ((data.button & 0x80000001) == 0) {
+				if (!IS_RELEASE(data.button)) {
 					hijack_buttonlist = NULL;
 					ir_selected = 1; // return to main menu
 				}
@@ -1956,7 +1956,7 @@ reboot_display (int firsttime)
 		}
 		if (left_pressed && right_pressed) {
 			clear_hijack_displaybuf(COLOR0);
-			(void) draw_string(ROWCOL(2,30), "Rebooting..", PROMPTCOLOR);
+			(void) draw_string(ROWCOL(2,32), "Rebooting..", PROMPTCOLOR);
 			rc = NEED_REFRESH;
 			// reboot on next refresh, AFTER screen has been updated on this pass
 		}
@@ -1986,11 +1986,10 @@ showbutton_display (int firsttime)
 	if (hijack_button_deq(&hijack_userq, &data, 0)) {
 		if (++counter > 99)
 			counter = 0;
-		if (prev[0] == -1 && (data.button & 0x80000000)) {
+		if (prev[0] == -1 && IS_RELEASE(data.button)) {
 			// ignore it: left over from selecting us off the menu
-		} else if (data.button == prev[1] && ((data.button & 0x80000000) || data.button < 0x10)) {
+		} else if (data.button == prev[1] && IS_RELEASE(data.button)) {
 			ir_translate_table = saved_table;
-			hijack_buttonlist = NULL;
 			ir_selected = 1; // return to main menu
 		} else {
 			for (i = 2; i >= 0; --i)
@@ -2298,6 +2297,52 @@ static int hijack_check_buttonlist (unsigned long data, unsigned long delay)
 	return 0;
 }
 
+static void
+quicktimer_move (int direction)
+{
+	if (direction == 0) {
+		timer_timeout = 0;
+	} else {
+		timer_timeout += (direction * hijack_quicktimer_minutes * (60*HZ));
+		if (timer_timeout < 0)
+			timer_timeout = 0;
+	}
+}
+
+static int
+quicktimer_display (int firsttime)
+{
+	static const unsigned long quicktimer_buttonlist[] = {5, IR_KW_4_PRESSED, IR_KW_4_RELEASED, IR_RIO_4_PRESSED, IR_RIO_4_RELEASED};
+	static const hijack_geom_t geom = {8, 8+6+KFONT_HEIGHT, 12, EMPEG_SCREEN_COLS-12};
+	hijack_buttondata_t data;
+	unsigned int rowcol;
+
+	timer_started = jiffies;
+	if (firsttime) {
+		ir_numeric_input = &timer_timeout;
+		clear_hijack_displaybuf(COLOR0);
+		draw_frame((unsigned char *)hijack_displaybuf, &geom);
+		hijack_buttonlist = quicktimer_buttonlist;
+		hijack_overlay_geom = (hijack_geom_t *)&geom;
+		hijack_last_moved = jiffies ? jiffies : -1;
+	} else if (jiffies_since(hijack_last_moved) >= (HZ*3)) {
+		hijack_deactivate(HIJACK_INACTIVE);
+		return NO_REFRESH;
+	} else {
+		while (hijack_button_deq(&hijack_userq, &data, 0)) {
+			if (!(data.button & 0x80000000))
+				timer_timeout += hijack_quicktimer_minutes * (60*HZ);
+			hijack_last_moved = jiffies ? jiffies : -1;
+		}
+		rowcol = (geom.first_row+4)|((geom.first_col+6)<<16);
+		rowcol = draw_string(rowcol, "Quick Timer: ", COLOR3);
+		clear_text_row(rowcol, geom.last_col-4, 1);
+		rowcol = draw_hhmmss(rowcol, timer_timeout / (60*HZ), ENTRYCOLOR);
+		return NEED_REFRESH;
+	}
+	return NO_REFRESH;
+}
+
 // This routine gets first shot at IR codes as soon as they leave the translator.
 //
 // In an ideal world, we would never use "jiffies" here, relying on the inter-code "delay" instead.
@@ -2448,6 +2493,21 @@ hijack_handle_button(unsigned long data, unsigned long delay)
 			if (hijack_status != HIJACK_INACTIVE)
 				hijacked = 1;
 			break;
+		case IR_KW_4_RELEASED:
+		case IR_RIO_4_RELEASED:
+			if (hijack_status == HIJACK_INACTIVE && !player_menu_is_active) {
+				if (timer_timeout) {
+	    				timer_timeout = 0;
+					hijack_beep(60, 100, 30);
+					activate_dispfunc(quicktimer_display, quicktimer_move);
+				} else {
+	    				timer_timeout = hijack_quicktimer_minutes * (60*HZ);
+					hijack_beep(80, 100, 30);
+					activate_dispfunc(quicktimer_display, quicktimer_move);
+				}
+				hijacked = 1;
+			}
+			break;    	    
 	}
 done:
 	// save button PRESSED codes in ir_lastpressed
@@ -2457,8 +2517,8 @@ done:
 	if (data && data == ir_releasewait) {
 		ir_releasewait = 0;
 		hijacked = 1;
-	} else if (hijacked && (data & 0x80000001) == 0 && data != IR_KNOB_LEFT && data != IR_KNOB_RIGHT) {
-		ir_releasewait = data | ((data & 0xffffff00) ? 0x80000000 : 0x00000001);
+	} else if (hijacked && !IS_RELEASE(data) && data != IR_KNOB_LEFT && data != IR_KNOB_RIGHT) {
+		ir_releasewait = data | ((data > 0xf) ? 0x80000000 : 0x00000001);
 	}
 	if (!hijacked)
 		hijack_button_enq(&hijack_playerq, data, delay);
@@ -2539,7 +2599,7 @@ input_append_code2 (unsigned long button)
 	//} else {
 		released = (button <= 0xf) ? (button & 1) : (button >> 31);
 		if (released) {
-			if (ir_downkey == -1)	// FIXME: just send the code anyway?
+			if (ir_downkey == -1)	// FIXME? just send the code anyway?
 				return;	// already taken care of (we hope)
 			ir_downkey = -1;
 		} else {

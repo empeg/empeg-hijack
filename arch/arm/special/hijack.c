@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v133"
+#define HIJACK_VERSION "v134"
 
 #include <linux/sched.h>
 #include <linux/kernel.h>
@@ -2715,6 +2715,20 @@ look_for_trackinfo_or_tuner (unsigned char *buf, int row)
 #endif // RESTORE_CARVISUALS
 
 static void
+check_screen_grab (unsigned char *buf)
+{
+#ifdef CONFIG_NET_ETHERNET
+	extern unsigned char *notify_screen_grab_buffer;	// arch/arm/notify.c
+	if (notify_screen_grab_buffer) {
+		extern struct semaphore notify_screen_grab_sem;
+		memcpy(notify_screen_grab_buffer, buf, EMPEG_SCREEN_BYTES);
+		notify_screen_grab_buffer = NULL;
+		up(&notify_screen_grab_sem);
+	}
+#endif // CONFIG_NET_ETHERNET
+}
+
+static void
 hijack_reboot_now (void *dev)
 {
 	unsigned long flags;
@@ -2760,6 +2774,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 		hijack_deactivate(HIJACK_INACTIVE);
 		(void)timer_check_expiry(dev);
 		restore_flags(flags);
+		check_screen_grab(player_buf);
 		display_blat(dev, player_buf);
 		return;
 	}
@@ -2848,17 +2863,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 			hijack_deactivate(HIJACK_INACTIVE_PENDING);
 			break;
 	}
-#ifdef CONFIG_NET_ETHERNET
-{
-	extern unsigned char *notify_screen_grab_buffer;	// arch/arm/notify.c
-	if (notify_screen_grab_buffer) {
-		extern struct semaphore notify_screen_grab_sem;
-		memcpy(notify_screen_grab_buffer, buf, EMPEG_SCREEN_BYTES);
-		notify_screen_grab_buffer = NULL;
-		up(&notify_screen_grab_sem);
-	}
-}
-#endif // CONFIG_NET_ETHERNET
+	check_screen_grab(buf);
 	restore_flags(flags);
 
 	// Prevent screen burn-in on an inactive/unattended player:

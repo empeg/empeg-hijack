@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v219"
+#define HIJACK_VERSION	"v220"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -2397,7 +2397,7 @@ menu_move (int direction)
 	}
 	empeg_state_dirty = 1;
 }
-#if 0 //fixme
+#if 1 //fixme
 static int
 menu_display (int firsttime)
 {

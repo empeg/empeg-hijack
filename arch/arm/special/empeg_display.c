@@ -139,7 +139,7 @@
 #include <asm/uaccess.h>
 #include <asm/arch/empegcar.h>	// for EMPEG_FLASHBASE
 
-#include "hijack_ani.h"
+#include "empeg_ani.h"
 
 /* No hard disk found image */
 #include "nohd_img.h"
@@ -812,7 +812,7 @@ static void handle_splash(struct display_dev *dev)
 		logo_type = LOGO_EMPEG;
 	}
 	
-	ani_ptr=(unsigned long*)hijack_ani;
+	ani_ptr=(unsigned long*)empeg_ani;
 {
 	// look for custom animation at tail end of kernel flash partition:
 	const unsigned int kernel_start = EMPEG_FLASHBASE + 0x10000;

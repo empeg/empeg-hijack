@@ -91,7 +91,7 @@ typedef struct server_parms_s {
 	char			have_portaddr;		// bool
 	char			icy_metadata;		// bool
 	char			streaming;		// bool
-	char			need_password;		// bool
+	char			need_password;		// bool, FTP only
 	char			rename_pending;		// bool
 	char			nocache;		// bool
 	char			show_dotfiles;		// bool
@@ -104,9 +104,10 @@ typedef struct server_parms_s {
 	unsigned int		umask;
 	struct sockaddr_in	portaddr;
 	char			clientip[INET_ADDRSTRLEN];
+	char			user_passwd[24];	// khttpd
 	char			hostname[48];		// serverip, or "Host:" field from HTTP header
 	char			style[128];		// path for stylesheet to embed into xml output
-	unsigned char		cwd[1024];
+	unsigned char		cwd[1000];
 	unsigned char		buf[1024];
 	unsigned char		tmp2[768];
 	unsigned char		tmp3[768];
@@ -758,7 +759,6 @@ send_dirlist (server_parms_t *parms, char *path, int full_listing)
 }
 
 typedef enum {auth_none, auth_basic, auth_full} khttpd_auth_t;
-static char *khttpd_basic_base64, *khttpd_full_base64;
 
 static int
 khttpd_check_auth (server_parms_t *parms, khttpd_auth_t authtype)
@@ -776,7 +776,7 @@ khttpd_check_auth (server_parms_t *parms, khttpd_auth_t authtype)
 		"%s Authorization Required<p>"
 		"</body></html>\r\n";
 
-	if (parms->auth >= authtype || (!khttpd_basic_base64 && !khttpd_full_base64)) {
+	if (parms->auth >= authtype || (!*hijack_khttpd_basic && !*hijack_khttpd_full)) {
 		return 0;
 	} else {
 		char		*buf = parms->cwd, *auths = (authtype == auth_full) ? "Full" : "Basic";
@@ -1253,7 +1253,7 @@ send_playlist (server_parms_t *parms, char *path)
 		if (parms->generate_playlist != xml) {
 			secs = str_val(tags.duration) / 1000;
 			used  = sprintf(xfer.buf, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s\r\n\r\n"
-				"#EXTM3U\r\n#EXTINF:%u,%s\r\nhttp://%s/", audio_m3u, secs, artist_title, parms->hostname);
+				"#EXTM3U\r\n#EXTINF:%u,%s\r\nhttp://%s%s/", audio_m3u, secs, artist_title, parms->user_passwd, parms->hostname);
 			used += encode_url(xfer.buf+used, artist_title, 0);
 			used += sprintf(xfer.buf+used, ".%s?FID=%x&EXT=.%s\r\n", tags.codec, pfid^1, tags.codec);
 			(void)ksock_rw(parms->datasock, xfer.buf, used, -1);
@@ -1424,7 +1424,7 @@ open_fidfile:
 					if (fidtype == 'T') {
 						combine_artist_title(tags.artist, tags.title, artist_title, sizeof(artist_title));
 						subpath[sublen - 1] = '0';
-						used += sprintf(xfer.buf+used, "#EXTINF:%u,%s\r\nhttp://%s/", secs, artist_title, parms->hostname);
+						used += sprintf(xfer.buf+used, "#EXTINF:%u,%s\r\nhttp://%s%s/", secs, artist_title, parms->user_passwd, parms->hostname);
 						used += encode_url(xfer.buf+used, artist_title, 0);
 						used += sprintf(xfer.buf+used, ".%s?FID=%x&EXT=.%s\r\n", tags.codec, fid^1, tags.codec);
 					}
@@ -2086,6 +2086,44 @@ got_response:
 	return quit;
 }
 
+static const unsigned char base64[64] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+static void
+decode_base64 (const char *s, char *result, int maxlen)
+{
+	char c, tmp = 0, *end = result + maxlen - 1;
+	unsigned int state = 0;
+
+	while ((c = *s++) != '\0' && c != '\r' && c != '\n') {
+		unsigned b64 = 64;
+
+		while (c != base64[--b64] && b64);
+		switch (state) {
+			case 0:
+				tmp = b64;
+				state = 1;
+				break;
+			case 1:
+				*result++ = (tmp << 2) | (b64 >> 4);
+				tmp = b64 & 0xf;
+				state = 2;
+				break;
+			case 2:
+				*result++ = (tmp << 4) | (b64 >> 2);
+				tmp = b64 & 0x3;
+				state = 3;
+				break;
+			case 3:
+				*result++ = (tmp << 6) | (b64);
+				state = 0;
+				break;
+		}
+		if (result >= end)
+			break;
+	}
+	*result = '\0';
+}
+
 static void
 khttpd_handle_connection (server_parms_t *parms)
 {
@@ -2143,10 +2181,15 @@ khttpd_handle_connection (server_parms_t *parms)
 				while ((c = *x) && c != ' ' && c != '\r' && c != '\n')
 					++x;
 				*x = '\0';
-				if (0 == strcmp(user_passwd, khttpd_basic_base64))
-					parms->auth = auth_basic;
-				if (0 == strcmp(user_passwd, khttpd_full_base64))
+				decode_base64(user_passwd, parms->user_passwd, sizeof(parms->user_passwd) - 1);	// (-1 to allow for '@' append)
+				if (0 == strcmp(parms->user_passwd, hijack_khttpd_full))
 					parms->auth = auth_full;
+				else if (0 == strcmp(parms->user_passwd, hijack_khttpd_basic))
+					parms->auth = auth_basic;
+				else
+					parms->user_passwd[0] = '\0';
+				if (parms->user_passwd[0])
+					strcat(parms->user_passwd, "@");
 				*x = c;
 			} else if (!strxcmp(x, Host, 1) && *(x += sizeof(Host) - 1)) {
 				unsigned char *h = x;
@@ -2285,15 +2328,15 @@ child_thread (void *arg)
 	return 0;
 }
 
+#if 0
 static char *
 encode_base64 (const char *s)
 {
-	static const unsigned char base64[64] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 	unsigned char c, tmp = 0, *result, *rp, state = 0;
 
 	if (!s || !*s)
 		return NULL;
-	rp = result = kmalloc((strlen(s) + 2) * 4 / 3, GFP_KERNEL);
+	rp = result = kmalloc(((strlen(s) + 2) / 3 * 4) + 1, GFP_KERNEL);
 	if (!result)
 		return NULL;
 	while ((c = *s++) != '\0') {
@@ -2323,7 +2366,7 @@ encode_base64 (const char *s)
 	*rp = '\0';
 	return result;
 }
-
+#endif
 
 int
 kftpd_daemon (unsigned long use_http)	// invoked twice from init/main.c
@@ -2360,12 +2403,9 @@ kftpd_daemon (unsigned long use_http)	// invoked twice from init/main.c
 	if (*hijack_kftpd_password)
 		parms.need_password = 1;
 	if (use_http) {
-		parms.need_password = 1;	//FIXME
 		server_port	= hijack_khttpd_port;
 		parms.verbose	= hijack_khttpd_verbose;
 		parms.use_http	= 1;
-		khttpd_basic_base64 = encode_base64(hijack_khttpd_basic);
-		khttpd_full_base64 = encode_base64(hijack_khttpd_full);
 	} else {
 		server_port	= hijack_kftpd_control_port;
 		parms.data_port	= hijack_kftpd_data_port;

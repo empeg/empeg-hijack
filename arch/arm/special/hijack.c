@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v155"
+#define HIJACK_VERSION "v156"
 
 #include <linux/sched.h>
 #include <linux/kernel.h>
@@ -3914,7 +3914,7 @@ fix_visuals (unsigned char *buf)
 		}
 		if (restore_carvisuals)
 			empeg_state_dirty = 1;
-		printk("fix_visuals(): restore=%d, row=%d\n", restore_carvisuals, info_screenrow); //fixme: temporary
+		printk("fix_visuals(): mixer=%02x, restore=%d, row=%d\n", buf[0x0e], restore_carvisuals, info_screenrow); //fixme: temporary
 	}
 }
 #endif // RESTORE_CARVISUALS

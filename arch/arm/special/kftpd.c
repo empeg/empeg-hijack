@@ -249,11 +249,11 @@ send_dir_response (server_parms_t *parms, int rcode, char *dir, char *suffix)
 }
 
 static int
-turn_on_sockopt (server_parms_t *parms, struct socket * sock, int protocol, int option)
+set_sockopt (server_parms_t *parms, struct socket *sock, int protocol, int option, int off_on)
 {
-	int	rc, turn_on = 1;
+	int	rc;
 
-	rc = sock_setsockopt(sock, protocol, option, (char *)&turn_on, sizeof(turn_on));
+	rc = sock_setsockopt(sock, protocol, option, (char *)&off_on, sizeof(off_on));
 	if (rc)
 		printk("%s: setsockopt(%d,%d) failed, rc=%d\n", parms->servername, protocol, option, rc);
 	return rc;
@@ -269,7 +269,7 @@ make_socket (server_parms_t *parms, struct socket **sockp, int port)
 	*sockp = NULL;
 	if ((rc = sock_create(AF_INET, SOCK_STREAM, 0, &sock))) {
 		printk("%s: sock_create() failed, rc=%d\n", parms->servername, rc);
-	} else if (turn_on_sockopt(parms, sock, SOL_SOCKET, SO_REUSEADDR)) {
+	} else if (set_sockopt(parms, sock, SOL_SOCKET, SO_REUSEADDR, 1)) {
 		sock_release(sock);
 	} else {
 		memset(&addr, 0, sizeof(struct sockaddr_in));
@@ -308,7 +308,7 @@ open_datasock (server_parms_t *parms)
 					(struct sockaddr *)&parms->portaddr, sizeof(struct sockaddr_in), flags)) {
 				response = 426;
 			} else {
-				(void) turn_on_sockopt(parms, parms->datasock, SOL_TCP, TCP_NODELAY); // don't care
+				(void) set_sockopt(parms, parms->datasock, SOL_TCP, TCP_NODELAY, 1); // don't care
 			}
 			if (response)
 				sock_release(parms->datasock);
@@ -911,14 +911,15 @@ get_tag (char *s, char *tag, char *buf, int buflen)
 }
 
 // Mmmm.. probably the wrong approach, but it will do for starters.
-// Much better would be to implement an on-the-fly "/proc/playlists" tree,
+// Much better might be to implement an on-the-fly "/proc/playlists" tree,
 // using symlinks (with extensions!) to point at the actual audio files.
 static int
 send_tagfile (server_parms_t *parms, char *path, unsigned char *buf, int size)
 {
-	char	type[12], subpath[64], *pathtail, html[128];
+	char	type[12], subpath[64], *pathtail;
 	int	pathlen = strlen(path);
 
+	(void) set_sockopt(parms, parms->datasock, SOL_TCP, TCP_NODELAY, 0); // don't care
 	if (size < PAGE_SIZE && pathlen < sizeof(subpath)) {	// Ouch.. we cannot handle HUGE tag files here
 		strcpy(subpath, path);
 		pathtail = subpath + pathlen - 1;
@@ -926,60 +927,67 @@ send_tagfile (server_parms_t *parms, char *path, unsigned char *buf, int size)
 			--pathtail;
 		buf[size] = '\0';	// Ensure zero-termination of the data
 		if (get_tag(buf, "type=", type, sizeof(type))) {
+			int playlist_fd;
 			path[strlen(path)-1] = '0';	// for the next phase (whichever) below:
-			if (!strxcmp(type, "tune", 0)) {
-				// fixme: need to somehow specify the audio type (mp3,wav,wmp)
+			if (strxcmp(type, "playlist", 0)) {
+				// fixme: need to somehow specify the audio type (mp3,wav,wma)
 				khttpd_redirect(parms, path, buf);
 				return 0;
 			}
-			if (!strxcmp(type, "playlist", 0)) {
-				// open the *0 file, which contains a list of 32-bit fids
-				// loop: read a 32-bit fid, open/read the corresponding *1 file,
-				//    format/send the *1 title, type..
-				//    close the *1, and loop again until done.
-				int playlist_fd = open(path, O_RDONLY, 0);
-				if (playlist_fd >= 0) {
-					int rc = 0, fid = -1;
-					if (khttp_send_file_header(parms, path, 0, buf)) {
-						printk("send header failed\n");
-						rc = -1;
-					} else while (sizeof(fid) == read(playlist_fd, (char *)&fid, sizeof(fid))) {
+			if ((playlist_fd = open(path, O_RDONLY, 0)) >= 0) {
+				int rc = 0, fid = -1, done_header = 0;
+				if (khttp_send_file_header(parms, path, 0, buf)) {
+					printk("send header failed\n");
+					rc = -1;
+				} else {
+					while (sizeof(fid) == read(playlist_fd, (char *)&fid, sizeof(fid))) {
 						int subitem_fd;
-						fid |= 1;
+						fid |= 1;	// select the tagfile
 						sprintf(pathtail, "%x", fid);
 						subitem_fd = open(subpath, O_RDONLY, 0);
 						if (subitem_fd >= 0) {
 							size = read(subitem_fd, buf, PAGE_SIZE-1);
-							if (size > 0) {
-								char title[64];
-								buf[size] = '\0';
-								if (get_tag(buf, "title=", title, sizeof(title))) {
-									size = sprintf(html, "<BR><A HREF=\"%x?FORMAT\">%s</A>\n", fid, title);
-									(void)ksock_rw(parms->datasock, html, size, -1);
-								}
-							} else {
-								printk("read_subitem(%s) returned %d\n", subpath, size);
-							}
 							close(subitem_fd);
-						} else {
-							printk("open_subitem(%s) returned %d\n", subpath, subitem_fd);
+							if (size > 0) {
+								int sent;
+								char title[64], artist[32], source[32];
+								buf[size] = '\0';
+								(void) get_tag(buf, "type=",   type,   sizeof(type));
+								(void) get_tag(buf, "title=",  title,  sizeof(title));
+								(void) get_tag(buf, "artist=", artist, sizeof(artist));
+								(void) get_tag(buf, "source=", source, sizeof(source));
+								size = 0;
+								if (!done_header) {
+									done_header = 1;
+									size += sprintf(buf+size, "<HTML><BODY><TABLE BORDER=2><THEAD>");
+									size += sprintf(buf+size, "<TR><TD> <b>Title</b> <TD> <b>Type</b> <TD> <b>Artist</b> <TD> <b>Source</b> <TBODY>\n");
+								}
+								if (*type == 't')
+									size += sprintf(buf+size, "<TR><TD> <A HREF=\"%x\">%s</A> ", fid & ~1, title);
+								else
+									size += sprintf(buf+size, "<TR><TD> <A HREF=\"%x?FORMAT\">%s</A> ", fid, title);
+								size += sprintf(buf+size, "<TD> %s <TD> %s <TD> %s \n", type, artist, source);
+								sent = ksock_rw(parms->datasock, buf, size, -1);
+								if (sent != size) {
+									printk("Size=%d, sent=%d\n", size, sent);
+									break;
+								}
+							}
 						}
 					}
-					close(playlist_fd);
-					if (!rc)
-						return 0;
-				} else {
-					printk("open_playlist(%s) returned %d\n", path, playlist_fd);
+					if (done_header) {
+						size = sprintf(buf, "</TABLE></BODY></HTML>\n");
+						(void) ksock_rw(parms->datasock, buf, size, -1);
+					}
 				}
+				close(playlist_fd);
+				if (!rc)
+					return 0;
 			}
-		} else {
-			printk("get_tag(type) failed\n");
 		}
-	} else {
-		printk("prelim check failed, size=%d, pathlen=%d\n", size, pathlen);
 	}
-	khttpd_respond(parms, 408, "Bad Playlist", "File is not a playlist");
-	return 451;	// Ugh, but it will do
+	khttpd_respond(parms, 408, "Playlist Error", "Playlist is empty or corrupted");
+	return 0;
 }
 
 static int
@@ -1528,7 +1536,7 @@ child_thread (void *arg)
 
 	if (parms->verbose && !get_clientip(parms))
 		printk("%s: connection from %s\n", parms->servername, parms->clientip);
-	(void) turn_on_sockopt(parms, parms->servsock, SOL_TCP, TCP_NODELAY); // don't care
+	(void) set_sockopt(parms, parms->servsock, SOL_TCP, TCP_NODELAY, 1); // don't care
 	if (parms->use_http) {
 		khttpd_handle_connection(parms);
 	} else if (!kftpd_send_response(parms, 220)) {

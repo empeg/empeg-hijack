@@ -1113,15 +1113,13 @@ static void rs_put_char(struct tty_struct *tty, unsigned char ch)
 	if (serial_paranoia_check(info, tty->device, "rs_put_char"))
 		return;
 
-#ifdef CONFIG_PROC_FS
-{
-	if (hijack_serial_notify(&ch, 1))
-		return;
-}
 	if (!tty || !info->xmit_buf)
 		return;
-
+#ifdef CONFIG_PROC_FS
+	if (hijack_serial_notify(&ch, 1))
+		return;
 #endif // CONFIG_PROC_FS
+
 	save_flags(flags); cli();
 	if (info->xmit_cnt >= SERIAL_XMIT_SIZE - 1) {
 		restore_flags(flags);
@@ -1219,6 +1217,7 @@ static int rs_write(struct tty_struct * tty, int from_user,
 			buf += c;
 			count -= c;
 			ret += c;
+
 		}
 	}
 	if (info->xmit_cnt && !tty->stopped && !tty->hw_stopped &&

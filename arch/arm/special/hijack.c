@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v297"
+#define HIJACK_VERSION	"v298"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -3279,7 +3279,6 @@ quicktimer_display (int firsttime)
 	timer_started = JIFFIES();
 	if (firsttime) {
 		if (ir_lastpressed != IR_NULL_BUTTON) {
-			printk("-------QuickTimer: button=%08x\n", ir_lastpressed);	//FIXME
 			buttonlist[0] = 3;
 			buttonlist[1] = ir_lastpressed;
 			buttonlist[2] = RELEASECODE(ir_lastpressed);

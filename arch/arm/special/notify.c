@@ -55,7 +55,6 @@ hijack_serial_notify (const unsigned char *s, int size)
 	static enum	{want_title, want_data, want_eol} state = want_title;
 	char		*line;
 	unsigned long	flags;
-
 	switch (state) {
 		default:
 			state = want_title;
@@ -69,6 +68,9 @@ hijack_serial_notify (const unsigned char *s, int size)
 				return hijack_suppress_notify;
 			} else if (!hijack_player_started && !strxcmp(s, "Vcb: 0x", 1)) {
 				hijack_player_started = jiffies;
+			} else if (!strxcmp(s, "Switching to baud rate: 4800, disabling logging", 1)) {
+				hijack_player_started = jiffies;
+				strcpy(notify_data[NOTIFY_MAX_LINES-1],"Needed in config.ini: [serial]car_rate=115200");
 			}
 			break;
 		case want_data:
@@ -90,8 +92,6 @@ hijack_serial_notify (const unsigned char *s, int size)
 					restore_flags(flags);
 				}
 				state = want_eol;
-				//if (!hijack_notify_started)
-				//	hijack_notify_started = JIFFIES();
 				return hijack_suppress_notify;
 			}
 			break;

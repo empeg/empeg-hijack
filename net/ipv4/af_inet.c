@@ -524,8 +524,8 @@ static int inet_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 
 {
 	extern int hijack_disable_emplode;
-	if (ntohs(addr->sin_port) == 8300 && hijack_disable_emplode) {
-		printk("inet_bind(): disabling port 8300 (Emplode)\n");
+	if (hijack_disable_emplode && sock->type == SOCK_STREAM && ntohs(addr->sin_port) == 8300) {
+		printk("inet_bind(): disabling port 8300/tcp (Emplode)\n");
 		addr->sin_addr.s_addr = htonl(0x7f000001); // only accept connections from localhost!
 	}
 }

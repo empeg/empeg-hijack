@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v200"
+#define HIJACK_VERSION	"v201"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -51,7 +51,7 @@ int	hijack_fsck_disabled = 0;	// used in fs/ext2/super.c
 int	hijack_onedrive = 0;		// used in drivers/block/ide-probe.c
 int	hijack_reboot = 0;		// set to "1" to cause reboot on next display refresh
 int	hijack_player_is_restarting = 0;// used in fs/read_write.c, fs/exec.c
-unsigned int hijack_player_started = 0;	// set to jiffies on receipt of "Prolux 4 empeg car" from player //fixme
+unsigned int hijack_player_started = 0;	// set to jiffies when player startup is detected on serial port (notify.c)
 
 static unsigned int PROMPTCOLOR = COLOR3, ENTRYCOLOR = -COLOR3;
 
@@ -308,7 +308,8 @@ typedef struct hijack_buttonq_s {
 #define VOLADJ_FIXEDPOINT(whole,fraction) ((((whole)<<MULT_POINT)|((unsigned int)((fraction)*(1<<MULT_POINT))&MULT_MASK)))
 #define VOLADJ_BITS 2
 
-int hijack_voladj_enabled = 0; // used by voladj code in empeg_audio3.c
+int hijack_voladj_enabled = 0;	// used by voladj code in empeg_audio3.c
+int hijack_delaytime = 0;	// used by delay code in empeg_audio3.c
 static const char  *voladj_names[] = {"[Off]", "Low", "Medium", "High"};
 static unsigned int voladj_history[VOLADJ_HISTSIZE] = {0,}, voladj_last_histx = 0, voladj_histx = 0;
 static unsigned int hijack_voladj_parms[(1<<VOLADJ_BITS)-1][5];
@@ -410,26 +411,6 @@ static const hijack_option_t hijack_option_table[] =
 {NULL,NULL,0,0,0,0} // end-of-list
 };
 
-static void
-reset_hijack_options (void)
-{
-	const hijack_option_t *h = hijack_option_table;
-	while (h->name) {
-		int n = h->num_items, *val = h->target;
-		if (n == 1) {
-			*val = h->defaultval;
-		} else if (n) {
-			
-			int *def = (int *)h->defaultval;
-			while (n--)
-				*val++ = *def++;
-		} else {
-			strcpy(h->target, (char *)h->defaultval);
-		}
-		++h;
-	}
-}
-
 static const char showbutton_menu_label	[] = "Button Codes Display";
 static const char timer_menu_label	[] = "Countdown Timer Timeout";
 static const char timeraction_menu_label[] = "Countdown Timer Action";
@@ -437,6 +418,7 @@ static const char fsck_menu_label	[] = "Filesystem Check on Sync";
 static const char forcepower_menu_label	[] = "Force AC/DC Power Mode";
 static const char onedrive_menu_label	[] = "Hard Disk Detection";
 static const char hightemp_menu_label	[] = "High Temperature Warning";
+static const char delaytime_menu_label	[] = "Left/Right Time Alignment";
 static const char homework_menu_label	[] = "Home/Work Location";
 static const char knobdata_menu_label	[] = "Knob Press Redefinition";
 static const char carvisuals_menu_label	[] = "Restore DC/Car Visuals";
@@ -467,6 +449,8 @@ static int hijack_force_power = 0;
 
 #define TIMERACTION_BITS 1
 static int timer_timeout = 0, timer_started = 0, timer_action = 0;
+
+static int delaytime = 0;
 
 static int hijack_homework = 0;
 static const char *homework_labels[] = {";@HOME", ";@WORK"};
@@ -1497,7 +1481,7 @@ homework_display (int firsttime)
 	clear_hijack_displaybuf(COLOR0);
 	(void)draw_string(ROWCOL(0,0), homework_menu_label, PROMPTCOLOR);
 	rowcol = draw_string(ROWCOL(2,0), "config.ini mode: ", PROMPTCOLOR);
-	(void)   draw_string(rowcol, homework_labels[hijack_homework], ENTRYCOLOR);
+	(void)   draw_string_spaced(rowcol, homework_labels[hijack_homework], ENTRYCOLOR);
 	return NEED_REFRESH;
 }
 
@@ -2036,6 +2020,64 @@ game_display (int firsttime)
 	return NEED_REFRESH;
 }
 
+/* Time Alignment Setup Code - Christian Hack 2002 - christianh@pdd.edmi.com.au */
+/* Allows user adjustment of channel delay for time alignment. Time alignment   */
+/* is actually done in empeg_audio3.c. thru global var hijack_delaytime         */ 
+static void
+delaytime_move (int direction)
+{
+	if (direction == 0) {
+		delaytime = 0;
+	} else {
+		/* Delay time is simply in 0.1ms increments */
+		delaytime -= direction;
+
+		/* Value is in tenths of ms - negative values mean right channel delayed, positive = left */
+		if (delaytime > 127)
+			delaytime = -127;
+		else if (delaytime < -127)
+			delaytime = 127;
+
+		/* Convert 0.1ms units into samples - 4.41 samples per 0.1ms - no floating point */
+	}
+	hijack_delaytime = delaytime * 441;
+	hijack_delaytime /= 100;
+
+	//printk("Delay time = %d * 0.1ms (%d samples)\n", delaytime, hijack_delaytime);
+
+	empeg_state_dirty = 1;
+}
+
+static int
+delaytime_display (int firsttime)
+{
+	unsigned int rowcol, tmp;
+	unsigned char buf[20];
+
+	if (firsttime)
+		ir_numeric_input = &delaytime;
+	else if (!hijack_last_moved)
+		return NO_REFRESH;
+	hijack_last_moved = 0;
+	clear_hijack_displaybuf(COLOR0);
+	(void) draw_string(ROWCOL(0,0), delaytime_menu_label, PROMPTCOLOR);
+	rowcol = draw_string(ROWCOL(2,0), "Delay: ", PROMPTCOLOR);
+	if (delaytime) {
+		/* Remove sign, it's decoded also in empeg_audio3.c */ 
+		tmp = (delaytime >= 0) ? (delaytime) : (-delaytime);
+		sprintf(buf, "%3d.%d ms %s", (tmp /  10), (tmp % 10), (delaytime) ? ((delaytime > 0) ? "Left" : "Right") : "");
+		(void) draw_string_spaced(rowcol, buf, ENTRYCOLOR);
+
+		/* Speed of sound is roughly 1200km/h = 333m/s */
+		tmp = tmp * 333;
+		sprintf(buf, "Distance: %d.%d cm", (tmp / 100), (tmp % 100));
+		(void) draw_string(ROWCOL(3,0), buf, PROMPTCOLOR);
+	} else {
+		rowcol = draw_string_spaced(rowcol, "[Off]", ENTRYCOLOR);
+	}
+	return NEED_REFRESH;
+}
+
 static void
 hightemp_move (int direction)
 {
@@ -2281,6 +2323,7 @@ static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 #ifdef EMPEG_KNOB_SUPPORTED
 	{ knobdata_menu_label,		knobdata_display,	knobdata_move,		0},
 #endif // EMPEG_KNOB_SUPPORTED
+	{ delaytime_menu_label,		delaytime_display,	delaytime_move,		0},
 	{"Reboot Machine",		reboot_display,		NULL,			0},
 	{ carvisuals_menu_label,	carvisuals_display,	carvisuals_move,	0},
 	{ blankerfuzz_menu_label,	blankerfuzz_display,	blankerfuzz_move,	0},
@@ -2452,26 +2495,6 @@ get_current_mixer_source (void)
 {
 	unsigned short source;
 	int input = get_current_mixer_input();
-
-#if 1 //fixme temporary workaround for player bug
-	// A bug in the player software sometimes leads to the saved-mixer
-	//  state ("channel") disagreeing with the actual mixer state.
-	// This here ensures it will get corrected, though not completely
-	//  until the next player restart happens.
-	static int done_once = 0;
-	if (!done_once) {
-		unsigned long flags;
-		unsigned char *empeg_statebuf;
-		done_once = 1;
-		save_flags_clif(flags);
-		empeg_statebuf = *empeg_state_writebuf;
-		if (input != (empeg_statebuf[0x0e] & 7)) {
-			empeg_statebuf[0x0e] = (empeg_statebuf[0x0e] & ~7) | (input & 7);
-			empeg_state_dirty = 1;
-		}
-		restore_flags(flags);
-	}
-#endif // 1
 
 	switch (input) {
 		case SOUND_MASK_LINE:	// Aux in
@@ -2904,7 +2927,6 @@ static void
 input_append_code2 (unsigned int rawbutton)
 {
 	unsigned int released = IS_RELEASE(rawbutton);
-	unsigned short mixer;
 
 	if (hijack_ir_debug) {
 		printk("IA2:%08x.%c,dk=%08x,dr=%d,lk=%d\n", rawbutton, released ? 'R' : 'P',
@@ -2922,10 +2944,8 @@ input_append_code2 (unsigned int rawbutton)
 				ir_downkey = rawbutton;
 		}
 	}
-	mixer = get_current_mixer_source();	//fixme: temporary workaround player for bug;
-						//see get_current_mixer_source for details;
 	if (ir_translate_table != NULL) {
-		//fixme unsigned short mixer	= get_current_mixer_source();
+		unsigned short	mixer		= get_current_mixer_source();
 		unsigned short	carhome		= empeg_on_dc_power ? IR_FLAGS_CAR : IR_FLAGS_HOME;
 		unsigned short	shifted		= ir_shifted ? IR_FLAGS_SHIFTED : IR_FLAGS_NOTSHIFTED;
 		unsigned short	flags		= mixer | carhome | shifted;
@@ -3955,21 +3975,46 @@ edit_config_ini (char *s, const char *lookfor, int just_looking)
 	return count;
 }
 
-// invoked from fs/read_write.c on first read of config.ini at each player start-up:
+static void
+reset_hijack_options (void)
+{
+	const hijack_option_t *h = hijack_option_table;
+	while (h->name) {
+		int n = h->num_items, *val = h->target;
+		if (n == 1) {
+			*val = h->defaultval;
+		} else if (n) {
+			
+			int *def = (int *)h->defaultval;
+			while (n--)
+				*val++ = *def++;
+		} else {
+			strcpy(h->target, (char *)h->defaultval);
+		}
+		++h;
+	}
+}
+
+// invoked from fs/read_write.c on each read of config.ini at each player start-up.
+// This could be invoked multiple times if file is too large for a single read,
+// so we use the f_pos parameter to ensure we only do setup stuff once.
 void
-hijack_process_config_ini (char *buf)
+hijack_process_config_ini (char *buf, int invocation_count)
 {
 	static const char *acdc_labels[2] = {";@AC", ";@DC"};
+	(void) edit_config_ini(buf, acdc_labels[empeg_on_dc_power], 0);
+	if (!edit_config_ini(buf, homework_labels[ hijack_homework], 0)
+	 && !edit_config_ini(buf, homework_labels[!hijack_homework], 1)
+	 && invocation_count == 1)
+	{
+		// no HOME/WORK labels in config.ini, so we don't need it on the menu:
+		remove_menu_entry(homework_menu_label);
+	}
+	if (invocation_count != 1)		// exit if not first read of this cycle
+		return;
 
 	printk("\n");
 	reset_hijack_options();
-	(void) edit_config_ini(buf, acdc_labels[empeg_on_dc_power], 0);
-	if (!edit_config_ini(buf, homework_labels[hijack_homework], 0)) {
-		if (!edit_config_ini(buf, homework_labels[!hijack_homework], 1)) {
-			// no HOME/WORK labels in config.ini, so we don't need it on the menu:
-			remove_menu_entry(homework_menu_label);
-		}
-	}
 	if (ir_setup_translations(buf))
 		show_message("ir_translate config error", 5*HZ);
 	if (hijack_get_options(buf))
@@ -4070,7 +4115,7 @@ typedef struct hijack_savearea_s {
 	unsigned knob_ac		: 1+KNOBDATA_BITS;	// 4 bits
 	unsigned knob_dc		: 1+KNOBDATA_BITS;	// 4 bits
 
-	unsigned byte5_leftover		: 8;			// 8 bits
+	signed 	 delaytime		: 8;			// 8 bits
 	unsigned byte6_leftover		: 8;			// 8 bits
 
 	unsigned menu_item		: MENU_BITS;		// 5 bits
@@ -4108,7 +4153,7 @@ hijack_save_settings (unsigned char *buf)
 	savearea.force_power		= hijack_force_power;
 	savearea.homework		= hijack_homework;
 	savearea.byte3_leftover	= 0;
-	savearea.byte5_leftover	= 0;
+	savearea.delaytime		= delaytime;
 	savearea.byte6_leftover	= 0;
 	memcpy(buf+HIJACK_SAVEAREA_OFFSET, &savearea, sizeof(savearea));
 }
@@ -4148,6 +4193,12 @@ hijack_restore_settings (char *buf)
 	menu_init();
 	carvisuals_enabled		= savearea.restore_visuals;
 	hijack_fsck_disabled		= savearea.fsck_disabled;
+
+	delaytime = hijack_delaytime	= savearea.delaytime;
+
+	/* Calc'd on startup otherwise they won't take effect until setting is changed */
+	hijack_delaytime = delaytime * 441;
+	hijack_delaytime /= 100;
 
 	return failed;
 }

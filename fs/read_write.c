@@ -136,8 +136,9 @@ asmlinkage ssize_t sys_read(unsigned int fd, char * buf, size_t count)
 		goto out;
 
 {
-	// Hijack needs to intercept & modify "config.ini" the first time
-	// the player software reads it after the player starts up.
+	// Hijack needs to intercept & modify "config.ini" when the player software
+	// reads it at startup (and only at startup, not afterwards).
+	//
 	// We do this by setting a flag in do_execve() when the player is started,
 	// and then just assume here that the first sys_read() from the player
 	// will be for "/empeg/var/config.ini" (as shown by running "strace player").
@@ -146,30 +147,44 @@ asmlinkage ssize_t sys_read(unsigned int fd, char * buf, size_t count)
 	// We would have to intercept sys_open() and get it there, and save the ino/dev
 	// from it to check against the d_inode ino/dev info in here.  But we don't.  :)
 	//
-	extern void hijack_process_config_ini (char *);
+	// The ugly part is that, since the file may be too large for a single read
+	// into the player's buffer, we have to kmalloc() our own buffer for the ENTIRE file
+	// each time through, in order to do the macro edits before passing it on to the player.
+	//
 	extern int  hijack_player_is_restarting;  // set by do_execve("/empeg/bin/player")
+	extern void hijack_process_config_ini (char *, int);
 	if (!hijack_player_is_restarting || strcmp(current->comm, "player")) {
 		ret = read(file, buf, count, &file->f_pos);
 	} else {
 		char *kbuf;
-		hijack_player_is_restarting = 0;
-		if ((kbuf = kmalloc(count+1, GFP_KERNEL)) == NULL) {
+		off_t old_pos = file->f_pos, i_size = file->f_dentry->d_inode->i_size;
+		if (old_pos >= i_size) {				// do nothing if at/after EOF
+			ret = 0;
+		} else if ((kbuf = kmalloc(i_size + 1, GFP_KERNEL)) == NULL) {
 			ret = -ENOMEM;
 		} else {
 			mm_segment_t old_fs = get_fs();
 			set_fs(KERNEL_DS);
-			ret = read(file, kbuf, count, &file->f_pos);
+			file->f_pos = 0;				// reset position to beginning of file
+			ret = read(file, kbuf, i_size, &file->f_pos);	// read ENTIRE file each time
+			file->f_pos = old_pos;				// restore original file position
 			set_fs(old_fs);
 			if (ret >= 0) {
-				if (ret != count)
-					printk("Hijack: short read of config.ini (%d/%u)\n", ret, count);
 				kbuf[ret] = '\0';
-				hijack_process_config_ini(kbuf);
-				if (copy_to_user(buf, kbuf, ret))
+				if (ret != i_size)
+					printk("\nERROR: config.ini: short read, %d/%lu\n", ret, i_size);
+				ret -= old_pos;				// calculate num bytes to be returned
+				if (ret > count)
+					ret = count;
+				file->f_pos = old_pos + ret;		// update new file position
+				hijack_process_config_ini(kbuf, hijack_player_is_restarting++);
+				if (copy_to_user(buf, kbuf + old_pos, ret))
 					ret = -EFAULT;
 			}
 			kfree(kbuf);
 		}
+		if (file->f_pos >= i_size)
+			hijack_player_is_restarting = 0;
 	}
 }
 out:

@@ -19,14 +19,56 @@
   	/* Buffer management */
   	struct wait_queue *waitq;
 ***************
-*** 839,844 ****
+*** 752,761 ****
+  		return -ENOMEM;
+  	}
+  
+  	/* Clear them */
+  	for(i = 0; i < AUDIO_NOOF_BUFFERS; i++)
+  		dev->buffers[i].count = 0;
+  
+  	/* Set up queue: note that two buffers could be DMA'ed any any time,
+  	   and so we use two fewer marked as "free" */
+  	dev->head = dev->tail = dev->used = 0;
+--- 1183,1211 ----
+  		return -ENOMEM;
+  	}
+  
++ 	/* Allocate delay buffer - only need a half size buffer since we are only delaying one channel*/
++ 	if ((delaytime_buffer = kmalloc(AUDIO_BUFFER_SIZE / 2, GFP_KERNEL)) == NULL) {
++ 		/* No memory */
++ 		printk(AUDIO_NAME ": can't get memory for delaytime buffers");
++ 		return -ENOMEM;
++ 	}
++ 	/* Ensure buffer is clear so we don't get an initial click */
++ 	memset(delaytime_buffer, 0, AUDIO_BUFFER_SIZE / 2);
++ 
+  	/* Clear them */
+  	for(i = 0; i < AUDIO_NOOF_BUFFERS; i++)
+  		dev->buffers[i].count = 0;
+  
++         /* Initialise volume adjustment */
++         voladj_intinit( &(dev->voladj),
++             AUDIO_BUFFER_SIZE,              /* buffersize */
++             ((1 << MULT_POINT) * 2),        /* factor_per_second */
++             ((1 << MULT_POINT) / 10),       /* minvol */
++             (((1 << MULT_POINT) * 4) / 4),  /* headroom */
++             30,                             /* real_silence */
++             80                              /* fake_silence */
++             );
++ 
+  	/* Set up queue: note that two buffers could be DMA'ed any any time,
+  	   and so we use two fewer marked as "free" */
+  	dev->head = dev->tail = dev->used = 0;
+***************
+*** 829,834 ****
   	audio_dev *dev = &audio[0];
   	int total = 0;
   	int ret;
   	
   #if AUDIO_DEBUG_VERBOSE
   	printk(AUDIO_NAME ": audio_write: count=%d\n", count);
---- 1278,1284 ----
+--- 1279,1285 ----
   	audio_dev *dev = &audio[0];
   	int total = 0;
   	int ret;
@@ -35,7 +77,7 @@
   #if AUDIO_DEBUG_VERBOSE
   	printk(AUDIO_NAME ": audio_write: count=%d\n", count);
 ***************
-*** 352,374 ****
+*** 362,384 ****
   		dev->free--;
   		restore_flags(flags);
   
@@ -59,7 +101,7 @@
   	}
   
   	/* Update hwm */
---- 795,850 ----
+--- 817,932 ----
   		dev->free--;
   		restore_flags(flags);
   
@@ -72,7 +114,67 @@
   		if (dev->head == AUDIO_NOOF_BUFFERS)
   			dev->head = 0;
 + 
-+ 		copy_from_user(dev->buffers[thisbufind].data,buffer,AUDIO_BUFFER_SIZE);
++ 		/* Main Time Alignment Code - Christian Hack 2002 - christianh@pdd.edmi.com.au	*/
++ 		/* Gotta offset the first x bytes of one channel by hijack_delaytime samples 	*/
++ 		/* which is calced and hardcoded to 44.1kHz in hijack.c				*/
++ 		/* Doing things 2 bytes at a time so we will be slow. This isn't reflected in	*/
++ 		/* units load averages surprisingly						*/
++ 
++ 		/* If not delaying at all using the original routine                            */		
++ 		if (hijack_delaytime) {
++ 			int i, delayed, nondelayed, samples_delay;
++ 
++ 			/* For each sample pair do this - 1152 sample pairs all up make 4608 bytes */
++ 
++ 			/* First work out which channel to delay */
++ 			if (hijack_delaytime > 0) {
++ 				/* Delay Left Channel */
++ 				delayed = 0;
++ 				nondelayed = 2;
++ 				samples_delay = hijack_delaytime;
++ 			} else {
++ 				/* Delay Right Channel */
++ 				delayed = 2;
++ 				nondelayed = 0;
++ 				samples_delay = -hijack_delaytime;
++ 			}
++ 
++ 			/* Start from buffer */
++ 			/* Do delayed channel first - first part comes from buffer  */
++ 			/* and end of the new data goes in the buffer for next time */
++ 			for (i = 0; i < samples_delay; i++) {
++ 
++ 				/* Delayed channel comes from the delayed buffer */
++ 				memcpy(dev->buffers[thisbufind].data + (i * 4) + delayed, 
++ 					delaytime_buffer + (i * 2), 
++ 					2);
++ 
++ 				copy_from_user(delaytime_buffer + (i * 2), 
++ 					buffer + AUDIO_BUFFER_SIZE - (samples_delay * 4) + (i * 4) + delayed, 
++ 					2);
++ 			}
++ 
++ 			/* Now from new buffer - middle section starts at beginning of new buffer */
++ 			for (i = 0; i < ((AUDIO_BUFFER_SIZE / 4) - samples_delay); i++) {
++ 
++ 				/* Delayed channel comes from the new buffer */
++ 				copy_from_user(
++ 					dev->buffers[thisbufind].data + (samples_delay * 4) + (i * 4) + delayed, 
++ 					buffer + (i * 4) + delayed, 
++ 					2);
++ 			}
++ 
++ 			/* Copy non delayed channel straight in */
++ 			for (i = 0; i < AUDIO_BUFFER_SIZE; i += 4) {
++ 				/* Non delayed channel */
++ 				copy_from_user(dev->buffers[thisbufind].data + i + nondelayed, buffer + i + nondelayed, 2);
++ 			}
++ 		} else  {
++ 
++ 			/* Original simple copy routine */
++ 			copy_from_user(dev->buffers[thisbufind].data,buffer,AUDIO_BUFFER_SIZE);
++ 		}
++ 
   		total += AUDIO_BUFFER_SIZE;
   		/* Oops, we missed this in previous versions */
   		buffer += AUDIO_BUFFER_SIZE;
@@ -117,7 +219,7 @@
   
   	/* Update hwm */
 ***************
-*** 440,446 ****
+*** 987,993 ****
   				    AUDIO_BUFFER_SIZE);
           }	
   	}
@@ -125,7 +227,7 @@
   	/* invalid command */
   	return -EINVAL;
   }
---- 916,922 ----
+--- 1538,1544 ----
   				    AUDIO_BUFFER_SIZE);
           }	
   	}

@@ -1103,6 +1103,8 @@ typedef struct
 	int good_data;
 } audio_dev;
 
+unsigned char *delaytime_buffer;
+
 /* cosine tables for beep parameters */
 static unsigned long csin_table_44100[];
 static unsigned long csin_table_38000[];
@@ -1184,16 +1186,6 @@ int __init empeg_audio_init(void)
 	/* Clear them */
 	for(i = 0; i < AUDIO_NOOF_BUFFERS; i++)
 		dev->buffers[i].count = 0;
-
-        /* Initialise volume adjustment */
-        voladj_intinit( &(dev->voladj),
-            AUDIO_BUFFER_SIZE,              /* buffersize */
-            ((1 << MULT_POINT) * 2),        /* factor_per_second */
-            ((1 << MULT_POINT) / 10),       /* minvol */
-            (((1 << MULT_POINT) * 4) / 4),  /* headroom */
-            30,                             /* real_silence */
-            80                              /* fake_silence */
-            );
 
         /* Initialise volume adjustment */
         voladj_intinit( &(dev->voladj),
@@ -1320,6 +1312,7 @@ static int empeg_audio_write(struct file *file,
                 int multiplier;
 		extern void hijack_voladj_update_history(int);
 		extern int  hijack_voladj_enabled;
+		extern int  hijack_delaytime;
 
 		/* Critical sections kept as short as possible to give good
 		   latency for other tasks */
@@ -1400,6 +1393,9 @@ static int empeg_audio_purge(audio_dev *dev)
 	dev->head=dev->tail=dev->used=0;
 	dev->free=MAX_FREE_BUFFERS;
 	
+	/* Clear delay buffer out otherwise we get it when the next data comes through */
+	memset(delaytime_buffer, 0, AUDIO_BUFFER_SIZE / 2);
+
 	/* Let it run again */
 	restore_flags(flags);
 

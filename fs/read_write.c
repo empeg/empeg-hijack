@@ -146,7 +146,7 @@ asmlinkage ssize_t sys_read(unsigned int fd, char * buf, size_t count)
 	// We would have to intercept sys_open() and get it there, and save the ino/dev
 	// from it to check against the d_inode ino/dev info in here.  But we don't.  :)
 	//
-	extern void hijack_process_config_ini (char *, unsigned int);
+	extern void hijack_process_config_ini (char *);
 	extern int  hijack_player_is_restarting;  // set by do_execve("/empeg/bin/player")
 	if (!hijack_player_is_restarting || strcmp(current->comm, "player")) {
 		ret = read(file, buf, count, &file->f_pos);
@@ -165,7 +165,7 @@ asmlinkage ssize_t sys_read(unsigned int fd, char * buf, size_t count)
 					ret = -EIO;
 			} else {
 				kbuf[count] = '\0';
-				hijack_process_config_ini(kbuf, count);
+				hijack_process_config_ini(kbuf);
 				if (copy_to_user(buf, kbuf, count))
 					ret = -EFAULT;
 			}

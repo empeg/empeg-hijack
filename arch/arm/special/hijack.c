@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v177"
+#define HIJACK_VERSION	"v178"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -339,10 +339,11 @@ static hijack_buttonq_t hijack_inputq, hijack_playerq, hijack_userq;
 // Externally tuneable parameters for config.ini; the voladj_parms are also tuneable
 //
 static int hijack_button_pacing;		// minimum spacing between press/release pairs within playerq
-static int hijack_ir_debug;			// printk() for every ir press/release code
-static int hijack_spindown_seconds;		// drive spindown timeout in seconds
+static int hijack_dc_servers;			// 1 == allow kftpd/khttpd when on DC power
        int hijack_extmute_off;			// buttoncode to inject when EXT-MUTE goes inactive
        int hijack_extmute_on;			// buttoncode to inject when EXT-MUTE goes active
+static int hijack_ir_debug;			// printk() for every ir press/release code
+static int hijack_spindown_seconds;		// drive spindown timeout in seconds
 #ifdef CONFIG_NET_ETHERNET
        char hijack_kftpd_password[16];		// kftpd password
        int hijack_kftpd_control_port;		// kftpd control port
@@ -377,6 +378,7 @@ static const hijack_option_t hijack_option_table[] =
 // config.ini string		address-of-variable		default			howmany	min	max
 //===========================	==========================	=========		=======	===	================
 {"button_pacing",		&hijack_button_pacing,		20,			1,	0,	HZ},
+{"dc_servers",			&hijack_dc_servers,		0,			1,	0,	1},
 {"spindown_seconds",		&hijack_spindown_seconds,	30,			1,	0,	(239 * 5)},
 {"extmute_off",			&hijack_extmute_off,		0,			1,	0,	IR_NULL_BUTTON},
 {"extmute_on",			&hijack_extmute_on,		0,			1,	0,	IR_NULL_BUTTON},
@@ -456,6 +458,8 @@ static int hijack_force_power = 0;
 static int timer_timeout = 0, timer_started = 0, timer_action = 0;
 
 static int hijack_homework = 0;
+static const char *homework_labels[] = {";@HOME", ";@WORK"};
+
 
 #define MENU_BITS	5
 #define MENU_MAX_ITEMS	(1<<MENU_BITS)
@@ -1489,7 +1493,7 @@ homework_display (int firsttime)
 	clear_hijack_displaybuf(COLOR0);
 	(void)draw_string(ROWCOL(0,0), "Home/Work Location", PROMPTCOLOR);
 	rowcol = draw_string(ROWCOL(2,0), "config.ini mode: ", PROMPTCOLOR);
-	(void)   draw_string(rowcol, hijack_homework ? " ;@WORK " : " ;@HOME ", ENTRYCOLOR);
+	(void)   draw_string(rowcol, homework_labels[hijack_homework], ENTRYCOLOR);
 	return NEED_REFRESH;
 }
 
@@ -3878,37 +3882,38 @@ set_drive_spindown_times (void)
 	set_drive_spindown(&ide_hwifs[0].drives[0]);
 }
 
-// edit the player's view of config.ini using ";@HOME" and ";@WORK" tags:
+// edit the player's view of config.ini
 static void
-process_homework_options (char *s, unsigned int size)
+edit_config_ini (char *s, const char *lookfor)
 {
-	const char *lookfor = hijack_homework ? ";@WORK " : ";@HOME ";
 	char *optname, *optend;
 
 	while (*(s = skipchars(s, " \n\t\r"))) {
 		if (!strxcmp(s, lookfor, 1)) {
 			// "insert in place" the new option
 			s += strlen(lookfor);
-			*(s - 1) = '\n';
-			s = skipchars(s, " \t");
-			optname = s;
-			optend = findchars(s, "=\r\n");
-			if (*optend == '=')
-				++optend;
-			s = findchars(optend, "\r\n");
-			if (*s) {
-				// temporarily terminate the optname substring
-				char saved = *optend, *t = s;
-				*optend = '\0';
-				// now find any old copies of the same option, and nuke'em
-				while (*(t = skipchars(t, " \t\r\n"))) {
-					if (!strxcmp(t, optname, 1)) {
-						*t = ';';	// comment-out the option, in-place!
-						break;
+			optname = skipchars(s, " \t");
+			if (optname != s) {	// "if we found some whitespace"
+				s = optname;
+				*(s - 1) = '\n';
+				optend = findchars(s, "=\r\n");
+				if (*optend == '=')
+					++optend;
+				s = findchars(optend, "\r\n");
+				if (*s && *optname != ';') {
+					// temporarily terminate the optname substring
+					char saved = *optend, *t = s;
+					*optend = '\0';
+					// now find any old copies of the same option, and nuke'em
+					while (*(t = skipchars(t, " \t\r\n"))) {
+						if (!strxcmp(t, optname, 1)) {
+							*t = ';';	// comment-out the option, in-place!
+							break;
+						}
+						t = findchars(t, "\r\n");
 					}
-					t = findchars(t, "\r\n");
+					*optend = saved;
 				}
-				*optend = saved;
 			}
 		}
 		s = findchars(s, "\r\n");
@@ -3917,11 +3922,13 @@ process_homework_options (char *s, unsigned int size)
 
 // invoked from fs/read_write.c on first read of config.ini at each player start-up:
 void
-hijack_process_config_ini (char *buf, unsigned int size)
+hijack_process_config_ini (char *buf)
 {
+	static const char *acdc_labels[2] = {";@AC", ";@DC"};
 	printk("\n");
 	reset_hijack_options();
-	process_homework_options(buf, size);
+	edit_config_ini(buf, acdc_labels[empeg_on_dc_power]);
+	edit_config_ini(buf, homework_labels[hijack_homework]);
 	if (ir_setup_translations(buf))
 		show_message("[ir_translate] config errors", 5*HZ);
 	if (hijack_get_options(buf))
@@ -3940,6 +3947,11 @@ hijack_process_config_ini (char *buf, unsigned int size)
 	}
 	hijack_set_voladj_parms();
 #ifdef CONFIG_NET_ETHERNET
+	if (empeg_on_dc_power && !hijack_dc_servers) {
+		// disable servers on DC power to free more buffer space
+		hijack_kftpd_control_port = 0;
+		hijack_khttpd_port = 0;
+	}
 	up(&hijack_kftpd_startup_sem);	// wake-up kftpd now that we've parsed config.ini for port numbers
 	up(&hijack_khttpd_startup_sem);	// wake-up kftpd now that we've parsed config.ini for port numbers
 #endif // CONFIG_NET_ETHERNET

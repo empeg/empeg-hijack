@@ -931,7 +931,16 @@ get_fid_mime_title (char *path, char *buf, int bufsize, char *title, int titlele
 				case 'm': mimetype = audio_wma;	 break;
 				case 'a': mimetype = audio_wav;	 break;
 			}
-			get_tag(buf, "title=", title, titlelen - 1);
+			get_tag(buf, "artist=", title, titlelen / 2);
+			size = strlen(title);
+			if (size) {
+				title += size;
+				*title++ = ' ';
+				*title++ = '-';
+				*title++ = ' ';
+				titlelen -= size + 3;
+			}
+			get_tag(buf, "title=", title, titlelen);
 			*ext++ = '.';
 			strcpy(ext, codec);
 		}
@@ -946,7 +955,7 @@ khttp_send_file_header (server_parms_t *parms, char *path, off_t length, char *b
 	int		len;
 	const char	*mimetype, *rcode = "200 OK";
 	off_t		clength = length;
-	char		title[64], ext[8];
+	char		title[80], ext[8];
 
 	title[0] = '\0';
 	if (glob_match(path, "/drive?/fids/*0")) {
@@ -967,7 +976,7 @@ khttp_send_file_header (server_parms_t *parms, char *path, off_t length, char *b
 		len += sprintf(buf+len, "Content-Type: %s\r\n", mimetype);
 	if (*title) {	// tune title for WinAmp, XMMS, Save-To-Disk, etc..
 		if (parms->icy_metadata)
-			len += sprintf(buf+len, "icy-name: %s\r\n", title);
+			len += sprintf(buf+len, "icy-name:%s\r\n", title);
 		else
 			len += sprintf(buf+len, "Content-Disposition: attachment; filename=%s%s\r\n", title, ext);
 	}

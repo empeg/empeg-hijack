@@ -27,7 +27,7 @@
 //    }
 //
 
-#define EMPEG_HIJACK_WAITMENU		_IO(EMPEG_DISPLAY_MAGIC, 81)	// Create menu item and wait for it to be selected
+#define EMPEG_HIJACK_WAITMENU		_IO(EMPEG_DISPLAY_MAGIC, 80)	// Create menu item and wait for it to be selected
 #define EMPEG_HIJACK_DISPWRITE		_IO(EMPEG_DISPLAY_MAGIC, 82)	// Copy buffer to screen
 #define EMPEG_HIJACK_BINDBUTTONS	_IO(EMPEG_DISPLAY_MAGIC, 83)	// Specify IR codes to be hijacked
 #define EMPEG_HIJACK_UNBINDBUTTONS	_IO(EMPEG_DISPLAY_MAGIC, 84)	// Stop hijacking IR codes (don't forget this!)

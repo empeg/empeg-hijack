@@ -24,11 +24,10 @@
 #define HIJACK_ACTIVE		3
 
 static unsigned int hijack_status = HIJACK_INACTIVE;
-static unsigned long hijack_last_moved = 0, hijack_userdata = 0, hijack_last_refresh = 0, blanker_activated = 0;
+static unsigned long hijack_last_moved = 0, hijack_last_refresh = 0, blanker_activated = 0;
 
 static int  (*hijack_dispfunc)(int) = NULL;
 static void (*hijack_movefunc)(int) = NULL;
-static int menu_item = 0, menu_size = 0, menu_top = 0;
 static unsigned int ir_lasttime = 0, ir_selected = 0, ir_releasewait = 0, ir_knob_down = 0, ir_left_down = 0, ir_right_down = 0, ir_trigger_count = 0;
 static unsigned long ir_delayed_knob_release = 0;
 void real_input_append_code(void *dev, unsigned long data); // empeg_input.c
@@ -38,7 +37,7 @@ static unsigned char *hijack_player_buf = NULL;
 #define KNOBDATA_BITS 2
 static const unsigned long knobdata_pressed [] = {IR_KNOB_PRESSED, IR_RIO_SHUFFLE_PRESSED, IR_RIO_INFO_PRESSED, IR_RIO_INFO_PRESSED};
 static const unsigned long knobdata_released[] = {IR_KNOB_RELEASED,IR_RIO_SHUFFLE_RELEASED,IR_RIO_INFO_RELEASED,IR_RIO_INFO_PRESSED};
-static int knobdata_index = 0;
+static short knobdata_index = 0;
 
 #define HIJACK_DATAQ_SIZE	8
 static unsigned long *hijack_buttonlist = NULL, hijack_dataq[HIJACK_DATAQ_SIZE];
@@ -297,15 +296,16 @@ draw_number (unsigned int rowcol, unsigned int number, const char *format, int c
 }
 
 static void
-activate_dispfunc (unsigned long userdata, int (*dispfunc)(int), void (*movefunc)(int))
+activate_dispfunc (int (*dispfunc)(int), void (*movefunc)(int))
 {
 	ir_selected = 0;
 	ir_trigger_count = 0;
-	hijack_userdata = userdata;
-	hijack_dispfunc = dispfunc;
-	hijack_movefunc = movefunc;
-	hijack_status = HIJACK_PENDING;
-	dispfunc(1);
+	if (dispfunc != NULL) {
+		hijack_dispfunc = dispfunc;
+		hijack_movefunc = movefunc;
+		hijack_status = HIJACK_PENDING;
+		dispfunc(1);
+	}
 }
 
 static void
@@ -390,15 +390,16 @@ voladj_display (int firsttime)
 	unsigned int i, rowcol, mult, prev = -1;
 	unsigned char buf[32];
 	unsigned long flags;
+	static unsigned long last_histx = -1;
 
 	if (firsttime) {
 		memset(voladj_history, 0, sizeof(voladj_history));
 		voladj_histx = 0;
-	} else if (!hijack_last_moved && hijack_userdata == voladj_histx) {
+	} else if (!hijack_last_moved && last_histx == voladj_histx) {
 		return NO_REFRESH;
 	}
 	hijack_last_moved = 0;
-	hijack_userdata = voladj_histx;
+	last_histx = voladj_histx;
 	clear_hijack_displaybuf(COLOR0);
 	save_flags_cli(flags);
 	voladj_history[voladj_histx = (voladj_histx + 1) % VOLADJ_HISTSIZE] = voladj_multiplier;
@@ -582,7 +583,7 @@ blanker_display (int firsttime)
 static void
 knobdata_move (int direction)
 {
-	knobdata_index = (knobdata_index + direction) % (sizeof(knobdata_pressed)/sizeof(unsigned long));
+	knobdata_index = (knobdata_index + direction) & ((1<<KNOBDATA_BITS)-1);
 }
 
 static int
@@ -631,7 +632,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v38 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v39 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -780,7 +781,7 @@ game_display (int firsttime)
 	game_hdir = 1;
 	game_vdir = 1;
 	game_row = 6;
-	game_col = jiffies % GAME_COLS;
+	game_col = ((unsigned long)jiffies) % GAME_COLS;
 	if (hijack_displaybuf[game_row][game_col])
 		game_col = game_col ? GAME_COLS - 2 : 1;
 	game_ball_last_moved = 0;
@@ -952,56 +953,79 @@ showbutton_display (int firsttime)
 	return NO_REFRESH;
 }
 
-static int
-exit_display (int firsttime)
-{
-	hijack_deactivate();
-	return NEED_REFRESH;
-}
+typedef int  (menu_dispfunc_t)(int);
+typedef void (menu_movefunc_t)(int);
+
+typedef struct menu_item_s {
+	char			*label;
+	menu_dispfunc_t		*dispfunc;
+	menu_movefunc_t		*movefunc;
+	unsigned long		userdata;
+} menu_item_t;
+
+static volatile short menu_item = 0, menu_size = 0, menu_top = 0;
+
+static menu_item_t menu_table [] = {
+	{"Break-Out Game",		game_display,		game_move,	0},
+	{"Auto Volume Adjust",		voladj_display,		voladj_move,	0},
+	{"Screen Inactivity Blanker",	blanker_display,	blanker_move,	0},
+	{"Font Display",		kfont_display,		NULL,		0},
+	{"Vital Signs",			vitals_display,		NULL,		0},
+	{"Max Temp Warning",		maxtemp_display,	maxtemp_move,	0},
+	{"Calculator",			calculator_display,	NULL,		0},
+	{"Knob Press Redefinition",	knobdata_display,	knobdata_move,	0},
+	{NULL,				NULL,			NULL,		0},
+	{NULL,				NULL,			NULL,		0},
+	{NULL,				NULL,			NULL,		0},
+	{NULL,				NULL,			NULL,		0},
+	{NULL,				NULL,			NULL,		0},
+	{NULL,				NULL,			NULL,		0},
+	{NULL,				NULL,			NULL,		0},
+	{NULL,				NULL,			NULL,		0}};
+
+#define MENU_MAX_SIZE (sizeof(menu_table) / sizeof(menu_table[0]))
 
 static void
 menu_move (int direction)
 {
-	menu_item += direction;
-	if (menu_item >= menu_size)
-		menu_item = menu_size - 1;
-	else if (menu_item < 0)
-		menu_item = 0;
+	short menu_max = menu_size - 1;
+	if (direction < 0) {
+		if (menu_item == menu_top && --menu_top < 0)
+			menu_top = menu_max;
+		if (--menu_item < 0)
+			menu_item = menu_max;
+	} else {
+		short bottom = (menu_top + (EMPEG_TEXT_ROWS - 1)) % menu_size;
+		if (menu_item == bottom && ++menu_top > menu_max)
+			menu_top = 0;
+		if (++menu_item > menu_max)
+			menu_item = 0;
+	}
 }
-
-#define MENU_MAX_SIZE 15
-static const char *menu_label [MENU_MAX_SIZE]       = {"Break-Out Game", "Auto Volume Adjust", "Screen Inactivity Blanker", "Font Display", "Vital Signs", "Max Temp Warning", "Calculator", "Knob Press Redefinition", "[exit]", NULL,};
-static int (*menu_displayfunc [MENU_MAX_SIZE])(int) = {game_display, voladj_display, blanker_display, kfont_display, vitals_display, maxtemp_display, calculator_display, knobdata_display, exit_display, NULL,};
-static void (*menu_movefunc   [MENU_MAX_SIZE])(int) = {game_move, voladj_move, blanker_move, NULL, NULL, maxtemp_move, NULL, knobdata_move, NULL, NULL,};
-static unsigned long menu_userdata[MENU_MAX_SIZE] = {0,};
 
 static int
 menu_display (int firsttime)
 {
-	unsigned int item = menu_item;
-
+	unsigned long flags;
 	if (firsttime || hijack_last_moved) {
+		unsigned int text_row;
 		hijack_last_moved = 0;
 		clear_hijack_displaybuf(COLOR0);
-		if (menu_top > item)
-			menu_top = item;
-		while (item >= (menu_top + EMPEG_TEXT_ROWS))
-			++menu_top;
-		for (menu_size = 0; menu_label[menu_size] != NULL; ++menu_size) {
-			if (menu_size >= menu_top && menu_size < (menu_top + EMPEG_TEXT_ROWS))
-				(void)draw_string(ROWCOL(menu_size-menu_top,0), menu_label[menu_size], (menu_size == item) ? COLOR3 : COLOR2);
+		save_flags_cli(flags);
+		for (text_row = 0; text_row < EMPEG_TEXT_ROWS; ++text_row) {
+			unsigned int index = (menu_top + text_row) % menu_size;
+			(void)draw_string(ROWCOL(text_row,0), menu_table[index].label, (index == menu_item) ? COLOR3 : COLOR2);
 		}
+		restore_flags(flags);
 		return NEED_REFRESH;
 	}
-	if (!firsttime) {
-		unsigned long flags;
-		save_flags_cli(flags);
-		if (ir_selected)
-			activate_dispfunc(menu_userdata[item], menu_displayfunc[item], menu_movefunc[item]);
-		else if (jiffies_since(ir_lasttime) > (HZ*5))
-			hijack_deactivate(); // menu timed-out
-		restore_flags(flags);
-	}
+	save_flags_cli(flags);
+	if (ir_selected) {
+		menu_item_t *item = &menu_table[menu_item];
+		activate_dispfunc(item->dispfunc, item->movefunc);
+	} else if (jiffies_since(ir_lasttime) > (HZ*5))
+		hijack_deactivate(); // menu timed-out
+	restore_flags(flags);
 	return NO_REFRESH;
 }
 
@@ -1017,9 +1041,14 @@ userland_display (int firsttime)
 	if (firsttime) {
 		clear_hijack_displaybuf(COLOR0);
 		userland_display_updated = 1;
-		wake_up(&hijack_menu_waitq);
 	}
 	save_flags_cli(flags);
+	if (firsttime) {
+		if (menu_table[menu_item].userdata)
+			wake_up(&hijack_menu_waitq);
+		else
+			hijack_dispfunc = NULL;	// exit from this selection
+	}
 	if (userland_display_updated) {
 		userland_display_updated = 0;
 		rc = NEED_REFRESH;
@@ -1031,7 +1060,7 @@ userland_display (int firsttime)
 static int
 hijack_move (int direction)
 {
-	if (hijack_status == HIJACK_ACTIVE && hijack_movefunc != NULL)
+	if (hijack_movefunc != NULL)
 		hijack_movefunc(direction);
 	hijack_last_moved = jiffies ? jiffies : 1;
 	return 1; // input WAS hijacked
@@ -1043,12 +1072,10 @@ hijack_move_repeat (void)
 	unsigned int repeat_interval = (hijack_movefunc == game_move) ? (HZ/15) : (HZ/3);
 	if (ir_left_down && jiffies_since(ir_left_down) >= repeat_interval) {
 		ir_left_down = jiffies ? jiffies : 1;
-		hijack_movefunc(-1);
-		hijack_last_moved = jiffies ? jiffies : 1;
+		hijack_move(-1);
 	} else if (ir_right_down && jiffies_since(ir_right_down) >= repeat_interval) {
 		ir_right_down = jiffies ? jiffies : 1;
-		hijack_movefunc(1);
-		hijack_last_moved = jiffies ? jiffies : 1;
+		hijack_move(1);
 	}
 }
 
@@ -1100,8 +1127,8 @@ hijack_display (struct display_dev *dev, unsigned char *player_buf)
 			if (!dev->power) {  // do not activate menu if unit is in standby mode!
 				buf = player_buf;
 			} else if (ir_trigger_count >= 3 || (ir_knob_down && jiffies_since(ir_knob_down) >= HZ)) {
-				menu_item = menu_top = 0;
-				activate_dispfunc(0, menu_display, menu_move);
+				//menu_item = menu_top = 0;
+				activate_dispfunc(menu_display, menu_move);
 			} else if (jiffies_since(ir_lasttime) < (HZ*5) || !maxtemp_threshold || read_temperature() < (maxtemp_threshold + MAXTEMP_OFFSET)) {
 				buf = player_buf;
 			} else {
@@ -1115,7 +1142,7 @@ hijack_display (struct display_dev *dev, unsigned char *player_buf)
 			break;
 		case HIJACK_ACTIVE:
 			if (hijack_dispfunc == NULL) {  // userland app finished?
-				activate_dispfunc(0, menu_display, menu_move);
+				activate_dispfunc(menu_display, menu_move);
 				//hijack_deactivate();
 			} else {
 				if (hijack_movefunc != NULL)
@@ -1125,12 +1152,13 @@ hijack_display (struct display_dev *dev, unsigned char *player_buf)
 				refresh = hijack_dispfunc(0);
 				save_flags_cli(flags);
 				if (ir_selected && hijack_dispfunc != userland_display)
-					activate_dispfunc(0, menu_display, menu_move);
+					activate_dispfunc(menu_display, menu_move);
 			}
 			break;
 		case HIJACK_PENDING:
 			if (!ir_releasewait) {
 				ir_selected = 0;
+				ir_lasttime = jiffies; // prevents premature exit from menu reentry
 				hijack_status = HIJACK_ACTIVE;
 			}
 			break;
@@ -1170,11 +1198,15 @@ hijack_display (struct display_dev *dev, unsigned char *player_buf)
 					blanker_activated = jiffies ? jiffies : 1;
 			}
 		}
-		if (blanker_activated && jiffies_since(blanker_activated) > (blanker_timeout * (SCREEN_BLANKER_MULTIPLIER * HZ))) {
-			if (!blanked) {
-				buf = player_buf;
-				memset(buf,0x00,EMPEG_SCREEN_BYTES);
-				refresh = NEED_REFRESH;
+		if (blanker_activated) {
+			if (jiffies_since(ir_lasttime) < jiffies_since(blanker_activated)) {
+				blanker_activated = ir_lasttime;
+			} else if (jiffies_since(blanker_activated) > (blanker_timeout * (SCREEN_BLANKER_MULTIPLIER * HZ))) {
+				if (!blanked) {
+					buf = player_buf;
+					memset(buf,0x00,EMPEG_SCREEN_BYTES);
+					refresh = NEED_REFRESH;
+				}
 			}
 		}
 	}
@@ -1243,12 +1275,14 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 				case IR_KW_NEXTTRACK_PRESSED:
 				case IR_RIO_NEXTTRACK_PRESSED:
 				case IR_KNOB_RIGHT:
-					hijacked = hijack_move(1);
+					if (hijack_status == HIJACK_ACTIVE)
+						hijacked = hijack_move(1);
 					break;
 				case IR_KW_PREVTRACK_PRESSED:
 				case IR_RIO_PREVTRACK_PRESSED:
 				case IR_KNOB_LEFT:
-					hijacked = hijack_move(-1);
+					if (hijack_status == HIJACK_ACTIVE)
+						hijacked = hijack_move(-1);
 					break;
 				case IR_KNOB_RELEASED:  // note: this one often arrives in pairs, so check knob_down first!
 					if (ir_knob_down && overlay_was_active && hijack_status == HIJACK_ACTIVE) { 
@@ -1289,10 +1323,9 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 		ir_releasewait = data | ((((int)data) > 16) ? 0x80000000 : 0x00000001);
 	}
 	// save button PRESSED codes in ir_lastpressed
-	if ((data & 0x80000001) == 0 || ((int)data) > 16) {
+	if ((data & 0x80000001) == 0 || ((int)data) > 16)
 		ir_lastpressed = data;
-		ir_lasttime = jiffies;
-	}
+	ir_lasttime = jiffies;
 	switch (data) {
 		case IR_RIO_MENU_PRESSED:
 			if (hijack_status == HIJACK_INACTIVE && !hijack_player_menu_is_active) {
@@ -1318,7 +1351,7 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 				data = knobdata_released[index];	// substitute our translation
 				if (jiffies_since(ir_knob_down) < (HZ/2)) {	// short press?
 					if (!(hijack_player_menu_is_active | index | overlay_was_active | hijack_sound_adjust_is_active)) {
-						activate_dispfunc(0, voladj_overlay, voladj_move);
+						activate_dispfunc(voladj_overlay, voladj_move);
 						hijacked = 1;
 					} else {
 						real_input_append_code(dev, knobdata_pressed[index]);
@@ -1355,22 +1388,16 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 
 // returns menu index >= 0,  or -ERROR
 static int
-extend_menu (const char *label, unsigned long userdata, int (*displayfunc)(int), void (*movefunc)(int))
+extend_menu (menu_item_t *new)
 {
 	int i;
 	for (i = 0; i < MENU_MAX_SIZE; ++i) {
-		if (menu_label[i] == NULL) {
-			// Insert new entry before last item [exit]
-			menu_label       [i] = menu_label[i-1];
-			menu_displayfunc [i] = menu_displayfunc[i-1];
-			menu_movefunc    [i] = menu_movefunc[i-1];
-			menu_userdata    [i] = menu_userdata[i-1];
-			--i;
-			menu_label       [i] = label;
-			menu_displayfunc [i] = displayfunc;
-			menu_movefunc    [i] = movefunc;
-			menu_userdata    [i] = userdata;
-			return i; // success
+		menu_item_t *item = &menu_table[i];
+		if (item->label == NULL || !strcmp(item->label, new->label)) {
+			if (item->label == NULL) // extending table?
+				menu_size = i + 1;
+			*item = *new;	// copy data regardless
+			return i;	// success
 		}
 	}
 	return -ENOMEM; // no room; menu is full
@@ -1378,31 +1405,21 @@ extend_menu (const char *label, unsigned long userdata, int (*displayfunc)(int),
 
 // returns menu index >= 0,  or -ERROR
 static int
-userland_extend_menu (const char *label, unsigned long userdata)
+userland_extend_menu (char *label, unsigned long userdata)
 {
-	int i, rc = -ENOMEM;
+	int rc = -ENOMEM, size = 1 + strlen(label);
 	unsigned long flags;
+	menu_item_t item;
 
+	item.label = kmalloc(size, GFP_KERNEL);
+	if (item.label == NULL)
+		return -ENOMEM;
+	memcpy(item.label, label, size);
+	item.dispfunc	= userland_display;
+	item.movefunc	= NULL;
+	item.userdata	= userdata;
 	save_flags_cli(flags);
-	for (i = 0; i < MENU_MAX_SIZE; ++i) {
-		if (menu_label[i] == NULL) {
-			int size = 1 + strlen(label);
-			unsigned char *buf = kmalloc(size, GFP_KERNEL);
-			if (buf == NULL) {
-				rc = -ENOMEM;
-				break;
-			}
-			memcpy(buf, label, size);
-			rc = extend_menu(buf, userdata, userland_display, NULL);
-			break;
-		} else if (0 == strcmp(menu_label[i], label)) {
-			menu_userdata[i] = userdata; // already there, so just update userdata
-			if (menu_item == i && hijack_dispfunc == userland_display)
-				hijack_dispfunc = NULL; // return to menu
-			rc = i;
-			break;
-		}
-	}
+	rc = extend_menu(&item);
 	restore_flags(flags);
 	return rc;
 }
@@ -1450,48 +1467,71 @@ hijack_restore_settings (const unsigned char *buf)
 	knobdata_index		= hijack_savearea.knobdata_index % (sizeof(knobdata_pressed)/sizeof(unsigned long));
 }
 
+static int
+hijack_wait_on_menu (char *argv[])
+{
+	struct wait_queue wait = {current, NULL};
+	int i, rc, index, num_items, indexes[MENU_MAX_SIZE];
+	unsigned long flags, userdata = (unsigned long)current->pid << 8;
+
+	// (re)create the menu items, with our waitq as userdata
+	for (i = 0; *argv && i < MENU_MAX_SIZE; ++i) {
+		unsigned char label[32], size = 0, *argp = *argv++;
+		do {
+			if (copy_from_user(&label[size], &argp[size], 1))
+				return -EFAULT;
+		} while (label[size++] && size < sizeof(label));
+		label[size-1] = '\0';
+
+		save_flags_cli(flags);
+		index = userland_extend_menu(label, userdata | i);
+		restore_flags(flags);
+		if (index < 0)
+			return index;
+		indexes[i] = index;
+	}
+	num_items = i;
+	save_flags_cli(flags);
+	add_wait_queue(&hijack_menu_waitq, &wait);
+	while (1) {
+		unsigned long menudata = menu_table[menu_item].userdata;
+		current->state = TASK_INTERRUPTIBLE;
+		if ((menudata & ~0xff) == userdata && hijack_dispfunc == userland_display) {
+			rc = menudata & 0x7f;
+			break;
+		}
+		if (signal_pending(current)) {
+			rc = -EINTR;
+			break;
+		}
+		restore_flags(flags);
+		schedule();
+		save_flags_cli(flags);
+	}
+	for (i = 0; i < num_items; ++i)	{	// disable our menu items until next time
+		menu_item_t *item = &menu_table[indexes[i]];
+		item->userdata = 0;
+	}
+	current->state = TASK_RUNNING;
+	remove_wait_queue(&hijack_menu_waitq, &wait);
+	restore_flags(flags);
+	return rc;
+}
+
 static int  // invoked from empeg_display.c::ioctl()
 hijack_ioctl (struct inode *inode, struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	unsigned long flags;
-	int index, rc;
+	int rc;
 
 	//struct display_dev *dev = (struct display_dev *)filp->private_data;
 	switch (cmd) {
-		case EMPEG_HIJACK_WAITMENU:	// create menu item and wait for it to be selected
+		case EMPEG_HIJACK_WAITMENU:	// (re)create menu item(s) and wait for them to be selected
 		{
-			// Invocation:  rc = ioctl(fd, EMPEG_HIJACK_WAITMENU, (char *)"Menu Label");
-			int size = 0;
-			unsigned char buf[32] = {0,}, *label = (unsigned char *)arg;
-			struct wait_queue wait = {current, NULL};
-			do {
-				if (copy_from_user(&buf[size], label+size, 1)) return -EFAULT;
-			} while (buf[size++] && size < sizeof(buf));
-			buf[size-1] = '\0';
-			save_flags_cli(flags);
-			index = userland_extend_menu(buf,0);
-			if (index < 0) {
-				restore_flags(flags);
-				return index;
-			}
-			rc = 0;
-			add_wait_queue(&hijack_menu_waitq, &wait);
-			while (1) {
-				current->state = TASK_INTERRUPTIBLE;
-				if (menu_item == index && hijack_dispfunc == userland_display)
-					break;
-				if (signal_pending(current)) {
-					rc = -EINTR;
-					break;
-				}
-				restore_flags(flags);
-				schedule();
-				save_flags_cli(flags);
-			}
-			current->state = TASK_RUNNING;
-			remove_wait_queue(&hijack_menu_waitq, &wait);
-			restore_flags(flags);
-			return rc;
+			// Invocation:  char *menulabels[] = {"Label1", "Label2", NULL};
+			//              rc = ioctl(fd, EMPEG_HIJACK_WAITMENU, &menu_labels)
+			//              if (rc < 0) perror(); else selected_index = rc;
+			return hijack_wait_on_menu((char **)arg);
 		}
 		case EMPEG_HIJACK_DISPWRITE:	// copy buffer to screen
 		{
@@ -1626,8 +1666,9 @@ hijack_ioctl (struct inode *inode, struct file *filp, unsigned int cmd, unsigned
 void
 hijack_init (void)
 {
+	menu_item_t item = {"Button Codes Display", showbutton_display, NULL, 0};
 	extern int getbitset(void);
-	(void)extend_menu("Button Codes Display", 0, showbutton_display, NULL);
+	(void)extend_menu(&item);	// we need at least one call to extend_menu() to set the menu_size!!
 	hijack_on_dc_power = getbitset() & EMPEG_POWER_FLAG_DC;
 	init_temperature();
 }

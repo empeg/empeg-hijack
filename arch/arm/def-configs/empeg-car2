@@ -202,7 +202,7 @@ CONFIG_IRDA=y
 # IrDA protocols
 #
 # CONFIG_IRLAN is not set
-CONFIG_IRCOMM=y
+# CONFIG_IRCOMM is not set
 # CONFIG_IRDA_ULTRA is not set
 # CONFIG_IRDA_OPTIONS is not set
 # CONFIG_IRDA_COMPRESSION is not set

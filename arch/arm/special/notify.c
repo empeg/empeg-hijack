@@ -332,10 +332,11 @@ hijack_do_command (const char *buffer, unsigned int count)
 	while (!rc && *nextline) {
 		unsigned char *s;
 		s = nextline;
+		if (*s == '#')	// ignore eol?
+			return rc;
 		while (*nextline && *++nextline != '\n' && *nextline != ';');
 		if (*nextline)
 			*nextline++ = '\0';
-
 		if (!strxcmp(s, "BUTTON ", 1)) {
 			s = do_button(s+7, 0);
 		} else if (!strxcmp(s, "BUTTONRAW ", 1)) {

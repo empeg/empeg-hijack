@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v190"
+#define HIJACK_VERSION	"v191"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -153,6 +153,8 @@ typedef struct button_name_s {
 #define IR_FAKE_VOLADJ		(IR_NULL_BUTTON-6)
 #define IR_FAKE_KNOBSEEK	(IR_NULL_BUTTON-7)
 #define IR_FAKE_NEXTSRC		(IR_NULL_BUTTON-8)	// This MUST be the lowest numbered FAKE code
+
+// Fixme (someday): serial-port-"w" == "pause" (not pause/play): create a fake button for this.
 
 #define ALT BUTTON_FLAGS_ALTNAME
 static button_name_t button_names[] = {
@@ -2480,12 +2482,12 @@ get_current_mixer_source (void)
 }
 
 static void
-toggle_input_source (void)
+do_nextsrc (void)
 {
 	unsigned int button;
 	unsigned long flags;
 
-	// main -> aux -> tuner -> main
+	// main -> tuner -> aux -> main
 	save_flags_cli(flags);
 	button = IR_RIO_SOURCE_PRESSED;
 	switch (get_current_mixer_source()) {
@@ -2493,9 +2495,9 @@ toggle_input_source (void)
 			if (kenwood_disabled)
 				hijack_enq_button_pair(IR_RIO_SOURCE_PRESSED);
 			else
-				button = IR_KW_CD_PRESSED;
+				button = IR_KW_TAPE_PRESSED;
 			break;
-		case IR_FLAGS_AUX:
+		case IR_FLAGS_MAIN:
 			if (empeg_tuner_present || hijack_fake_tuner) 
 				button = IR_RIO_TUNER_PRESSED;
 			break;
@@ -2695,7 +2697,7 @@ hijack_handle_button (unsigned int button, unsigned long delay, int any_ui_is_ac
 			hijacked = 1;
 			break;
 		case IR_FAKE_NEXTSRC:
-			toggle_input_source();
+			do_nextsrc();
 			hijacked = 1;
 			break;
 		case IR_FAKE_POPUP0:
@@ -3129,7 +3131,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 		if (!ir_knob_down)
 			ir_knob_down = -1;
 		hijack_deactivate(HIJACK_IDLE);
-		toggle_input_source();
+		do_nextsrc();
 	}
 #endif // EMPEG_KNOB_SUPPORTED
 	if (jiffies > (10*HZ) && (timer_check_expiry(dev) || hightemp_check_threshold())) {

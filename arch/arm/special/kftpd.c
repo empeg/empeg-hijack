@@ -954,47 +954,40 @@ open_fid_file (char *path)
 	return fd;
 }
 
-static const char *
-get_fid_info (char *path, char *buf, int bufsize, char *atitle, int atitlelen, char *ext)
-{
-	static char	*labels[] = {"type=", "artist=", "title=", "codec=", NULL};
-	struct 		{char *type, *artist, *title, *codec;} tags;
-	const char	*mimetype = application_octet;
-	int		fd, size;
-
-	if (0 <= (fd = open_fid_file(path))) {	// open tagfile
-		size = read(fd, buf, bufsize-1);
-		buf[size] = '\0';
-		close(fd);
-		find_tags(buf, size, labels, (char **)&tags);
-		if (TOUPPER(tags.type[0]) != 'P' && *tags.codec) {
-			switch (TOUPPER(tags.codec[1])) {
-				case 'P': mimetype = audio_mpeg; break;
-				case 'M': mimetype = audio_wma;	 break;
-				case 'A': mimetype = audio_wav;	 break;
-			}
-			*ext++ = '.';
-			strcpy(ext, tags.codec);
-			combine_artist_title(tags.artist, tags.title, atitle, atitlelen);
-		}
-	}
-	return mimetype;
-}
-
 static int
 khttp_send_file_header (server_parms_t *parms, char *path, off_t length, char *buf, int bufsize)
 {
+	static char	*labels[] = {"type=", "artist=", "title=", "codec=", "genre=", NULL};
+	struct 		{char *type, *artist, *title, *codec, *genre;} tags;
 	int		len;
-	const char	*mimetype, *rcode = "200 OK";
+	const char	*mimetype = application_octet, *rcode = "200 OK";
 	off_t		clength = length;
-	char		artist_title[128], ext[8];
+	char		artist_title[128];
 
 	artist_title[0] = '\0';
 	if (glob_match(path, "/drive?/fids/*0")) {
-		char *lastc = path + strlen(path) - 1;
+		char c, *lastc = path + strlen(path) - 1;
+		int		fd, size;
+
 		*lastc = '1';
-		mimetype = get_fid_info(path, buf, bufsize, artist_title, sizeof(artist_title), ext);
+		fd = open_fid_file(path);	// open tagfile
 		*lastc = '0';
+		if (fd > 0) {
+			size = read(fd, buf, bufsize-1);
+			buf[size] = '\0';
+			close(fd);
+			find_tags(buf, size, labels, (char **)&tags);
+			c = tags.type[0];
+			if (TOUPPER(c) != 'P' && tags.codec[0]) {
+				switch (TOUPPER(tags.codec[1])) {
+					case 'P': mimetype = audio_mpeg; break;
+					case 'M': mimetype = audio_wma;	 break;
+					case 'A': mimetype = audio_wav;	 break;
+				}
+				combine_artist_title(tags.artist, tags.title, artist_title, sizeof(artist_title));
+			}
+		}
+
 	} else {
 		const char		*pattern;
 		const mime_type_t	*m = mime_types;
@@ -1017,10 +1010,13 @@ khttp_send_file_header (server_parms_t *parms, char *path, off_t length, char *b
 	if (mimetype)
 		len += sprintf(buf+len, "Content-Type: %s\r\n", mimetype);
 	if (artist_title[0]) {	// tune title for WinAmp, XMMS, Save-To-Disk, etc..
+		len += sprintf(buf+len, "x-audiocast-name:%s\r\n", artist_title);
+		if (tags.genre[0])
+			len += sprintf(buf+len, "x-audiocast-genre:%s\r\n", tags.genre);
 		if (parms->icy_metadata)
 			len += sprintf(buf+len, "icy-name:%s\r\n", artist_title);
 		else
-			len += sprintf(buf+len, "Content-Disposition: attachment; filename=\"%s%s\"\r\n", artist_title, ext);
+			len += sprintf(buf+len, "Content-Disposition: attachment; filename=\"%s.%s\"\r\n", artist_title, tags.codec);
 	}
 	buf[len++] = '\r';
 	buf[len++] = '\n';
@@ -1180,7 +1176,7 @@ send_playlist (server_parms_t *parms, char *path)
 		if (!strxcmp(tags.codec, "mp3", 0)) {
 			secs = str_val(tags.duration) / 1000;
 			size  = sprintf(xfer.buf, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s\r\n\r\n#EXTM3U\r\n"
-				"#EXTINF:%u,%s\r\nhttp://%s%s\r\n", audio_m3u, secs, artist_title, parms->hostname, path);
+				"#EXTINF:%u,%s\r\nhttp://%s%s?#%s.%s\r\n", audio_m3u, secs, artist_title, parms->hostname, path, artist_title, tags.codec);
 			(void)ksock_rw(parms->datasock, xfer.buf, size, -1);
 		} else { // wma, wav
 			khttpd_redirect(parms, path);
@@ -1192,6 +1188,7 @@ send_playlist (server_parms_t *parms, char *path)
 	used += sprintf(xfer.buf+used, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s\r\n\r\n",
 		(parms->generate_playlist == 2) ? audio_m3u : text_html);
 	if (parms->generate_playlist == 1) {
+		//fixme: Get rid of everything after '#' if iTunes is not any better with it
 		used += sprintf(xfer.buf+used, "<HTML><HEAD><TITLE>Playlists: %s</TITLE></HEAD>\r\n<BODY>"
 			"<TABLE BGCOLOR=\"WHITE\" BORDER=\"2\"><THEAD>\r\n<TR>"
 			"<TD> <A HREF=\"%x?.m3u\"><B>Play</B></A> <TD> <A HREF=\"%x\"><B>Tags</B></A> "
@@ -1219,14 +1216,14 @@ open_fidfile:
 	}
 	while (fidx >= 0) {
 		while (sizeof(fid) == read(fidfiles[fidx], (char *)&fid, sizeof(fid))) {
-			int	fd;
+			int	sublen, fd;
 
 			if (used >= (xfer.buf_size - 512) && (used -= ksock_rw(parms->datasock, xfer.buf, used, -1)))
 				goto cleanup;
 
 			// read in the tagfile for this fid
 			fid |= 1;
-			sprintf(subpath+13, "%x", fid);
+			sublen = 13+sprintf(subpath+13, "%x", fid);
 			fd = open_fid_file(subpath);
 			if (fd < 0) {
 				// Hmmm.. missing tags file.  This IS a database error, and should never happen.  But it does..
@@ -1283,9 +1280,10 @@ open_fidfile:
 				}
 			} else if (fidtype == 'T') {
 				combine_artist_title(tags.artist, tags.title, artist_title, sizeof(artist_title));
-				used += sprintf(xfer.buf+used, "#EXTINF:%u,%s\r\nhttp://%s%s\r\n",
-					secs, artist_title, parms->hostname, subpath);
-				xfer.buf[used-3] = '0';	// convert subpath into tune path
+				subpath[sublen - 1] = '0';
+				//fixme: Get rid of everything after '#' if iTunes is not any better with it
+				used += sprintf(xfer.buf+used, "#EXTINF:%u,%s\r\nhttp://%s%s?#%s.%s\r\n",
+					secs, artist_title, parms->hostname, subpath, artist_title, tags.codec);
 			}
 		}
 		close(fidfiles[fidx--]);

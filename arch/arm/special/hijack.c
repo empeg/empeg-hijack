@@ -12,13 +12,13 @@
 //           Knob-Press re-definition
 //           IR Button Press Display
 //           Reboot Machine from menu
-//
+//           ... and tons more
 
 #include <asm/arch/hijack.h>
 #include <linux/soundcard.h>	// for SOUND_MASK_*
 
 extern int get_loadavg(char * buffer);					// fs/proc/array.c
-extern void machine_restart(void *);					// arch/alpha/kernel/process.c
+extern void machine_restart(void *);					// arch/arm/kernel/process.c
 extern int real_input_append_code(unsigned long data);			// arch/arm/special/empeg_input.c
 extern int empeg_state_dirty;						// arch/arm/special/empeg_state.c
 extern void state_cleanse(void);					// arch/arm/special/empeg_state.c
@@ -28,6 +28,7 @@ extern unsigned long jiffies_since(unsigned long past_jiffies);		// arch/arm/spe
 
 extern int empeg_on_dc_power(void);					// arch/arm/special/empeg_power.c
 extern unsigned char get_current_mixer_source(void);			// arch/arm/special/empeg_mixer.c
+extern void empeg_mixer_select_input(int input);			// arch/arm/special/empeg_mixer.c
 extern int empeg_readtherm(volatile unsigned int *timerbase, volatile unsigned int *gpiobase);	// arch/arm/special/empeg_therm.S
 extern int empeg_inittherm(volatile unsigned int *timerbase, volatile unsigned int *gpiobase);	// arch/arm/special/empeg_therm.S
        int display_ioctl (struct inode *inode, struct file *filp, unsigned int cmd, unsigned long arg); //arch/arm/special/empeg_display.c
@@ -53,6 +54,7 @@ static unsigned int PROMPTCOLOR = COLOR3, ENTRYCOLOR = -COLOR3;
 #ifdef RESTORE_CARVISUALS
 static unsigned int carvisuals_enabled = 0;
 static unsigned int restore_carvisuals = 0;
+static unsigned int info_screenrow = 0;
 #endif // RESTORE_CARVISUALS
 static unsigned int on_dc_power = 0;
 static unsigned int hijack_status = HIJACK_INACTIVE;
@@ -963,7 +965,7 @@ draw_temperature (unsigned int rowcol, int temp, int offset, int color)
 	return draw_string(rowcol, buf, color);
 }
 
-static int            savearea_display_offset = 0;
+static int savearea_display_offset = 0;
 static unsigned char *last_savearea;
 static unsigned long *last_updated  = NULL;
 unsigned char **empeg_state_writebuf;	// initialized in empeg_state.c
@@ -993,8 +995,8 @@ savearea_display (int firsttime)
 		rc = NEED_REFRESH;
 	}
 	if (rc == NEED_REFRESH) {
-		int offset, row = 0, rowcol = ROWCOL(0,0);
-		for (offset = savearea_display_offset; offset != ((savearea_display_offset + 32) & 0x7f);) {
+		unsigned int offset, row = 0, rowcol = ROWCOL(0,0);
+		for (offset = savearea_display_offset & 0x7f; offset != ((savearea_display_offset + 32) & 0x7f);) {
 			int color = COLOR2;
 			unsigned char b = empeg_statebuf[offset];
 			if (last_updated && last_savearea) {
@@ -1542,7 +1544,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v89 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v90 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1856,11 +1858,9 @@ reboot_display (int firsttime)
 		return NEED_REFRESH;
 	}
 	if (left_pressed && right_pressed) {
-		save_flags_cli(flags);
+		save_flags_clif(flags);	// clif is necessary here
 		state_cleanse();	// Ensure flash savearea is updated first
-		restore_flags(flags);	// never executed (?)
-		machine_restart(NULL);	// Reboot the machine NOW!  Fails in Tuner mode..
-		return NEED_REFRESH;
+		machine_restart(NULL);	// never returns
 	}
 	rc = NO_REFRESH;
 	save_flags_cli(flags);
@@ -2128,7 +2128,7 @@ toggle_input_source (void)
 		case 'A':	// Aux
 			button = IR_KW_CD_PRESSED;   // player
 			break;
-		default:	// main/mp3
+		default:	// Main/Mp3
 			// by hitting "aux" before "tuner", we handle "tuner not present"
 			hijack_button_enq(&hijack_playerq, IR_KW_TAPE_PRESSED,  0);	// aux
 			hijack_button_enq(&hijack_playerq, IR_KW_TAPE_RELEASED, 0);
@@ -2458,17 +2458,17 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 
 #ifdef RESTORE_CARVISUALS
 	if (restore_carvisuals) {
-		unsigned char *r15 = &player_buf[15 * EMPEG_SCREEN_COLS / 2];
-		save_flags_cli(flags);
-		// look for solid line, possibly (beta7) with a blinking track "position" pixel
-		if (((*(unsigned long *)r15) & 0x22222222) == 0x22222222) {	// is track-info active yet?
+		unsigned char *row = &player_buf[info_screenrow * EMPEG_SCREEN_COLS / 2];
+		unsigned long test = (*(unsigned long *)row) & 0x33333333;
+		if (((test | (test << 1)) & 0x22222222) == 0x22222222) { // solid line any color(s)?
 			while (restore_carvisuals) {
 				--restore_carvisuals;
+				save_flags_cli(flags);
 				hijack_button_enq(&hijack_playerq, IR_RIO_INFO_PRESSED,  0);
 				hijack_button_enq(&hijack_playerq, IR_RIO_INFO_RELEASED, 0);
+				restore_flags(flags);
 			}
 		}
-		restore_flags(flags);
 	}
 #endif // RESTORE_CARVISUALS
 
@@ -2756,7 +2756,7 @@ ir_setup_translations2 (unsigned char *buf, unsigned long *table)
 							break;
 						case 'T': // Tuner
 						case 'A': // Aux
-						case 'M': // Main/Mp3/dsp
+						case 'M': // Main/Mp3
 							if (!source) {
 								source = *s;
 								goto loop;
@@ -2962,6 +2962,74 @@ menu_init (void)
 	menu_top = (menu_item ? menu_item : menu_size) - 1;
 }
 
+#ifdef RESTORE_CARVISUALS
+//unsigned int b40cd = (buf[0x40] << 16) | (buf[0x4c] << 8) | buf[0x4d];
+//switch (b40cd) {
+//	case 0x000004: // off (beta3, beta6)
+//		restore_carvisuals = 2;
+//		break;
+//	case 0x000005: // off (beta7)
+//	case 0x000003: // off (beta7)
+//		restore_carvisuals = 3;
+//		break;
+//	case 0x010004: // line (beta3, beta6)
+//		restore_carvisuals = 3;
+//		break;
+//	case 0x010005: // line (beta7)
+//	case 0x010003: // line (beta7)
+//		restore_carvisuals = 4;
+//		break;
+//	case 0x020004: // transient (beta3, beta6)
+//		restore_carvisuals = 4;
+//		break;
+//	case 0x020005: // transient (beta7)
+//	case 0x020003: // transient (beta7)
+//	case 0x021105: // transient (beta7)
+//		restore_carvisuals = 5;
+//		break;
+//	case 0x020403: // track (beta3, beta6, beta7)
+//	case 0x020404: // now&next (beta3, beta6)
+//	case 0x020405: // now&next (beta7)
+//	case 0x021505: // now&next (beta7)
+//	case 0x020404: // seek    (beta7)
+// Note that the "Details" setting is not saved in flash.
+
+static void
+fix_visuals (unsigned char *buf)
+{
+	restore_carvisuals = 0;
+	if (carvisuals_enabled) {
+		switch (buf[0x0e] & 3) { // examine the saved mixer source
+			case 0: // Tuner AM??
+			case 1: // Tuner FM??
+				//
+				// FIXME: need to work out the Tuner mode here also!
+				//
+				break;
+			case 2: // Main/Mp3
+				if ((buf[0x4c] & 0x04) == 0) {	// MP3 visuals visible ?
+					info_screenrow = 15;
+					restore_carvisuals = (buf[0x40] & 3) + 2 + (buf[0x4d] & 1);
+					// switch to "track" mode on startup (because it's easy to detect later one),
+					// and then restore the original mode when the track info appears in the screen buffer.
+					buf[0x40] = (buf[0x40] & ~0x03) | 0x02;
+					buf[0x4c] =  buf[0x4c]          | 0x04;
+					buf[0x4d] = (buf[0x4d] & ~0x07) | 0x03;
+				}
+				break;
+			case 3: // Aux
+				if ((buf[0x4c] & 0x08) == 0) {	// AUX visuals visible ?
+					info_screenrow = 8;
+					restore_carvisuals = (buf[0x41] & 3) + 1;
+					buf[0x41] = (buf[0x41] & ~0x03) | 0x02;
+					buf[0x4c] =  buf[0x4c]          | 0x08;
+				}
+				break;
+		}
+	}
+}
+#endif // RESTORE_CARVISUALS
+
 #define HIJACK_SAVEAREA_OFFSET (128 - 2 - sizeof(hijack_savearea))
 
 void	// invoked from empeg_state.c
@@ -3034,53 +3102,8 @@ hijack_restore_settings (unsigned char *buf)
 	hijack_fsck_disabled		= hijack_savearea.fsck_disabled;
 
 #ifdef RESTORE_CARVISUALS
-	restore_carvisuals = 0;
-	if (on_dc_power && carvisuals_enabled) {
-#if 0 // easy to read, but big and slow..
-		unsigned int b40cd = (buf[0x40] << 16) | (buf[0x4c] << 8) | buf[0x4d];
-		switch (b40cd) {
-			case 0x000004: // off (beta3, beta6)
-				restore_carvisuals = 2;
-				break;
-			case 0x000005: // off (beta7)
-			case 0x000003: // off (beta7)
-				restore_carvisuals = 3;
-				break;
-			case 0x010004: // line (beta3, beta6)
-				restore_carvisuals = 3;
-				break;
-			case 0x010005: // line (beta7)
-			case 0x010003: // line (beta7)
-				restore_carvisuals = 4;
-				break;
-			case 0x020004: // transient (beta3, beta6)
-				restore_carvisuals = 4;
-				break;
-			case 0x020005: // transient (beta7)
-			case 0x020003: // transient (beta7)
-			case 0x021105: // transient (beta7)
-				restore_carvisuals = 5;
-				break;
-		  //	case 0x020403: // track (beta3, beta6, beta7)
-		  //	case 0x020404: // now&next (beta3, beta6)
-		  //	case 0x020405: // now&next (beta7)
-		  //	case 0x021505: // now&next (beta7)
-		  //	case 0x020404: // seek    (beta7)
-		  // Note that the "Details" setting is not saved in flash.
-		}
-		if (restore_carvisuals) {
-#else // not so obvious, but tiny and fast
-		if ((buf[0x4c] & 0x04) == 0) {	// visuals visible ?
-			restore_carvisuals = (buf[0x40] & 3) + 2 + (buf[0x4d] & 1);
-#endif // 0
-			// switch to "track" mode on startup (because it's easy to detect later one),
-			// and then restore the original mode when the track info appears in the screen buffer.
-			buf[0x40] = (buf[0x40] & ~0x03) | 0x02;
-			buf[0x4c] =  buf[0x4c]          | 0x04;
-			buf[0x4d] = (buf[0x4d] & ~0x07) | 0x03;
-			empeg_state_dirty = 1;
-		}
-	}
+	if (on_dc_power)
+		fix_visuals(buf);
 #endif // RESTORE_CARVISUALS
 }
 

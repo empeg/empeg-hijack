@@ -132,7 +132,7 @@ static int empeg_mixer_release(struct inode *inode, struct file *file);
 static int empeg_mixer_ioctl(struct inode *inode, struct file *file,
 			     uint command, ulong arg);
 
-static void empeg_mixer_select_input(int input);
+       void empeg_mixer_select_input(int input);
 static void empeg_mixer_setloudness(mixer_dev *dev, int level);
 static int empeg_mixer_setvolume(mixer_dev *dev, int vol);
 static int empeg_mixer_getdb(mixer_dev *dev);
@@ -861,7 +861,7 @@ static void empeg_mixer_mute(int on)
 #endif
 }
 
-static void empeg_mixer_select_input(int input)
+void empeg_mixer_select_input(int input)
 {
 	static dsp_setup fm_setup[]=
 	{ { 0xfff, 0x5323 },

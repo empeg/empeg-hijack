@@ -44,6 +44,14 @@
 #define KFONT_HEIGHT			8				// font height is 8 pixels
 #define KFONT_WIDTH			6				// font width 5 pixels or less, plus 1 for spacing
 
+// When using these colors from userland, or them with 0x80 first!
+// These can be the first byte of a string for EMPEG_HIJACK_DISPTEXT
+//
+#define COLOR0 0 // blank pixels
+#define COLOR1 1 // prefix with '-' for inverse video
+#define COLOR2 2 // prefix with '-' for inverse video
+#define COLOR3 3 // prefix with '-' for inverse video
+
 // Front panel codes
 //
 #define IR_TOP_BUTTON_PRESSED		0x00000000

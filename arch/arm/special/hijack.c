@@ -69,11 +69,6 @@ unsigned long jiffies_since(unsigned long past_jiffies);
 
 static unsigned char hijack_displaybuf[EMPEG_SCREEN_ROWS][EMPEG_SCREEN_COLS/2];
 
-#define COLOR0 0 // blank pixels
-#define COLOR1 1 // prefix with '-' for inverse video
-#define COLOR2 2 // prefix with '-' for inverse video
-#define COLOR3 3 // prefix with '-' for inverse video
-
 const unsigned char kfont [1 + '~' - ' '][KFONT_WIDTH] = {  // variable width font
 	{0x00,0x00,0x00,0x00,0x00,0x00}, // space
 	{0x5f,0x00,0x00,0x00,0x00,0x00}, // !
@@ -277,7 +272,7 @@ top:	if (s && row < EMPEG_SCREEN_ROWS) {
 			int col_adj;
 			if (*s++ == '\n' || -1 == (col_adj = draw_char(row, col, *(s-1), color, inverse))) {
 				col  = 0;
-				row += 1;
+				row += KFONT_HEIGHT;
 				goto top;
 			}
 			col += col_adj;
@@ -467,6 +462,16 @@ extern int empeg_readtherm(volatile unsigned int *timerbase, volatile unsigned i
 extern int empeg_inittherm(volatile unsigned int *timerbase, volatile unsigned int *gpiobase);
 extern int get_loadavg(char * buffer);
 
+static void
+init_temperature (void)
+{
+	unsigned long flags;
+
+	save_flags_clif(flags);
+	(void)empeg_inittherm(&OSMR0,&GPLR);
+	restore_flags(flags);
+}
+
 static int
 read_temperature (void)
 {
@@ -488,18 +493,19 @@ read_temperature (void)
 	//   The initial boot code has stuff in there to do this, which is currently disabled;
 	//   the delay on reading the thermometer would add ~1s to boot time as you wouldn't
 	//   be able to let the drives out of reset until you'd read the temperature.
+	//
+	// But in practice, the danged thing stops updating sometimes
+	// so we may still need the odd call to empeg_inittherm() just to ensure
+	// it is running.  -ml
 
-	if (!lastread) { // start the thermometer up first time through
-		save_flags_clif(flags);
-		temp = empeg_inittherm(&OSMR0,&GPLR);
-		restore_flags(flags);
-	}
-	if (jiffies_since(lastread) < (HZ*2))
+	if (lastread && jiffies_since(lastread) < (HZ*2))
 		return temp;
-	lastread = jiffies ? jiffies : 1;
 	save_flags_clif(flags);			//  power cyles without inittherm()
 	temp = empeg_readtherm(&OSMR0,&GPLR);
 	restore_flags(flags);
+	lastread = jiffies ? jiffies : 1;
+	if (((lastread / HZ) & 0x63) == 0) // restart the thermometer once a minute or so
+		init_temperature();
 	/* Correct for negative temperatures (sign extend) */
 	if (temp & 0x80)
 		temp = -(128 - (temp ^ 0x80));
@@ -625,7 +631,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v37 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v38 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1591,13 +1597,19 @@ hijack_ioctl (struct inode *inode, struct file *filp, unsigned int cmd, unsigned
 		{
 			// Invocation:  rc = ioctl(fd, EMPEG_HIJACK_DISPTEXT, (unsigned char *)"Text for the screen");
 			int size = 0;
-			unsigned char buf[256] = {0,}, *text = (unsigned char *)arg;
+			unsigned char color = COLOR3, buf[256] = {0,}, *text = (unsigned char *)arg;
 			do {
 				if (copy_from_user(&buf[size], text+size, 1)) return -EFAULT;
 			} while (buf[size++] && size < sizeof(buf));
 			buf[size-1] = '\0';
+			text = buf;
+			if (buf[0] & 0x80) {		// First byte can now specify a color as: (color | 0x80)
+				color = *text++;	// Note also that negative colors are used for "reverse video"
+				if (!(color & 0x40))
+					color &= 3;
+			}
 			save_flags_cli(flags);
-			(void)draw_string(ROWCOL(0,0),buf,COLOR3);
+			(void)draw_string(ROWCOL(0,0),text,color);
 			restore_flags(flags);
 			userland_display_updated = 1;
 			return 0;
@@ -1617,4 +1629,5 @@ hijack_init (void)
 	extern int getbitset(void);
 	(void)extend_menu("Button Codes Display", 0, showbutton_display, NULL);
 	hijack_on_dc_power = getbitset() & EMPEG_POWER_FLAG_DC;
+	init_temperature();
 }

@@ -35,7 +35,7 @@ static int id_read_procmem(char *buf, char **start, off_t offset,
 	len += sprintf(buf+len, "flash : %dK\n",
 		       permset[9]==0xffffffff?1024:permset[9]);
 	len += sprintf(buf+len, "drives: %d\n", modset[0]);
-	len += sprintf(buf+len, "image : %08x\n", *user_splash);
+	len += sprintf(buf+len, "image : %08lx\n", *user_splash);
 	return len;
 }
 
@@ -46,7 +46,7 @@ static int therm_read_procmem(char *buf, char **start, off_t offset,
 	unsigned long flags;
 
 	/* Need to disable IRQs during temperature read */
-	save_flags_cli(flags);
+	save_flags_clif(flags);
 	temp=empeg_readtherm(&OSMR0,&GPLR);
 	restore_flags(flags);
 

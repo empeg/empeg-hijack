@@ -69,12 +69,40 @@ typedef struct ir_translation_s {
 static ir_translation_t *ir_current_longpress = NULL;
 static unsigned long *ir_translate_table = NULL;
 
-#define KNOBDATA_BITS 2
+#define KNOBDATA_BITS 3
 #ifdef EMPEG_KNOB_SUPPORTED
 static unsigned long ir_knob_busy = 0, ir_knob_down = 0;
-static const unsigned long knobdata_pressed [] = {IR_KNOB_PRESSED, IR_RIO_SHUFFLE_PRESSED, IR_RIO_INFO_PRESSED, IR_RIO_INFO_PRESSED};
-static const unsigned long knobdata_released[] = {IR_KNOB_RELEASED,IR_RIO_SHUFFLE_RELEASED,IR_RIO_INFO_RELEASED,IR_RIO_INFO_PRESSED};
+
+typedef struct knob_pair_s {
+	unsigned long	pressed;
+	unsigned long	released;
+} knob_pair_t;
+
+#define KNOBDATA_SIZE (1 << KNOBDATA_BITS)
 static int knobdata_index = 0;
+static const char *knobdata_labels[] = {"[default]", "PopUp", "VolAdj+", "Details", "Hush", "Info", "Mark", "Shuffle"};
+static const knob_pair_t knobdata_pairs[1<<KNOBDATA_BITS] = {
+	{IR_KNOB_PRESSED,		IR_KNOB_RELEASED},
+	{IR_KNOB_PRESSED,		IR_KNOB_RELEASED},
+	{IR_KNOB_PRESSED,		IR_KNOB_RELEASED},
+	{IR_RIO_INFO_PRESSED,		IR_RIO_INFO_PRESSED},
+	{IR_RIO_HUSH_PRESSED,		IR_RIO_HUSH_PRESSED},
+	{IR_RIO_INFO_PRESSED,		IR_RIO_INFO_RELEASED},
+	{IR_RIO_MARK_PRESSED,		IR_RIO_MARK_RELEASED},
+	{IR_RIO_SHUFFLE_PRESSED,	IR_RIO_SHUFFLE_RELEASED} };
+
+#define KNOBMENU_SIZE KNOBDATA_SIZE	// indexes share the same bits in flash..
+static int knobmenu_index = 0;
+static const char *knobmenu_labels[] = {"[default]", "Details", "Hush", "Info", "Mark", "Repeat", "Shuffle", "Visual"};
+static const knob_pair_t knobmenu_pairs[KNOBMENU_SIZE] = {
+	{IR_KNOB_PRESSED,		IR_KNOB_RELEASED},
+	{IR_RIO_INFO_PRESSED,		IR_RIO_INFO_PRESSED},
+	{IR_RIO_HUSH_PRESSED,		IR_RIO_HUSH_PRESSED},
+	{IR_RIO_INFO_PRESSED,		IR_RIO_INFO_RELEASED},
+	{IR_RIO_MARK_PRESSED,		IR_RIO_MARK_RELEASED},
+	{IR_RIO_REPEAT_PRESSED,		IR_RIO_REPEAT_RELEASED},
+	{IR_RIO_SHUFFLE_PRESSED,	IR_RIO_SHUFFLE_RELEASED},
+	{IR_RIO_VISUAL_PRESSED,		IR_RIO_VISUAL_RELEASED} };
 #endif
 
 // How button press/release events are handled:
@@ -151,15 +179,15 @@ static const unsigned long *hijack_buttonlist = NULL;
 static struct wait_queue *hijack_userq_waitq = NULL, *hijack_menu_waitq = NULL;
 
 #define SCREEN_BLANKER_MULTIPLIER 15
-#define BLANKER_BITS (8 - VOLADJ_BITS)
+#define BLANKER_BITS 6
 static int blanker_timeout = 0;
 
 #define BLANKERFUZZ_MULTIPLIER 5
 #define BLANKERFUZZ_BITS 3
 static int blankerfuzz_amount = 0;
 
-#define MAXTEMP_OFFSET	29
-#define MAXTEMP_BITS	(8 - VOLADJ_BITS)
+#define MAXTEMP_OFFSET	34
+#define MAXTEMP_BITS	5
 static int maxtemp_threshold = 0;
 
 #define DCPOWER_BITS 1
@@ -182,20 +210,20 @@ static volatile short menu_item = 0, menu_size = 0, menu_top = 0;
 
 // format of eight-byte flash memory savearea used for our hijack'd settings
 static struct sa_struct {
-	unsigned voladj_ac_power	: VOLADJ_BITS;
-	unsigned blanker_timeout	: BLANKER_BITS;
-	unsigned voladj_dc_power	: VOLADJ_BITS;
-	unsigned maxtemp_threshold	: MAXTEMP_BITS;
-	unsigned knobdata_index		: KNOBDATA_BITS;
-	unsigned blankerfuzz_amount	: BLANKERFUZZ_BITS;
-	unsigned timer_action		: TIMERACTION_BITS;
-	unsigned force_dcpower		: DCPOWER_BITS;
-	unsigned byte3_leftover		: (8 - (KNOBDATA_BITS + BLANKERFUZZ_BITS + TIMERACTION_BITS + DCPOWER_BITS));
-	unsigned byte4			: 8;
-	unsigned byte5			: 8;
-	unsigned byte6			: 8;
-	unsigned menu_item		: MENU_BITS;
-	unsigned byte7_leftover		: (8 - MENU_BITS);
+	unsigned voladj_ac_power	: VOLADJ_BITS;		// 2 bits
+	unsigned blanker_timeout	: BLANKER_BITS;		// 6 bits
+	unsigned voladj_dc_power	: VOLADJ_BITS;		// 2 bits
+	unsigned maxtemp_threshold	: MAXTEMP_BITS;		// 5 bits
+	unsigned byte2_leftover		: 1;
+	unsigned byte3_leftover		: 6;
+	unsigned timer_action		: TIMERACTION_BITS;	// 1 bit
+	unsigned force_dcpower		: DCPOWER_BITS;		// 1 bit
+	unsigned knob_ac		: 1+KNOBDATA_BITS;	// 4 bits
+	unsigned knob_dc		: 1+KNOBDATA_BITS;	// 4 bits
+	unsigned byte5_leftover		: 8;
+	unsigned byte6_leftover		: 8;
+	unsigned menu_item		: MENU_BITS;		// 5 bits
+	unsigned blankerfuzz_amount	: BLANKERFUZZ_BITS;	// 3 bits
 } hijack_savearea;
 
 static unsigned char hijack_displaybuf[EMPEG_SCREEN_ROWS][EMPEG_SCREEN_COLS/2];
@@ -513,6 +541,9 @@ hijack_button_deq (hijack_buttonq_t *q, hijack_buttondata_t *rdata, int nowait)
 static void
 hijack_deactivate (int new_status)
 {
+	unsigned long flags;
+
+	save_flags_cli(flags);
 	ir_selected = 0;
 	ir_numeric_input = NULL;
 	hijack_movefunc = NULL;
@@ -521,6 +552,7 @@ hijack_deactivate (int new_status)
 	ir_trigger_count = 0;
 	hijack_overlay_geom = NULL;
 	hijack_status = new_status;
+	restore_flags(flags);
 }
 
 static void
@@ -650,8 +682,9 @@ voladj_display (int firsttime)
 	return NEED_REFRESH;
 }
 
+#ifdef EMPEG_KNOB_SUPPORTED
 static int
-voladj_prefix (int firsttime)
+voladj_prefix_display (int firsttime)
 {
 	static const hijack_geom_t geom = {8, 8+6+KFONT_HEIGHT, 16, EMPEG_SCREEN_COLS-16};
 
@@ -661,7 +694,7 @@ voladj_prefix (int firsttime)
 		clear_hijack_displaybuf(COLOR0);
 		draw_frame((unsigned char *)hijack_displaybuf, &geom);
 		hijack_overlay_geom = (hijack_geom_t *)&geom;
-	} else if (jiffies_since(hijack_last_moved) >= (HZ*2)) {
+	} else if (jiffies_since(hijack_last_moved) >= (HZ*3)) {
 		hijack_deactivate(HIJACK_INACTIVE);
 	} else {
 		unsigned int rowcol = (geom.first_row+4)|((geom.first_col+6)<<16);
@@ -672,6 +705,7 @@ voladj_prefix (int firsttime)
 	}
 	return NO_REFRESH;
 }
+#endif // EMPEG_KNOB_SUPPORTED
 
 static int
 kfont_display (int firsttime)
@@ -744,7 +778,8 @@ read_temperature (void)
 	/* Correct for negative temperatures (sign extend) */
 	if (temperature & 0x80)
 		temperature = -(128 - (temperature ^ 0x80));
-	return temperature + hijack_temperature_correction;
+	temperature += hijack_temperature_correction;
+	return temperature;
 }
 
 static unsigned int
@@ -1107,10 +1142,21 @@ screen_compare (unsigned long *screen1, unsigned long *screen2)
 }
 
 #ifdef EMPEG_KNOB_SUPPORTED
+
+static void
+send_knob_pair (const knob_pair_t *kd)
+{
+	hijack_button_enq(&hijack_playerq, kd->pressed, 0);
+	if (kd->pressed == kd->released) // simulate a long button press
+		hijack_button_enq(&hijack_playerq, kd->pressed|0x80000000, HZ);
+	else
+		hijack_button_enq(&hijack_playerq, kd->released, 0);
+}
+
 static void
 knobdata_move (int direction)
 {
-	knobdata_index = direction ? (knobdata_index + direction) & ((1<<KNOBDATA_BITS)-1) : 0;
+	knobdata_index = direction ? (knobdata_index + direction) & (KNOBDATA_SIZE-1) : 0;
 	empeg_state_dirty = 1;
 }
 
@@ -1118,25 +1164,80 @@ static int
 knobdata_display (int firsttime)
 {
 	unsigned int rowcol;
-	unsigned char *s = "";
  
 	if (firsttime)
-		ir_numeric_input = &knobdata_index;
+		ir_numeric_input = &knobdata_index;	// allows cancel/top to reset it to 0
 	else if (!hijack_last_moved)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
 	(void)draw_string(ROWCOL(0,0), "Knob Press Redefinition", COLOR2);
-	switch (knobdata_released[knobdata_index]) {
-		case IR_KNOB_RELEASED:		s = "[default]";break;
-		case IR_RIO_SHUFFLE_RELEASED:	s = "Shuffle";	break;
-		case IR_RIO_INFO_RELEASED:	s = "Info";	break;
-		case IR_RIO_INFO_PRESSED:	s = "Details";	break;
-	}
 	rowcol = draw_string(ROWCOL(2,0), "Quick press = ", COLOR2);
-	(void)draw_string(rowcol, s, COLOR3);
+	(void)draw_string(rowcol, knobdata_labels[knobdata_index], COLOR3);
 	return NEED_REFRESH;
 }
+
+static unsigned long knobmenu_pressed;
+static const unsigned long knobmenu_buttons[3] = {3, IR_KNOB_PRESSED, IR_KNOB_RELEASED}; 
+
+static void
+knobmenu_move (int direction)
+{
+	if (direction == 0) {
+		hijack_deactivate(HIJACK_INACTIVE);
+	} else if (!knobmenu_pressed) {
+		knobmenu_index += direction;
+		if (knobmenu_index < 0)
+			knobmenu_index = 0;
+		else if (knobmenu_index >= KNOBMENU_SIZE)
+			knobmenu_index = KNOBMENU_SIZE-1;
+		empeg_state_dirty = 1;
+	}
+}
+
+static int
+knobmenu_display (int firsttime)
+{
+	unsigned long flags;
+	hijack_buttondata_t data;
+	static const hijack_geom_t knobmenu_geom = {8, 8+6+KFONT_HEIGHT, 6, EMPEG_SCREEN_COLS-6};
+ 
+	ir_selected = 0; // paranoia?
+	if (firsttime) {
+		knobmenu_pressed = 0;
+		hijack_last_moved = jiffies ? jiffies : -1;
+		ir_numeric_input = &knobmenu_index;	// allows cancel/top to reset it to 0
+		hijack_buttonlist = knobmenu_buttons;;
+		hijack_initq(&hijack_userq);
+		clear_hijack_displaybuf(COLOR0);
+		draw_frame((unsigned char *)hijack_displaybuf, &knobmenu_geom);
+		hijack_overlay_geom = (hijack_geom_t *)&knobmenu_geom;
+	}
+	if (!knobmenu_pressed) {
+		if (jiffies_since(hijack_last_moved) >= (HZ*4)) {
+			hijack_deactivate(HIJACK_INACTIVE);
+		} else {
+			unsigned int rowcol = (knobmenu_geom.first_row+4)|((knobmenu_geom.first_col+6)<<16);
+			rowcol = draw_string(rowcol, "Select Action: ", COLOR3);
+			clear_text_row(rowcol, knobmenu_geom.last_col-4);
+			(void)draw_string(rowcol, knobmenu_labels[knobmenu_index], COLOR3);
+		}
+	}
+	save_flags_cli(flags);
+	while (hijack_status == HIJACK_ACTIVE && hijack_button_deq(&hijack_userq, &data, 0)) {
+		if (!knobmenu_pressed && data.button == IR_KNOB_PRESSED) {
+			knobmenu_pressed = jiffies ? jiffies : -1;
+			//hijack_button_enq(&hijack_playerq, knobmenu_pairs[knobmenu_index].pressed, 0);
+			send_knob_pair(&knobmenu_pairs[knobmenu_index]);
+		} else if (knobmenu_pressed && data.button == IR_KNOB_RELEASED) {
+			//hijack_button_enq(&hijack_playerq, knobmenu_pairs[knobmenu_index].pressed|0x80000000, jiffies_since(knobmenu_pressed));
+			hijack_deactivate(HIJACK_INACTIVE);
+		}
+	}
+	restore_flags(flags);
+	return NEED_REFRESH;
+}
+
 #endif // EMPEG_KNOB_SUPPORTED
 
 #define GAME_COLS		(EMPEG_SCREEN_COLS/2)
@@ -1163,7 +1264,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v78 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v79 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1724,6 +1825,7 @@ check_if_sound_adjust_is_active (void *player_buf)
 	     && test_row(player_buf, 16, 0x11) && test_row(player_buf, 17, 0x00));
 }
 
+#ifdef EMPEG_KNOB_SUPPORTED
 static void
 toggle_input_source (void)
 {
@@ -1746,6 +1848,7 @@ toggle_input_source (void)
 	hijack_button_enq(&hijack_playerq, button,            0);
 	hijack_button_enq(&hijack_playerq, button|0x80000000, 0);
 }
+#endif // EMPEG_KNOB_SUPPORTED
 
 static int
 timer_check_expiry (struct display_dev *dev)
@@ -1851,24 +1954,23 @@ hijack_handle_button(unsigned long data, unsigned long delay)
 					ir_knob_busy = 0;
 				} else if (hijack_status != HIJACK_INACTIVE) {
 					hijacked = 1;
-					if (hijack_dispfunc == voladj_prefix) {
+					if (hijack_dispfunc == voladj_prefix_display) {
 						hijack_deactivate(HIJACK_INACTIVE);
 						hijack_button_enq(&hijack_playerq, IR_KNOB_PRESSED,  0);
 						hijack_button_enq(&hijack_playerq, IR_KNOB_RELEASED, 0);
 					}
 				} else if (hijack_status == HIJACK_INACTIVE) {
-					int index = player_menu_is_active ? 0 : knobdata_index;
+					int index = knobdata_index;
+					if (player_menu_is_active || player_sound_adjust_is_active)
+						index = 0;
 					hijacked = 1;
 					if (jiffies_since(ir_knob_down) < (HZ/2)) {	// short press?
-						if (!player_menu_is_active && !player_sound_adjust_is_active && !index) {
-							activate_dispfunc(voladj_prefix, voladj_move);
+						if (index == 1) { // ButtonMenu
+							activate_dispfunc(knobmenu_display, knobmenu_move);
+						} else if (index == 2) { // VolAdj+SoundStuff
+							activate_dispfunc(voladj_prefix_display, voladj_move);
 						} else {
-							unsigned long button = knobdata_pressed[index];
-							hijack_button_enq(&hijack_playerq, button, 0);
-							if (button == knobdata_released[index]) // simulate a long button press
-								hijack_button_enq(&hijack_playerq, button|0x80000000, HZ);
-							else
-								hijack_button_enq(&hijack_playerq, knobdata_released[index], 0);
+							send_knob_pair(&knobdata_pairs[index]);
 						}
 					}
 				}
@@ -2093,7 +2195,11 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 				restore_flags(flags);
 				refresh = hijack_dispfunc(0);
 				save_flags_cli(flags);
-				if (ir_selected && hijack_dispfunc != userland_display && hijack_dispfunc != voladj_prefix) {
+				if (ir_selected && hijack_dispfunc != userland_display
+#ifdef EMPEG_KNOB_SUPPORTED
+				 && hijack_dispfunc != knobmenu_display && hijack_dispfunc != voladj_prefix_display
+#endif // EMPEG_KNOB_SUPPORTED
+				){
 					if (hijack_dispfunc == forcedc_display)
 						activate_dispfunc(reboot_display, NULL);
 					else
@@ -2498,6 +2604,8 @@ void	// invoked from empeg_state.c
 hijack_save_settings (unsigned char *buf)
 {
 	// save state
+	hijack_savearea.byte2_leftover = hijack_savearea.byte3_leftover = 0;
+	hijack_savearea.byte5_leftover = hijack_savearea.byte6_leftover = 0;
 	if (empeg_on_dc_power())
 		hijack_savearea.voladj_dc_power	= hijack_voladj_enabled;
 	else
@@ -2505,7 +2613,17 @@ hijack_save_settings (unsigned char *buf)
 	hijack_savearea.blanker_timeout		= blanker_timeout;
 	hijack_savearea.maxtemp_threshold	= maxtemp_threshold;
 #ifdef EMPEG_KNOB_SUPPORTED
-	hijack_savearea.knobdata_index		= knobdata_index;
+{
+	unsigned int knob;
+	if (knobdata_index == 1)
+		knob = (1 << KNOBDATA_BITS) | knobmenu_index;
+	else
+		knob = knobdata_index;
+	if (empeg_on_dc_power())
+		hijack_savearea.knob_dc = knob;
+	else
+		hijack_savearea.knob_ac = knob;
+}
 #endif // EMPEG_KNOB_SUPPORTED
 	hijack_savearea.blankerfuzz_amount	= blankerfuzz_amount;
 	hijack_savearea.timer_action		= timer_action;
@@ -2527,7 +2645,17 @@ hijack_restore_settings (const unsigned char *buf)
 	blanker_timeout			= hijack_savearea.blanker_timeout;
 	maxtemp_threshold		= hijack_savearea.maxtemp_threshold;
 #ifdef EMPEG_KNOB_SUPPORTED
-	knobdata_index			= hijack_savearea.knobdata_index;
+{
+	unsigned int knob;
+	knob = empeg_on_dc_power() ? hijack_savearea.knob_dc : hijack_savearea.knob_ac;
+	if ((knob & (1 << KNOBDATA_BITS)) == 0) {
+		knobmenu_index		= 0;
+		knobdata_index		= knob;
+	} else {
+		knobmenu_index		= knob & ((1 << KNOBDATA_BITS) - 1);
+		knobdata_index		= 1;
+	}
+}
 #endif // EMPEG_KNOB_SUPPORTED
 	blankerfuzz_amount		= hijack_savearea.blankerfuzz_amount;
 	timer_action			= hijack_savearea.timer_action;
@@ -2627,34 +2755,36 @@ get_file (const char *path, unsigned char **buffer)
 {
 	unsigned int size;
 	int rc = 0;
-	struct file *file;
+	struct file *filp;
 
 	*buffer = NULL;
-	lock_kernel();
-	file = filp_open(path,O_RDONLY,0);
-	if (!file || !file->f_dentry || !file->f_dentry->d_inode) {
+	lock_kernel();	// FIXME?  Is this necessary?
+	filp = filp_open(path,O_RDONLY,0);
+	if (IS_ERR(filp) || !filp) {
 		rc = -ENOENT;
 	} else {
-		size = file->f_dentry->d_inode->i_size;
-		if (size > 0) {
-			unsigned char *buf = (unsigned char *)kmalloc(size+1, GFP_KERNEL);
-			if (!buf) {
-				rc = -ENOMEM;
-			} else {
-				mm_segment_t old_fs = get_fs();
-				file->f_pos = 0;
-				set_fs(get_ds());
-				rc = file->f_op->read(file, buf, size, &(file->f_pos));
-				set_fs(old_fs);
-				if (rc < 0) {
-					kfree(buf);
+		if (filp->f_dentry && filp->f_dentry->d_inode) {
+			size = filp->f_dentry->d_inode->i_size;
+			if (size > 0) {
+				unsigned char *buf = (unsigned char *)kmalloc(size+1, GFP_KERNEL);
+				if (!buf) {
+					rc = -ENOMEM;
 				} else {
-					buf[rc] = '\0';
-					*buffer = buf;
+					mm_segment_t old_fs = get_fs();
+					filp->f_pos = 0;
+					set_fs(KERNEL_DS);	// FIXME?  Is this correct?
+					rc = filp->f_op->read(filp, buf, size, &(filp->f_pos));
+					set_fs(old_fs);
+					if (rc < 0) {
+						kfree(buf);
+					} else {
+						buf[rc] = '\0';
+						*buffer = buf;
+					}
 				}
 			}
 		}
-		filp_close(file,NULL);
+		filp_close(filp,NULL);
 	}
 	unlock_kernel();
   	return rc;

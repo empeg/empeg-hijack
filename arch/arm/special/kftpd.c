@@ -1117,7 +1117,7 @@ encode_url (unsigned char *out, unsigned char *s, int partial_encode)
 			*out++ = hexchars[c >> 4];
 			*out++ = hexchars[c & 0xf];
 		} else if (partial_encode == 1) { // for netscape, and stupid iTunes playlist display
-			*out++ = (c == ' ' || c == '?' || c == '%') ? '_' : c;
+			*out++ = (c == ' ' || c == '?' || c == '%' || c == '#' || c == '!' || c == '@') ? '_' : c;
 		} else {  // xml
 			if (c == '<' || c == '>' || c == '&') {
 				*out++ = '&';

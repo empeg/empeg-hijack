@@ -1635,7 +1635,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,18), " Enhancements.v102 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,18), " Enhancements.v103 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -2365,19 +2365,19 @@ quicktimer_display (int firsttime)
 // Note that ALL front-panel buttons send codes ONCE on press, but twice on RELEASE.
 //
 static int
-hijack_handle_button(unsigned long data, unsigned long delay)
+hijack_handle_button(unsigned long button, unsigned long delay)
 {
 	static unsigned long ir_lastpressed = -1;
 	int hijacked = 0;
 
 	blanker_triggered = 0;
-	if (hijack_status == HIJACK_ACTIVE && hijack_buttonlist && hijack_check_buttonlist(data, delay)) {
+	if (hijack_status == HIJACK_ACTIVE && hijack_buttonlist && hijack_check_buttonlist(button, delay)) {
 		hijacked = 1;
 		goto done;
 	}
 	if (hijack_status == HIJACK_ACTIVE && hijack_dispfunc == userland_display)
 		goto done;	// just pass key codes straight through to userland
-	switch (data) {
+	switch (button) {
 #ifdef EMPEG_KNOB_SUPPORTED
 		case IR_KNOB_PRESSED:
 			hijacked = 1; // hijack it and later send it with the release
@@ -2449,7 +2449,7 @@ hijack_handle_button(unsigned long data, unsigned long delay)
 				hijacked = 1;
 			} else if (ir_menu_down && !player_menu_is_active) {
 				hijack_button_enq(&hijack_playerq, IR_RIO_MENU_PRESSED, 0);
-				if (data == ir_releasewait)
+				if (button == ir_releasewait)
 					ir_releasewait = 0;
 			}
 			ir_menu_down = 0;
@@ -2459,7 +2459,7 @@ hijack_handle_button(unsigned long data, unsigned long delay)
 				hijacked = ir_selected = 1;
 			} else if (hijack_status == HIJACK_INACTIVE) {
 				// ugly Kenwood remote hack: press/release CD quickly 3 times to activate menu
-				if ((ir_lastpressed & ~0x80000000) != data || delay > HZ)
+				if ((ir_lastpressed & ~0x80000000) != button || delay > HZ)
 					ir_trigger_count = 1;
 				else if (++ir_trigger_count >= 3)
 					hijacked = 1;
@@ -2507,27 +2507,30 @@ hijack_handle_button(unsigned long data, unsigned long delay)
 			if (hijack_status != HIJACK_INACTIVE)
 				hijacked = 1;
 			break;
+		case IR_KW_4_PRESSED:
+		case IR_RIO_4_PRESSED:
 		case IR_KW_4_RELEASED:
 		case IR_RIO_4_RELEASED:
 			if (hijack_status == HIJACK_INACTIVE && !player_menu_is_active) {
-				activate_dispfunc(quicktimer_display, timer_move);
+				if ((button & 0x80000000))
+					activate_dispfunc(quicktimer_display, timer_move);
 				hijacked = 1;
 			}
 			break;    	    
 	}
 done:
 	// save button PRESSED codes in ir_lastpressed
-	ir_lastpressed = data;
+	ir_lastpressed = button;
 
 	// wait for RELEASED code of most recently hijacked PRESSED code
-	if (data && data == ir_releasewait) {
+	if (button && button == ir_releasewait) {
 		ir_releasewait = 0;
 		hijacked = 1;
-	} else if (hijacked && !IS_RELEASE(data) && data != IR_KNOB_LEFT && data != IR_KNOB_RIGHT) {
-		ir_releasewait = data | ((data > 0xf) ? 0x80000000 : 0x00000001);
+	} else if (hijacked && !IS_RELEASE(button) && button != IR_KNOB_LEFT && button != IR_KNOB_RIGHT) {
+		ir_releasewait = button | ((button > 0xf) ? 0x80000000 : 0x00000001);
 	}
 	if (!hijacked)
-		hijack_button_enq(&hijack_playerq, data, delay);
+		hijack_button_enq(&hijack_playerq, button, delay);
 
 	// See if we have any buttons ready for the player software
 	return 0;

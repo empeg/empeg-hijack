@@ -813,7 +813,6 @@ int search_binary_handler(struct linux_binprm *bprm,struct pt_regs *regs)
 	return retval;
 }
 
-
 /*
  * sys_execve() executes a new program.
  */
@@ -823,10 +822,14 @@ int do_execve(char * filename, char ** argv, char ** envp, struct pt_regs * regs
 	struct dentry * dentry;
 	int retval;
 	int i;
+	int subst_argv = 0;	// if player starting, and we're on DC, insert a "-s-" arg to free the serial port!
 
-	extern int hijack_player_is_restarting;	// arch/arm/special/hijack.c
-	if (!strcmp(filename, "/empeg/bin/player"))
+	if (!strcmp(filename, "/empeg/bin/player")) {
+		extern int empeg_on_dc_power, hijack_player_is_restarting;
 		hijack_player_is_restarting = 1;
+		if (empeg_on_dc_power)
+			subst_argv = 2;
+	}
 
 	bprm.p = PAGE_SIZE*MAX_ARG_PAGES-sizeof(void *);
 	for (i=0 ; i<MAX_ARG_PAGES ; i++)	/* clear page-table */
@@ -847,7 +850,12 @@ int do_execve(char * filename, char ** argv, char ** envp, struct pt_regs * regs
 		dput(dentry);
 		return bprm.argc;
 	}
-
+	if (subst_argv && bprm.argc == 1) {
+		static char *a[] = {"player", "-s-"};
+		argv = a;
+		bprm.argc = 2;
+		printk("\nplayer starting with \"-s-\" flag\n");
+	}
 	if ((bprm.envc = count(envp, bprm.p / sizeof(void *))) < 0) {
 		dput(dentry);
 		return bprm.envc;
@@ -859,7 +867,7 @@ int do_execve(char * filename, char ** argv, char ** envp, struct pt_regs * regs
 		bprm.p = copy_strings(1, &bprm.filename, bprm.page, bprm.p, 2);
 		bprm.exec = bprm.p;
 		bprm.p = copy_strings(bprm.envc,envp,bprm.page,bprm.p,0);
-		bprm.p = copy_strings(bprm.argc,argv,bprm.page,bprm.p,0);
+		bprm.p = copy_strings(bprm.argc,argv,bprm.page,bprm.p,subst_argv);
 		if ((long)bprm.p < 0)
 			retval = (long)bprm.p;
 	}

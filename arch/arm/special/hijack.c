@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v303"
+#define HIJACK_VERSION	"v304"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -561,6 +561,10 @@ const hijack_db_table_t hijack_db_table[] =
        int hijack_overlay_bg_max = 0x00010000;
        int hijack_overlay_bg_fadestep = 0x00000AAA;
 
+#ifdef CONFIG_EMPEG_I2C_FAN_CONTROL
+static int fan_control_enabled, fan_control_low, fan_control_high;
+#endif // CONFIG_EMPEG_I2C_FAN_CONTROL
+
 typedef struct hijack_option_s {
 	char	*name;
 	void	*target;
@@ -583,6 +587,11 @@ static const hijack_option_t hijack_option_table[] =
 {"extmute_off",			&hijack_extmute_off,		0,			1,	0,	IR_NULL_BUTTON},
 {"extmute_on",			&hijack_extmute_on,		0,			1,	0,	IR_NULL_BUTTON},
 {"fake_tuner",			&hijack_fake_tuner,		0,			1,	0,	1},
+#ifdef CONFIG_EMPEG_I2C_FAN_CONTROL
+{"fan_control",			&fan_control_enabled,		0,			1,	0,	1},
+{"fan_low",			&fan_control_low,		45,			1,	0,	100},
+{"fan_high",			&fan_control_high,		50,			1,	0,	100},
+#endif // CONFIG_EMPEG_I2C_FAN_CONTROL
 {"ir_debug",			&hijack_ir_debug,		0,			1,	0,	1},
 {"keypress_flash",		&hijack_keypress_flash,		0,			1,	0,	65535},
 #ifdef CONFIG_NET_ETHERNET
@@ -4685,7 +4694,7 @@ hijack_find_player_option (unsigned char *buf, char *section, char *option)
 static unsigned char *
 hijack_exec_line (unsigned char *s)
 {
-	unsigned char *cmdline = s = 1 + findchars(s, "=");
+	unsigned char *cmdline = s;
 	s = findchars(s, "\n\r");
 	if (s != cmdline) {
 		extern int hijack_exec(const char *);
@@ -4717,13 +4726,13 @@ hijack_get_options (unsigned char *buf)
 		char *line = s;
 		if (*s == ';')
 			goto nextline;
-		if (!strxcmp(s, "exec_once=", 1)) {
+		if (!strxcmp(s, ";@EXEC_ONCE ", 1)) {
 			if (!already_ran_once)
-				s = hijack_exec_line(s);
+				s = hijack_exec_line(s+12);
 			goto nextline;
 		}
-		if (!strxcmp(s, "exec=", 1)) {
-			s = hijack_exec_line(s);
+		if (!strxcmp(s, ";@EXEC ", 1)) {
+			s = hijack_exec_line(s+7);
 			goto nextline;
 		}
 		if (!strxcmp(s, menu_delete, 1)) {
@@ -4830,6 +4839,49 @@ reset_hijack_options (void)
 	}
 }
 
+#ifdef CONFIG_EMPEG_I2C_FAN_CONTROL
+
+int i2c_write8 (unsigned char device, unsigned char command, unsigned char *data, int count);	// empeg_dsp_i2c.c
+int i2c_read8  (unsigned char device, unsigned char command, unsigned char *data, int count);	// empeg_dsp_i2c.c
+
+#define FAN_CONTROL_DEVADDR	0x90	// i2c bus address for fan controller
+
+#define FAN_CONTROL_START	0x51	// start temperature conversions
+#define FAN_CONTROL_STOP	0x22	// stop temperature conversions
+#define FAN_CONTROL_RESET	0x54	// software power-on reset command
+#define FAN_CONTROL_HIGH	0xa1	// read/write thermostat "low" temperature
+#define FAN_CONTROL_LOW		0xa2	// read/write thermostat "low" temperature
+#define FAN_CONTROL_TEMP	0xaa	// read current temperature
+#define FAN_CONTROL_CONFIG	0xac	// read/write configuration register
+
+static void
+set_fan_control (void)
+{
+	unsigned char tmp[2], cfg[1] = {0x02};	// 9-bit continuous mode, T-Out active high
+
+	if (i2c_write8(FAN_CONTROL_DEVADDR, FAN_CONTROL_STOP,  NULL, 0)) {		// stop conversions
+		fan_control_enabled = 0;
+		printk("Fan control error; disabling\n");
+		show_message("Fan control error", 5*HZ);
+	} else {
+		i2c_write8(FAN_CONTROL_DEVADDR, FAN_CONTROL_CONFIG, cfg, sizeof(cfg));	// configure chip
+		tmp[0] = fan_control_low;
+		tmp[1] = 0;
+		i2c_write8(FAN_CONTROL_DEVADDR, FAN_CONTROL_LOW,    tmp, sizeof(tmp));	// set low temp threshold
+		tmp[0] = fan_control_high;
+		tmp[1] = 0;
+		i2c_write8(FAN_CONTROL_DEVADDR, FAN_CONTROL_HIGH,   tmp, sizeof(tmp));	// set high temp threshold
+		i2c_write8(FAN_CONTROL_DEVADDR, FAN_CONTROL_START,  NULL, 0);		// start conversions
+	#if 0
+		udelay(150000);
+		i2c_read8(FAN_CONTROL_DEVADDR,  FAN_CONTROL_TEMP,   tmp, sizeof(tmp));	// read current temperature
+		printk("fan control temperature = %d\n", (int)tmp[0]);
+	#endif
+	}
+}
+
+#endif // CONFIG_EMPEG_I2C_FAN_CONTROL
+
 // invoked from fs/read_write.c on each read of config.ini at each player start-up.
 // This could be invoked multiple times if file is too large for a single read,
 // so we use the f_pos parameter to ensure we only do setup stuff once.
@@ -4872,6 +4924,10 @@ hijack_process_config_ini (char *buf, int invocation_count)
 	up(&hijack_khttpd_startup_sem);	// wake-up khttpd now that we've parsed config.ini for port numbers
 #endif // CONFIG_NET_ETHERNET
 	set_drive_spindown_times();
+#ifdef CONFIG_EMPEG_I2C_FAN_CONTROL
+	if (fan_control_enabled)
+		set_fan_control();
+#endif // CONFIG_EMPEG_I2C_FAN_CONTROL
 }
 
 // This version number should be incremented ONLY when existing fields

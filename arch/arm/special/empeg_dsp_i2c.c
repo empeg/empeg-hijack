@@ -24,6 +24,17 @@ static void i2c_putdatabit(int bit);
 static int i2c_getbyte(unsigned char *byte, int nak);
 static int i2c_putbyte(int byte);
 
+#ifdef CONFIG_EMPEG_I2C_FAN_CONTROL
+// semaphore to serialize access on the i2c bus:
+#include <asm/semaphore.h>
+static struct semaphore i2c_busy = MUTEX;
+#define GRAB_I2C_SEMA		down(&i2c_busy)
+#define RELEASE_I2C_SEMA	up(&i2c_busy)
+#else
+#define GRAB_I2C_SEMA
+#define RELEASE_I2C_SEMA
+#endif
+
 /*
  * Delay stuff
  * These are the minimum delays that the i2c bus can take before
@@ -232,6 +243,10 @@ static int i2c_putbyte(int byte)
 int i2c_read(unsigned char device, unsigned short address,
 	     unsigned int *data, int count)
 {
+	int	rc = -1;	// failure
+
+	GRAB_I2C_SEMA;
+
 	/* Send start sequence */
 	i2c_startseq();
 
@@ -273,11 +288,11 @@ int i2c_read(unsigned char device, unsigned short address,
 	i2c_putdatabit(1);
 
 	i2c_stopseq();	
-	
-	return 0;
+	rc = 0;		// success
 
  i2c_error:
-	return -1;
+	RELEASE_I2C_SEMA;
+	return rc;
 }
 
 int i2c_read1(unsigned char device, unsigned short address,
@@ -289,6 +304,10 @@ int i2c_read1(unsigned char device, unsigned short address,
 int i2c_write(unsigned char device, unsigned short address,
 	      unsigned int *data, unsigned short count)
 {
+	int	rc = -1;	// failure
+
+	GRAB_I2C_SEMA;
+
 	/* Pulse out the start sequence */
 	i2c_startseq();
 
@@ -345,13 +364,11 @@ int i2c_write(unsigned char device, unsigned short address,
 	}
 	
 	i2c_stopseq();
-
-	/* Complete success */
-	return 0;
+	rc = 0;		// success
 
  i2c_error:
-	/* Complete failure */
-	return -1;
+	RELEASE_I2C_SEMA;
+	return rc;
 }
 
 int i2c_write1(unsigned char device, unsigned short address,
@@ -406,4 +423,86 @@ int dsp_patchmulti(dsp_setup *setup, int address, int new_data)
 		}
 	}	
 	return 1;
-}	
+}
+
+#ifdef CONFIG_EMPEG_I2C_FAN_CONTROL
+
+int i2c_read8 (unsigned char device, unsigned char command, unsigned char *data, int count)
+{
+	int	rc = -1;	// failure
+
+	GRAB_I2C_SEMA;
+
+	/* Send start sequence */
+	i2c_startseq();
+
+	/* Set the device */
+	if (i2c_putbyte(device & 0xFE))
+		goto done;
+
+	/* Set the command */
+	if (i2c_putbyte(command))
+		goto done;
+
+	/* Repeat the start sequence */
+	i2c_startseq();
+	
+	/* Set the device but this time in read mode */
+	if (i2c_putbyte(device | 0x01))
+		goto done;
+
+	/* Now read in the actual data */
+	while (count--) {
+		if (i2c_getbyte(data, 1))
+			goto done;
+		++data;
+	}
+
+	/* Now say we don't want any more: NAK (send bit 1) */
+	i2c_putdatabit(1);
+	i2c_stopseq();	
+	rc = 0;		// success
+ done:
+	RELEASE_I2C_SEMA;
+	return rc;
+}
+
+int i2c_write8 (unsigned char device, unsigned char command, unsigned char *data, int count)
+{
+	int	rc = -1;	// failure
+
+	GRAB_I2C_SEMA;
+
+	/* Pulse out the start sequence */
+	i2c_startseq();
+
+	/* Say who we're talking to */
+	if (i2c_putbyte(device & 0xFE)) {
+		printk("i2c_write8: device select failed\n");
+		goto done;
+	}
+
+	/* Set the command */
+	if (i2c_putbyte(command)) {
+		printk("i2c_write8: command issue failed\n");
+		goto done;
+	}
+
+	/* Now send the actual data */
+	while (count--) {
+		if (i2c_putbyte(*data)) {
+			printk("i2c_write8: write byte failed, count:%d\n", count);
+			goto done;
+		}
+		++data;
+	}
+
+	i2c_stopseq();
+	rc = 0;
+ done:
+	RELEASE_I2C_SEMA;
+	return rc;
+}
+
+#endif // CONFIG_EMPEG_I2C_FAN_CONTROL
+

@@ -25,9 +25,10 @@ extern void state_cleanse(void);					// arch/arm/special/empeg_state.c
 extern void hijack_voladj_intinit(int, int, int, int, int);		// arch/arm/special/empeg_audio3.c
 extern void hijack_beep (int pitch, int duration_msecs, int vol_percent);// arch/arm/special/empeg_audio3.c
 extern unsigned long jiffies_since(unsigned long past_jiffies);		// arch/arm/special/empeg_input.c
+extern unsigned long input_devices[1];					// arch/arm/special/empeg_input.c
 
 extern int empeg_on_dc_power(void);					// arch/arm/special/empeg_power.c
-extern int get_current_mixer_source(void);				// arch/arm/special/empeg_mixer.c
+extern unsigned char get_current_mixer_source(void);			// arch/arm/special/empeg_mixer.c
 extern int empeg_readtherm(volatile unsigned int *timerbase, volatile unsigned int *gpiobase);	// arch/arm/special/empeg_therm.S
 extern int empeg_inittherm(volatile unsigned int *timerbase, volatile unsigned int *gpiobase);	// arch/arm/special/empeg_therm.S
 
@@ -53,6 +54,18 @@ static unsigned long ir_lasttime = 0, ir_selected = 0, ir_releasewait = 0, ir_tr
 static unsigned long ir_menu_down = 0, ir_left_down = 0, ir_right_down = 0;
 static unsigned long ir_move_repeat_delay;
 static int *ir_numeric_input = NULL, player_menu_is_active = 0, player_sound_adjust_is_active = 0;
+
+typedef struct ir_translation_s {
+	unsigned long	old;		// original code (bit31 == 0)
+	unsigned long	down;		// current status: 0=notpressed; other=jiffies_when_pressed
+	unsigned short	count;		// how many codes in new[]
+	unsigned char	source;		// (T)uner,(A)ux,(M)ain, or '\0'(any)
+	unsigned char	longpress;	// boolean: 1=match long (>=HZ) presses only
+	unsigned long	new[1];		// start of macro table
+} ir_translation_t;
+
+static ir_translation_t *ir_current_longpress = NULL;
+static unsigned long *ir_translation_table = NULL;
 
 #define KNOBDATA_BITS 2
 #ifdef EMPEG_KNOB_SUPPORTED
@@ -975,7 +988,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v65 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v66 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1513,14 +1526,13 @@ toggle_input_source (void)
 	unsigned long button;
 
 	switch (get_current_mixer_source()) {
-		case SOUND_MASK_RADIO:  // FM radio
-		case SOUND_MASK_LINE1:  // AM radio
+		case 'T':	// Tuner
 			button = IR_KW_TAPE_PRESSED; // aux
 			break;
-		case SOUND_MASK_LINE:   // AUX
+		case 'A':	// Aux
 			button = IR_KW_CD_PRESSED;   // player
 			break;
-		default:	// player (SOUND_MASK_PCM)
+		default:	// main/mp3
 			// by hitting "aux" before "tuner", we handle "tuner not present"
 			(void)real_input_append_code(IR_KW_TAPE_PRESSED);  // aux
 			(void)real_input_append_code(IR_KW_TAPE_RELEASED);
@@ -1530,18 +1542,6 @@ toggle_input_source (void)
 	(void)real_input_append_code(button);
 	(void)real_input_append_code(button|0x80000000);
 }
-
-//static int
-//tuner_is_active (void)
-//{
-//	switch (get_current_mixer_source()) {
-//		case SOUND_MASK_RADIO:  // FM radio
-//		case SOUND_MASK_LINE1:  // AM radio
-//			return 1;
-//		default:
-//			return 0;
-//	}
-//}
 
 static int
 timer_check_expiry (struct display_dev *dev)
@@ -1606,6 +1606,13 @@ hijack_display (struct display_dev *dev, unsigned char *player_buf)
 	int refresh = NEED_REFRESH;
 
 	save_flags_cli(flags);
+	if (ir_current_longpress && jiffies_since(ir_current_longpress->down) >= HZ) {
+		void input_append_code(void *dev, unsigned long data);
+		unsigned long new = ir_current_longpress->old;
+		ir_current_longpress = NULL;
+		new |= (new > 0xf) ? 0x80000000 : 1;	// front panel is weird
+		input_append_code(&input_devices[0], new);
+	}
 	if (!dev->power) {  // do (almost) nothing if unit is in standby mode
 		hijack_deactivate(HIJACK_INACTIVE);
 		(void)timer_check_expiry(dev);
@@ -1741,38 +1748,26 @@ static int hijack_check_buttonlist (unsigned long data)
 	return 0;
 }
 
-typedef struct ir_translation_s {
-	unsigned long	old;		// original code (bit31 == 0)
-	unsigned long	down;		// current status: 0=notpressed; other=whenpressed (jiffies)
-	unsigned long	count;		// how many codes in new[]
-	unsigned long	new[1];		// start of macro table
-} ir_translation_t;
-
-static unsigned long *ir_translation_table = NULL;
-
 static const unsigned char hexchars[] = "0123456789abcdefABCDEF";
 
-static unsigned char *
-skip_over (unsigned char *s, const unsigned char *skipchars)
+static int
+skip_over (unsigned char **s, const unsigned char *skipchars)
 {
-	if (s) {
-		while (*s && strchr(skipchars, *s))
-			++s;
-		if (!*s)
-			s = NULL;
+	unsigned char *t = *s;
+	if (t) {
+		while (*t && strchr(skipchars, *t))
+			++t;
+		*s = t;
 	}
-	return s;
+	return (t && *t); // 0 == end of string
 }
 
 static int
 match_char (unsigned char **s, unsigned char c)
 {
-	unsigned char *t;
-
-	t = *s = skip_over(*s, " \t");
-	if (*t == c) {
-		*s = skip_over(++t, " \t");
-		return 1;  // match succeeded
+	if (skip_over(s, " \t") && **s == c) {
+		++*s;
+		return skip_over(s, " \t");
 	}
 	return 0; // match failed
 }
@@ -1858,7 +1853,7 @@ get_hijack_option (unsigned char *s, const hijack_option_t *opt)
 {
 	int optlen = strlen(opt->name);
 
-	while ((s = skip_over(s, " \t\r\n")) && *s != '[') {
+	while (skip_over(&s, " \t\r\n") && *s != '[') {
 		if (!strncmp(s, opt->name, optlen)) {
 			s += optlen;
 			if (match_char(&s, '=')) {
@@ -1896,35 +1891,68 @@ ir_setup_translations2 (unsigned char *buf, unsigned long *table)
 	const char header[] = "[ir_translate]";
 	unsigned char *s;
 	int index = 0;
+	unsigned long *common_bits = NULL;
 
+	if (table) {
+		// Fixme: [someday] break up codes into separate tables/sections by vendor-id.
+		// Fixme: This could help a lot in the case where multiple foreign remotes are translated.
+		common_bits = &table[index++];
+		*common_bits = 0x7fffffff;	// The set of bits common to all translated codes
+	}
 	// find start of translations
 	if (!buf || !*buf || !(s = strstr(buf, header)) || !*s)
 		return 0;
 	s += sizeof(header) - 1;
-	while ((s = skip_over(s, " \t\r\n"))) {
+	while (skip_over(&s, " \t\r\n")) {
 		int old, new;
 		ir_translation_t *t = NULL;
-		if (get_number(&s, &old, 16, " \t=") && match_char(&s, '=')) {
-			if (table) {
-				t = (ir_translation_t *)&(table[index]);
-				t->old = old & 0x7fffffff;
-				t->down = 0;
-				t->count = 0;
-			} else {
-				printk("ir_translate: %08X ->", old);
+		if (get_number(&s, &old, 16, " \t.=")) {
+			int count = 0, longpress = 0;
+			unsigned char source = 0;
+			if (*s == '.') {
+				if (*++s == 'L') {
+					longpress = 1;
+					++s;
+				}
+				if (*s && strchr("TAM", *s))	// Tuner,Aux,Main
+					source = *s++;
 			}
-			index += (sizeof(ir_translation_t) - sizeof(unsigned long)) / sizeof(unsigned long);
-			do {
-				if (!get_number(&s, &new, 16, " ,;\t\r\n"))
-					goto done;
-				if (t)
-					t->new[t->count++] = new & 0x7fffffff;
-				else
-					printk(" %08X", new);
-				++index;
-			} while (match_char(&s, ','));
-			if (!t)
-				printk("\n");
+			if (match_char(&s, '=')) {
+				if (table) {
+					*common_bits &= old;	// build up common_bits mask
+					t = (ir_translation_t *)&(table[index]);
+					t->longpress = longpress;
+					t->source = source;
+					t->old = old & 0x7fffffff;
+					t->down = 0;
+					t->count = 0;
+				} else {
+					printk("ir_translate: %08X", old);
+					if (source || longpress) {
+						printk(".");
+						if (longpress)
+							printk("L");
+						if (source)
+							printk("%c",source);
+					}
+					printk("=");
+				}
+				index += (sizeof(ir_translation_t) - sizeof(unsigned long)) / sizeof(unsigned long);
+				do {
+					if (!get_number(&s, &new, 16, " ,;\t\r\n"))
+						goto done;
+					if (t) {
+						t->new[t->count++] = new & 0x7fffffff;
+					} else {
+						if (count++)
+							printk(",");
+						printk("%08X", new);
+					}
+					++index;
+				} while (match_char(&s, ','));
+				if (!t)
+					printk("\n");
+			}
 		}
 		while (*s && *s != '\n')	// skip to end-of-line
 			++s;
@@ -1943,8 +1971,7 @@ done:
 static void
 ir_setup_translations (unsigned char *buf)
 {
-	unsigned long *table = NULL;
-	unsigned long flags;
+	unsigned long flags, *table = NULL;
 	int size;
 
 	save_flags(flags);
@@ -1960,7 +1987,7 @@ ir_setup_translations (unsigned char *buf)
 	if (!table) {
 		printk("ir_setup_translations failed: no memory\n");
 	} else {
-		(void)ir_setup_translations2(buf, table);	// second pass to actually save the data
+		(void)ir_setup_translations2(buf, table);// second pass actually saves the data
 		save_flags(flags);
 		ir_translation_table = table;
 		restore_flags(flags);
@@ -2113,47 +2140,76 @@ done:
 	return hijacked ? 0 : real_input_append_code(data);
 }
 
+// Send a translated replacement sequence, except for the final release code
+static unsigned long
+ir_send_buttons (void *dev, ir_translation_t *t)
+{
+	unsigned long new = 0, *newp = &t->new[0];
+	int count = t->count;
+
+	while (count--) {
+		new = *newp++;
+		if (hijack_append_code(dev, new))
+			break;	// buffer full
+		if (count) {
+			new |= (new > 0xf) ? 0x80000000 : 1;	// front panel is weird
+			if (hijack_append_code(dev, new))
+				break;	// buffer full
+		}
+	}
+	return new;
+}
+
 void  // invoked from multiple places in empeg_input.c
 input_append_code(void *dev, unsigned long data)  // empeg_input.c
 {
-	unsigned long old, released, *table = ir_translation_table;
+	unsigned long flags, old, released, *table = ir_translation_table;
 
+	save_flags_cli(flags);
+	ir_current_longpress = NULL;
 	if (table) {
-		released = data & 0x80000000;
+		unsigned long common_bits = *table++;
+		released = data & ((data > 0xf) ? 0x80000000 : 1);	// front panel is weird
 		old = data ^ released;
-		while (*table != -1) {
-			ir_translation_t *t = (ir_translation_t *)table;
-			if (old == t->old) {
-				if (released) {
-					if (t->down) {
-						unsigned long new = t->new[t->count-1];
-						new |= (new > 0xf) ? 0x80000000 : 1;	// front panel is weird
+		if ((old & common_bits) == common_bits) {	// saves time (usually) on large tables
+			int delayed_send = 0;
+			while (*table != -1) {
+				ir_translation_t *t = (ir_translation_t *)table;
+				if (old == t->old && (!t->source || t->source == get_current_mixer_source())) {
+					if (!released) {	// button press?
+						if (t->down && jiffies_since(t->down) > (HZ*5))
+							t->down = 0;	// safeguard in case we have bugs
+						if (!t->down) {
+							t->down = jiffies ? jiffies : 1;
+							if (t->longpress)
+								ir_current_longpress = t;
+							else
+								(void)ir_send_buttons(dev, t);
+						}
+					} else if (t->down || delayed_send) {	// button release?
+						unsigned long new;
+						if (t->longpress) {
+							delayed_send = 1;
+							if (jiffies_since(t->down) < HZ) {
+								t->down = 0;
+								goto next;	// look for shortpress match instead
+							}
+						}
 						t->down = 0;
+						new = delayed_send ? ir_send_buttons(dev, t) : t->new[t->count - 1];
+						new |= (new > 0xf) ? 0x80000000 : 1;	// front panel is weird
 						(void)hijack_append_code(dev, new);
 					}
-				} else {
-					if (t->down && jiffies_since(t->down) > (HZ*5))
-						t->down = 0;
-					if (!t->down) {
-						unsigned long *newp = &t->new[0];
-						int count = t->count;
-						t->down = jiffies;
-						while (count--) {
-							unsigned long new = *newp++;
-							if (hijack_append_code(dev, new))
-								return; // buffer full
-							new |= (new > 0xf) ? 0x80000000 : 1;	// front panel is weird
-							if (count && hijack_append_code(dev, new))
-								return; // buffer full: this could be Very Bad
-						}
-					}
+					restore_flags(flags);
+					return;
 				}
-				return;
+			next:
+				//table = &t->new[t->count];
+				table += (sizeof(ir_translation_t) / sizeof(unsigned long) - 1) + t->count; // faster
 			}
-			//table = &t->new[t->count];
-			table += (sizeof(ir_translation_t) / sizeof(unsigned long) - 1) + t->count;
 		}
 	}
+	restore_flags(flags);
 	(void)hijack_append_code(dev, data);
 }
 

@@ -3,6 +3,7 @@
  *
  * Copyright (C) 1998 Deborah Wallach.
  * Twiddles  (C) 1999 Hugo Fiennes <hugo@empeg.com>
+ * Fixed lockups 2002 Mark Lord <mlord@pobox.com>
  *
  */
 
@@ -49,7 +50,7 @@ extern __inline__ int reset_timer (void)
 	   been passed by the time the OSMR was written to.
 	   hugo@empeg.com
         */
-	save_flags_clif(flags);
+	save_flags_clif(flags);       // was save_flags_cli()  --M.Lord
 	last_os_timer_match=OSMR0;
 
         /* Clear match on timer 0 */
@@ -198,7 +199,7 @@ static __inline__ unsigned long rtc_readdata(void)
 	return(b);
 }
 
-extern int set_rtc_time(unsigned long nowtime)
+extern void set_rtc_time(unsigned long nowtime)
 {
 	/* Send "write rtc" command to rtc */
 	rtc_sendcommand(0x80);

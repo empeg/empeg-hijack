@@ -508,7 +508,7 @@ fake_tuner (unsigned char c)
 static _INLINE_ void transmit_chars(struct async_struct *info, int *intr_done)
 {
 	int count;
-
+	
 	if (info->x_char) {
 		serial_outp(info, UART_TX, info->x_char);
 		info->state->icount.tx++;
@@ -1127,7 +1127,7 @@ static void rs_put_char(struct tty_struct *tty, unsigned char ch)
 		restore_flags(flags);
 		return;
 	}
-	
+
 	info->xmit_buf[info->xmit_head++] = ch;
 	info->xmit_head &= SERIAL_XMIT_SIZE-1;
 	info->xmit_cnt++;

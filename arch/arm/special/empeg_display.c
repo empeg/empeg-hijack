@@ -891,6 +891,7 @@ int display_sendcontrol_part2(int b)
 {
 	int bit;
 	unsigned long flags;
+
 	/* Send a byte to the display serially via control line (mk2 only) */
 	if (empeg_hardwarerevision()<6) return 0;
 
@@ -1366,7 +1367,6 @@ void __init empeg_display_init(void)
 void display_powerreturn_action(void)
 {
 	unsigned long flags;
-
 #if 0
 	save_flags_clif(flags);
 	/* LCD control register 0; flags & enable */

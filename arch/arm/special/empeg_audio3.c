@@ -861,10 +861,10 @@ static int empeg_audio_write(struct file *file,
                 dev->head++;
 		if (dev->head == AUDIO_NOOF_BUFFERS)
 			dev->head = 0;
+
 		buf = (unsigned short *)dev->buffers[thisbufind].data;
 		copy_from_user(dev->buffers[thisbufind].data,buffer,AUDIO_BUFFER_SIZE);
 		delay_one_channel(buf);
-
 		total += AUDIO_BUFFER_SIZE;
 		/* Oops, we missed this in previous versions */
 		buffer += AUDIO_BUFFER_SIZE;

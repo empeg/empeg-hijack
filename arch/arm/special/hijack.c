@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v291"
+#define HIJACK_VERSION	"v292"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -4813,7 +4813,7 @@ hijack_process_config_ini (char *buf, int invocation_count)
 		hijack_khttpd_port = 0;
 	}
 	up(&hijack_kftpd_startup_sem);	// wake-up kftpd now that we've parsed config.ini for port numbers
-	up(&hijack_khttpd_startup_sem);	// wake-up kftpd now that we've parsed config.ini for port numbers
+	up(&hijack_khttpd_startup_sem);	// wake-up khttpd now that we've parsed config.ini for port numbers
 #endif // CONFIG_NET_ETHERNET
 	set_drive_spindown_times();
 }

@@ -165,6 +165,7 @@ static struct file_operations mixer_fops =
 	release:	empeg_mixer_release
 };
 
+
 int __init empeg_mixer_init(void)
 {
 	mixer_dev *dev = &mixer_global;
@@ -217,6 +218,7 @@ int __init empeg_mixer_init(void)
 	
 	/* mixer_select_input(INPUT_AUX); */
 	dsp_write(Y_SrcScal, 0x400);
+
 	dev->input = SOUND_MASK_PCM;
 	dev->flags = 0;
 	empeg_mixer_setloudness(dev, 0);

@@ -24,6 +24,7 @@ extern int empeg_state_dirty;						// arch/arm/special/empeg_state.c
 extern void state_cleanse(void);					// arch/arm/special/empeg_state.c
 extern void hijack_voladj_intinit(int, int, int, int, int);		// arch/arm/special/empeg_audio3.c
 extern void hijack_beep (int pitch, int duration_msecs, int vol_percent);// arch/arm/special/empeg_audio3.c
+extern unsigned long jiffies_since(unsigned long past_jiffies);		// arch/arm/special/empeg_input.c
 
 extern int getbitset(void);						// arch/arm/special/empeg_power.c
 extern int get_current_mixer_source(void);				// arch/arm/special/empeg_mixer.c
@@ -88,11 +89,45 @@ static int blanker_timeout = 0;
 #define BLANKERFUZZ_BITS 3
 static int blankerfuzz_amount = 0;
 
-static int maxtemp_threshold = 0, hijack_on_dc_power = 0;
 #define MAXTEMP_OFFSET	29
 #define MAXTEMP_BITS	(8 - VOLADJ_BITS)
+static int maxtemp_threshold = 0;
 
-unsigned long jiffies_since(unsigned long past_jiffies);
+#define DCPOWER_BITS 1
+int hijack_force_dcpower = 0; // used by empeg_power.c
+
+#define TIMERACTION_BITS 1
+static int timer_timeout = 0, timer_started = 0, timer_action = 0;
+
+#define MENU_BITS	5
+#define MENU_MAX_ITEMS	(1<<MENU_BITS)
+typedef int  (menu_dispfunc_t)(int);
+typedef void (menu_movefunc_t)(int);
+typedef struct menu_item_s {
+	char			*label;
+	menu_dispfunc_t		*dispfunc;
+	menu_movefunc_t		*movefunc;
+	unsigned long		userdata;
+} menu_item_t;
+static volatile short menu_item = 0, menu_size = 0, menu_top = 0;
+
+// format of eight-byte flash memory savearea used for our hijack'd settings
+static struct sa_struct {
+	unsigned voladj_ac_power	: VOLADJ_BITS;
+	unsigned blanker_timeout	: BLANKER_BITS;
+	unsigned voladj_dc_power	: VOLADJ_BITS;
+	unsigned maxtemp_threshold	: MAXTEMP_BITS;
+	unsigned knobdata_index		: KNOBDATA_BITS;
+	unsigned blankerfuzz_amount	: BLANKERFUZZ_BITS;
+	unsigned timer_action		: TIMERACTION_BITS;
+	unsigned force_dcpower		: DCPOWER_BITS;
+	unsigned byte3_leftover		: (8 - (KNOBDATA_BITS + BLANKERFUZZ_BITS + TIMERACTION_BITS + DCPOWER_BITS));
+	unsigned byte4			: 8;
+	unsigned byte5			: 8;
+	unsigned byte6			: 8;
+	unsigned menu_item		: MENU_BITS;
+	unsigned byte7_leftover		: (8 - MENU_BITS);
+} hijack_savearea;
 
 static unsigned char hijack_displaybuf[EMPEG_SCREEN_ROWS][EMPEG_SCREEN_COLS/2];
 
@@ -626,6 +661,30 @@ vitals_display (int firsttime)
 	return NEED_REFRESH;
 }
 
+static void
+forcedc_move (int direction)
+{
+	hijack_savearea.force_dcpower = !hijack_savearea.force_dcpower;
+}
+
+static int
+forcedc_display (int firsttime)
+{
+	unsigned int rowcol;
+	int on_dc = (getbitset() & EMPEG_POWER_FLAG_DC);
+
+	if (!firsttime && !hijack_last_moved)
+		return NO_REFRESH;
+	hijack_last_moved = 0;
+	clear_hijack_displaybuf(COLOR0);
+	(void)draw_string(ROWCOL(0,0), "Force DC/Car Operation", COLOR2);
+	rowcol = draw_string(ROWCOL(1,0), "Current Mode: ", COLOR2);
+	(void)draw_string(rowcol, on_dc ? "DC/Car" : "AC/Home", COLOR2);
+	rowcol = draw_string(ROWCOL(3,0), "Next reboot: ", COLOR2);
+	(void)draw_string(rowcol, hijack_savearea.force_dcpower ? "Force DC/Car" : "[Normal]", COLOR3);
+	return NEED_REFRESH;
+}
+
 static unsigned int
 draw_hhmmss (unsigned int rowcol, unsigned int seconds, int color)
 {
@@ -646,8 +705,6 @@ draw_hhmmss (unsigned int rowcol, unsigned int seconds, int color)
 draw:	return draw_string(rowcol, buf, color);
 }
 
-#define TIMERACTION_BITS 1
-static int timer_timeout = 0, timer_started = 0, timer_action = 0;
 static void
 timer_move (int direction)
 {
@@ -682,9 +739,14 @@ timer_display (int firsttime)
 	unsigned int rowcol;
 	unsigned char *offmsg = "[Off]";
 
-	if (timer_timeout && jiffies_since(timer_started) >= (timer_timeout * HZ)) {
-		timer_timeout = 0;  // turn alarm off if it was on
-		offmsg = "[Cancelled]";
+	if (firsttime && timer_timeout) {  // was timer already running?
+		int remaining = (jiffies_since(timer_started) / HZ) - timer_timeout;
+		if (remaining > 0) {
+			timer_timeout = remaining;
+		} else {
+			timer_timeout = 0;  // turn alarm off if it was on
+			offmsg = "[Cancelled]";
+		}
 	}
 	timer_started = jiffies;
 	if (firsttime)
@@ -947,7 +1009,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v53 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v54 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1320,29 +1382,15 @@ showbutton_display (int firsttime)
 	}
 	return NO_REFRESH;
 }
-
-typedef int  (menu_dispfunc_t)(int);
-typedef void (menu_movefunc_t)(int);
-
-typedef struct menu_item_s {
-	char			*label;
-	menu_dispfunc_t		*dispfunc;
-	menu_movefunc_t		*movefunc;
-	unsigned long		userdata;
-} menu_item_t;
-
-static volatile short menu_item = 0, menu_size = 0, menu_top = 0;
-
-#define MENU_BITS	5
-#define MENU_MAX_ITEMS	(1<<MENU_BITS)
 static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 	{"Auto Volume Adjust",		voladj_display,		voladj_move,		0},
 	{"Break-Out Game",		game_display,		game_move,		0},
 	{"Button Codes Display",	showbutton_display,	NULL,			0},
 	{"Calculator",			calculator_display,	NULL,			0},
-	{"Countdown Timer Expiry",	timer_display,		timer_move,		0},
+	{"Countdown Timer Timeout",	timer_display,		timer_move,		0},
 	{"Countdown Timer Action",	timeraction_display,	timeraction_move,	0},
 	{"Font Display",		kfont_display,		NULL,			0},
+	{"Force DC/Car Mode",		forcedc_display,	forcedc_move,		0},
 	{"High Temperature Warning",	maxtemp_display,	maxtemp_move,		0},
 #ifdef EMPEG_KNOB_SUPPORTED
 	{"Knob Press Redefinition",	knobdata_display,	knobdata_move,		0},
@@ -1352,16 +1400,6 @@ static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 	{"Screen Blanker Sensitivity",	blankerfuzz_display,	blankerfuzz_move,	0},
 	{"Vital Signs",			vitals_display,		NULL,			0},
 	{NULL,				NULL,			NULL,			0},};
-
-static void
-menu_init (void)
-{
-	// menu_size, menu_item, and menu_top
-	for (menu_size = 0; menu_table[menu_size].label != NULL; ++menu_size); // Calculate initial menu size
-	while (menu_table[menu_item].label == NULL)
-		--menu_item;
-	menu_top = (menu_item ? menu_item : menu_size) - 1;
-}
 
 static void
 menu_move (int direction)
@@ -1564,8 +1602,12 @@ hijack_display (struct display_dev *dev, unsigned char *player_buf)
 				restore_flags(flags);
 				refresh = hijack_dispfunc(0);
 				save_flags_cli(flags);
-				if (ir_selected && hijack_dispfunc != userland_display && hijack_dispfunc != voladj_prefix)
-					activate_dispfunc(menu_display, menu_move);
+				if (ir_selected && hijack_dispfunc != userland_display && hijack_dispfunc != voladj_prefix) {
+					if (hijack_dispfunc == forcedc_display)
+						activate_dispfunc(reboot_display, NULL);
+					else
+						activate_dispfunc(menu_display, menu_move);
+				}
 			}
 			if (hijack_overlay_geom) {
 				hijack_do_overlay (player_buf, (unsigned char *)hijack_displaybuf, hijack_overlay_geom);
@@ -1835,28 +1877,21 @@ userland_extend_menu (char *label, unsigned long userdata)
 	return rc;
 }
 
-// format of eight-byte flash memory savearea used for our hijack'd settings
-static struct sa_struct {
-	unsigned voladj_ac_power	: VOLADJ_BITS;
-	unsigned blanker_timeout	: BLANKER_BITS;
-	unsigned voladj_dc_power	: VOLADJ_BITS;
-	unsigned maxtemp_threshold	: MAXTEMP_BITS;
-	unsigned knobdata_index		: KNOBDATA_BITS;
-	unsigned blankerfuzz_amount	: BLANKERFUZZ_BITS;
-	unsigned timer_action		: TIMERACTION_BITS;
-	unsigned byte3_leftover		: (8 - (KNOBDATA_BITS + BLANKERFUZZ_BITS + TIMERACTION_BITS));
-	unsigned byte4			: 8;
-	unsigned byte5			: 8;
-	unsigned byte6			: 8;
-	unsigned menu_item		: MENU_BITS;
-	unsigned byte7_leftover		: (8 - MENU_BITS);
-} hijack_savearea;
+static void
+menu_init (void)
+{
+	// menu_size, menu_item, and menu_top
+	for (menu_size = 0; menu_table[menu_size].label != NULL; ++menu_size); // Calculate initial menu size
+	while (menu_table[menu_item].label == NULL)
+		--menu_item;
+	menu_top = (menu_item ? menu_item : menu_size) - 1;
+}
 
 void	// invoked from empeg_state.c
 hijack_save_settings (unsigned char *buf)
 {
 	// save state
-	if (hijack_on_dc_power)
+	if (getbitset() & EMPEG_POWER_FLAG_DC)
 		hijack_savearea.voladj_dc_power	= hijack_voladj_enabled;
 	else
 		hijack_savearea.voladj_ac_power	= hijack_voladj_enabled;
@@ -1868,6 +1903,7 @@ hijack_save_settings (unsigned char *buf)
 	hijack_savearea.blankerfuzz_amount	= blankerfuzz_amount;
 	hijack_savearea.timer_action		= timer_action;
 	hijack_savearea.menu_item		= menu_item;
+	//hijack_savearea.force_dcpower is only updated from the menu!
 	memcpy(buf, &hijack_savearea, sizeof(hijack_savearea));
 }
 
@@ -1876,7 +1912,8 @@ hijack_restore_settings (const unsigned char *buf)
 {
 	// restore state
 	memcpy(&hijack_savearea, buf, sizeof(hijack_savearea));
-	if (hijack_on_dc_power)
+	hijack_force_dcpower		= hijack_savearea.force_dcpower;
+	if (getbitset() & EMPEG_POWER_FLAG_DC)
 		hijack_voladj_enabled	= hijack_savearea.voladj_dc_power;
 	else
 		hijack_voladj_enabled	= hijack_savearea.voladj_ac_power;
@@ -2104,7 +2141,7 @@ hijack_ioctl (struct inode *inode, struct file *filp, unsigned int cmd, unsigned
 		}
 		case EMPEG_HIJACK_SETGEOM:	// Set window overlay geometry
 		{
-			// Invocation:  rc = ioctl(fd, EMPEG_HIJACK_DISPCLEAR, (hijack_geom_t *)&geom);
+			// Invocation:  rc = ioctl(fd, EMPEG_HIJACK_SETGEOM, (hijack_geom_t *)&geom);
 			static hijack_geom_t geom; // static is okay here cuz only one app can be active at a time
 			if (copy_from_user(&geom, (hijack_geom_t *)arg, sizeof(geom)))
 				return -EFAULT;
@@ -2160,6 +2197,5 @@ void
 hijack_init (void)
 {
 	menu_init();
-	hijack_on_dc_power = getbitset() & EMPEG_POWER_FLAG_DC;
 	init_temperature();
 }

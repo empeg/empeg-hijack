@@ -193,7 +193,11 @@ int getbitset(void)
 		if (!(gplr&EMPEG_SERIALCTS)) bitset|=EMPEG_POWER_FLAG_LIGHTS; /* Dimmer sense - inverted */
 		if (dev->displaystate)	  bitset|=EMPEG_POWER_FLAG_DISPLAY;
 	}
-	
+{
+	extern int hijack_force_dcpower;
+	if (hijack_force_dcpower)
+		bitset|=EMPEG_POWER_FLAG_DC;
+}
 	if (saved_unstable == (bitset & unstable_bits)) {
 		 /* It hasn't changed, so keep the timeout up to date */
 		stable_time = jiffies;

@@ -226,7 +226,6 @@ int real_input_append_code(input_code data)  // invoked from hijack.c
 	int rc = 0;
 	input_code *new_wp;
 	unsigned long flags;
-
 	save_flags_cli(flags);
 	
 	new_wp = dev->buf_wp + 1;

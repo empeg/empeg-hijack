@@ -65,7 +65,7 @@ typedef struct ir_translation_s {
 } ir_translation_t;
 
 static ir_translation_t *ir_current_longpress = NULL;
-static unsigned long *ir_translation_table = NULL;
+static unsigned long *ir_translate_table = NULL;
 
 #define KNOBDATA_BITS 2
 #ifdef EMPEG_KNOB_SUPPORTED
@@ -1068,7 +1068,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v68 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v69 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1419,7 +1419,7 @@ reboot_display (int firsttime)
 static int
 showbutton_display (int firsttime)
 {
-	static unsigned long prev[4];
+	static unsigned long *saved_table, prev[4];
 	unsigned long flags;
 	hijack_buttondata_t data;
 	int i;
@@ -1429,11 +1429,15 @@ showbutton_display (int firsttime)
 		prev[0] = prev[1] = prev[2] = prev[3] = -1;
 		hijack_buttonlist = intercept_all_buttons;
 		hijack_initq(&hijack_userq);
+		// disable IR translations
+		saved_table = ir_translate_table;
+		ir_translate_table = NULL;
 	}
 	if (hijack_button_deq(&hijack_userq, &data, 0)) {
 		if (prev[0] == -1 && (data.button & 0x80000000)) {
 			// ignore it: left over from selecting us off the menu
 		} else if (data.button == prev[1] && ((data.button & 0x80000000) || data.button < 0x10)) {
+			ir_translate_table = saved_table;
 			hijack_buttonlist = NULL;
 			ir_selected = 1; // return to main menu
 		} else {
@@ -1445,7 +1449,7 @@ showbutton_display (int firsttime)
 	restore_flags(flags);
 	if (firsttime || prev[0] != -1) {
 		clear_hijack_displaybuf(COLOR0);
-		(void) draw_string(ROWCOL(0,0), "Button Codes Display", COLOR3);
+		(void) draw_string(ROWCOL(0,0), "Raw Button Codes Display", COLOR3);
 		(void) draw_string(ROWCOL(1,0), "Repeat any button to exit", COLOR2);
 		if (prev[3] != -1)
 			(void)draw_number(ROWCOL(2,4), prev[3], "%08X", COLOR2);
@@ -2228,9 +2232,9 @@ ir_setup_translations (unsigned char *buf)
 	int size;
 
 	save_flags_cli(flags);
-	if (ir_translation_table) {
-		kfree(ir_translation_table);
-		ir_translation_table = NULL;
+	if (ir_translate_table) {
+		kfree(ir_translate_table);
+		ir_translate_table = NULL;
 	}
 	restore_flags(flags);
 	size = ir_setup_translations2(buf, NULL);	// first pass to calculate table size
@@ -2242,7 +2246,7 @@ ir_setup_translations (unsigned char *buf)
 	} else {
 		(void)ir_setup_translations2(buf, table);// second pass actually saves the data
 		save_flags_cli(flags);
-		ir_translation_table = table;
+		ir_translate_table = table;
 		restore_flags(flags);
 	}
 }
@@ -2283,7 +2287,7 @@ void  // invoked from multiple places (time-sensitive code) in empeg_input.c
 input_append_code(void *ignored, unsigned long button)  // empeg_input.c
 {
 	static unsigned long ir_downkey = 0;
-	unsigned long flags, common_bits, old, released = 0, *table = ir_translation_table;
+	unsigned long flags, common_bits, old, released = 0, *table = ir_translate_table;
 
 	save_flags_cli(flags);
 	//printk("\n%8ld: IAC(%08lx)\n", jiffies, button);
@@ -2554,7 +2558,7 @@ get_file (const char *path, unsigned char **buffer)
 static void
 print_ir_translates (void)
 {
-	unsigned long *table = ir_translation_table;
+	unsigned long *table = ir_translate_table;
 
 	if (table) {
 		++table;	// skip over "common_bits" word

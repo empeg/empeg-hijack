@@ -360,7 +360,7 @@ static struct inode_operations kflash_ops = {
 	NULL,
 };
 
-static struct proc_dir_entry proc_bootlogos_entry = {
+static struct proc_dir_entry proc_flash5_entry = {
 	0,			/* inode (dynamic) */
 	15,			/* length of name */
 	"empeg_bootlogos",	/* name */
@@ -371,13 +371,40 @@ static struct proc_dir_entry proc_bootlogos_entry = {
 };
 
 #ifdef CONFIG_NET_ETHERNET
-static struct proc_dir_entry proc_kernel_entry = {
+static struct proc_dir_entry proc_flash6_entry = {
+	0,			/* inode (dynamic) */
+	11,			/* length of name */
+	"flash_0c000",		/* name */
+	S_IFBLK|S_IRUSR|S_IWUSR,/* mode */
+	1, 0, 0,		/* links, owner, group */
+	MKDEV(60,6),		/* size holds device number */
+	&kflash_ops,		/* inode operations */
+};
+static struct proc_dir_entry proc_flash7_entry = {
+	0,			/* inode (dynamic) */
+	11,			/* length of name */
+	"flash_0e000",		/* name */
+	S_IFBLK|S_IRUSR|S_IWUSR,/* mode */
+	1, 0, 0,		/* links, owner, group */
+	MKDEV(60,7),		/* size holds device number */
+	&kflash_ops,		/* inode operations */
+};
+static struct proc_dir_entry proc_flash8_entry = {
 	0,			/* inode (dynamic) */
 	12,			/* length of name */
 	"empeg_kernel",		/* name */
 	S_IFBLK|S_IRUSR|S_IWUSR,/* mode */
 	1, 0, 0,		/* links, owner, group */
 	MKDEV(60,8),		/* size holds device number */
+	&kflash_ops,		/* inode operations */
+};
+static struct proc_dir_entry proc_flash9_entry = {
+	0,			/* inode (dynamic) */
+	11,			/* length of name */
+	"flash_b0000",		/* name */
+	S_IFBLK|S_IRUSR|S_IWUSR,/* mode */
+	1, 0, 0,		/* links, owner, group */
+	MKDEV(60,9),		/* size holds device number */
 	&kflash_ops,		/* inode operations */
 };
 #endif
@@ -444,8 +471,11 @@ void hijack_notify_init (void)
 	proc_register(&proc_root, &proc_screen_png_entry);
 #endif // CONFIG_NET_ETHERNET
 	proc_register(&proc_root, &proc_notify_entry);
-	proc_register(&proc_root, &proc_bootlogos_entry);
 #ifdef CONFIG_NET_ETHERNET
-	proc_register(&proc_root, &proc_kernel_entry);
+	proc_register(&proc_root, &proc_flash9_entry);
+	proc_register(&proc_root, &proc_flash8_entry);
+	proc_register(&proc_root, &proc_flash7_entry);
+	proc_register(&proc_root, &proc_flash6_entry);
 #endif // CONFIG_NET_ETHERNET
+	proc_register(&proc_root, &proc_flash5_entry);
 }

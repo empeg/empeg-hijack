@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v178"
+#define HIJACK_VERSION	"v179"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -3900,7 +3900,7 @@ edit_config_ini (char *s, const char *lookfor)
 				if (*optend == '=')
 					++optend;
 				s = findchars(optend, "\r\n");
-				if (*s && *optname != ';') {
+				if (*s) {
 					// temporarily terminate the optname substring
 					char saved = *optend, *t = s;
 					*optend = '\0';

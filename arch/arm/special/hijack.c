@@ -975,7 +975,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v64 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v65 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1858,7 +1858,7 @@ get_hijack_option (unsigned char *s, const hijack_option_t *opt)
 {
 	int optlen = strlen(opt->name);
 
-	while ((s = skip_over(s, " ;\t\r\n")) && *s != '[') {
+	while ((s = skip_over(s, " \t\r\n")) && *s != '[') {
 		if (!strncmp(s, opt->name, optlen)) {
 			s += optlen;
 			if (match_char(&s, '=')) {
@@ -1901,33 +1901,33 @@ ir_setup_translations2 (unsigned char *buf, unsigned long *table)
 	if (!buf || !*buf || !(s = strstr(buf, header)) || !*s)
 		return 0;
 	s += sizeof(header) - 1;
-	while ((s = skip_over(s, " ;\t\r\n"))) {
+	while ((s = skip_over(s, " \t\r\n"))) {
 		int old, new;
 		ir_translation_t *t = NULL;
-		if (!get_number(&s, &old, 16, " \t=") || !match_char(&s, '='))
-			break;
-		if (table) {
-			t = (ir_translation_t *)&(table[index]);
-			t->old = old & 0x7fffffff;
-			t->down = 0;
-			t->count = 0;
-		} else {
-			printk("ir_translate: %08X ->", old);
+		if (get_number(&s, &old, 16, " \t=") && match_char(&s, '=')) {
+			if (table) {
+				t = (ir_translation_t *)&(table[index]);
+				t->old = old & 0x7fffffff;
+				t->down = 0;
+				t->count = 0;
+			} else {
+				printk("ir_translate: %08X ->", old);
+			}
+			index += (sizeof(ir_translation_t) - sizeof(unsigned long)) / sizeof(unsigned long);
+			do {
+				if (!get_number(&s, &new, 16, " ,;\t\r\n"))
+					goto done;
+				if (t)
+					t->new[t->count++] = new & 0x7fffffff;
+				else
+					printk(" %08X", new);
+				++index;
+			} while (match_char(&s, ','));
+			if (!t)
+				printk("\n");
 		}
-		index += (sizeof(ir_translation_t) - sizeof(unsigned long)) / sizeof(unsigned long);
-		do {
-			if (!get_number(&s, &new, 16, " ,;\t\r\n"))
-				goto done;
-			if (t)
-				t->new[t->count++] = new & 0x7fffffff;
-			else
-				printk(" %08X", new);
-			++index;
-		} while (match_char(&s, ','));
-		while (*s && *s != '\n')	// ignore end of line (comments)
+		while (*s && *s != '\n')	// skip to end-of-line
 			++s;
-		if (!t)
-			printk("\n");
 	}
 done:
 	if (!table)

@@ -926,7 +926,7 @@ int display_sendcontrol_part2(int b)
 
 	/* End of transmission, line low */
 	GPCR=EMPEG_DISPLAYCONTROL;
-	udelay(40);
+	udelay( (sendcontrol_busy == 1) ? 5 : 40 );
 
 	/* Reenable IRQs */
 	sendcontrol_busy = 0;

@@ -656,6 +656,7 @@ static inline void input_kenwood_interrupt(struct input_dev *dev, int level,
 				mfr = cpu_data >> 16;
 				data1 = (cpu_data >> 8) & 0xff;
 				data2 = cpu_data & 0xff;
+
 				/* We've finished getting data, confirm
 				   it passes the validity check */
 				if (data1 == ((__u8)(~data2))) {
@@ -866,7 +867,7 @@ static ssize_t input_read(struct file *filp, char *dest, size_t count,
 	int n;
 
 	struct wait_queue wait = { current, NULL };
-	
+
 	/* If we're nonblocking then return immediately if there's no data */
 	if ((filp->f_flags & O_NONBLOCK) && (dev->buf_rp == dev->buf_wp))
 		return -EAGAIN;

@@ -484,7 +484,7 @@ hijack_voladj_update_history (int multiplier)
 	restore_flags(flags);
 }
 
-const unsigned int hijack_voladj_parms[(1<<VOLADJ_BITS)-1][5] = { // Values as suggested by Richard Lovejoy
+static unsigned int hijack_voladj_parms[(1<<VOLADJ_BITS)-1][5] = { // Values as suggested by Richard Lovejoy
 	{0x1800,	 100,	0x1000,	25,	60},  // Low
 	{0x2000,	 409,	0x1000,	27,	70},  // Medium (Normal)
 	{0x2000,	3000,	0x0c00,	30,	80}}; // High
@@ -576,6 +576,7 @@ kfont_display (int firsttime)
 	return NEED_REFRESH;
 }
 
+static int hijack_temperature_correction = -4;
 static void
 init_temperature (void)
 {
@@ -623,14 +624,14 @@ read_temperature (void)
 	/* Correct for negative temperatures (sign extend) */
 	if (temp & 0x80)
 		temp = -(128 - (temp ^ 0x80));
-	return temp;
+	return temp + hijack_temperature_correction;
 }
 
 static unsigned int
-draw_temperature (unsigned int rowcol, int temp, int color)
+draw_temperature (unsigned int rowcol, int temp, int offset, int color)
 {
 	unsigned char buf[32];
-	sprintf(buf, "%dC/%dF ", temp, temp * 180 / 100 + 32);
+	sprintf(buf, "%+dC/%+dF ", temp, temp * 180 / 100 + offset);
 	return draw_string(rowcol, buf, color);
 }
 
@@ -647,7 +648,7 @@ vitals_display (int firsttime)
 	clear_hijack_displaybuf(COLOR0);
 	sprintf(buf, "Rev:%02d, Jiffies:%08lX\nTemperature: ", permset[0], jiffies);
 	rowcol = draw_string(ROWCOL(0,0), buf, COLOR2);
-	(void)draw_temperature(rowcol, read_temperature(), COLOR2);
+	(void)draw_temperature(rowcol, read_temperature(), 32, COLOR2);
 	si_meminfo(&si);
 	sprintf(buf, "Free: %lukB/%lukB\nLoadAvg: ", si.freeram/1024, si.totalram/1024);
 	rowcol = draw_string(ROWCOL(2,0), buf, COLOR2);
@@ -812,7 +813,7 @@ static int maxtemp_check_threshold (void)
 		int color = (elapsed & 1) ? COLOR3 : -COLOR3;
 		clear_hijack_displaybuf(color);
 		rowcol = draw_string(ROWCOL(2,18), " Too Hot: ", -color);
-		(void)draw_temperature(rowcol, read_temperature(), -color);
+		(void)draw_temperature(rowcol, read_temperature(), 32, -color);
 		return 1;
 	}
 	return 0;
@@ -974,7 +975,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v63 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v64 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1138,7 +1139,10 @@ game_display (int firsttime)
 static void
 maxtemp_move (int direction)
 {
-	maxtemp_threshold += direction;
+	if (maxtemp_threshold == 0 && direction > 0)
+		maxtemp_threshold = 55 - MAXTEMP_OFFSET;
+	else
+		maxtemp_threshold += direction;
 	if (maxtemp_threshold < 0 || direction == 0)
 		maxtemp_threshold = 0;
 	else if (maxtemp_threshold > ((1<<MAXTEMP_BITS)-1))
@@ -1157,14 +1161,16 @@ maxtemp_display (int firsttime)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
-	rowcol = draw_string(ROWCOL(0,0), "High Temperature Warning", COLOR2);
+	rowcol = draw_string(ROWCOL(0,0), "High Temperature Warning.", COLOR2);
 	rowcol = draw_string(ROWCOL(1,0), "Threshold: ", COLOR2);
 	if (maxtemp_threshold)
-		(void)draw_temperature(rowcol, maxtemp_threshold + MAXTEMP_OFFSET, COLOR3);
+		(void)draw_temperature(rowcol, maxtemp_threshold + MAXTEMP_OFFSET, 32, COLOR3);
 	else
 		rowcol = draw_string(rowcol, "[Off]", COLOR3);
-	rowcol = draw_string(ROWCOL(3,0), "Currently: ", COLOR2);
-	(void)draw_temperature(rowcol, read_temperature(), COLOR2);
+	rowcol = draw_string(ROWCOL(2,0), "Currently: ", COLOR2);
+	(void)draw_temperature(rowcol, read_temperature(), 32, COLOR2);
+	rowcol = draw_string(ROWCOL(3,0), "Corrected by ", COLOR2);
+	(void)draw_temperature(rowcol, hijack_temperature_correction, 0, COLOR2);
 	return NEED_REFRESH;
 }
 
@@ -1743,92 +1749,189 @@ typedef struct ir_translation_s {
 } ir_translation_t;
 
 static unsigned long *ir_translation_table = NULL;
-static int ir_debug_translations = 0;
 
 static const unsigned char hexchars[] = "0123456789abcdefABCDEF";
 
 static unsigned char *
-skipover (unsigned char *s, const unsigned char *skipchars)
+skip_over (unsigned char *s, const unsigned char *skipchars)
 {
-	while (s && *s && strchr(skipchars, *s))
-		++s;
+	if (s) {
+		while (*s && strchr(skipchars, *s))
+			++s;
+		if (!*s)
+			s = NULL;
+	}
 	return s;
 }
 
 static int
-get_8hex (unsigned char **src, unsigned long *dest)
+match_char (unsigned char **s, unsigned char c)
 {
-	int i;
-	unsigned long data = 0;
-	unsigned char *s = *src;
+	unsigned char *t;
 
-	for (i = 0; i < 8; ++i) {
-		unsigned char *c = strchr(hexchars, *s);
-		int d;
-		if (!c)
-			return 1;  // failure
-		d = c - hexchars;
+	t = *s = skip_over(*s, " \t");
+	if (*t == c) {
+		*s = skip_over(++t, " \t");
+		return 1;  // match succeeded
+	}
+	return 0; // match failed
+}
+
+typedef struct hijack_option_s {
+	const char	*name;
+	int		*target;
+	int		num_items;
+	int		min;
+	int		max;
+} hijack_option_t; 
+
+static const hijack_option_t hijack_option_table[] = {
+	{"temperature_correction",	&hijack_temperature_correction,	1,	-20,	+20},
+	{"voladj_low",			&hijack_voladj_parms[0][0],	5,	0,	0x7ffe},
+	{"voladj_medium",		&hijack_voladj_parms[1][0],	5,	0,	0x7ffe},
+	{"voladj_high",			&hijack_voladj_parms[2][0],	5,	0,	0x7ffe},
+	{NULL,NULL,0,0,0} // end-of-list
+	};
+
+static int
+get_number (unsigned char **src, int *target, unsigned int base, const char *nextchars)
+{
+	int digits;
+	unsigned int data = 0, prev;
+	unsigned char *s = *src, *cp, neg = 0;
+
+	if (!s)
+		return 0; // failure
+	if (base == 10 && *s == '-') {
+		++s;
+		neg = 1;
+	} else if (s[0] == '0' && s[1] == 'x') {
+		s += 2;
+		base = 16;
+	}
+	for (digits = 0; (cp = strchr(hexchars, *s)); ++digits) {
+		unsigned char d;
+		d = cp - hexchars;
 		if (d > 0xf)
 			d -= 6;
-		data = (data << 4) | d;
+		if (d >= base)
+			break;	// not a valid digit
+		prev = data;
+		data = (prev * base) + d;
+		if ((data / base) != prev)
+			break;	// numeric overflow
 		++s;
 	}
-	*dest = data;
+	if (!digits || (*s && !strchr(nextchars, *s)))
+		return 0; // failure
+	*target = neg ? -data : data;
 	*src = s;
-	return 0; // success
+	return 1; // success
+}
+
+static int
+get_option_vals (int syntax_only, unsigned char **s, const hijack_option_t *opt)
+{
+	int i, rc = 0;
+	if (syntax_only)
+		printk("hijack: %s =", opt->name);
+	for (i = 0; i < opt->num_items; ++i) {
+		int val;
+		if (!get_number(s, &val, 10, " ,;\t\r\n") || val < opt->min || val > opt->max)
+			break;	// failure
+		if (syntax_only)
+			printk(" %d", val);
+		else
+			opt->target[i] = val;
+		if ((i + 1) == opt->num_items)
+			rc = 1;	// success
+		else if (!match_char(s, ','))
+			break;	// failure
+	}
+	if (syntax_only)
+		printk("\n");
+	return rc; // success
+}
+
+static void
+get_hijack_option (unsigned char *s, const hijack_option_t *opt)
+{
+	int optlen = strlen(opt->name);
+
+	while ((s = skip_over(s, " ;\t\r\n")) && *s != '[') {
+		if (!strncmp(s, opt->name, optlen)) {
+			s += optlen;
+			if (match_char(&s, '=')) {
+				unsigned char *test = s;
+				if (get_option_vals(1, &test, opt)) {		// first pass to validate all args
+					(void)get_option_vals(0, &s, opt);	// second pass to actually save the data
+					return;  // done
+				}
+			}
+		}
+		while (*s && *s != '\n') // skip to end-of-line
+			++s;
+	}
+}
+
+static void
+get_hijack_options (unsigned char *buf)
+{
+	const char header[] = "[hijack]";
+	const hijack_option_t *opt = &hijack_option_table[0];
+
+	// find start of options
+	if (buf && *buf && (buf = strstr(buf, header)) && *buf) {
+		buf += sizeof(header) - 1;
+		while (opt->name) {
+			get_hijack_option(buf, opt);
+			++opt;
+		}
+	}
 }
 
 static int
 ir_setup_translations2 (unsigned char *buf, unsigned long *table)
 {
-	const char header[] = "[ir_translate]", debug[] = "debug";
+	const char header[] = "[ir_translate]";
 	unsigned char *s;
 	int index = 0;
 
 	// find start of translations
-	if (!buf || !*buf)
+	if (!buf || !*buf || !(s = strstr(buf, header)) || !*s)
 		return 0;
-	s = strstr(buf, header);
-	if (!s || !*s)
-		return 0;
-	if (ir_debug_translations)
-		printk("\n");
 	s += sizeof(header) - 1;
-	while ((s = skipover(s, " ;\t\r\n")) && *s && strchr(hexchars, *s)) {
-		unsigned long old, new;
+	while ((s = skip_over(s, " ;\t\r\n"))) {
+		int old, new;
 		ir_translation_t *t = NULL;
-		if (!strncmp(s, debug, sizeof(debug)-1)) {
-			ir_debug_translations = 1;
-			s += sizeof(debug)-1;
-			continue;
-		}
-		if (get_8hex(&s, &old) || *s != ':')
+		if (!get_number(&s, &old, 16, " \t=") || !match_char(&s, '='))
 			break;
 		if (table) {
 			t = (ir_translation_t *)&(table[index]);
 			t->old = old & 0x7fffffff;
 			t->down = 0;
 			t->count = 0;
-			if (ir_debug_translations)
-				printk("ir_translate: %08lX ->", old);
+		} else {
+			printk("ir_translate: %08X ->", old);
 		}
 		index += (sizeof(ir_translation_t) - sizeof(unsigned long)) / sizeof(unsigned long);
-		while (*s == ':' && *++s) {
-			if (get_8hex(&s, &new))
+		do {
+			if (!get_number(&s, &new, 16, " ,;\t\r\n"))
 				goto done;
-			if (t) {
+			if (t)
 				t->new[t->count++] = new & 0x7fffffff;
-				if (ir_debug_translations)
-					printk(" %08lX", new);
-			}
+			else
+				printk(" %08X", new);
 			++index;
-		}
-		while (*s && (*s != '\n' && *s != '\r'))	// ignore end of line (comments)
+		} while (match_char(&s, ','));
+		while (*s && *s != '\n')	// ignore end of line (comments)
 			++s;
-		if (t && ir_debug_translations)
+		if (!t)
 			printk("\n");
 	}
 done:
+	if (!table)
+		printk("\n");
 	if (index) {
 		if (table)
 			table[index] = -1;	// end of table marker
@@ -1845,7 +1948,6 @@ ir_setup_translations (unsigned char *buf)
 	int size;
 
 	save_flags(flags);
-	ir_debug_translations = 0;
 	if (ir_translation_table) {
 		kfree(ir_translation_table);
 		ir_translation_table = NULL;
@@ -2024,22 +2126,25 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 			if (old == t->old) {
 				if (released) {
 					if (t->down) {
+						unsigned long new = t->new[t->count-1];
+						new |= (new > 0xf) ? 0x80000000 : 1;	// front panel is weird
 						t->down = 0;
-						(void)hijack_append_code(dev, t->new[t->count-1]|0x80000000);
+						(void)hijack_append_code(dev, new);
 					}
 				} else {
 					if (t->down && jiffies_since(t->down) > (HZ*5))
 						t->down = 0;
 					if (!t->down) {
-						unsigned long *new = &t->new[0];
+						unsigned long *newp = &t->new[0];
 						int count = t->count;
 						t->down = jiffies;
 						while (count--) {
-							if (hijack_append_code(dev, *new))
+							unsigned long new = *newp++;
+							if (hijack_append_code(dev, new))
 								return; // buffer full
-							if (count && hijack_append_code(dev, *new|0x80000000))
+							new |= (new > 0xf) ? 0x80000000 : 1;	// front panel is weird
+							if (count && hijack_append_code(dev, new))
 								return; // buffer full: this could be Very Bad
-							++new;
 						}
 					}
 				}
@@ -2270,19 +2375,14 @@ void
 hijack_read_config_file (const char *path)
 {
 	unsigned char *buf = NULL;
-	int rc = get_file(path, &buf);
+	int rc;
+	printk("\n");
+	rc = get_file(path, &buf);
 	if (rc < 0) {
 		printk("hijack.c: open(%s) failed (errno=%d)\n", path, rc);
 	} else if (rc > 0 && buf && *buf) {
-
+		get_hijack_options(buf);
 		ir_setup_translations(buf);
-
-		// Code to parse config file goes here!
-		// Code to parse config file goes here!
-		// Code to parse config file goes here!
-		// Code to parse config file goes here!
-		// Code to parse config file goes here!
-
 	}
 	if (buf) kfree(buf);
 }

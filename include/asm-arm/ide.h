@@ -13,7 +13,6 @@
 
 #ifdef __KERNEL__
 
-
 #ifndef MAX_HWIFS
 #ifdef CONFIG_SA1100_EMPEG
 #ifdef CONFIG_NET_ETHERNET  // mk2 or later?

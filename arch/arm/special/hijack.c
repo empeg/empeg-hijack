@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v158"
+#define HIJACK_VERSION "v159"
 
 #include <linux/sched.h>
 #include <linux/kernel.h>
@@ -1773,7 +1773,6 @@ popup_activate (unsigned int button)
 {
 	button &= ~BUTTON_FLAGS;
 	current_popup = ir_next_match(NULL, button);
-printk("popup_activate(0%x): %p\n", button, current_popup);
 	if (current_popup != NULL) {
 		if (current_popup->old == IR_FAKE_POPUP0)
 		 	current_popup->popup_index = (current_popup->popup_index & ~7) | popup0_index;
@@ -3919,8 +3918,8 @@ fix_visuals (unsigned char *buf)
 				if ((buf[0x4c] & 0x20) == 0) {	// AM visuals visible ?
 					info_screenrow = 0;	// "chickenfoot"
 					restore_carvisuals = (buf[0x43] - 1) & 3;
-					buf[0x4c] = buf[0x4c] |  0x20;
 					buf[0x43] = buf[0x43] & ~0x03;
+					buf[0x4c] = buf[0x4c] |  0x20;
 				}
 				break;
 		}

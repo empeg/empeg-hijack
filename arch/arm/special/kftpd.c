@@ -947,7 +947,7 @@ get_duration (char *buf)
 
 	if (get_tag(buf, "duration=", duration, sizeof(duration))) {
 		if (get_number(&d, &secs, 10, NULL))
-			secs = (secs + 800) / 1000;	// convert msecs to secs
+			secs /= 1000;	// convert msecs to secs
 	}
 	return secs;
 }
@@ -1025,13 +1025,13 @@ send_tagfile (server_parms_t *parms, char *path, unsigned char *buf, int size, i
 								}
 							}
 							if (parms->format_tagfile == 1) {
+								const char *extra = (*type == 't') ? "0" : "1?.html";
 								size += sprintf(buf+size, "<TR><TD> <A HREF=\"%x?.m3u\"><em>Play</em></A> ", fid);
-								size += sprintf(buf+size, "<TD> <A HREF=\"%x?.html\">%s</A> <TD> %u:%02u <TD> %s "
-									"<TD> %s <TD> %s \r\n", fid, title, secs / 60, secs % 60,
-									type, artist, source);
+								size += sprintf(buf+size, "<TD> <A HREF=\"%x%s\">%s</A> <TD> %u:%02u <TD> %s "
+									"<TD> %s <TD> %s \r\n", fid>>4, extra, title, secs / 60, secs % 60, type, artist, source);
 							} else if (*type == 't') {
 								*pathtail = '\0';
-								size += sprintf(buf+size, "#EXTINF:%u,%s - %s\r\nhttp://%s%s%d\r\n",
+								size += sprintf(buf+size, "#EXTINF:%u,%s - %s\r\nhttp://%s%s%x\r\n",
 									secs, artist, title, parms->serverip, subpath, fid & ~1);
 							}
 							sent = ksock_rw(parms->datasock, buf, size, -1);

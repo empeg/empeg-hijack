@@ -1,0 +1,14 @@
+This is to be a man page for dumpreiserfs
+
+This program exists only to help to solve problem with reiserfsck.
+
+DUMPREISERFS
+It can be used to dump reiserfs partition out.
+Called with -p it will calculate how many bytes have to be transfereed.
+If -P specified, dumpreiserfs will write the partition metadata out to stdout n
+which should be caugth with |gzip -c > whatever.gz
+
+UNPACKREISERFS deals with the file created in the above way.
+zcat whatever.gz | unpackreiserfs /dev/wherever you want to reiserfs transferred to.
+
+5/10/99

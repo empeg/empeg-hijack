@@ -1,0 +1,10 @@
+README for arch/arm/special
+---------------------------
+
+This directory holds the entirely experimental console driver
+system, with the various drivers specific to the ARM ports within.
+This is not intended to be added to, but is merely a duplication
+of parts of drivers/char and arch/arm/drivers/char directories
+for work-in-progress until the drivers are fully integrated.
+
+Do not assume anything about the contents of this directory.

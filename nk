@@ -1,0 +1,24 @@
+#!/bin/sh
+
+OK=0
+if [ "$1" = "" ]; then
+    PROCESSORS=`grep -c processor /proc/cpuinfo`
+    echo Using $PROCESSORS processors
+
+    if make -j $PROCESSORS zImage; then
+	OK=1
+    fi
+else
+    OK=1
+fi
+
+if [ $OK = 1 ]; then
+/bin/echo -n "q\015" > /dev/ttyS0
+/bin/echo -n "exec shutdown -r now\015" > /dev/ttyS0
+echo
+echo 
+echo
+../boot/download arch/arm/boot/zImage 10000
+echo -n r > /dev/ttyS0
+minicom
+fi

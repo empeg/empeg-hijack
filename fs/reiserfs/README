@@ -1,0 +1,124 @@
+Reiserfs is a file system based on balanced tree algorithms, which is described at http://devlinux.com/namesys.
+
+Stop reading here.  Go there, then return.
+
+Send bug reports to reiser@idiom.com, or vs@namesys.botik.ru, or both.
+
+mkreiserfs and other utilities are in reiserfs/utils, or wherever your
+Linux provider put them.  Note that some of the utilities cannot be
+compiled without accessing to the balancing code which is in the kernel
+code, and relocating the utilities may require you to specify where that
+code can be found.
+
+Try turning REISERFS_CHECK in reiserfs_fs.h on or off if you want error
+checking or speed, respectively.  Real users, as opposed to folks who
+want to hack, will want it off.
+
+[LICENSE] ReiserFS is hereby licensed under the GNU General
+Public License version 2.  Please see the file "COPYING"
+which should have accompanied this software distribution for
+details of that license.
+
+Since that license (particularly 2.b) is necessarily vague in certain
+areas due to its generality, the following interpretations shall govern.
+Some may consider these terms to be a supplemental license to the GPL.
+You may include ReiserFS in a Linux kernel which you may then include
+with anything, and you may even include it with a Linux kernel with
+non-GPL'd kernel modules.  You may include it in any kernel which is
+wholly GPL'd including its kernel modules which you may then include
+with anything.  If you wish to use it for a kernel which you sell usage
+or copying licenses for, which is not listed above, then you must obtain
+an additional license.  If you wish to integrate it with any other
+software system which is not GPL'd, without integrating it into an
+operating system kernel, then you must obtain an additional license.
+This is an interpretation of what is and is not part of the software
+program falling under the GPL section 2.b., and is intended as a
+specification of (with a slight supplement to), not an exception to, the
+GPL as applied to this particular piece of software.
+
+Further licensing options are available for commercial and/or other
+interests directly from Hans Reiser:  reiser@idiom.com.  If you
+interpret the GPL as not allowing those additional licensing options,
+you read it wrongly, when carefully read you can see that those
+restrictions on additional terms do not apply to the owner of the
+copyright, and my interpretation of this shall govern for this license.
+
+[END LICENSE]
+
+I try to find ways to make money for those who contribute to this code.
+My success in such efforts cannot be guaranteed though:-).  You are
+encouraged to add to it.  If you ask me to include it in my standard
+distribution, and you don't request an exception to this (if you want
+the exception, talk to me about it, don't be shy), you give ownership of
+the copyright to me, and you consent to my marketing exceptions to the
+GPL.  If you want to market it as part of a system you sell, please
+contact me.  
+
+Hideous Commercial Pitch: Spread your development costs across other OS
+vendors.  Select from the best in the world, not the best in your
+building, by buying from third party OS component suppliers.  Leverage
+the software component development power of the internet.  Be the most
+aggressive in taking advantage of the commercial possibilities of
+decentralized internet development, and add value through your branded
+integration that you sell as an operating system.  Let your competitors
+be the ones to compete against the entire internet by themselves.  Be
+hip, get with the new economic trend, before your competitors do.  Send
+email to reiser@idiom.com.
+
+To understand the code, after reading the website, start reading the
+code by reading reiserfs_fs.h first.
+
+Hans Reiser was the project initiator, primary architect, source of all
+funding for the first 5.5 years, and one of the programmers.  He owns
+the copyright.
+
+Vladimir Saveljev was one of the programmers, and he worked long hours
+writing the cleanest code.  He always made the effort to be the best he
+could be, and to make his code the best that it could be.  What resulted
+was quite remarkable. I don't think that money can ever motivate someone
+to work the way he did, he is one of the most selfless men I know.
+
+Yura joined us near the end of our project, and helped with such things
+as integrating hashing back into the code, and benchmarking different
+pieces of code to help with tuning analysis.
+
+Anatoly Pinchuk is a former member of our team who worked closely with
+Vladimir throughout the project's development.  He wrote a quite
+substantial portion of the total code.  He realized that there was a
+space problem with packing tails of files for files larger than a node
+that start on a node aligned boundary (there are reasons to want to node
+align files), and he invented and implemented indirect items and
+unformatted nodes as the solution.
+
+Two other former employees were involved who won't be getting credit
+here because they tried to kill the project at the end of it, and almost
+succeeded (they cost me maybe two years).  They wanted to force me to
+sell it to the company they tried to start.  They get to keep the money
+they got from me, and that is it.  When their "VC" said that he could
+get a hundred researchers to swear in Russian Court that I had had
+nothing to do with the development of treefs, I changed the name to
+reiserfs and registered the copyright.
+
+Grigory Zaigralin was an extremely effective system administrator for our group.
+
+Igor Krasheninnikov was wonderful at hardware procurement, repair, and
+network installation.
+
+Jeremy Fitzhardinge wrote the teahash.c code, and he gives credit to a
+textbook he got the algorithm from in the code.  Note that his analysis
+of how we could use the hashing code in making 32 bit NFS cookies work
+was probably more important than the actual algorithm.  Colin Plumb also
+contributed to it.
+
+Chris Mason dived right into our code, and in just a few months produced
+the journaling code that dramatically increased the value of ReiserFS.
+He is just an amazing programmer.
+
+Igor Zagorovsky is writing much of the new item handler and extent code
+for our next major release.
+
+Ecila, MP3, and SuSE (in chronological order) made it possible for me to
+not have a day job anymore, and to dramatically increase our staffing.
+Ecila funded hypertext feature development, MP3 funded journaling, and
+SuSE funded core development.  SuSE has helped in much more than just
+funding....

@@ -1,0 +1,113 @@
+# Default tifon keymap. Uses no modifiers
+# Written by: Stefan Hellkvist, stefan@verkstad.net
+# Please observe that no matter what you set keycode 16 and 2 (shift and ctrl) 
+# to be, the behavior will always be the same since the position of the shift key
+# and the control key is hardwired into the current keyboard implementation and 
+# the action is always the same
+#
+# numerical mode 
+keycode 1 = n
+keycode 2 = Control
+keycode 3 = numbersign
+keycode 4 = nine
+keycode 5 = six
+keycode 6 = three
+keycode 7 = Right
+keycode 8 = Delete
+keycode 9 = Down
+keycode 10 = Up
+keycode 11 = zero
+keycode 12 = eight
+keycode 13 = five
+keycode 14 = two
+keycode 15 = Left
+keycode 16 = Shift
+keycode 17 = y
+keycode 18 = Escape
+keycode 19 = asterisk
+keycode 20 = seven
+keycode 21 = four
+keycode 22 = one
+#
+# alpha mode
+#
+keycode 23 = Return
+keycode 24 = comma
+keycode 25 = period
+keycode 26 = at
+keycode 27 = m
+keycode 28 = l
+keycode 29 = p
+keycode 30 = plus
+keycode 31 = minus
+keycode 32 = colon
+keycode 33 = slash
+keycode 34 = n
+keycode 35 = k
+keycode 36 = o
+keycode 37 = z
+keycode 38 = x
+keycode 39 = c
+keycode 40 = v
+keycode 41 = b
+keycode 42 = j
+keycode 43 = i
+keycode 44 = a
+keycode 45 = s
+keycode 46 = d
+keycode 47 = f
+keycode 48 = g
+keycode 49 = h
+keycode 50 = u
+keycode 51 = q
+keycode 52 = w
+keycode 53 = e
+keycode 54 = r
+keycode 55 = t
+keycode 56 = y
+keycode 57 = space
+#
+# mouse mode
+#
+keycode 58 = Tab
+keycode 59 = question
+keycode 60 = exclam
+keycode 61 = grave
+keycode 62 = quotedbl
+keycode 63 = apostrophe
+keycode 64 = aring 	Aring
+keycode 65 = equal
+keycode 66 = underscore
+keycode 67 = semicolon
+keycode 68 = backslash
+keycode 69 = Compose
+keycode 70 = udiaeresis Udiaeresis
+keycode 71 = odiaeresis	Odiaeresis
+keycode 72 = greater
+keycode 73 = bracketright
+keycode 74 = bracketleft
+keycode 75 = paragraph
+keycode 76 = asciicircum
+keycode 77 = asciitilde
+keycode 78 = adiaeresis Adiaeresis
+keycode 79 = bar
+keycode 80 = braceright
+keycode 81 = braceleft
+keycode 82 = sterling
+keycode 83 = dollar
+keycode 84 = Next
+keycode 85 = Prior
+keycode 86 = less
+keycode 87 = parenleft
+keycode 88 = parenright
+keycode 89 = percent
+keycode 90 = ampersand
+keycode 91 = Select
+keycode 92 = Find
+
+        
+
+
+
+
+

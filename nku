@@ -1,0 +1,37 @@
+#!/bin/sh
+
+OK=0
+if [ "$1" = "" ]; then
+    PROCESSORS=`grep -c processor /proc/cpuinfo`
+    echo Using $PROCESSORS processors
+
+    if make -j $PROCESSORS zImage; then
+	OK=1
+    fi
+else
+    OK=1
+fi
+
+if [ "$OK" = "1" ]; then
+    T=nku.$$
+
+    rm -rf $T
+    mkdir -p $T
+
+    cd $T
+
+    echo -n Making upgrade file...
+    echo Kernel Upgrade >> info
+    date >> version
+    ln -s ../arch/arm/boot/zImage kernel.rom
+    
+    cd ..
+    ../pump/makeupgrade $T kernel.upgrade
+    
+    ls -l kernel.upgrade
+    
+    rm -rf $T
+else
+    # We failed.
+    exit 1
+fi

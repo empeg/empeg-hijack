@@ -1,0 +1,20 @@
+Notes for new busmouse handling (mouse.c)
+-----------------------------------------
+
+adbmouse:
+		No testing yet, unknown if any code is correct.
+
+amigamouse:
+		Been available on internet, no bug reports.
+
+atarimouse:
+		Been available on internet, no bug reports.
+
+atixlmouse:
+		Been available on internet, no bug reports.
+
+macmouse:
+		Been available on internet, no bug reports.
+
+msbusmouse:
+		Been available on internet, no bug reports.

@@ -1,0 +1,50 @@
+.\" -*- nroff -*-
+.\" Copyright 1996, 1997 Hans Reiser.
+.\" 
+.TH MKREISERFS 8 "February 1999" "Reiserfs utilities"
+.SH NAME
+mkreiserfs \- create a Linux Reiserfs file system
+.SH SYNOPSIS
+.B mkreiserfs
+[
+.B \-b
+.I block-size-in-1k-units
+]
+.I device
+[
+.I size-in-blocks
+]
+.SH DESCRIPTION
+.B mkreiserfs
+utility is used to create a Linux Reiserfs file system on a device
+(usually a disk partition).
+.br
+.I device
+is the special file corresponding to the device (e.g /dev/hdXX for
+IDE disk partition or /dev/sdXX for SCSI disk partition).
+.br
+.I size-in-blocks
+is the number of blocks on the device.  If omitted, it will be
+determined by
+.B mkreiserfs
+automatically.
+.SH OPTIONS
+.TP
+.I -b block-size-in-1k-units
+Specify the size of blocks in 1024b units.  In current version
+.B mkreiserfs
+accepts only values of 1, 2, or 4 (i.e. size of blocks can be 1024b,
+2048b, or 4096b correspondingly)
+.\" .SH AUTHOR
+.\" This version of
+.\" .B mkreiserfs
+.\" has been written by Hans Reiser <reiser@idiom.com>.
+.SH BUGS
+Not known yet.
+Please, report bugs to Hans Reiser <reiser@idiom.com>.
+.SH AVAILABILITY
+.B mkreiserfs
+sources are available for anonymous ftp from namesys.botik.ru
+in /pub/linux+reiserfs/reiserfs-utils.tgz
+.SH SEE ALSO
+.BR reiserfsck (8)

@@ -1,0 +1,60 @@
+.\" -*- nroff -*-
+.\" Copyright 1996, 1997 Hans Reiser.
+.\" 
+.TH REISERFSCK 8 "February 1999" "Reiserfs utilities"
+.SH NAME
+reiserfsck \- check a Linux Reiserfs file system
+.SH SYNOPSIS
+.B reiserfsck
+[
+.B \-aprvfy
+]
+.I device
+.SH DESCRIPTION
+.B reiserfsck
+is used to perform a consistency check for the Linux Reiserfs file
+system.
+.TP
+.I device
+is the special file corresponding to the device (e.g /dev/hdXX for
+IDE disk partition or /dev/sdXX for SCSI disk partition).
+.SH OPTIONS
+.TP
+.I -a 
+This is provided for backwards compatibility only. It does the same
+thing as the
+.I -p
+option described below; it is recommended to use
+.I -p 
+option when possible.
+.TP
+.I -f
+Force checking even if the file system seems clean.
+.TP
+.I -p
+Automatically repair ("preen") the file system without any questions.
+.TP
+.I -r
+This option does nothing at all; it is provided only for backwards
+compatibility.
+.TP
+.I -v
+Verbose mode.
+.TP
+.I -y
+Assume an answer of ``yes'' to all questions; allows 
+.B reiserfsck
+to be used non-interactively.
+.\" .SH AUTHOR
+.\" This version of
+.\" .B reiserfsck
+.\" has been written by Hans Reiser <reiser@idiom.com>.
+.SH BUGS
+Not known yet.
+Please, report bugs to Hans Reiser <reiser@idiom.com>.
+.SH AVAILABILITY
+.B reiserfsck
+sources are available for anonymous ftp from namesys.botik.ru
+in /pub/linux+reiserfs/reiserfs-utils.tgz
+.SH SEE ALSO
+.BR mkreiserfs (8)

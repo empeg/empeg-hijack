@@ -1,0 +1,29 @@
+This contains programs to create (mkreiserfs) and repair
+(reiserfsck) reiserfs file system on a block device. 
+
+Building is simple:
+mkdir bin
+make
+
+After that you have binaries in bin/.
+
+You can `make install` to copy programs to /sbin
+and man pages to /usr/man/man8.
+
+
+NOTE: 	do not store data you take care about on reiserfs partition. It
+	is quite unstable yet.  Please, report any weird behaviour ro
+	reiser@idiom.com.
+
+
+FSCK NOTE:
+	DON'T USE FSCK ON JOURNALING REISERFS!!!  
+	Reiserfs stores data on disk in quite complicate manner. This leads
+	that reiserfsck does not look as a simple program. It should
+	still contain bugs. The perfect way to use it is to backup
+	target partition first (I am sorry, if you have desire, time and disk
+	space). If reiserfs will fail, it would be useful to use backuped copy
+	of the partition in the debugging.
+
+Thanks a lot
+

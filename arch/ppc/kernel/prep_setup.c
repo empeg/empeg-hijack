@@ -1,0 +1,867 @@
+/*
+ *  linux/arch/ppc/kernel/setup.c
+ *
+ *  Copyright (C) 1995  Linus Torvalds
+ *  Adapted from 'alpha' version by Gary Thomas
+ *  Modified by Cort Dougan (cort@cs.nmt.edu)
+ */
+
+/*
+ * bootup setup stuff..
+ */
+
+#include <linux/config.h>
+#include <linux/module.h>
+#include <linux/errno.h>
+#include <linux/sched.h>
+#include <linux/kernel.h>
+#include <linux/mm.h>
+#include <linux/stddef.h>
+#include <linux/unistd.h>
+#include <linux/ptrace.h>
+#include <linux/malloc.h>
+#include <linux/user.h>
+#include <linux/a.out.h>
+#include <linux/tty.h>
+#include <linux/major.h>
+#include <linux/interrupt.h>
+#include <linux/reboot.h>
+#include <linux/init.h>
+#include <linux/blk.h>
+#include <linux/ioport.h>
+#include <linux/console.h>
+#include <linux/timex.h>
+#include <linux/pci.h>
+#include <linux/openpic.h>
+
+#include <asm/mmu.h>
+#include <asm/processor.h>
+#include <asm/residual.h>
+#include <asm/io.h>
+#include <asm/pgtable.h>
+#include <asm/ide.h>
+#include <asm/cache.h>
+#include <asm/dma.h>
+#include <asm/machdep.h>
+#include <asm/mk48t59.h>
+#include <asm/prep_nvram.h>
+#include <asm/raven.h>
+
+
+#include "time.h"
+#include "local_irq.h"
+#include "i8259.h"
+#include "open_pic.h"
+
+#if defined(CONFIG_SOUND) || defined(CONFIG_SOUND_MODULE)
+#include <../drivers/sound/sound_config.h>
+#include <../drivers/sound/dev_table.h>
+#endif
+
+unsigned char ucSystemType;
+unsigned char ucBoardRev;
+unsigned char ucBoardRevMaj, ucBoardRevMin;
+
+extern unsigned long mc146818_get_rtc_time(void);
+extern int mc146818_set_rtc_time(unsigned long nowtime);
+extern unsigned long mk48t59_get_rtc_time(void);
+extern int mk48t59_set_rtc_time(unsigned long nowtime);
+
+extern unsigned char prep_nvram_read_val(int addr);
+extern void prep_nvram_write_val(int addr,
+				 unsigned char val);
+extern unsigned char rs_nvram_read_val(int addr);
+extern void rs_nvram_write_val(int addr,
+				 unsigned char val);
+
+extern int pckbd_setkeycode(unsigned int scancode, unsigned int keycode);
+extern int pckbd_getkeycode(unsigned int scancode);
+extern int pckbd_translate(unsigned char scancode, unsigned char *keycode,
+			   char raw_mode);
+extern char pckbd_unexpected_up(unsigned char keycode);
+extern void pckbd_leds(unsigned char leds);
+extern void pckbd_init_hw(void);
+extern unsigned char pckbd_sysrq_xlate[128];
+
+extern void prep_setup_pci_ptrs(void);
+extern char saved_command_line[256];
+
+int _prep_type;
+
+#define cached_21	(((char *)(ppc_cached_irq_mask))[3])
+#define cached_A1	(((char *)(ppc_cached_irq_mask))[2])
+
+/* for the mac fs */
+kdev_t boot_dev;
+/* used in nasty hack for sound - see prep_setup_arch() -- Cort */
+long ppc_cs4232_dma, ppc_cs4232_dma2;
+unsigned long empty_zero_page[1024];
+
+extern PTE *Hash, *Hash_end;
+extern unsigned long Hash_size, Hash_mask;
+extern int probingmem;
+extern unsigned long loops_per_sec;
+
+#ifdef CONFIG_BLK_DEV_RAM
+extern int rd_doload;		/* 1 = load ramdisk, 0 = don't load */
+extern int rd_prompt;		/* 1 = prompt for ramdisk, 0 = don't prompt */
+extern int rd_image_start;	/* starting block # of image */
+#endif
+#ifdef CONFIG_VGA_CONSOLE
+unsigned long vgacon_remap_base;
+#endif
+
+__prep
+int
+prep_get_cpuinfo(char *buffer)
+{
+	extern char *Motherboard_map_name;
+	int len, i;
+  
+#ifdef __SMP__
+#define CD(X)		(cpu_data[n].X)  
+#else
+#define CD(X) (X)
+#endif
+  
+	len = sprintf(buffer,"machine\t\t: PReP %s\n",Motherboard_map_name);
+
+	
+	switch ( _prep_type )
+	{
+	case _PREP_IBM:
+		if ((*(unsigned char *)0x8000080c) & (1<<6))
+			len += sprintf(buffer+len,"Upgrade CPU\n");
+		len += sprintf(buffer+len,"L2\t\t: ");
+		if ((*(unsigned char *)0x8000080c) & (1<<7))
+		{
+			len += sprintf(buffer+len,"not present\n");
+			goto no_l2;
+		}
+		len += sprintf(buffer+len,"%sKb,",
+			       (((*(unsigned char *)0x8000080d)>>2)&1)?"512":"256");
+		len += sprintf(buffer+len,"%sync\n",
+			       ((*(unsigned char *)0x8000080d)>>7) ? "":"a");
+		break;
+	case _PREP_Motorola:
+		len += sprintf(buffer+len,"L2\t\t: ");
+		switch(*((unsigned char *)CACHECRBA) & L2CACHE_MASK)
+		{
+		case L2CACHE_512KB:
+			len += sprintf(buffer+len,"512Kb");
+			break;
+		case L2CACHE_256KB:
+			len += sprintf(buffer+len,"256Kb");
+			break;
+		case L2CACHE_1MB:
+			len += sprintf(buffer+len,"1MB");
+			break;
+		case L2CACHE_NONE:
+			len += sprintf(buffer+len,"none\n");
+			goto no_l2;
+			break;
+		default:
+			len += sprintf(buffer+len, "%x\n",
+				       *((unsigned char *)CACHECRBA));
+		}
+		
+		len += sprintf(buffer+len,",parity %s",
+			       (*((unsigned char *)CACHECRBA) & L2CACHE_PARITY) ?
+			       "enabled" : "disabled");
+		
+		len += sprintf(buffer+len, " SRAM:");
+		
+		switch ( ((*((unsigned char *)CACHECRBA) & 0xf0) >> 4) & ~(0x3) )
+		{
+		case 1: len += sprintf(buffer+len,
+				       "synchronous,parity,flow-through\n");
+			break;
+		case 2: len += sprintf(buffer+len,"asynchronous,no parity\n");
+			break;
+		case 3: len += sprintf(buffer+len,"asynchronous,parity\n");
+			break;
+		default:len += sprintf(buffer+len,
+				       "synchronous,pipelined,no parity\n");
+			break;
+		}
+		break;
+	default:
+		break;
+	}
+	
+	
+no_l2:	
+	if ( res->ResidualLength == 0 )
+		return len;
+	
+	/* print info about SIMMs */
+	len += sprintf(buffer+len,"simms\t\t: ");
+	for ( i = 0 ; (res->ActualNumMemories) && (i < MAX_MEMS) ; i++ )
+	{
+		if ( res->Memories[i].SIMMSize != 0 )
+			len += sprintf(buffer+len,"%d:%ldM ",i,
+				       (res->Memories[i].SIMMSize > 1024) ?
+				       res->Memories[i].SIMMSize>>20 :
+				       res->Memories[i].SIMMSize);
+	}
+	len += sprintf(buffer+len,"\n");
+
+	return len;
+}
+
+__initfunc(void
+prep_setup_arch(unsigned long * memory_start_p, unsigned long * memory_end_p))
+{
+	extern char cmd_line[];
+	unsigned char reg;
+	unsigned char ucMothMemType;
+	unsigned char ucEquipPres1;
+
+	/* init to some ~sane value until calibrate_delay() runs */
+	loops_per_sec = 50000000;
+	
+	/* Set up floppy in PS/2 mode */
+	outb(0x09, SIO_CONFIG_RA);
+	reg = inb(SIO_CONFIG_RD);
+	reg = (reg & 0x3F) | 0x40;
+	outb(reg, SIO_CONFIG_RD);
+	outb(reg, SIO_CONFIG_RD);	/* Have to write twice to change! */
+
+	/*
+	 * We need to set up the NvRAM access routines early as prep_init
+	 * has yet to be called
+	 */
+	ppc_md.nvram_read_val = prep_nvram_read_val;
+	ppc_md.nvram_write_val = prep_nvram_write_val;
+
+	/* we should determine this according to what we find! -- Cort */
+	switch ( _prep_type )
+	{
+	case _PREP_IBM:
+		/* Enable L2.  Assume we don't need to flush -- Cort*/
+		*(unsigned char *)(0x8000081c) |= 3;
+		ROOT_DEV = to_kdev_t(0x0301); /* hda1 */
+		break;
+	case _PREP_Motorola:
+		/* Enable L2.  Assume we don't need to flush -- Cort*/
+		*(unsigned char *)(0x8000081c) |= 3;
+		ROOT_DEV = to_kdev_t(0x0801); /* sda1 */
+		break;
+	case _PREP_Radstone:
+		ROOT_DEV = to_kdev_t(0x0802); /* sda2 */
+
+		/*
+		 * Determine system type
+		 */
+		ucMothMemType=inb(0x866);
+		ucEquipPres1=inb(0x80c);
+
+		ucSystemType=((ucMothMemType&0x03)<<1) |
+			     ((ucEquipPres1&0x80)>>7);
+		ucSystemType^=7;
+
+		/*
+		 * Determine board revision for use by
+		 * rev. specific code
+		 */
+		ucBoardRev=inb(0x854);
+		ucBoardRevMaj=ucBoardRev>>5;
+		ucBoardRevMin=ucBoardRev&0x1f;
+
+		/*
+		 * Most Radstone boards have memory mapped NvRAM
+		 */
+		if((ucSystemType==RS_SYS_TYPE_PPC1) && (ucBoardRevMaj<5))
+		{
+			ppc_md.nvram_read_val = prep_nvram_read_val;
+			ppc_md.nvram_write_val = prep_nvram_write_val;
+		}
+		else
+		{
+			ppc_md.nvram_read_val = rs_nvram_read_val;
+			ppc_md.nvram_write_val = rs_nvram_write_val;
+		}
+		break;
+	}
+
+      /* Read in NVRAM data */ 
+      init_prep_nvram();
+       
+      /* if no bootargs, look in NVRAM */
+      if ( cmd_line[0] == '\0' ) {
+              char *bootargs;
+              bootargs = prep_nvram_get_var("bootargs");
+              if (bootargs != NULL) {
+                      strcpy(cmd_line, bootargs);
+
+                      /* again.. */
+                      strcpy(saved_command_line, cmd_line);
+              }
+      }
+
+	printk("Boot arguments: %s\n", cmd_line);
+	
+#ifdef CONFIG_SOUND_CS4232
+	/*
+	 * setup proper values for the cs4232 driver so we don't have
+	 * to recompile for the motorola or ibm workstations sound systems.
+	 * This is a really nasty hack, but unless we change the driver
+	 * it's the only way to support both addrs from one binary.
+	 * -- Cort
+	 */
+	if ( is_prep )
+	{
+		extern struct card_info snd_installed_cards[];
+		struct card_info  *snd_ptr;
+
+		for ( snd_ptr = snd_installed_cards; 
+		      snd_ptr < &snd_installed_cards[num_sound_cards];
+		      snd_ptr++ )
+		{
+			if ( snd_ptr->card_type == SNDCARD_CS4232 )
+			{
+				if ( _prep_type == _PREP_Motorola )
+				{
+					snd_ptr->config.io_base = 0x830;
+					snd_ptr->config.irq = 10;
+					snd_ptr->config.dma = ppc_cs4232_dma = 6;
+					snd_ptr->config.dma2 = ppc_cs4232_dma2 = 7;
+				}
+				if ( _prep_type == _PREP_IBM )
+				{
+					snd_ptr->config.io_base = 0x530;
+					snd_ptr->config.irq =  5;
+					snd_ptr->config.dma = ppc_cs4232_dma = 1;
+					/* this is wrong - but leave it for now */
+					snd_ptr->config.dma2 = ppc_cs4232_dma2 = 7;
+				}
+			}
+		}
+	}
+#endif /* CONFIG_SOUND_CS4232 */	
+
+	/*print_residual_device_info();*/
+        request_region(0x20,0x20,"pic1");
+	request_region(0xa0,0x20,"pic2");
+	request_region(0x00,0x20,"dma1");
+	request_region(0x40,0x20,"timer");
+	request_region(0x80,0x10,"dma page reg");
+	request_region(0xc0,0x20,"dma2");
+
+	raven_init();
+
+#ifdef CONFIG_VGA_CONSOLE
+	/* remap the VGA memory */
+	vgacon_remap_base = 0xf0000000;
+	/*vgacon_remap_base = ioremap(0xc0000000, 0xba000);*/
+        conswitchp = &vga_con;
+#endif
+}
+
+/*
+ * Determine the decrementer frequency from the residual data
+ * This allows for a faster boot as we do not need to calibrate the
+ * decrementer against another clock. This is important for embedded systems.
+ */
+__initfunc(void prep_res_calibrate_decr(void))
+{
+	int freq, divisor;
+
+	freq = res->VitalProductData.ProcessorBusHz;
+	divisor = 4;
+	printk("time_init: decrementer frequency = %d/%d\n", freq, divisor);
+	decrementer_count = freq / HZ / divisor;
+	count_period_num = divisor;
+	count_period_den = freq / 1000000;
+}
+
+/*
+ * Uses the on-board timer to calibrate the on-chip decrementer register
+ * for prep systems.  On the pmac the OF tells us what the frequency is
+ * but on prep we have to figure it out.
+ * -- Cort
+ */
+int calibrate_done = 0;
+volatile int *done_ptr = &calibrate_done;
+
+__initfunc(void
+prep_calibrate_decr_handler(int            irq,
+			    void           *dev,
+			    struct pt_regs *regs))
+{
+	unsigned long freq, divisor;
+	static unsigned long t1 = 0, t2 = 0;
+	
+	if ( !t1 )
+		t1 = get_dec();
+	else if (!t2)
+	{
+		t2 = get_dec();
+		t2 = t1-t2;  /* decr's in 1/HZ */
+		t2 = t2*HZ;  /* # decrs in 1s - thus in Hz */
+		freq = t2 * 60;	/* try to make freq/1e6 an integer */
+		divisor = 60;
+		printk("time_init: decrementer frequency = %lu/%lu (%luMHz)\n",
+		       freq, divisor,t2>>20);
+		decrementer_count = freq / HZ / divisor;
+		count_period_num = divisor;
+		count_period_den = freq / 1000000;
+		*done_ptr = 1;
+	}
+}
+
+__initfunc(void prep_calibrate_decr(void))
+{
+	unsigned long flags;
+
+
+	save_flags(flags);
+
+#define TIMER0_COUNT 0x40
+#define TIMER_CONTROL 0x43
+	/* set timer to periodic mode */
+	outb_p(0x34,TIMER_CONTROL);/* binary, mode 2, LSB/MSB, ch 0 */
+	/* set the clock to ~100 Hz */
+	outb_p(LATCH & 0xff , TIMER0_COUNT);	/* LSB */
+	outb(LATCH >> 8 , TIMER0_COUNT);	/* MSB */
+	
+	if (request_irq(0, prep_calibrate_decr_handler, 0, "timer", NULL) != 0)
+		panic("Could not allocate timer IRQ!");
+	__sti();
+	while ( ! *done_ptr ) /* nothing */; /* wait for calibrate */
+        restore_flags(flags);
+	free_irq( 0, NULL);
+}
+
+
+/* We use the NVRAM RTC to time a second to calibrate the decrementer. */
+__initfunc(void mk48t59_calibrate_decr(void))
+{
+	unsigned long freq, divisor;
+	unsigned long t1, t2;
+        unsigned char save_control;
+        long i;
+	unsigned char sec;
+ 
+		
+	/* Make sure the time is not stopped. */
+	save_control = ppc_md.nvram_read_val(MK48T59_RTC_CONTROLB);
+	
+	ppc_md.nvram_write_val(MK48T59_RTC_CONTROLA,
+			     (save_control & (~MK48T59_RTC_CB_STOP)));
+
+	/* Now make sure the read bit is off so the value will change. */
+	save_control = ppc_md.nvram_read_val(MK48T59_RTC_CONTROLA);
+	save_control &= ~MK48T59_RTC_CA_READ;
+	ppc_md.nvram_write_val(MK48T59_RTC_CONTROLA, save_control);
+
+
+	/* Read the seconds value to see when it changes. */
+	sec = ppc_md.nvram_read_val(MK48T59_RTC_SECONDS);
+	for (i = 0 ; i < 1000000 ; i++)	{ /* may take up to 1 second... */
+	   if (ppc_md.nvram_read_val(MK48T59_RTC_SECONDS) != sec) {
+	      break;
+	   }
+	}
+	t1 = get_dec();
+
+	sec = ppc_md.nvram_read_val(MK48T59_RTC_SECONDS);
+	for (i = 0 ; i < 1000000 ; i++)	{ /* Should take up 1 second... */
+	   if (ppc_md.nvram_read_val(MK48T59_RTC_SECONDS) != sec) {
+	      break;
+	   }
+	}
+
+	t2 = t1 - get_dec();
+
+	freq = t2 * 60;	/* try to make freq/1e6 an integer */
+	divisor = 60;
+	printk("time_init: decrementer frequency = %lu/%lu (%luMHz)\n",
+	       freq, divisor,t2>>20);
+	decrementer_count = freq / HZ / divisor;
+	count_period_num = divisor;
+	count_period_den = freq / 1000000;
+}
+
+void
+prep_restart(char *cmd)
+{
+        unsigned long i = 10000;
+
+
+        _disable_interrupts();
+
+        /* set exception prefix high - to the prom */
+        _nmask_and_or_msr(0, MSR_IP);
+
+        /* make sure bit 0 (reset) is a 0 */
+        outb( inb(0x92) & ~1L , 0x92 );
+        /* signal a reset to system control port A - soft reset */
+        outb( inb(0x92) | 1 , 0x92 );
+
+        while ( i != 0 ) i++;
+        panic("restart failed\n");
+}
+
+/*
+ * This function will restart a board regardless of port 92 functionality
+ */
+void
+prep_direct_restart(char *cmd)
+{
+	u32 jumpaddr=0xfff00100;
+	u32 defaultmsr=MSR_IP;
+
+	/*
+	 * This will ALWAYS work regardless of port 92
+	 * functionality
+	 */
+	_disable_interrupts();
+
+	__asm__ __volatile__("\n\
+	mtspr   26, %1  /* SRR0 */
+	mtspr   27, %0  /* SRR1 */
+	rfi"
+	:
+	: "r" (defaultmsr), "r" (jumpaddr));
+	/*
+	 * Not reached
+	 */
+}
+
+void
+prep_halt(void)
+{
+        unsigned long flags;
+	_disable_interrupts();
+	/* set exception prefix high - to the prom */
+	save_flags( flags );
+	restore_flags( flags|MSR_IP );
+	
+	/* make sure bit 0 (reset) is a 0 */
+	outb( inb(0x92) & ~1L , 0x92 );
+	/* signal a reset to system control port A - soft reset */
+	outb( inb(0x92) | 1 , 0x92 );
+                
+	while ( 1 ) ;
+	/*
+	 * Not reached
+	 */
+}
+
+void
+prep_power_off(void)
+{
+	prep_halt();
+}
+
+int prep_setup_residual(char *buffer)
+{
+        int len = 0;
+
+
+	/* PREP's without residual data will give incorrect values here */
+	len += sprintf(len+buffer, "clock\t\t: ");
+	if ( res->ResidualLength )
+		len += sprintf(len+buffer, "%ldMHz\n",
+		       (res->VitalProductData.ProcessorHz > 1024) ?
+		       res->VitalProductData.ProcessorHz>>20 :
+		       res->VitalProductData.ProcessorHz);
+	else
+		len += sprintf(len+buffer, "???\n");
+
+	return len;
+}
+
+u_int
+prep_irq_cannonicalize(u_int irq)
+{
+	if (irq == 2)
+	{
+		return 9;
+	}
+	else
+	{
+		return irq;
+	}
+}
+
+void                           
+prep_do_IRQ(struct pt_regs *regs, int cpu, int isfake)
+{
+        int irq;
+
+	if ( (irq = i8259_irq(0)) < 0 )
+	{
+		printk(KERN_DEBUG "Bogus interrupt from PC = %lx\n",
+		       regs->nip);
+		ppc_spurious_interrupts++;
+		return;
+	}
+        ppc_irq_dispatch_handler( regs, irq );
+}		
+
+__initfunc(void
+prep_init_IRQ(void))
+{
+	int i;
+
+	if (OpenPIC != NULL) {
+		for ( i = 16 ; i < 36 ; i++ )
+			irq_desc[i].ctl = &open_pic;
+		openpic_init(1);
+	}
+	
+        for ( i = 0 ; i < 16  ; i++ )
+                irq_desc[i].ctl = &i8259_pic;
+        i8259_init();
+#ifdef __SMP__
+	request_irq(openpic_to_irq(OPENPIC_VEC_SPURIOUS), openpic_ipi_action,
+		    0, "IPI0", 0);
+#endif /* __SMP__ */
+}
+
+#if defined(CONFIG_BLK_DEV_IDE) || defined(CONFIG_BLK_DEV_IDE_MODULE)
+/*
+ * IDE stuff.
+ */
+void
+prep_ide_insw(ide_ioreg_t port, void *buf, int ns)
+{
+	ide_insw(((port)+(_IO_BASE)), buf, ns);
+}
+
+void
+prep_ide_outsw(ide_ioreg_t port, void *buf, int ns)
+{
+	ide_outsw(((port)+_IO_BASE), buf, ns);
+}
+
+int
+prep_ide_default_irq(ide_ioreg_t base)
+{
+	if ( _prep_type == _PREP_IBM ) {
+		switch (base) {
+			case 0x1f0: return 13;
+			case 0x170: return 13;
+			case 0x1e8: return 11;
+			case 0x168: return 10;
+			default:
+				return 0;
+		}
+	} else {
+		switch (base) {
+			case 0x1f0: return 14;
+			case 0x170: return 14;
+			case 0x1e8: return 15;
+			case 0x168: return 15;
+			default:
+				return 0;
+		}
+	}
+}
+
+ide_ioreg_t
+prep_ide_default_io_base(int index)
+{
+	switch (index) {
+		case 0: return 0x1f0;
+		case 1: return 0x170;
+		case 2: return 0x1e8;
+		case 3: return 0x168;
+		default:
+                        return 0;
+	}
+}
+
+int
+prep_ide_check_region(ide_ioreg_t from, unsigned int extent)
+{
+        return check_region(from, extent);
+}
+
+void
+prep_ide_request_region(ide_ioreg_t from,
+			unsigned int extent,
+			const char *name)
+{
+        request_region(from, extent, name);
+}
+
+void
+prep_ide_release_region(ide_ioreg_t from,
+			unsigned int extent)
+{
+        release_region(from, extent);
+}
+
+void
+prep_ide_fix_driveid(struct hd_driveid *id)
+{
+	ppc_generic_ide_fix_driveid(id);
+}
+
+__initfunc(void
+prep_ide_init_hwif_ports (ide_ioreg_t *p, ide_ioreg_t base, int *irq))
+{
+	ide_ioreg_t port = base;
+	int i = 8;
+
+	while (i--)
+		*p++ = port++;
+	*p++ = base + 0x206;
+	if (irq != NULL)
+		*irq = 0;
+}
+#endif
+
+unsigned long *MotSave_SmpIar;
+unsigned char *MotSave_CpusState[2];
+
+__initfunc(void
+prep_init(unsigned long r3, unsigned long r4, unsigned long r5,
+	  unsigned long r6, unsigned long r7))
+{
+	RESIDUAL *old_res = (RESIDUAL *)(r3 + KERNELBASE);
+
+	/* make a copy of residual data */
+	if ( r3 )
+	{
+		memcpy((void *)res,(void *)(r3+KERNELBASE),
+		       sizeof(RESIDUAL));
+
+		/* These need to be saved for the Motorola Prep 
+		 * MVME4600 and Dual MTX boards.
+		 */
+		MotSave_SmpIar = &old_res->VitalProductData.SmpIar;
+		MotSave_CpusState[0] = &old_res->Cpus[0].CpuState;
+		MotSave_CpusState[1] = &old_res->Cpus[1].CpuState;
+	}
+
+	isa_io_base = PREP_ISA_IO_BASE;
+	isa_mem_base = PREP_ISA_MEM_BASE;
+	pci_dram_offset = PREP_PCI_DRAM_OFFSET;
+	ISA_DMA_THRESHOLD = 0x00ffffff;
+	DMA_MODE_READ = 0x44;
+	DMA_MODE_WRITE = 0x48;
+
+	/* figure out what kind of prep workstation we are */
+	if ( res->ResidualLength != 0 )
+	{
+		if ( !strncmp(res->VitalProductData.PrintableModel,"IBM",3) )
+			_prep_type = _PREP_IBM;
+                else if (!strncmp(res->VitalProductData.PrintableModel,
+                                  "Radstone",8))
+                {
+                        extern char *Motherboard_map_name;
+
+                        _prep_type = _PREP_Radstone;
+                        Motherboard_map_name=
+                                res->VitalProductData.PrintableModel;
+                }
+		else
+			_prep_type = _PREP_Motorola;
+	}
+	else /* assume motorola if no residual (netboot?) */
+	{
+		_prep_type = _PREP_Motorola;
+	}
+
+	prep_setup_pci_ptrs();
+
+#ifdef CONFIG_BLK_DEV_INITRD
+	/* take care of initrd if we have one */
+	if ( r4 )
+	{
+		initrd_start = r4 + KERNELBASE;
+		initrd_end = r5 + KERNELBASE;
+	}
+#endif /* CONFIG_BLK_DEV_INITRD */
+
+	/* take care of cmd line */
+	if ( r6  && (((char *) r6) != '\0'))
+	{
+		*(char *)(r7+KERNELBASE) = 0;
+		strcpy(cmd_line, (char *)(r6+KERNELBASE));
+	}
+
+	ppc_md.setup_arch     = prep_setup_arch;
+	ppc_md.setup_residual = prep_setup_residual;
+	ppc_md.get_cpuinfo    = prep_get_cpuinfo;
+	ppc_md.irq_cannonicalize = prep_irq_cannonicalize;
+	ppc_md.init_IRQ       = prep_init_IRQ;
+	/* this gets changed later on if we have an OpenPIC -- Cort */
+	ppc_md.do_IRQ         = prep_do_IRQ;
+	ppc_md.init           = NULL;
+
+	ppc_md.restart        = prep_restart;
+	ppc_md.power_off      = prep_power_off;
+	ppc_md.halt           = prep_halt;
+
+	ppc_md.time_init      = NULL;
+	if (_prep_type == _PREP_Radstone) {
+		/*
+		 * We require a direct restart as port 92 does not work on
+		 * all Radstone boards
+		 */
+		ppc_md.restart        = prep_direct_restart;
+		/*
+		 * The RTC device used varies according to board type
+		 */
+		if(((ucSystemType==RS_SYS_TYPE_PPC1) && (ucBoardRevMaj>=5)) ||
+		   (ucSystemType==RS_SYS_TYPE_PPC1a))
+		{
+			ppc_md.set_rtc_time   = mk48t59_set_rtc_time;
+			ppc_md.get_rtc_time   = mk48t59_get_rtc_time;
+		}
+		else
+		{
+			ppc_md.set_rtc_time   = mc146818_set_rtc_time;
+			ppc_md.get_rtc_time   = mc146818_get_rtc_time;
+		}
+		/*
+		 * Determine the decrementer rate from the residual data
+		 */
+		ppc_md.calibrate_decr = prep_res_calibrate_decr;
+	}
+	else if (_prep_type == _PREP_IBM) {
+		ppc_md.set_rtc_time   = mc146818_set_rtc_time;
+		ppc_md.get_rtc_time   = mc146818_get_rtc_time;
+		ppc_md.calibrate_decr = prep_calibrate_decr;
+	}
+	else {
+		ppc_md.set_rtc_time   = mk48t59_set_rtc_time;
+		ppc_md.get_rtc_time   = mk48t59_get_rtc_time;
+		ppc_md.calibrate_decr = mk48t59_calibrate_decr;
+	}
+
+#if defined(CONFIG_BLK_DEV_IDE) || defined(CONFIG_BLK_DEV_IDE_MODULE)
+        ppc_ide_md.insw = prep_ide_insw;
+        ppc_ide_md.outsw = prep_ide_outsw;
+        ppc_ide_md.default_irq = prep_ide_default_irq;
+        ppc_ide_md.default_io_base = prep_ide_default_io_base;
+        ppc_ide_md.check_region = prep_ide_check_region;
+        ppc_ide_md.request_region = prep_ide_request_region;
+        ppc_ide_md.release_region = prep_ide_release_region;
+        ppc_ide_md.fix_driveid = prep_ide_fix_driveid;
+        ppc_ide_md.ide_init_hwif = prep_ide_init_hwif_ports;
+#endif		
+        ppc_ide_md.io_base = _IO_BASE;
+
+#ifdef CONFIG_VT
+	ppc_md.kbd_setkeycode    = pckbd_setkeycode;
+	ppc_md.kbd_getkeycode    = pckbd_getkeycode;
+	ppc_md.kbd_translate     = pckbd_translate;
+	ppc_md.kbd_unexpected_up = pckbd_unexpected_up;
+	ppc_md.kbd_leds          = pckbd_leds;
+	ppc_md.kbd_init_hw       = pckbd_init_hw;
+#ifdef CONFIG_MAGIC_SYSRQ
+	ppc_md.kbd_sysrq_xlate	 = pckbd_sysrq_xlate;
+#endif
+#endif
+}
+
+#ifdef CONFIG_SOUND_MODULE
+EXPORT_SYMBOL(ppc_cs4232_dma);
+EXPORT_SYMBOL(ppc_cs4232_dma2);
+#endif

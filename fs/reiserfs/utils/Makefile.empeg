@@ -1,0 +1,4 @@
+# Cross-compile utils for ARM Linux
+
+all:
+	$(MAKE) CC="arm-linux-gcc -fsigned-char" AR=arm-linux-ar

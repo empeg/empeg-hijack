@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v317"
+#define HIJACK_VERSION	"v318"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -1817,7 +1817,7 @@ volumelock_display (int firsttime)
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
 	(void)draw_string(ROWCOL(0,0), volumelock_menu_label, PROMPTCOLOR);
-	rowcol = draw_string(ROWCOL(2,0), "On boot use ", PROMPTCOLOR);
+	rowcol = draw_string(ROWCOL(2,0), empeg_on_dc_power ? "DC: Use: " : "AC: Use: ", PROMPTCOLOR);
 	rowcol = draw_string_spaced(rowcol, last_current[hijack_volumelock_enabled], ENTRYCOLOR);
 	(void)   draw_string(rowcol, " volume", PROMPTCOLOR);
 	return NEED_REFRESH;

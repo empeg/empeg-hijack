@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v325"
+#define HIJACK_VERSION	"v326"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -90,7 +90,8 @@ static void (*hijack_movefunc)(int) = NULL;
 #define BUTTON_FLAGS_UI		(0x20000000)	// send only if player menus are idle
 #define BUTTON_FLAGS_NOTUI	(0x10000000)	// send only if player menus are active
 #define BUTTON_FLAGS_ALTNAME	(0x08000000)	// use alternate name when displaying
-#define BUTTON_FLAGS_UISTATE	(BUTTON_FLAGS_UI|BUTTON_FLAGS_NOTUI)
+#define BUTTON_FLAGS_SOUNDADJ	(0x04000000)	// send only if player Vol/Loud/Bal/Fader popup is active
+#define BUTTON_FLAGS_UISTATE	(BUTTON_FLAGS_UI|BUTTON_FLAGS_NOTUI|BUTTON_FLAGS_SOUNDADJ)
 #define BUTTON_FLAGS		(0xff000000)
 #define IR_NULL_BUTTON		(~BUTTON_FLAGS)
 
@@ -3233,12 +3234,15 @@ check_if_menu_is_active (const unsigned char *buf)
 	return 0;
 }
 
-static int
-player_ui_is_active (const unsigned char *buf)
+static unsigned int
+get_player_ui_flags (const unsigned char *buf)
 {
-	// Use screen-scraping to see if the player user-interface is active:
-	return	(check_if_menu_is_active(buf)   || check_if_soundadj_is_active(buf) ||
-		 check_if_search_is_active(buf) || check_if_equalizer_is_active(buf));
+	// Use screen-scraping to see if elements of the player user-interface are active:
+	if (check_if_soundadj_is_active(buf))
+		return BUTTON_FLAGS_SOUNDADJ|BUTTON_FLAGS_UI;
+	if (check_if_menu_is_active(buf) || check_if_search_is_active(buf) || check_if_equalizer_is_active(buf))
+		return BUTTON_FLAGS_UI;
+	return BUTTON_FLAGS_NOTUI;
 }
 
 static void
@@ -3432,17 +3436,16 @@ quicktimer_display (int firsttime)
 // Note that ALL front-panel buttons send codes ONCE on press, but twice on RELEASE.
 //
 static void
-hijack_handle_button (unsigned int button, unsigned long delay, int any_ui_is_active, const unsigned char *player_buf)
+hijack_handle_button (unsigned int button, unsigned long delay, unsigned int player_ui_flags, const unsigned char *player_buf)
 {
 	unsigned long old_releasewait;
 	int hijacked = 0;
 
-	//printk("HB: %08lx.%ld,ui=%d\n", button, delay, any_ui_is_active);
+	//printk("HB: %08lx.%ld,ui=%d\n", button, delay, player_ui_flags);
 	// filter out buttons that rely on UI or NONUI states
-	if ((button & BUTTON_FLAGS_UISTATE)) {
-		if (!(button & (any_ui_is_active ? BUTTON_FLAGS_UI : BUTTON_FLAGS_NOTUI)))
-			return;		// this button doesn't exist in this state
-	}
+	if ((button & BUTTON_FLAGS_UISTATE) && !(button & player_ui_flags))
+		return;		// this button doesn't exist in this state
+	player_ui_flags &= ~BUTTON_FLAGS_NOTUI;	// convert to a boolean
 	if (button & BUTTON_FLAGS_SHIFT)
 		ir_shifted = !ir_shifted;
 	button &= ~(BUTTON_FLAGS_UISTATE|BUTTON_FLAGS_SHIFT);
@@ -3537,7 +3540,7 @@ hijack_handle_button (unsigned int button, unsigned long delay, int any_ui_is_ac
 					ir_knob_busy = 0;
 				} else if (hijack_status == HIJACK_IDLE) {
 					int index = knobdata_index;
-					if (any_ui_is_active)
+					if (player_ui_flags)
 						index = 0;
 					hijacked = 1;
 					if (jiffies_since(ir_knob_down) < (HZ/2)) {	// short press?
@@ -3578,7 +3581,7 @@ hijack_handle_button (unsigned int button, unsigned long delay, int any_ui_is_ac
 			break;
 #endif // EMPEG_KNOB_SUPPORTED
 		case IR_RIO_MENU_PRESSED:
-			if (!any_ui_is_active) {
+			if (!player_ui_flags) {
 				hijacked = 1; // hijack it and later send it with the release
 				ir_menu_down = JIFFIES();
 			}
@@ -3588,7 +3591,7 @@ hijack_handle_button (unsigned int button, unsigned long delay, int any_ui_is_ac
 		case IR_RIO_MENU_RELEASED:
 			if (hijack_status != HIJACK_IDLE) {
 				hijacked = 1;
-			} else if (ir_menu_down && !any_ui_is_active) {
+			} else if (ir_menu_down && !player_ui_flags) {
 				hijack_enq_button(&hijack_playerq, IR_RIO_MENU_PRESSED, 0);
 				ir_releasewait = IR_NULL_BUTTON;
 			}
@@ -3665,13 +3668,13 @@ hijack_handle_buttons (const char *player_buf)
 {
 	hijack_buttondata_t	data;
 	unsigned long		flags;
-	int			any_ui_is_active = 1;
+	unsigned int		player_ui_flags = BUTTON_FLAGS_UI;
 
 	if (hijack_status == HIJACK_IDLE)
-		any_ui_is_active = player_ui_is_active(player_buf);
+		player_ui_flags = get_player_ui_flags(player_buf);
 	while (hijack_button_deq(&hijack_inputq, &data, 1)) {
 		save_flags_cli(flags);
-		hijack_handle_button(data.button, data.delay, any_ui_is_active, player_buf);
+		hijack_handle_button(data.button, data.delay, player_ui_flags, player_buf);
 		restore_flags(flags);
 	}
 }
@@ -4268,6 +4271,7 @@ ir_setup_translations2 (unsigned char *s, unsigned int *table, int *had_errors)
 								case 'S': new |= BUTTON_FLAGS_SHIFT;		break;
 								case 'U': new |= BUTTON_FLAGS_UI;		break;
 								case 'N': new |= BUTTON_FLAGS_NOTUI;		break;
+								case 'V': new |= BUTTON_FLAGS_SOUNDADJ;		break;
 								default: goto save_new;
 							}
 						} while (1);

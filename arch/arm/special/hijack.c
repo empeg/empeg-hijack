@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v379"
+#define HIJACK_VERSION	"v380"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -4961,7 +4961,7 @@ edit_config_ini (char *s, const char *lookfor)
 			// "insert in place" the new option
 			s += strlen(lookfor);
 			optname = skipchars(s, " \t");
-			if (optname != s) {		// verify whitespace after "lookfor"
+			if (optname != s || *s == ';'){ // verify whitespace after "lookfor"
 				s = optname;
 				*(s - 1) = '\n';	// "uncomment" the portion after "lookfor"
 				++count;		// keep track of how many substitutions we do

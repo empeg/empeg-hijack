@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v270"
+#define HIJACK_VERSION	"v271"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -2910,6 +2910,7 @@ menu_display (int firsttime)
 }
 
 static int userland_display_updated = 0;
+static unsigned long userland_menudata = 0;
 
 // this is invoked when a userland menu item is active
 static int
@@ -2919,6 +2920,7 @@ userland_display (int firsttime)
 	int rc = NO_REFRESH;
 
 	if (firsttime) {
+		userland_menudata = menu_table[menu_item].userdata;
 		clear_hijack_displaybuf(COLOR0);
 		userland_display_updated = 1;
 	}
@@ -3795,8 +3797,11 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 		hijack_standby_time = 0;
 	else if (!hijack_standby_time)
 		hijack_standby_time = jiffies ? jiffies : -1;
-	else if (jiffies_since(hijack_standby_time) >= (60*60*13))
+	else if (jiffies_since(hijack_standby_time) >= (60*60*13)) {
 		hijack_standby_time = jiffies - (60*60);	// prevent wraparound from eventually screwing us
+		if (hijack_standby_time == 0)
+			hijack_standby_time = -1;
+	}
 
 	// Manage buttonLED illumination level
 	if (!hijack_standby_time || jiffies_since(hijack_standby_time) > (HZ/4))
@@ -4251,8 +4256,7 @@ hijack_release_menu_and_buttons (void)
 
 	save_flags_cli(flags);
 	if (hijack_dispfunc == userland_display) {
-		unsigned long menu_pid = menu_table[menu_item].userdata >> 8;
-		if (menu_pid == current->pid) {
+		if ((userland_menudata & ~0xff) == (current->pid << 8)) {
 			hijack_dispfunc = NULL;		// restart the main menu
 			if (hijack_buttonlist) {	// release any buttons we had grabbed
 				kfree(hijack_buttonlist);
@@ -4278,7 +4282,6 @@ hijack_wait_on_menu (char *argv[])
 				return -EFAULT;
 		} while (label[size++] && size < sizeof(label));
 		label[size-1] = '\0';
-
 		save_flags_cli(flags);
 		index = userland_extend_menu(label, (current->pid << 8) | i);
 		restore_flags(flags);
@@ -4291,12 +4294,12 @@ hijack_wait_on_menu (char *argv[])
 	add_wait_queue(&hijack_menu_waitq, &wait);
 	while (1) {
 		current->state = TASK_INTERRUPTIBLE;
-		menudata = menu_table[menu_item].userdata;
 		if (signal_pending(current)) {
 			rc = -EINTR;
 			break;
 		}
-		if (hijack_dispfunc == userland_display && (menudata >> 8) == current->pid) {
+		menudata = menu_table[menu_item].userdata;
+		if (hijack_dispfunc == userland_display && (menudata & ~0xff) == (current->pid << 8)) {
 			rc = menudata & 0xff;
 			break;
 		}
@@ -4306,12 +4309,12 @@ hijack_wait_on_menu (char *argv[])
 	}
 	current->state = TASK_RUNNING;
 	remove_wait_queue(&hijack_menu_waitq, &wait);
+	if (rc < 0)
+		hijack_release_menu_and_buttons();
 	for (i = num_items - 1; i >= 0; --i)	{	// disable our menu items until next time
 		menu_item_t *item = &menu_table[indexes[i]];
 		remove_menu_entry(item->label);
 	}
-	if (rc < 0)
-		hijack_release_menu_and_buttons();
 	restore_flags(flags);
 	return rc;
 }

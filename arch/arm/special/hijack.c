@@ -1635,7 +1635,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,18), " Enhancements.v101 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,18), " Enhancements.v102 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -2316,18 +2316,6 @@ static int hijack_check_buttonlist (unsigned long data, unsigned long delay)
 	return 0;
 }
 
-static void
-quicktimer_move (int direction)
-{
-	if (direction == 0) {
-		timer_timeout = 0;
-	} else {
-		timer_timeout += (direction * hijack_quicktimer_minutes * (60*HZ));
-		if (timer_timeout < 0)
-			timer_timeout = 0;
-	}
-}
-
 static int
 quicktimer_display (int firsttime)
 {
@@ -2338,6 +2326,13 @@ quicktimer_display (int firsttime)
 
 	timer_started = jiffies;
 	if (firsttime) {
+		if (timer_timeout) {
+	    		timer_timeout = 0;
+			hijack_beep(60, 100, 30);
+		} else {
+	    		timer_timeout = hijack_quicktimer_minutes * (60*HZ);
+			hijack_beep(80, 100, 30);
+		}
 		ir_numeric_input = &timer_timeout;
 		clear_hijack_displaybuf(COLOR0);
 		draw_frame((unsigned char *)hijack_displaybuf, &geom);
@@ -2515,15 +2510,7 @@ hijack_handle_button(unsigned long data, unsigned long delay)
 		case IR_KW_4_RELEASED:
 		case IR_RIO_4_RELEASED:
 			if (hijack_status == HIJACK_INACTIVE && !player_menu_is_active) {
-				if (timer_timeout) {
-	    				timer_timeout = 0;
-					hijack_beep(60, 100, 30);
-					activate_dispfunc(quicktimer_display, quicktimer_move);
-				} else {
-	    				timer_timeout = hijack_quicktimer_minutes * (60*HZ);
-					hijack_beep(80, 100, 30);
-					activate_dispfunc(quicktimer_display, quicktimer_move);
-				}
+				activate_dispfunc(quicktimer_display, timer_move);
 				hijacked = 1;
 			}
 			break;    	    

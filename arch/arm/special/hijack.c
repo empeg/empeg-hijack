@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v282"
+#define HIJACK_VERSION	"v283"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -72,7 +72,6 @@ static unsigned int PROMPTCOLOR = COLOR3, ENTRYCOLOR = -COLOR3;
 #define HIJACK_ACTIVE_PENDING	2
 #define HIJACK_ACTIVE		3
 
-static unsigned int homevisuals_enabled = 0;	// fixme: temporary workaround
 static unsigned int carvisuals_enabled = 0;
 static unsigned int restore_visuals = 0;
 static unsigned int info_screenrow = 0;
@@ -633,7 +632,6 @@ static const char delaytime_menu_label	[] = "Left/Right Time Alignment";
 static const char homework_menu_label	[] = "Home/Work Location";
 static const char knobdata_menu_label	[] = "Knob Press Redefinition";
 static const char carvisuals_menu_label	[] = "Restore DC/Car Visuals";
-static const char homevisuals_menu_label[] = "Restore Visuals (v2beta11)";	// fixme: workaround for beta11
 static const char blankerfuzz_menu_label[] = "Screen Blanker Sensitivity";
 static const char blanker_menu_label	[] = "Screen Blanker Timeout";
 static const char blankeraction_menu_label[] = "Screen Blanker Action";
@@ -1430,10 +1428,10 @@ draw_temperature (unsigned int rowcol, int temp, int offset, int color)
 	return draw_string_spaced(rowcol, buf, color);
 }
 
-static unsigned int savearea_display_offset = 0;
 static unsigned char *last_savearea;
 static unsigned long *last_updated  = NULL;
 unsigned char **empeg_state_writebuf;	// initialized in empeg_state.c
+static unsigned int savearea_display_offset = 0;
 
 static void
 savearea_move (int direction)
@@ -1505,56 +1503,6 @@ get_drive_size (int hwif, int unit)
 	unsigned long capacity = idedisk_capacity(&(ide_hwifs[hwif].drives[unit]));
 	return (capacity + (1000 * 1000)) / (2 * 1000 * 1000);
 }
-
-#ifdef DEBUG_JIFFIES
-static int
-debug_display (int firsttime)
-{
-	unsigned char buf[64];
-	unsigned long flags;
-	unsigned int rowcol = ROWCOL(0,0), bug = 0, ossr, oscr, osmr0;
-	static unsigned long counter, oldjiffies;
-
-	if (firsttime)
-		counter = oldjiffies = 0;
-	else if ((++counter & 0xf))
-		return NO_REFRESH;
-	clear_hijack_displaybuf(COLOR0);
-	save_flags_clif(flags);
-		ossr  = OSSR;
-		oscr  = OSCR;
-		osmr0 = OSMR0;
-	restore_flags(flags);
-	if (osmr0 > oscr) {
-		if ((unsigned)(osmr0 - oscr) > (unsigned)(2 * 36864))
-			bug = 1;
-	} else {
-		if ((unsigned)(oscr - osmr0) < (unsigned)(-(2 * 36864)))
-			bug = 2;
-	}
-	if (bug) {
-		if (jiffies == oldjiffies)
-			bug = -bug;
-		sprintf(buf, "BUG-%d", bug);
-		rowcol = draw_string_spaced(rowcol, buf, -COLOR3);
-	}
-	sprintf(buf, "cr:%08x,mr:%08x", oscr, osmr0);
-	if ((counter & 511) == 0)
-		printk("DEBUG: bug=%d, jiffies=%lu, cr:%08x, mr:%08x, sr:%08x\n", bug, jiffies, oscr, osmr0, ossr);
-	draw_string(ROWCOL(2,0), buf, PROMPTCOLOR);
-
-	sprintf(buf, "sr:%08x", ossr);
-	draw_string(ROWCOL(3,0), buf, PROMPTCOLOR);
-	oldjiffies = jiffies;
-	sprintf(buf, "Jiffies=%lu",  oldjiffies);
-	rowcol = draw_string(rowcol, buf, PROMPTCOLOR);
-	clear_text_row(rowcol, EMPEG_SCREEN_COLS, 0);
-
-	sprintf(buf, "in=%u, ti=%u",  kstat_irqs(4), kstat_irqs(26));
-	draw_string(ROWCOL(1,0), buf, PROMPTCOLOR);
-	return NEED_REFRESH;
-}
-#endif // DEBUG_JIFFIES
 
 static int
 vitals_display (int firsttime)
@@ -1821,28 +1769,6 @@ carvisuals_display (int firsttime)
 	(void)draw_string(ROWCOL(0,0), carvisuals_menu_label, PROMPTCOLOR);
 	rowcol = draw_string(ROWCOL(2,20), "Restore: ", PROMPTCOLOR);
 	(void)   draw_string_spaced(rowcol, disabled_enabled[carvisuals_enabled], ENTRYCOLOR);
-	return NEED_REFRESH;
-}
-
-static void	// fixme: temporary workaround
-homevisuals_move (int direction)
-{
-	homevisuals_enabled = !homevisuals_enabled;
-	empeg_state_dirty = 1;
-}
-
-static int	// fixme: temporary workaround
-homevisuals_display (int firsttime)
-{
-	unsigned int rowcol;
-
-	if (!firsttime && !hijack_last_moved)
-		return NO_REFRESH;
-	hijack_last_moved = 0;
-	clear_hijack_displaybuf(COLOR0);
-	(void)draw_string(ROWCOL(0,0), homevisuals_menu_label, PROMPTCOLOR);
-	rowcol = draw_string(ROWCOL(2,20), "Restore: ", PROMPTCOLOR);
-	(void)   draw_string_spaced(rowcol, disabled_enabled[homevisuals_enabled], ENTRYCOLOR);
 	return NEED_REFRESH;
 }
 
@@ -2888,7 +2814,6 @@ static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 	{ delaytime_menu_label,		delaytime_display,	delaytime_move,		0},
 	{"Reboot Machine",		reboot_display,		NULL,			0},
 	{ carvisuals_menu_label,	carvisuals_display,	carvisuals_move,	0},
-	{ homevisuals_menu_label,	homevisuals_display,	homevisuals_move,	0},
 	{ blankeraction_menu_label,	blankeraction_display,	blankeraction_move,	0},
 	{ blankerfuzz_menu_label,	blankerfuzz_display,	blankerfuzz_move,	0},
 	{ blanker_menu_label,		blanker_display,	blanker_move,		0},
@@ -2896,9 +2821,6 @@ static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 	{ bass_menu_label,		bass_display,		tone_move,		0},
 	{ treble_menu_label,		treble_display,		tone_move,		0},
 	{"Vital Signs",			vitals_display,		NULL,			0},
-#ifdef DEBUG_JIFFIES
-	{"Vitals v2beta11",		debug_display,		NULL,			0},
-#endif // DEBUG_JIFFIES
 	{NULL,				NULL,			NULL,			0},};
 
 static void
@@ -3806,24 +3728,6 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 		done_temp = 1;
 		init_temperature(1);
 	}
-#ifdef DEBUG_JIFFIES
-	// fixme: lockup detection logic
-	static unsigned long oldjiffies = 0, oldcount = 0;
-	if (jiffies == oldjiffies) {
-		if (++oldcount >= 5) {
-			activate_dispfunc(debug_display, NULL);
-			preselect_menu_item(timer_display);
-		}
-	} else {
-		if (oldcount >= 5) {
-			char buf[32];
-			sprintf(buf, "unstuck jiffies %lu", oldcount);
-			show_message(buf, 20*60*HZ);
-		}
-		oldjiffies = jiffies;
-		oldcount = 0;
-	}
-#endif // DEBUG_JIFFIES
 
 	// Send initial button sequences, if any
 	if (!sent_initial_buttons && hijack_player_started) {
@@ -4840,45 +4744,10 @@ hijack_process_config_ini (char *buf, int invocation_count)
 	set_drive_spindown_times();
 }
 
-// fixme: temporary work-around for v2.00-beta11 bug
-static void
-hijack_fix_homevisuals (unsigned char *buf)
-{
-	if (!empeg_on_dc_power && homevisuals_enabled) {
-		switch ((buf[0x0e] & 7) - 1) { // examine the saved mixer source
-			case INPUT_RADIO_FM: // Tuner FM
-				if ((buf[0x4c] & 0x10) && !(buf[0x42] & 3)) {	// Radio visual supposed to be active?
-					info_screenrow = 8;
-					restore_visuals = 1;			// comes up as OFF: restore it
-				}
-				break;
-			case INPUT_PCM: // Main/Mp3
-				if ((buf[0x4c] & 0x04)) {			// Track, Seek, or Now&Next ?
-					info_screenrow = 8;
-					restore_visuals = (buf[0x4d] & 7) - 2; // comes up as TRANSIENT: restore it
-				}
-				break;
-			case INPUT_AUX: // Aux
-				if ((buf[0x4c] & 0x08) && (buf[0x41] & 3) == 2) {	// Aux visual supposed to be active?
-					info_screenrow = 8;
-					restore_visuals = 1;			// comes up as TRANSIENT: restore it
-				}
-				break;
-			case INPUT_RADIO_AM: // Tuner AM
-				if ((buf[0x4c] & 0x20) && !(buf[0x43] & 3)) {	// Radio visual supposed to be active?
-					info_screenrow = 8;
-					restore_visuals = 1;			// comes up as OFF: restore it
-				}
-				break;
-		}
-	}
-}
-
 void
 hijack_fix_visuals (unsigned char *buf)
 {
 	restore_visuals = 0;
-	hijack_fix_homevisuals(buf);	// fixme: temporary work-around for v2.00-beta11 bug
 	if (empeg_on_dc_power && carvisuals_enabled) {
 		switch ((buf[0x0e] & 7) - 1) { // examine the saved mixer source
 			case INPUT_RADIO_FM: // Tuner FM
@@ -4966,7 +4835,7 @@ typedef struct hijack_savearea_s {
 
 	unsigned timer_action		: TIMERACTION_BITS;	// 1 bit
 	unsigned homework		: 1;			// 1 bits
-	unsigned fix_beta11		: 1;			// 1 bits
+	unsigned spare9			: 1;			// 1 bits
 	unsigned blanker_action		: 1;			// 1 bits
 	unsigned spare4			: 4;			// 4 bits
 
@@ -5015,7 +4884,6 @@ hijack_save_settings (unsigned char *buf)
 	savearea.timer_action		= timer_action;
 	savearea.blanker_action		= blanker_action;
 	savearea.homework		= hijack_homework;
-	savearea.fix_beta11		= homevisuals_enabled;
 	savearea.layout_version		= SAVEAREA_LAYOUT;
 	memcpy(buf+HIJACK_SAVEAREA_OFFSET, &savearea, sizeof(savearea));
 }
@@ -5072,7 +4940,6 @@ hijack_restore_settings (char *buf)
 	timer_action			= savearea.timer_action;
 	blanker_action			= savearea.blanker_action;
 	hijack_homework			= savearea.homework;
-	homevisuals_enabled		= savearea.fix_beta11;
 
 	return failed;
 }

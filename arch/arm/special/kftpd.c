@@ -1839,6 +1839,8 @@ hijack_do_command (void *sparms, char *buf)
 //		  --> output should be captured (pipe) and returned using a set of "200" responses
 //	SIZE	returns status 213 and bytecount of the specified file
 //
+// FIXME: add "MDTM 20030130102437 <pathname>"   (Modify Date TiMe command, used by ncftp)
+//
 /////////////////////////////////////////////////////////////////////////////////
 
 static response_t simple_response_table[] = {
@@ -1852,8 +1854,9 @@ static response_t simple_response_table[] = {
 	{226,	"\0\xf2" "ABOR"},
 	{226,	"\0ABOR"},
 	{221,	"\0QUIT"},
-	{214,	"\0HELP"},
+	{216,	"\0HELP SITE"},
 	{216,	"\0SITE HELP"},
+	{214,	"\0HELP"},
 	{200,	"\0"},
 	{0,	NULL}};
 

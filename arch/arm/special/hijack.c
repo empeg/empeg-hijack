@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v341"
+#define HIJACK_VERSION	"v342"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -28,7 +28,6 @@ extern void input_wakeup_waiters(void);					// arch/arm/special/empeg_input.c
 extern int display_sendcontrol_part1(int);				// arch/arm/special/empeg_display.c
 extern int display_sendcontrol_part2(int);				// arch/arm/special/empeg_display.c
 extern int remount_drives (int writeable);				// arch/arm/special/notify.c
-extern int sys_newfstat(int, struct stat *);
 extern int sys_sync(void);						// fs/buffer.c
 extern int get_loadavg(char * buffer);					// fs/proc/array.c
 extern void machine_restart(void *);					// arch/arm/kernel/process.c
@@ -2332,6 +2331,7 @@ knobdata_display (int firsttime)
 #endif // EMPEG_KNOB_SUPPORTED
 
 static unsigned long knobseek_lasttime;
+static int player_v3alpha3 = 0;
 
 static void
 knobseek_move_visuals (int direction)
@@ -2339,6 +2339,13 @@ knobseek_move_visuals (int direction)
 	unsigned int button;
 
 	button = (direction > 0) ? IR_RIO_VISUAL_PRESSED : IR_PREV_VISUAL_PRESSED;
+#ifdef EMPEG_KNOB_SUPPORTED
+	if (button == IR_PREV_VISUAL_PRESSED && player_v3alpha3) {
+		if ((empeg_tuner_present || hijack_fake_tuner) && get_current_mixer_source() != IR_FLAGS_TUNER) {
+			button = IR_KSNEXT_PRESSED;
+		}
+	}
+#endif
 	hijack_enq_button_pair(button);
 }
 
@@ -4995,6 +5002,24 @@ set_fan_control (void)
 
 #endif // CONFIG_EMPEG_I2C_FAN_CONTROL
 
+#ifdef EMPEG_KNOB_SUPPORTED
+static void check_for_v3alpha3 (void)
+{
+	extern int sys_newstat(char *, struct stat *);
+	mm_segment_t old_fs = get_fs();
+	struct stat st;
+
+	set_fs(KERNEL_DS);
+	if (0 == sys_newstat("/empeg/bin/player", &st)) {
+		//printk("player_size = %lu\n", st.st_size);
+		if (st.st_size == 1900988) {
+			player_v3alpha3 = 1;
+		}
+	}
+	set_fs(old_fs);
+}
+#endif
+
 // invoked from fs/read_write.c on each read of config.ini at each player start-up.
 // This could be invoked multiple times if file is too large for a single read,
 // so we use the f_pos parameter to ensure we only do setup stuff once.
@@ -5003,6 +5028,9 @@ hijack_process_config_ini (char *buf, off_t f_pos)
 {
 	static const char *acdc_labels[2] = {";@AC", ";@DC"};
 
+#ifdef EMPEG_KNOB_SUPPORTED
+	check_for_v3alpha3();
+#endif
 	(void) edit_config_ini(buf, acdc_labels    [empeg_on_dc_power]);
 	(void) edit_config_ini(buf, homework_labels[hijack_homework]);
 	if (f_pos)		// exit if not first read of this cycle

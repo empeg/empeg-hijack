@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v404"
+#define HIJACK_VERSION	"v405"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -4561,6 +4561,22 @@ hijack_release_menu_and_buttons (void)
 }
 
 static int
+hijack_takeover_screen (void)
+{
+	while (1) {
+		current->state = TASK_INTERRUPTIBLE;
+		if (signal_pending(current))
+			return -EINTR;
+		if (hijack_dispfunc != userland_display) {
+			activate_dispfunc(userland_display, NULL, 0);
+			return 0;
+		}
+		schedule_timeout(2);
+		current->state = TASK_RUNNING;
+	}
+}
+
+static int
 hijack_wait_on_menu (char *argv[])
 {
 	struct wait_queue wait = {current, NULL};
@@ -4640,6 +4656,9 @@ int hijack_ioctl  (struct inode *inode, struct file *filp, unsigned int cmd, uns
 	int rc;
 
 	switch (cmd) {
+		case EMPEG_HIJACK_TAKEOVER:	// take over the screen (possibly waits for another app to release it first)
+			return hijack_takeover_screen();
+			
 		case EMPEG_HIJACK_WAITMENU:	// (re)create menu item(s) and wait for them to be selected
 		{
 			// Invocation:  char *menulabels[] = {"Label1", "Label2", NULL};

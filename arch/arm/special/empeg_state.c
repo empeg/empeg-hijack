@@ -243,7 +243,7 @@ static void state_getflashtype(void)
 	state_disablewrite();
 }
 
-static int state_fetch(unsigned char *buffer)
+int state_fetch(unsigned char *buffer)
 {
 	/* EMPEG_FLASHBASE+0x4000 to +0x5fff is the space used for
 	   the power-down state saving: we work through here until

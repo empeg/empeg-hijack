@@ -157,8 +157,14 @@ static void powercontrol(int b)
 	restore_flags(flags);
 }
 
+extern int hijack_force_dcpower;
+int empeg_on_dc_power (void)
+{
+	return hijack_force_dcpower ? 1 : ((GPLR & EMPEG_EXTPOWER) != 0);
+}
+
 /* Bitset of current power state */
-int getbitset(void)
+static int getbitset(void)
 {
 	struct power_dev *dev=power_devices;
 
@@ -193,11 +199,8 @@ int getbitset(void)
 		if (!(gplr&EMPEG_SERIALCTS)) bitset|=EMPEG_POWER_FLAG_LIGHTS; /* Dimmer sense - inverted */
 		if (dev->displaystate)	  bitset|=EMPEG_POWER_FLAG_DISPLAY;
 	}
-{
-	extern int hijack_force_dcpower;
 	if (hijack_force_dcpower)
 		bitset|=EMPEG_POWER_FLAG_DC;
-}
 	if (saved_unstable == (bitset & unstable_bits)) {
 		 /* It hasn't changed, so keep the timeout up to date */
 		stable_time = jiffies;

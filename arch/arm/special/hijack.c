@@ -26,7 +26,7 @@ extern void hijack_voladj_intinit(int, int, int, int, int);		// arch/arm/special
 extern void hijack_beep (int pitch, int duration_msecs, int vol_percent);// arch/arm/special/empeg_audio3.c
 extern unsigned long jiffies_since(unsigned long past_jiffies);		// arch/arm/special/empeg_input.c
 
-extern int getbitset(void);						// arch/arm/special/empeg_power.c
+extern int empeg_on_dc_power(void);					// arch/arm/special/empeg_power.c
 extern int get_current_mixer_source(void);				// arch/arm/special/empeg_mixer.c
 extern int empeg_readtherm(volatile unsigned int *timerbase, volatile unsigned int *gpiobase);	// arch/arm/special/empeg_therm.S
 extern int empeg_inittherm(volatile unsigned int *timerbase, volatile unsigned int *gpiobase);	// arch/arm/special/empeg_therm.S
@@ -671,7 +671,6 @@ static int
 forcedc_display (int firsttime)
 {
 	unsigned int rowcol;
-	int on_dc = (getbitset() & EMPEG_POWER_FLAG_DC);
 
 	if (!firsttime && !hijack_last_moved)
 		return NO_REFRESH;
@@ -679,7 +678,7 @@ forcedc_display (int firsttime)
 	clear_hijack_displaybuf(COLOR0);
 	(void)draw_string(ROWCOL(0,0), "Force DC/Car Operation", COLOR2);
 	rowcol = draw_string(ROWCOL(1,0), "Current Mode: ", COLOR2);
-	(void)draw_string(rowcol, on_dc ? "DC/Car" : "AC/Home", COLOR2);
+	(void)draw_string(rowcol, empeg_on_dc_power() ? "DC/Car" : "AC/Home", COLOR2);
 	rowcol = draw_string(ROWCOL(3,0), "Next reboot: ", COLOR2);
 	(void)draw_string(rowcol, hijack_savearea.force_dcpower ? "Force DC/Car" : "[Normal]", COLOR3);
 	return NEED_REFRESH;
@@ -1009,7 +1008,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v54 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v55 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1891,7 +1890,7 @@ void	// invoked from empeg_state.c
 hijack_save_settings (unsigned char *buf)
 {
 	// save state
-	if (getbitset() & EMPEG_POWER_FLAG_DC)
+	if (empeg_on_dc_power())
 		hijack_savearea.voladj_dc_power	= hijack_voladj_enabled;
 	else
 		hijack_savearea.voladj_ac_power	= hijack_voladj_enabled;
@@ -1913,7 +1912,7 @@ hijack_restore_settings (const unsigned char *buf)
 	// restore state
 	memcpy(&hijack_savearea, buf, sizeof(hijack_savearea));
 	hijack_force_dcpower		= hijack_savearea.force_dcpower;
-	if (getbitset() & EMPEG_POWER_FLAG_DC)
+	if (empeg_on_dc_power())
 		hijack_voladj_enabled	= hijack_savearea.voladj_dc_power;
 	else
 		hijack_voladj_enabled	= hijack_savearea.voladj_ac_power;

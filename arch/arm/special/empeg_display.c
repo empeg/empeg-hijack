@@ -694,7 +694,7 @@ static void handle_splash(struct display_dev *dev)
 
 		/* On AC or DC power? AC is first image, DC is second */
 		display_timer.data=(unsigned long)(user_splash+4);
-		if (GPLR&EMPEG_EXTPOWER) display_timer.data+=EMPEG_SCREEN_SIZE;
+		if (empeg_on_dc_power()) display_timer.data+=EMPEG_SCREEN_SIZE;
 
 		/* Set up function pointer & add to timer queue (it will remove
 		   itself when the timer expires) */
@@ -1121,10 +1121,14 @@ void __init empeg_display_init(void)
 	*lcd_command1=0xaf;
 	udelay(1);
 #endif
-
+{
+	unsigned char buffer[128];
+	extern int state_fetch(unsigned char *);
+	hijack_init();
+	state_fetch(buffer);
+}
 	handle_splash(dev);
 	printk("empeg display initialised.\n");
-	hijack_init();
 }
 
 void display_powerreturn_action(void)

@@ -157,11 +157,7 @@ static void powercontrol(int b)
 	restore_flags(flags);
 }
 
-extern int hijack_force_dcpower;
-int empeg_on_dc_power (void)
-{
-	return hijack_force_dcpower ? 1 : ((GPLR & EMPEG_EXTPOWER) != 0);
-}
+extern int empeg_on_dc_power;
 
 /* Bitset of current power state */
 int getbitset(void)
@@ -195,13 +191,13 @@ int getbitset(void)
 		if (powerfail_enabled())  bitset|=EMPEG_POWER_FLAG_FAILENABLED;
 		if (gplr&EMPEG_ACCSENSE)  bitset|=EMPEG_POWER_FLAG_ACCESSORY;
 		if (power_firstboot)      bitset|=EMPEG_POWER_FLAG_FIRSTBOOT;
-		if (empeg_on_dc_power())
+		if (empeg_on_dc_power)
 			if (!(gplr&EMPEG_SERIALDCD)) bitset|=EMPEG_POWER_FLAG_EXTMUTE; /* Tel mute */
 		if (!(gplr&EMPEG_SERIALCTS)) bitset|=EMPEG_POWER_FLAG_LIGHTS; /* Dimmer sense - inverted */
 		if (dev->displaystate)	  bitset|=EMPEG_POWER_FLAG_DISPLAY;
 	}
 	
-	if (hijack_force_dcpower)
+	if (empeg_on_dc_power)
 		bitset|=EMPEG_POWER_FLAG_DC;
 	if (saved_unstable == (bitset & unstable_bits)) {
 		 /* It hasn't changed, so keep the timeout up to date */

@@ -943,7 +943,8 @@ static void handle_splash(struct display_dev *dev)
 
 		/* On AC or DC power? AC is first image, DC is second */
 		display_timer.data=(unsigned long)(user_splash+4);
-		if (empeg_on_dc_power()) display_timer.data+=EMPEG_SCREEN_SIZE;
+		if (empeg_on_dc_power)
+			display_timer.data+=EMPEG_SCREEN_SIZE;
 
 		/* Set up function pointer & add to timer queue (it will remove
 		   itself when the timer expires) */

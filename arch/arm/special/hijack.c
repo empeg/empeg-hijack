@@ -27,7 +27,6 @@ extern void hijack_voladj_intinit(int, int, int, int, int);		// arch/arm/special
 extern void hijack_beep (int pitch, int duration_msecs, int vol_percent);// arch/arm/special/empeg_audio3.c
 extern unsigned long jiffies_since(unsigned long past_jiffies);		// arch/arm/special/empeg_input.c
 
-extern int empeg_on_dc_power(void);					// arch/arm/special/empeg_power.c
 extern unsigned char get_current_mixer_source(void);			// arch/arm/special/empeg_mixer.c
 extern void empeg_mixer_select_input(int input);			// arch/arm/special/empeg_mixer.c
 extern int empeg_readtherm(volatile unsigned int *timerbase, volatile unsigned int *gpiobase);	// arch/arm/special/empeg_therm.S
@@ -38,6 +37,7 @@ extern int empeg_inittherm(volatile unsigned int *timerbase, volatile unsigned i
 #define EMPEG_KNOB_SUPPORTED	// Mk2 and later have a front-panel knob
 #endif
 
+int	empeg_on_dc_power;		// used in arch/arm/special/empeg_power.c
 int	hijack_fsck_disabled = 0;	// used in fs/ext2/super.c
 int	hijack_onedrive = 0;		// used in drivers/block/ide-probe.c
 
@@ -58,7 +58,6 @@ static unsigned int carvisuals_enabled = 0;
 static unsigned int restore_carvisuals = 0;
 static unsigned int info_screenrow = 0;
 #endif // RESTORE_CARVISUALS
-static unsigned int on_dc_power = 0;
 static unsigned int hijack_status = HIJACK_INACTIVE;
 static unsigned long hijack_last_moved = 0, hijack_last_refresh = 0, blanker_triggered = 0, blanker_lastpoll = 0;
 static unsigned char blanker_lastbuf[EMPEG_SCREEN_BYTES] = {0,}, blanker_is_blanked = 0;
@@ -101,7 +100,7 @@ typedef struct knob_pair_s {
 } knob_pair_t;
 
 #define KNOBDATA_SIZE (1 << KNOBDATA_BITS)
-static int knobdata_index = 0;
+static int knobdata_index = 0, hijack_knobjog = 0;
 static const char *knobdata_labels[] = {" [default] ", " PopUp ", " VolAdj+ ", " Details ", " Info ", " Mark ", " Shuffle ", " Source "};
 static const knob_pair_t knobdata_pairs[1<<KNOBDATA_BITS] = {
 	{IR_KNOB_PRESSED,		IR_KNOB_RELEASED},
@@ -219,8 +218,8 @@ static int blankerfuzz_amount = 0;
 #define MAXTEMP_BITS	5
 static int maxtemp_threshold = 0;
 
-#define DCPOWER_BITS 1
-int hijack_force_dcpower = 0; // used by empeg_power.c
+#define FORCEPOWER_BITS 2
+static int hijack_force_power = 0;
 
 #define TIMERACTION_BITS 1
 static int timer_timeout = 0, timer_started = 0, timer_action = 0;
@@ -248,9 +247,10 @@ static struct sa_struct {
 
 	unsigned fsck_disabled		: 1;			// 1 bit
 	unsigned onedrive		: 1;			// 1 bit
-	unsigned byte3_leftover		: 4;			// 5 bits
 	unsigned timer_action		: TIMERACTION_BITS;	// 1 bit
-	unsigned force_dcpower		: DCPOWER_BITS;		// 1 bit
+	unsigned force_power		: FORCEPOWER_BITS;	// 2 bits
+	unsigned knobjog		: 1;			// 1 bits
+	unsigned byte3_leftover		: 2;			// 2 bits
 
 	unsigned knob_ac		: 1+KNOBDATA_BITS;	// 4 bits
 	unsigned knob_dc		: 1+KNOBDATA_BITS;	// 4 bits
@@ -1061,14 +1061,23 @@ vitals_display (int firsttime)
 	return NEED_REFRESH;
 }
 
+static const char *powermode_text[FORCEPOWER_BITS<<1] = {" [Normal] ", " [Normal] ", " Force AC/Home ", " Force DC/Car "};
+
 static void
-forcedc_move (int direction)
+forcepower_move (int direction)
 {
-	hijack_savearea.force_dcpower = !hijack_savearea.force_dcpower;
+	if (direction < 0) {
+		if (--hijack_force_power < 1)
+			hijack_force_power = 3;
+	} else if (++hijack_force_power == 1) {
+		hijack_force_power = 2;
+	} else if (hijack_force_power > 3) {
+		hijack_force_power = 0;
+	}
 }
 
 static int
-forcedc_display (int firsttime)
+forcepower_display (int firsttime)
 {
 	unsigned int rowcol;
 
@@ -1076,11 +1085,11 @@ forcedc_display (int firsttime)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
-	(void)draw_string(ROWCOL(0,0), "Force DC/Car Operation", PROMPTCOLOR);
+	(void)draw_string(ROWCOL(0,0), "Force AC/DC Power Mode", PROMPTCOLOR);
 	rowcol = draw_string(ROWCOL(1,0), "Current Mode: ", PROMPTCOLOR);
-	(void)draw_string(rowcol, on_dc_power ? "DC/Car" : "AC/Home", PROMPTCOLOR);
+	(void)draw_string(rowcol, empeg_on_dc_power ? "DC/Car" : "AC/Home", PROMPTCOLOR);
 	rowcol = draw_string(ROWCOL(3,0), "On reboot: ", PROMPTCOLOR);
-	(void)draw_string(rowcol, hijack_savearea.force_dcpower ? " Force DC/Car " : " [Normal] ", ENTRYCOLOR);
+	(void)draw_string(rowcol, powermode_text[hijack_force_power], ENTRYCOLOR);
 	return NEED_REFRESH;
 }
 
@@ -1477,6 +1486,30 @@ knobdata_display (int firsttime)
 	return NEED_REFRESH;
 }
 
+static void
+knobjog_move (int direction)
+{
+	hijack_knobjog = !hijack_knobjog;
+	empeg_state_dirty = 1;
+}
+
+static int
+knobjog_display (int firsttime)
+{
+	unsigned int rowcol;
+
+	if (firsttime)
+		ir_numeric_input = &hijack_knobjog;	// allows cancel/top to reset it to 0
+	else if (!hijack_last_moved)
+		return NO_REFRESH;
+	hijack_last_moved = 0;
+	clear_hijack_displaybuf(COLOR0);
+	(void)draw_string(ROWCOL(0,0), "Knob Rotate Redefinition", PROMPTCOLOR);
+	rowcol = draw_string(ROWCOL(2,0), "Knob Rotate = ", PROMPTCOLOR);
+	(void)draw_string(rowcol, hijack_knobjog ? " Next/Prev " : " Volume ", ENTRYCOLOR);
+	return NEED_REFRESH;
+}
+
 static unsigned long knobmenu_pressed;
 static const unsigned long knobmenu_buttonlist[3] = {3, IR_KNOB_PRESSED, IR_KNOB_RELEASED};
 
@@ -1565,7 +1598,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v94 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v95 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1979,11 +2012,12 @@ static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 	{"Countdown Timer Action",	timeraction_display,	timeraction_move,	0},
 	{"Filesystem Check on Sync",	fsck_display,		fsck_move,		0},
 	{"Font Display",		kfont_display,		NULL,			0},
-	{"Force DC/Car Mode",		forcedc_display,	forcedc_move,		0},
+	{"Force AC/DC Power Mode",	forcepower_display,	forcepower_move,	0},
 	{  onedrive_menu_label,		onedrive_display,	onedrive_move,		0},
 	{"High Temperature Warning",	maxtemp_display,	maxtemp_move,		0},
 #ifdef EMPEG_KNOB_SUPPORTED
 	{"Knob Press Redefinition",	knobdata_display,	knobdata_move,		0},
+	{"Knob Rotate Redefinition",	knobjog_display,	knobjog_move,		0},
 #endif // EMPEG_KNOB_SUPPORTED
 #ifdef DISPLAY_NOTIFICATIONS
 	{"Notify Display",		notify_display,		notify_move,		0},
@@ -2251,6 +2285,8 @@ static int hijack_check_buttonlist (unsigned long data, unsigned long delay)
 // In an ideal world, we would never use "jiffies" here, relying on the inter-code "delay" instead.
 // But.. maybe later.  The timings are coarse enough that it shouldn't matter much.
 //
+// Note that ALL front-panel buttons send codes ONCE on press, but twice on RELEASE.
+//
 static int
 hijack_handle_button(unsigned long data, unsigned long delay)
 {
@@ -2302,6 +2338,26 @@ hijack_handle_button(unsigned long data, unsigned long delay)
 			}
 			ir_knob_down = 0;
 			break;
+		case IR_KNOB_RIGHT:
+			if (hijack_status != HIJACK_INACTIVE) {
+				hijack_move(1);
+				hijacked = 1;
+			} else if (hijack_knobjog) {
+				hijack_button_enq(&hijack_playerq, IR_RIGHT_BUTTON_PRESSED, 0);
+				hijack_button_enq(&hijack_playerq, IR_RIGHT_BUTTON_RELEASED, 0);
+				hijacked = 1;
+			}
+			break;
+		case IR_KNOB_LEFT:
+			if (hijack_status != HIJACK_INACTIVE) {
+				hijack_move(-1);
+				hijacked = 1;
+			} else if (hijack_knobjog) {
+				hijack_button_enq(&hijack_playerq, IR_LEFT_BUTTON_PRESSED, 0);
+				hijack_button_enq(&hijack_playerq, IR_LEFT_BUTTON_RELEASED, 0);
+				hijacked = 1;
+			}
+			break;
 #endif // EMPEG_KNOB_SUPPORTED
 		case IR_RIO_MENU_PRESSED:
 			if (!player_menu_is_active) {
@@ -2348,7 +2404,6 @@ hijack_handle_button(unsigned long data, unsigned long delay)
 		case IR_RIO_NEXTTRACK_PRESSED:
 			ir_move_repeat_delay = (hijack_movefunc == game_move) ? (HZ/15) : (HZ/3);
 			ir_right_down = jiffies ? jiffies : -1;
-		case IR_KNOB_RIGHT:
 			if (hijack_status != HIJACK_INACTIVE) {
 				hijack_move(1);
 				hijacked = 1;
@@ -2358,7 +2413,6 @@ hijack_handle_button(unsigned long data, unsigned long delay)
 		case IR_RIO_PREVTRACK_PRESSED:
 			ir_move_repeat_delay = (hijack_movefunc == game_move) ? (HZ/15) : (HZ/3);
 			ir_left_down = jiffies ? jiffies : -1;
-		case IR_KNOB_LEFT:
 			if (hijack_status != HIJACK_INACTIVE) {
 				hijack_move(-1);
 				hijacked = 1;
@@ -2561,7 +2615,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 				 && hijack_dispfunc != knobmenu_display && hijack_dispfunc != voladj_prefix_display
 #endif // EMPEG_KNOB_SUPPORTED
 				){
-					if (hijack_dispfunc == forcedc_display)
+					if (hijack_dispfunc == forcepower_display)
 						activate_dispfunc(reboot_display, NULL);
 					else
 						activate_dispfunc(menu_display, menu_move);
@@ -2886,7 +2940,7 @@ input_append_code(void *ignored, unsigned long button)  // empeg_input.c
 			unsigned long old = button & ~0xc0000000, common_bits = *table++;
 			if ((old & common_bits) == common_bits) {	// saves time (usually) on large tables
 				int delayed_send = 0;
-				unsigned char flags = on_dc_power ? IR_FLAGS_CAR : IR_FLAGS_HOME;
+				unsigned char flags = empeg_on_dc_power ? IR_FLAGS_CAR : IR_FLAGS_HOME;
 				if (ir_shifted)
 					flags |= IR_FLAGS_SHIFTED;
 				while (*table != -1) {
@@ -2924,7 +2978,7 @@ done:
 	restore_flags(flags);
 }
 
-// returns menu index >= 0,  or -ERROR
+// returns enu index >= 0,  or -ERROR
 static int
 extend_menu (menu_item_t *new)
 {
@@ -3050,7 +3104,7 @@ void	// invoked from empeg_state.c
 hijack_save_settings (unsigned char *buf)
 {
 	// save state
-	if (on_dc_power)
+	if (empeg_on_dc_power)
 		hijack_savearea.voladj_dc_power	= hijack_voladj_enabled;
 	else
 		hijack_savearea.voladj_ac_power	= hijack_voladj_enabled;
@@ -3060,11 +3114,12 @@ hijack_save_settings (unsigned char *buf)
 #ifdef EMPEG_KNOB_SUPPORTED
 {
 	unsigned int knob;
+	hijack_savearea.knobjog			= hijack_knobjog;
 	if (knobdata_index == 1)
 		knob = (1 << KNOBDATA_BITS) | knobmenu_index;
 	else
 		knob = knobdata_index;
-	if (on_dc_power)
+	if (empeg_on_dc_power)
 		hijack_savearea.knob_dc = knob;
 	else
 		hijack_savearea.knob_ac = knob;
@@ -3075,41 +3130,12 @@ hijack_save_settings (unsigned char *buf)
 	hijack_savearea.menu_item		= menu_item;
 	hijack_savearea.restore_visuals		= carvisuals_enabled;
 	hijack_savearea.fsck_disabled		= hijack_fsck_disabled;
-	//hijack_savearea.force_dcpower is only updated from the menu!
+	hijack_savearea.force_power		= hijack_force_power;
 	hijack_savearea.byte3_leftover		= 0;
 	hijack_savearea.byte5_leftover		= 0;
 	hijack_savearea.byte6_leftover		= 0;
 	memcpy(buf+HIJACK_SAVEAREA_OFFSET, &hijack_savearea, sizeof(hijack_savearea));
 }
-
-#ifdef HIJACK_DETECT_DOCK
-static int
-hijack_check_if_docked (void)
-{
-	unsigned long start_time = jiffies, poll = start_time;
-	unsigned int count = 0, previous_dcd = 0;
-
-	printk("\nChecking whether docked (serial TX->DCD)..\n");
-
-	while (jiffies_since(start_time) < (HZ/4)) {
-		unsigned int dcd = ((GPLR & EMPEG_SERIALDCD) != 0);
-		if (dcd != previous_dcd) {
-			printk("%d", dcd);
-			if (++count >= 5) {
-				printk(" Docked!\n");
-				return 1; // docked
-			}
-		}
-		previous_dcd = dcd;
-		if (jiffies_since(poll) > (HZ/20)) {
-			poll = jiffies;
-			printk(".");
-		}
-	}
-	printk(" not docked (%d).\n", count);
-	return 0; // not docked
-}
-#endif // HIJACK_DETECT_DOCK
 
 void	// invoked from empeg_state.c
 hijack_restore_settings (unsigned char *buf)
@@ -3117,15 +3143,12 @@ hijack_restore_settings (unsigned char *buf)
 	// restore state
 	memcpy(&hijack_savearea, buf+HIJACK_SAVEAREA_OFFSET, sizeof(hijack_savearea));
 
-#ifdef HIJACK_DETECT_DOCK
-	if (empeg_on_dc_power()) // "Real" power status
-		hijack_force_dcpower	= hijack_check_if_docked();
-	else 
-#endif // HIJACK_DETECT_DOCK
-		hijack_force_dcpower	= hijack_savearea.force_dcpower;
-	on_dc_power = empeg_on_dc_power(); // "Effective" power status
+	empeg_on_dc_power = ((GPLR & EMPEG_EXTPOWER) != 0);
 
-	if (on_dc_power)
+	hijack_force_power		= hijack_savearea.force_power;
+	if (hijack_force_power & 2)
+		empeg_on_dc_power = hijack_force_power & 1;
+	if (empeg_on_dc_power)
 		hijack_voladj_enabled	= hijack_savearea.voladj_dc_power;
 	else
 		hijack_voladj_enabled	= hijack_savearea.voladj_ac_power;
@@ -3135,7 +3158,8 @@ hijack_restore_settings (unsigned char *buf)
 #ifdef EMPEG_KNOB_SUPPORTED
 {
 	unsigned int knob;
-	knob = on_dc_power ? hijack_savearea.knob_dc : hijack_savearea.knob_ac;
+	hijack_knobjog			= hijack_savearea.knobjog;
+	knob = empeg_on_dc_power ? hijack_savearea.knob_dc : hijack_savearea.knob_ac;
 	if ((knob & (1 << KNOBDATA_BITS)) == 0) {
 		knobmenu_index		= 0;
 		knobdata_index		= knob;
@@ -3153,7 +3177,7 @@ hijack_restore_settings (unsigned char *buf)
 	hijack_fsck_disabled		= hijack_savearea.fsck_disabled;
 
 #ifdef RESTORE_CARVISUALS
-	if (on_dc_power)
+	if (empeg_on_dc_power)
 		fix_visuals(buf);
 #endif // RESTORE_CARVISUALS
 }
@@ -3566,9 +3590,9 @@ hijack_read_config_file (const char *path)
 
 		// Send initial button sequences, if any
 		save_flags_cli(flags);
-		if ( on_dc_power && ir_init_car)
+		if ( empeg_on_dc_power && ir_init_car)
 			input_append_code(NULL, ir_init_car);
-		if (!on_dc_power && ir_init_home)
+		if (!empeg_on_dc_power && ir_init_home)
 			input_append_code(NULL, ir_init_home);
 		restore_flags(flags);
 	}

@@ -32,6 +32,14 @@
 //    rc = ioctl(fd,EMPEG_HIJACK_WAITMENU, NULL);	// release the menu system on program exit
 //
 
+static inline unsigned long JIFFIES (void)
+{
+	unsigned long j = jiffies;
+	if (j == 0)
+		j = -1;
+	return j;
+}
+
 #define INRANGE(c,min,max)	((c) >= (min) && (c) <= (max))
 #define TOUPPER(c)		(INRANGE((c),'a','z') ? ((c) - ('a' - 'A')) : (c))
 

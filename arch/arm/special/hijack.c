@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v276"
+#define HIJACK_VERSION	"v277"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -1326,7 +1326,7 @@ voladj_prefix_display (int firsttime)
 	static const hijack_geom_t geom = {8, 8+6+KFONT_HEIGHT, 12, EMPEG_SCREEN_COLS-12};
 
 	if (firsttime) {
-		hijack_last_moved = jiffies ? jiffies : -1;
+		hijack_last_moved = JIFFIES();
 		create_overlay(&geom);
 	} else if (jiffies_since(hijack_last_moved) >= (HZ*3)) {
 		hijack_deactivate(HIJACK_IDLE);
@@ -1467,7 +1467,7 @@ savearea_display (int firsttime)
 			unsigned int addr = (offset + i) & 0x7f, color = COLOR2;
 			unsigned char b = empeg_statebuf[addr];
 			if (b != last_savearea[addr])
-				last_updated[addr] = jiffies ? jiffies : -1;
+				last_updated[addr] = JIFFIES();
 			last_savearea[addr] = b;
 			if (last_updated[addr]) {
 				elapsed = jiffies_since(last_updated[addr]);
@@ -1715,7 +1715,7 @@ timer_display (int firsttime)
 		}
 		ir_numeric_input = &timer_timeout;
 	}
-	timer_started = jiffies;
+	timer_started = JIFFIES();
 	if (!firsttime && !hijack_last_moved)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
@@ -2111,7 +2111,7 @@ hijack_adjust_buttonled (int power)
 		if (command) {
 			display_sendcontrol_part1();
 			saved_serial = display_sendcontrol_serial;
-			lasttime = jiffies;
+			lasttime = JIFFIES();
 			switch (command) {
 				case 242: hijack_buttonled_level = 0;	break;
 				case 243: hijack_buttonled_level++;	break;
@@ -2192,7 +2192,7 @@ knobseek_move (int direction)
 	unsigned int button;
 
 	if (jiffies_since(knobseek_lasttime) >= (HZ/4)) {
-		knobseek_lasttime = jiffies;
+		knobseek_lasttime = JIFFIES();
 		button = (direction > 0) ? IR_RIGHT_BUTTON_PRESSED : IR_LEFT_BUTTON_PRESSED;
 		hijack_enq_button_pair(button);
 	}
@@ -2208,7 +2208,7 @@ knobseek_display (int firsttime)
 		create_overlay(&geom);
 		rowcol = draw_string(rowcol, "Knob \"Seek\" Mode", COLOR3);
 		hijack_knobseek = 1;
-		knobseek_lasttime = hijack_last_moved = jiffies ? jiffies : -1;
+		knobseek_lasttime = hijack_last_moved = JIFFIES();
 	} else if (jiffies_since(hijack_last_moved) >= (HZ*5)) {
 		hijack_knobseek = 0;
 		hijack_deactivate(HIJACK_IDLE);
@@ -2272,7 +2272,7 @@ popup_display (int firsttime)
 		popup_index = current_popup->popup_index;
 		if (popup_index >= current_popup->count)
 			popup_index = 0;
-		hijack_last_moved = jiffies ? jiffies : -1;
+		hijack_last_moved = JIFFIES();
 		ir_numeric_input = &popup_index;	// allows cancel/top to reset it to 0
 		hijack_buttonlist = popup_buttonlist;
 		hijack_initq(&hijack_userq);
@@ -2297,7 +2297,7 @@ popup_display (int firsttime)
 		if (!IS_RELEASE(data.button)) {
 			if (!popup_got_press) {
 				unsigned int b = button & ~BUTTON_FLAGS;
-				popup_got_press = jiffies ? jiffies : -1;
+				popup_got_press = JIFFIES();
 				hijack_enq_button(&hijack_playerq, b, 0);
 				if (button & BUTTON_FLAGS_LONGPRESS)
 					hijack_enq_release(&hijack_playerq, b, HZ);
@@ -2382,7 +2382,7 @@ game_finale (void)
 		s++;
 	}
 	framenr += frameadj;
-	game_animtime = jiffies ? jiffies : -1;
+	game_animtime = JIFFIES();
 	return NEED_REFRESH;
 }
 
@@ -2426,10 +2426,10 @@ game_move_ball (void)
 {
 	ir_selected = 0; // prevent accidental exit from game
 	if (ir_left_down && jiffies_since(ir_left_down) >= (HZ/15)) {
-		ir_left_down = jiffies ? jiffies : -1;
+		ir_left_down = JIFFIES();
 		game_move(-1);
 	} else if (ir_right_down && jiffies_since(ir_right_down) >= (HZ/15)) {
-		ir_right_down = jiffies ? jiffies : -1;
+		ir_right_down = JIFFIES();
 		game_move(1);
 	}
 	if (jiffies_since(game_ball_last_moved) < (HZ/game_speed))
@@ -2761,7 +2761,7 @@ do_reboot (struct display_dev *dev)
 		clear_hijack_displaybuf(COLOR0);
 		(void) draw_string(ROWCOL(2,32), "Rebooting..", PROMPTCOLOR);
 		display_blat(dev, (char *)hijack_displaybuf);
-		hijack_last_moved = jiffies;
+		hijack_last_moved = JIFFIES();
 		state_cleanse();	// Ensure flash savearea is updated
 		if (remount_drives(0))
 			wait = 0;	// no need for a delay if remount did nothing
@@ -2930,7 +2930,7 @@ menu_display (int firsttime)
 	static int prev_menu_item;
 
 	if (firsttime) {
-		hijack_last_moved = jiffies ? jiffies : -1;
+		hijack_last_moved = JIFFIES();
 		prev_menu_item = -1;
 	}
 	if (menu_item != prev_menu_item) {
@@ -2984,7 +2984,7 @@ hijack_move (int direction)
 {
 	if (hijack_status == HIJACK_ACTIVE && hijack_movefunc != NULL) {
 		hijack_movefunc(direction);
-		hijack_last_moved = jiffies ? jiffies : -1;
+		hijack_last_moved = JIFFIES();
 	}
 }
 
@@ -2992,11 +2992,11 @@ static void
 hijack_move_repeat (void)
 {
 	if (ir_left_down && jiffies_since(ir_left_down) >= ir_move_repeat_delay) {
-		ir_left_down = jiffies ? jiffies : -1;
+		ir_left_down = JIFFIES();
 		hijack_move(-1);
 		ir_lasttime = jiffies;
 	} else if (ir_right_down && jiffies_since(ir_right_down) >= ir_move_repeat_delay) {
-		ir_right_down = jiffies ? jiffies : -1;
+		ir_right_down = JIFFIES();
 		hijack_move(+1);
 		ir_lasttime = jiffies;
 	}
@@ -3204,7 +3204,7 @@ message_display (int firsttime)
 		create_overlay(&geom);
 		rowcol = (geom.first_row+4)|((geom.first_col+6)<<16);
 		rowcol = draw_string(rowcol, message_text, COLOR3);
-		hijack_last_moved = jiffies ? jiffies : -1;
+		hijack_last_moved = JIFFIES();
 		untrigger_blanker();
 	} else if (jiffies_since(hijack_last_moved) >= message_time) {
 		hijack_deactivate(HIJACK_IDLE);
@@ -3234,7 +3234,7 @@ quicktimer_display (int firsttime)
 	hijack_buttondata_t data;
 	unsigned int rowcol;
 
-	timer_started = jiffies;
+	timer_started = JIFFIES();
 	if (firsttime) {
 		if (timer_timeout) {
 			timer_timeout = 0;
@@ -3245,7 +3245,7 @@ quicktimer_display (int firsttime)
 		}
 		ir_numeric_input = &timer_timeout;
 		hijack_buttonlist = quicktimer_buttonlist;
-		hijack_last_moved = jiffies ? jiffies : -1;
+		hijack_last_moved = JIFFIES();
 		create_overlay(&geom);
 	} else if (jiffies_since(hijack_last_moved) >= (HZ*3)) {
 		hijack_deactivate(HIJACK_IDLE);
@@ -3253,7 +3253,7 @@ quicktimer_display (int firsttime)
 		while (hijack_button_deq(&hijack_userq, &data, 0)) {
 			if (!(data.button & 0x80000000))
 				timer_timeout += hijack_quicktimer_minutes * (60*HZ);
-			hijack_last_moved = jiffies ? jiffies : -1;
+			hijack_last_moved = JIFFIES();
 		}
 		rowcol = (geom.first_row+4)|((geom.first_col+6)<<16);
 		rowcol = draw_string(rowcol, "Quick Timer: ", COLOR3);
@@ -3342,7 +3342,7 @@ hijack_handle_button (unsigned int button, unsigned long delay, int any_ui_is_ac
 		case IR_KNOB_PRESSED:
 			hijacked = 1; // hijack it and later send it with the release
 			ir_knob_busy = 0;
-			ir_knob_down = jiffies ? jiffies : -1;
+			ir_knob_down = JIFFIES();
 			if (hijack_status == HIJACK_ACTIVE)
 				hijacked = ir_selected = 1;
 			break;
@@ -3406,7 +3406,7 @@ hijack_handle_button (unsigned int button, unsigned long delay, int any_ui_is_ac
 		case IR_RIO_MENU_PRESSED:
 			if (!any_ui_is_active) {
 				hijacked = 1; // hijack it and later send it with the release
-				ir_menu_down = jiffies ? jiffies : -1;
+				ir_menu_down = JIFFIES();
 			}
 			if (hijack_status == HIJACK_ACTIVE)
 				hijacked = ir_selected = 1;
@@ -3446,7 +3446,7 @@ hijack_handle_button (unsigned int button, unsigned long delay, int any_ui_is_ac
 		case IR_KW_NEXTTRACK_PRESSED:
 		case IR_RIO_NEXTTRACK_PRESSED:
 			ir_move_repeat_delay = (hijack_movefunc == game_move) ? (HZ/15) : (HZ/3);
-			ir_right_down = jiffies ? jiffies : -1;
+			ir_right_down = JIFFIES();
 			if (hijack_status != HIJACK_IDLE) {
 				hijack_move(1);
 				hijacked = 1;
@@ -3455,7 +3455,7 @@ hijack_handle_button (unsigned int button, unsigned long delay, int any_ui_is_ac
 		case IR_KW_PREVTRACK_PRESSED:
 		case IR_RIO_PREVTRACK_PRESSED:
 			ir_move_repeat_delay = (hijack_movefunc == game_move) ? (HZ/15) : (HZ/3);
-			ir_left_down = jiffies ? jiffies : -1;
+			ir_left_down = JIFFIES();
 			if (hijack_status != HIJACK_IDLE) {
 				hijack_move(-1);
 				hijacked = 1;
@@ -3476,7 +3476,7 @@ hijack_handle_button (unsigned int button, unsigned long delay, int any_ui_is_ac
 		case IR_RIO_4_PRESSED:
 			if (!any_ui_is_active) {
 				hijacked = 1; // hijack it and later send it with the release
-				ir_4_down = jiffies ? jiffies : -1;
+				ir_4_down = JIFFIES();
 			}
 			break;
 		case IR_RIO_4_RELEASED:
@@ -3602,7 +3602,7 @@ input_append_code2 (unsigned int rawbutton)
 	}
 	if (hijack_keypress_flash) {
 		if (!released && button > 0xf && button < IR_FAKE_HIJACKMENU)	// don't flash for front panel, or releases
-			do_keypress_flash = jiffies ? jiffies : 0;
+			do_keypress_flash = JIFFIES();
 		else
 			do_keypress_flash = 0;
 	}
@@ -3789,25 +3789,6 @@ check_screen_grab (unsigned char *buf)
 #endif // CONFIG_NET_ETHERNET
 }
 
-void
-hijack_fixdisp (void)
-{
-	static int	done = 0;
-	tm_t		tm;
-
-	if (jiffies > (HZ*11) && !done) {
-		done = 1;
-		hijack_convert_time(CURRENT_TIME + (hijack_time_offset * 60), &tm);
-		if (tm.tm_year == 2002 && tm.tm_mon == 5 && tm.tm_mday >= 14 && tm.tm_mday <= 16) {
-			static char msg[19] = "Fvspqfbo!Nffu!3113\0";
-			unsigned int i;
-			for (i = 0; i < sizeof(msg); i++)
-				msg[i] -= 1;
-			show_message(msg, HZ*7);
-		}
-	}
-}
-
 // This routine covertly intercepts all display updates,
 // giving us a chance to substitute our own display.
 //
@@ -3866,7 +3847,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	if (dev->power)
 		hijack_standby_time = 0;
 	else if (!hijack_standby_time)
-		hijack_standby_time = jiffies ? jiffies : -1;
+		hijack_standby_time = JIFFIES();
 	else if (jiffies_since(hijack_standby_time) >= (60*60*13)) {
 		hijack_standby_time = jiffies - (60*60);	// prevent wraparound from eventually screwing us
 		if (hijack_standby_time == 0)
@@ -3910,7 +3891,6 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 		buf = (unsigned char *)hijack_displaybuf;
 		untrigger_blanker();
 	}
-	hijack_fixdisp();
 	switch (hijack_status) {
 		case HIJACK_IDLE:
 			if (ir_trigger_count >= 3
@@ -3985,7 +3965,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 				memcpy(blanker_lastbuf, buf, EMPEG_SCREEN_BYTES);
 				untrigger_blanker();
 			} else if (!blanker_triggered) {
-				blanker_triggered = jiffies ? jiffies : -1;
+				blanker_triggered = JIFFIES();
 			}
 		}
 		if (blanker_triggered) {

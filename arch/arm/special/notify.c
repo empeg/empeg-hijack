@@ -93,7 +93,7 @@ hijack_serial_notify (const unsigned char *s, int size)
 				}
 				state = want_eol;
 				if (!hijack_player_started)
-					hijack_player_started = jiffies ? jiffies : -1;
+					hijack_player_started = JIFFIES();
 				return hijack_suppress_notify;
 			}
 			break;

@@ -1166,9 +1166,8 @@ open_playlist_fid:
 	sprintf(subpath, "/drive0/fids/%x", fid & ~1);
 	fd[fdx] = open_fid_file(subpath);
 	if (fd[fdx] < 0) {
-		--fdx;
 		printk("%s: send_playlist(): open('%s') failed, rc=%d\n", parms->servername, subpath, fd[fdx--]);
-		goto aborted;
+		// playlist must have been empty; just continue..
 	}
 	while (fdx >= 0) {
 		while (sizeof(fid) == read(fd[fdx], (char *)&fid, sizeof(fid))) {
@@ -1203,7 +1202,7 @@ open_playlist_fid:
 						"<HTML><BODY><TABLE BORDER=2><THEAD>\r\n"
 						"<TR><TD> <A HREF=\"%x?.m3u\"><FONT SIZE=-1><EM>Play All</EM></FONT></A> <TD> <B>Title</B> <TD> <B>Length</B> <TD> <B>Type</B> "
 						"<TD> <B>Artist</B> <TD> <B>Source</B> <TBODY>\r\n",
-						rootfid, artist, hyphen, title, artist, hyphen, title);
+						artist, hyphen, title, artist, hyphen, title, rootfid|1);
 				} else {
 					size += sprintf(xfer.buf+size, "#EXTM3U\r\n");
 				}

@@ -610,22 +610,22 @@ blankerfuzz_display (int firsttime)
 }
 
 static int
-screen_compare (unsigned char *screen1, unsigned char *screen2)
+screen_compare (unsigned long *screen1, unsigned long *screen2)
 {
-	// FIXME: compare in bigger chucks before looking at the smaller bits!
-	unsigned char *end = screen1 + EMPEG_SCREEN_BYTES;
+	const unsigned char bitcount4[16] = {0,1,1,2, 1,2,2,3, 1,2,3,4, 2,3,3,4};
+	unsigned long *end = (unsigned long *)(((unsigned char *)screen1) + EMPEG_SCREEN_BYTES);
 	int allowable_fuzz = blankerfuzz_5pcts * (5 * (2 * EMPEG_SCREEN_BYTES) / 100);
-	do {
-		unsigned char diff = *screen1 ^ *screen2;
-		if (diff) {
-			if (diff & 0xf0)		// check first pixel
-				--allowable_fuzz;
-			if (diff & 0x0f)		// check second pixel
-				--allowable_fuzz;
+	do {	// compare 8 pixels at a time for speed
+		unsigned long x = *screen1 ^ *screen2++;
+		if (x) { // Now figure out how many of the 8 pixels didn't match
+			x |= x >>  1;		// reduce each pixel to one bit
+			x &= 0x11111111;	// mask away the excess bits
+			x |= x >> 15;		// move the upper 4 pixels to beside the lower 4
+			x |= x >>  6;		// Squish all eight pixels into one byte
+			allowable_fuzz -= bitcount4[x & 0xf] + bitcount4[(x >> 4) & 0xf];
 			if (allowable_fuzz < 0)
 				return 1;	// not the same
 		}
-		++screen2;
 	} while (++screen1 < end);
 	return 0;	// the same
 }
@@ -682,7 +682,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v40 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v41 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1235,7 +1235,7 @@ hijack_display (struct display_dev *dev, unsigned char *player_buf)
 			blanked = 0;
 		if (jiffies_since(blanker_lastpoll) >= (4*HZ/3)) {  // use an oddball interval to avoid patterns
 			blanker_lastpoll = jiffies;
-			if (screen_compare(last_buf, buf)) {
+			if (screen_compare((unsigned long *)last_buf, (unsigned long *)buf)) {
 				memcpy(last_buf, buf, EMPEG_SCREEN_BYTES);
 				blanker_activated = 0;
 			} else {
@@ -1540,8 +1540,13 @@ hijack_wait_on_menu (char *argv[])
 	}
 	num_items = i;
 	save_flags_cli(flags);
-	if (hijack_dispfunc == userland_display && (menu_table[menu_item].userdata & ~0xff) == userdata)
+	if (hijack_dispfunc == userland_display && (menu_table[menu_item].userdata & ~0xff) == userdata) {
 		hijack_dispfunc = NULL;		// restart the main menu
+		if (hijack_buttonlist) {	// release any buttons we had grabbed
+			kfree(hijack_buttonlist);
+			hijack_buttonlist = NULL;
+		}
+	}
 	add_wait_queue(&hijack_menu_waitq, &wait);
 	while (1) {
 		unsigned long menudata;

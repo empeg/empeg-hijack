@@ -17,13 +17,15 @@
 //
 //    fd = open("/dev/display");
 //    top: while (1) {
-//       rc = ioctl(fd, EMPEG_HIJACK_WAITMENU, "MyStuff");
+//       const char *mymenu = {"MyStuff", NULL};  // a NULL terminated array of strings
+//       rc = ioctl(fd, EMPEG_HIJACK_WAITMENU, mymenu);
+//       if (rc < 0) perror(rc) else menu_index = rc;
 //       rc = ioctl(fd,EMPEG_HIJACK_BINDBUTTONS, buttons);
 //       while (looping) {
 //          rc = ioctl(fd,EMPEG_HIJACK_DISPWRITE, screenbuf); /* or ioctl(fd,EMPEG_HIJACK_DISPTEXT, "Some\nText"); */
 //          rc = ioctl(fd,EMPEG_HIJACK_WAITBUTTONS, &data);
 //       }
-//       rc = ioctl(fd,EMPEG_HIJACK_UNBINDBUTTONS, NULL); /* VERY important! */
+//       //rc = ioctl(fd,EMPEG_HIJACK_UNBINDBUTTONS, NULL); /* now done by WAITMENU */
 //    }
 //
 

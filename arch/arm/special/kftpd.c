@@ -26,6 +26,9 @@
 #include <net/udp.h>
 #include <net/scm.h>
 
+#define KHTTPD	"khttpd"
+#define KFTPD	"kftpd"
+
 extern void sys_exit(int);
 extern const char hijack_vXXX_by_Mark_Lord[];		// from arch/arm/special/hijack.c
 extern int strxcmp (const char *str, const char *pattern, int partial);	// hijack.c
@@ -36,7 +39,7 @@ extern int hijack_khttpd_verbose;			// from arch/arm/special/hijack.c
 extern int hijack_kftpd_control_port;			// from arch/arm/special/hijack.c
 extern int hijack_kftpd_data_port;			// from arch/arm/special/hijack.c
 extern int hijack_kftpd_verbose;			// from arch/arm/special/hijack.c
-extern int hijack_kftpd_show_dotdir;			// from arch/arm/special/hijack.c
+extern int hijack_rootdir_dotdot;			// from arch/arm/special/hijack.c
 extern int hijack_max_connections;			// from arch/arm/special/hijack.c
 extern int hijack_khttpd_commands;			// from arch/arm/special/hijack.c
 extern int hijack_khttpd_dirs;				// from arch/arm/special/hijack.c
@@ -61,6 +64,7 @@ extern int sys_wait4 (pid_t pid,unsigned int * stat_addr, int options, struct ru
 
 // This data structure is allocated as a full page to prevent memory fragmentation:
 typedef struct server_parms_s {
+	char			*servername;
 	struct socket		*clientsock;
 	struct socket		*servsock;
 	struct socket		*datasock;
@@ -77,10 +81,9 @@ typedef struct server_parms_s {
 	off_t			start_offset;		// starting offset for next FTP/HTTP file transfer
 	off_t			end_offset;		// for current HTTP file read
 	unsigned int		umask;
-	char			*servername;
 	struct sockaddr_in	portaddr;
 	char			clientip[INET_ADDRSTRLEN];
-	char			serverip[INET_ADDRSTRLEN];
+	char			hostname[32];		// serverip, or "Host:" field from HTTP header
 	unsigned char		cwd[1024];
 	unsigned char		buf[1024];
 	unsigned char		tmp2[768];
@@ -233,17 +236,17 @@ kftpd_send_response (server_parms_t *parms, int rcode)
 	while (r->rcode && r->rcode != rcode)
 		++r;
 	if (parms->verbose)
-		printk("%s: %d%s.\n", parms->servername, rcode, r->text);
+		printk(KFTPD": %d%s.\n", rcode, r->text);
 	len = sprintf(buf, "%d%s.\r\n", rcode, r->text);
 	if ((rc = ksock_rw(parms->clientsock, buf, len, -1)) != len) {
-		printk("%s: ksock_rw(response) failed, rc=%d\n", parms->servername, rc);
+		printk(KFTPD": ksock_rw(response) failed, rc=%d\n", rc);
 		return -1;
 	}
 	return 0;
 }
 
 static int
-send_dir_response (server_parms_t *parms, int rcode, const char *dir, char *suffix)
+kftpd_dir_response (server_parms_t *parms, int rcode, const char *dir, char *suffix)
 {
 	char	buf[300];
 	int	rc, len;
@@ -253,9 +256,9 @@ send_dir_response (server_parms_t *parms, int rcode, const char *dir, char *suff
 	else
 		len = sprintf(buf, "%d \"%s\"\r\n", rcode, dir);
 	if (parms->verbose)
-		printk("%s: %s", parms->servername, buf);
+		printk(KFTPD": %s", buf);
 	if ((rc = ksock_rw(parms->clientsock, buf, len, -1)) != len) {
-		printk("%s: ksock_rw(dir_response) failed, rc=%d\n", parms->servername, rc);
+		printk(KFTPD": ksock_rw(dir_response) failed, rc=%d\n", rc);
 		return 1;
 	}
 	return 0;
@@ -486,14 +489,9 @@ filldir (void *data, const char *name, int namelen, off_t offset, ino_t ino)
 	unsigned int	len;
 
 	++p->filecount;
-	if (name[0] == '.' && namelen <= 2) {
-		if (namelen == 1) {
-			if (p->use_http || !hijack_kftpd_show_dotdir)
-				return 0;	// skip "." in khttpd listings
-		} else if (name[1] == '.' && p->path_len == 1) {
-			if (p->path[0] == '/')	// paranoia: path_len==1 ought to be sufficient
-				return 0;	// skip ".." when listing "rootdir"
-		}
+	if (namelen == 2 && name[0] == '.' && name[1] == '.') {
+		if (!hijack_rootdir_dotdot && p->path_len == 1 && p->path[0] == '/')
+			return 0;	// hide '..' in rootdir
 	}
 	// determine next aligned location in p->nam buffer:
 	len = (p->nam_used + 3) & ~3;
@@ -811,7 +809,7 @@ khttpd_respond (server_parms_t *parms, int rcode, const char *title, const char 
 	len = sprintf(buf, kttpd_response, rcode, title, rcode, title, rcode, title, text ? text : "");
 	rc = ksock_rw(parms->clientsock, buf, len, -1);
 	if (rc != len && parms->verbose)
-		printk("%s: respond(): ksock_rw(%d) returned %d, data='%s'\n", parms->servername, len, rc, buf);
+		printk(KHTTPD": respond(): ksock_rw(%d) returned %d, data='%s'\n", len, rc, buf);
 }
 
 
@@ -838,7 +836,7 @@ khttpd_redirect (server_parms_t *parms, const char *path)
 	len = sprintf(buf, http_redirect, path, slash, path, slash);
 	rc = ksock_rw(parms->clientsock, buf, len, -1);
 	if (rc != len)
-		printk("%s: redirect(): ksock_rw(%d) returned %d\n", parms->servername, len, rc);
+		printk(KHTTPD": redirect(): ksock_rw(%d) returned %d\n", len, rc);
 }
 
 static const char audio_mpeg[]		= "audio/mpeg";
@@ -1171,7 +1169,7 @@ send_playlist (server_parms_t *parms, char *path)
 		if (!strxcmp(tags.codec, "mp3", 0)) {
 			secs = str_val(tags.duration) / 1000;
 			size  = sprintf(xfer.buf, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s\r\n\r\n#EXTM3U\r\n"
-				"#EXTINF:%u,%s\r\nhttp://%s%s\r\n", audio_m3u, secs, artist_title, parms->serverip, path);
+				"#EXTINF:%u,%s\r\nhttp://%s%s\r\n", audio_m3u, secs, artist_title, parms->hostname, path);
 			(void)ksock_rw(parms->datasock, xfer.buf, size, -1);
 		} else { // wma, wav
 			khttpd_redirect(parms, path);
@@ -1212,19 +1210,24 @@ open_fidfile:
 		while (sizeof(fid) == read(fidfiles[fidx], (char *)&fid, sizeof(fid))) {
 			int	fd;
 
+			if (used >= (xfer.buf_size - 512) && (used -= ksock_rw(parms->datasock, xfer.buf, used, -1)))
+				goto cleanup;
+
 			// read in the tagfile for this fid
 			fid |= 1;
 			sprintf(subpath+13, "%x", fid);
 			fd = open_fid_file(subpath);
 			if (fd < 0) {
-				used += sprintf(xfer.buf+used, "<FONT COLOR=RED>open(\"%s\") failed, rc=%d</FONT>\n", subpath, fd);
-				goto aborted;
+				if (parms->generate_playlist == 1)
+					used += sprintf(xfer.buf+used, "<TR><TD COLSPAN=7><FONT COLOR=RED>open(\"%s\") failed, rc=%d</FONT>\n", subpath, fd);
+				continue;
 			}
 			size = read(fd, parms->tmp3, sizeof(parms->tmp3)-1);
 			close(fd);
 			if (size <= 0) {
-				used += sprintf(xfer.buf+used, "<FONT COLOR=RED>read(\"%s\") failed, rc=%d</FONT>\n", subpath, size);
-				goto aborted;
+				if (parms->generate_playlist == 1)
+					used += sprintf(xfer.buf+used, "<TR><TD COLSPAN=7><FONT COLOR=RED>read(\"%s\") failed, rc=%d</FONT>\n", subpath, size);
+				continue;
 			}
 			parms->tmp3[size] = '\0';	// Ensure zero-termination of the data
 
@@ -1232,8 +1235,9 @@ open_fidfile:
 			find_tags(parms->tmp3, size, labels, (char **)&tags);
 			fidtype = TOUPPER(tags.type[0]);
 			if (fidtype != 'T' && fidtype != 'P') {
-				used += sprintf(xfer.buf+used, "<FONT COLOR=RED>%s: invalid 'type=%s'</FONT>\n", subpath, tags.type);
-				goto aborted;
+				if (parms->generate_playlist == 1)
+					used += sprintf(xfer.buf+used, "<TR><TD COLSPAN=7><FONT COLOR=RED>%s: invalid 'type=%s'</FONT>\n", subpath, tags.type);
+				continue;
 			}
 			if (fidtype == 'P' && parms->generate_playlist == 2)
 				goto open_fidfile;	// nest one level deeper for this playlist
@@ -1263,11 +1267,9 @@ open_fidfile:
 			} else if (fidtype == 'T') {
 				combine_artist_title(tags.artist, tags.title, artist_title, sizeof(artist_title));
 				used += sprintf(xfer.buf+used, "#EXTINF:%u,%s\r\nhttp://%s%s\r\n",
-					secs, artist_title, parms->serverip, subpath);
+					secs, artist_title, parms->hostname, subpath);
 				xfer.buf[used-3] = '0';	// convert subpath into tune path
 			}
-			if (used >= (xfer.buf_size - 512) && (used -= ksock_rw(parms->datasock, xfer.buf, used, -1)))
-				goto cleanup;
 		}
 		close(fidfiles[fidx--]);
 	}
@@ -1326,51 +1328,51 @@ send_file (server_parms_t *parms, char *path)
 }
 
 static int
-do_rmdir (server_parms_t *parms, const char *path)
+kftpd_do_rmdir (server_parms_t *parms, const char *path)
 {
 	int	rc, response = 250;;
 
 	if ((rc = sys_rmdir(path))) {
-		printk("%s: rmdir('%s') failed, rc=%d\n", parms->servername, path, rc);
+		printk(KFTPD": rmdir('%s') failed, rc=%d\n", path, rc);
 		response = 550;
 	}
 	return response;
 }
 
 static int
-do_mkdir (server_parms_t *parms, const char *path)
+kftpd_do_mkdir (server_parms_t *parms, const char *path)
 {
 	int	rc, response = 0;
 
 	if ((rc = sys_mkdir(path, 0777 & ~parms->umask))) {
-		printk("%s: mkdir('%s') failed, rc=%d\n", parms->servername, path, rc);
+		printk(KFTPD": mkdir('%s') failed, rc=%d\n", path, rc);
 		response = 550;
 	} else {
-		(void) send_dir_response(parms, 257, path, "directory created");
+		(void) kftpd_dir_response(parms, 257, path, "directory created");
 	}
 	return response;
 }
 
 static int
-do_chmod (server_parms_t *parms, unsigned int mode, const char *path)
+kftpd_do_chmod (server_parms_t *parms, unsigned int mode, const char *path)
 {
 	int	rc, response = 200;
 
 	if ((rc = sys_chmod(path, mode))) {
 		if (rc != -ENOENT && parms->verbose)
-			printk("%s: chmod('%s',%d) failed, rc=%d\n", parms->servername, path, mode, rc);
+			printk(KFTPD": chmod('%s',%d) failed, rc=%d\n", path, mode, rc);
 		response = 550;
 	}
 	return response;
 }
 
 static int
-do_delete (server_parms_t *parms, const char *path)
+kftpd_do_delete (server_parms_t *parms, const char *path)
 {
 	int	rc, response = 250;
 
 	if ((rc = sys_unlink(path))) {
-		printk("%s: unlink('%s') failed, rc=%d\n", parms->servername, path, rc);
+		printk(KFTPD": unlink('%s') failed, rc=%d\n", path, rc);
 		response = 550;
 	}
 	return response;
@@ -1391,7 +1393,7 @@ receive_file (server_parms_t *parms, char *path)
 			if (size < 0) {
 				response = 426;
 			} else if (size && size != write(xfer.fd, xfer.buf, size)) {
-				printk("%s: write(%d) failed\n", parms->servername, size);
+				printk(KFTPD": write(%d) failed\n", size);
 				response = 451;
 			}
 		} while (!response && size > 0);
@@ -1511,11 +1513,11 @@ kftpd_handle_command (server_parms_t *parms)
 		bufsize = 511;	// limit path lengths, so we can use the other half for other stuff
 	n = ksock_rw(parms->clientsock, buf, bufsize, 0);
 	if (n < 0) {
-		printk("%s: ksock_rw() failed, rc=%d\n", parms->servername, n);
+		printk(KFTPD": ksock_rw() failed, rc=%d\n", n);
 		return -1;
 	} else if (n == 0) {
 		if (parms->verbose)
-			printk("%s: EOF on client sock\n", parms->servername);
+			printk(KFTPD": EOF on client sock\n");
 		return -1;
 	}
 	if (n >= bufsize)
@@ -1526,7 +1528,7 @@ kftpd_handle_command (server_parms_t *parms)
 	if (buf[n - 1] == '\r')
 		buf[--n] = '\0';
 	if (parms->verbose)
-		printk("%s: '%s'\n", parms->servername, buf);
+		printk(KFTPD": '%s'\n", buf);
 
 	// first look for commands that have hardcoded reponses:
 	for (r = simple_response_table; r->text; ++r) {
@@ -1552,8 +1554,9 @@ kftpd_handle_command (server_parms_t *parms)
 		response = 530;	// login incorrect
 	} else if (!strxcmp(buf, "LIST", 1) || !strxcmp(buf, "NLST", 1)) {
 		int j = 4;
-		if (buf[j] == ' ' && buf[j+1] == '-')
+		if (buf[j] == ' ' && buf[j+1] == '-') {
 			while (buf[++j] && buf[j] != ' ');
+		}
 		if (buf[j] && buf[j] != ' ') {
 			response = 501;
 		} else {
@@ -1573,13 +1576,13 @@ kftpd_handle_command (server_parms_t *parms)
 			response = 431;
 		} else {
 			strcpy(parms->cwd, path);
-			quit = send_dir_response(parms, 250, parms->cwd, "directory changed");
+			quit = kftpd_dir_response(parms, 250, parms->cwd, "directory changed");
 		}
 	} else if (!strxcmp(buf, "CDUP", 0)) {
 		append_path(parms->cwd, "..", parms->tmp3);
-		quit = send_dir_response(parms, 200, parms->cwd, NULL);
+		quit = kftpd_dir_response(parms, 200, parms->cwd, NULL);
 	} else if (!strxcmp(buf, "PWD", 0)) {
-		quit = send_dir_response(parms, 257, parms->cwd, NULL);
+		quit = kftpd_dir_response(parms, 257, parms->cwd, NULL);
 	} else if (!strxcmp(buf, "SITE CHMOD ", 1)) {
 		char *p = &buf[11];
 		int mode;
@@ -1588,7 +1591,7 @@ kftpd_handle_command (server_parms_t *parms)
 		} else {
 			strcpy(path, parms->cwd);
 			append_path(path, p, parms->tmp3);
-			response = do_chmod(parms, mode, path);
+			response = kftpd_do_chmod(parms, mode, path);
 		}
 	} else if (!strxcmp(buf, "SITE ", 1)) {
 		response = hijack_do_command(&buf[5], n - 5) ? 541 : 200;
@@ -1606,7 +1609,7 @@ kftpd_handle_command (server_parms_t *parms)
 		} else {
 			strcpy(path, parms->cwd);
 			append_path(path, &buf[4], parms->tmp3);
-			response = do_mkdir(parms, path);
+			response = kftpd_do_mkdir(parms, path);
 		}
 	} else if (!strxcmp(buf, "RMD ", 1) || !strxcmp(buf, "XRMD ", 1)) {
 		if (!buf[4]) {
@@ -1614,7 +1617,7 @@ kftpd_handle_command (server_parms_t *parms)
 		} else {
 			strcpy(path, parms->cwd);
 			append_path(path, &buf[4], parms->tmp3);
-			response = do_rmdir(parms, path);
+			response = kftpd_do_rmdir(parms, path);
 		}
 	} else if (!strxcmp(buf, "DELE ", 1)) {
 		if (!buf[5]) {
@@ -1622,7 +1625,7 @@ kftpd_handle_command (server_parms_t *parms)
 		} else {
 			strcpy(path, parms->cwd);
 			append_path(path, &buf[5], parms->tmp3);
-			response = do_delete(parms, path);
+			response = kftpd_do_delete(parms, path);
 		}
 	} else if (!strxcmp(buf, "RNFR ", 1)) {
 		if (!buf[5]) {
@@ -1723,7 +1726,7 @@ khttpd_handle_connection (server_parms_t *parms)
 	size = ksock_rw(parms->clientsock, buf, buflen, 0);
 	if (size <= 0) {
 		if (parms->verbose)
-			printk("%s: receive failed: %d\n", parms->servername, size);
+			printk(KHTTPD": receive failed: %d\n", size);
 		return;
 	}
 	if (size >= buflen) {
@@ -1742,11 +1745,22 @@ khttpd_handle_connection (server_parms_t *parms)
 	// HTTP "restart/resume" support:
 	for (x = p; *x; ++x) {
 		static const char Range[] = "\nRange: bytes=";
-		int start = 0, end = -1;
+		static const char Host[] = "\nHost: ";
 		if (*x == '\n') {
 			if (!strxcmp(x, "\nIcy-MetaData:1", 1)) {
 				parms->icy_metadata = 1;
+			} else if (!strxcmp(x, Host, 1) && *(x += sizeof(Host) - 1)) {
+				char *h = x;
+				while ((c = *x) && c != '\n' && c != '\r')
+					++x;
+				if ((x - h) < sizeof(parms->hostname)) {
+					c = *x;
+					*x = '\0';
+					strcpy(parms->hostname, h);
+					*x-- = c;
+				}
 			} else if (!strxcmp(x, Range, 1) && *(x += sizeof(Range) - 1)) {
+				int start = 0, end = -1;
 				if (*x != '-' && (!get_number(&x, &start, 10, "-") || start < 0))
 					break;
 				if (*x == '-') {
@@ -1761,7 +1775,7 @@ khttpd_handle_connection (server_parms_t *parms)
 	}
 	*p = '\0'; // zero-terminate the GET line
 	if (parms->verbose)
-		printk("%s: GET '%s'\n", parms->servername, path);
+		printk(KHTTPD": GET '%s'\n", path);
 	path = khttpd_fix_hexcodes(path);
 	// a useful shortcut
 	if (!strxcmp(path, "/?playlists", 0)) {
@@ -1857,7 +1871,7 @@ ksock_accept (server_parms_t *parms)
 			printk("%s: sock_accept: dup() failed\n", parms->servername);
 		} else if ((rc = parms->clientsock->ops->accept(parms->servsock, parms->clientsock, parms->servsock->file->f_flags)) < 0) {
 			printk("%s: sock_accept: accept() failed, rc=%d\n", parms->servername, rc);
-		} else if (get_ipaddr(parms->clientsock, parms->clientip, 1) || get_ipaddr(parms->clientsock, parms->serverip, 0)) {
+		} else if (get_ipaddr(parms->clientsock, parms->clientip, 1) || get_ipaddr(parms->clientsock, parms->hostname, 0)) {
 			printk("%s: sock_accept: get_ipaddr() failed\n", parms->servername);
 		} else {
 			return 0;	// success
@@ -1875,7 +1889,7 @@ child_thread (void *arg)
 	server_parms_t	*parms = arg;
 
 	if (parms->verbose)
-		printk("%s: %s connection from %s\n", parms->servername, parms->serverip, parms->clientip);
+		printk("%s: %s connection from %s\n", parms->servername, parms->hostname, parms->clientip);
 	(void) set_sockopt(parms, parms->servsock, SOL_TCP, TCP_NODELAY, 1); // don't care
 	if (parms->use_http) {
 		khttpd_handle_connection(parms);
@@ -1905,10 +1919,10 @@ kftpd_daemon (unsigned long use_http)	// invoked twice from init/main.c
 	memset(&parms, 0, sizeof(parms));
 
 	if (use_http) {
-		parms.servername = "khttpd";
+		parms.servername = KHTTPD;
 		sema = &hijack_khttpd_startup_sem;
 	} else {
-		parms.servername = "kftpd";
+		parms.servername = KFTPD;
 		sema = &hijack_kftpd_startup_sem;
 	}
 

@@ -240,6 +240,20 @@ static void state_getflashtype(void)
 	state_disablewrite();
 }
 
+typedef struct savearea_fields_s {
+	long		filler0;
+	long		filler1;
+	int		filler2;
+	unsigned	filler3   :2;
+	unsigned	ac_volume :7;
+	unsigned	dc_volume :7;
+	unsigned	filler4   :16;
+} savearea_fields_t;
+
+static int saved_volume;
+extern int hijack_volumelock_enabled;
+extern int empeg_on_dc_power;
+
 int empeg_state_restore (unsigned char *buffer)
 {
 	/* EMPEG_FLASHBASE+0x4000 to +0x5fff is the space used for
@@ -358,7 +372,14 @@ static inline int state_store(void)
 	/* Store the contents of read_buffer to flash, at savebase */
 	int a,status,crc=0xffff,data;
 	volatile unsigned short *from=(volatile unsigned short*)state_devices[0].read_buffer;
-	
+	if (!hijack_volumelock_enabled) {
+		savearea_fields_t *buf = (savearea_fields_t *)from;
+		if (empeg_on_dc_power)
+			buf->dc_volume = saved_volume;
+		else
+			buf->ac_volume = saved_volume;
+	}
+
 	/* Store current unixtime */
 	*((unsigned int*)from)=xtime.tv_sec;
 
@@ -602,7 +623,10 @@ static ssize_t state_read(struct file *filp, char *dest, size_t count,
 			  loff_t *ppos)
 {
 	struct state_dev *dev = filp->private_data;
+	savearea_fields_t *buf = (savearea_fields_t *)dev->read_buffer;
 
+	if (saved_volume == -1)
+		saved_volume = empeg_on_dc_power ? buf->dc_volume : buf->ac_volume;
 	if (count > STATE_BLOCK_SIZE || count <= 0)
 		count = STATE_BLOCK_SIZE;
 
@@ -610,19 +634,6 @@ static ssize_t state_read(struct file *filp, char *dest, size_t count,
 
 	return count;
 }
-
-typedef struct savearea_fields_s {
-	long		filler0;
-	long		filler1;
-	int		filler2;
-	unsigned	filler3   :2;
-	unsigned	ac_volume :7;
-	unsigned	dc_volume :7;
-	unsigned	filler4   :16;
-} savearea_fields_t;
-
-extern int hijack_volumelock_enabled;
-
 
 static ssize_t state_write(struct file *filp, const char *source, size_t count,
 		     loff_t *ppos)
@@ -636,18 +647,16 @@ static ssize_t state_write(struct file *filp, const char *source, size_t count,
 
 	copy_from_user_ret(dev->write_buffer, source, count, -EFAULT);
 
-	if (hijack_volumelock_enabled) {
-		savearea_fields_t	*new = (savearea_fields_t *)dev->write_buffer;
-		savearea_fields_t	*old = (savearea_fields_t *)dev->read_buffer;
-		new->ac_volume = old->ac_volume;
-		new->dc_volume = old->dc_volume;
-	}
-
 	/* Now we've written, switch the buffers and copy */
 	save_flags_cli(flags);
 	temp = dev->read_buffer;
 	dev->read_buffer = dev->write_buffer;
 	dev->write_buffer = temp;
+
+	if (!hijack_volumelock_enabled) {
+		savearea_fields_t *buf = (savearea_fields_t *)dev->read_buffer;
+		saved_volume = empeg_on_dc_power ? buf->dc_volume : buf->ac_volume;
+	}
 
 
 	/* Mark as dirty */

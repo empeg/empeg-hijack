@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v361"
+#define HIJACK_VERSION	"v362"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -30,6 +30,7 @@ extern void input_wakeup_waiters(void);					// arch/arm/special/empeg_input.c
 extern int display_sendcontrol_part1(int);				// arch/arm/special/empeg_display.c
 extern int display_sendcontrol_part2(int);				// arch/arm/special/empeg_display.c
 extern int remount_drives (int writeable);				// arch/arm/special/notify.c
+extern void init_notify (void);						// arch/arm/special/notify.c
 extern int sys_sync(void);						// fs/buffer.c
 extern int get_loadavg(char * buffer);					// fs/proc/array.c
 extern void machine_restart(void *);					// arch/arm/kernel/process.c
@@ -263,11 +264,15 @@ static struct {
 		unsigned int		buttons[9];
 	} popup0_default_translation =
 	{	{IR_FAKE_POPUP0, 0, 9, 0},
-		{IR_FAKE_CLOCK,		IR_RIO_INFO_PRESSED,
-		 IR_FAKE_KNOBSEEK,	IR_RIO_MARK_PRESSED|ALT,
-		 IR_FAKE_NEXTSRC,	IR_RIO_0_PRESSED|ALT,
-		 IR_FAKE_VOLADJMENU,	IR_FAKE_VISUALSEEK,
-		 IR_KNOB_PRESSED}
+		{IR_FAKE_CLOCK,
+		IR_RIO_INFO_PRESSED,
+		IR_KNOB_PRESSED,
+		IR_FAKE_KNOBSEEK,
+		IR_RIO_MARK_PRESSED|ALT,
+		IR_FAKE_NEXTSRC,
+		IR_RIO_0_PRESSED|ALT,	// Shuffle
+		IR_FAKE_VISUALSEEK,
+		IR_FAKE_VOLADJMENU}
 	};
 
 static ir_translation_t *ir_current_longpress = NULL;
@@ -680,7 +685,6 @@ static const char hightemp_menu_label	[] = "High Temperature Warning";
 static const char delaytime_menu_label	[] = "Left/Right Time Alignment";
 static const char homework_menu_label	[] = "Home/Work Location";
 static const char knobdata_menu_label	[] = "Knob Press Redefinition";
-static const char reducedisplay_menu_label[] = "Reduce Display Overhead";
 static const char carvisuals_menu_label	[] = "Restore DC/Car Visuals";
 static const char blankerfuzz_menu_label[] = "Screen Blanker Sensitivity";
 static const char blanker_menu_label	[] = "Screen Blanker Timeout";
@@ -2008,30 +2012,6 @@ saveserial_display (int firsttime)
 	return NEED_REFRESH;
 }
 
-int hijack_reducedisplay_enabled;
-
-static void
-reducedisplay_move (int direction)
-{
-	hijack_reducedisplay_enabled = !hijack_reducedisplay_enabled;
-}
-
-static int
-reducedisplay_display (int firsttime)
-{
-	unsigned int rowcol;
-
-	if (!firsttime && !hijack_last_moved)
-		return NO_REFRESH;
-	hijack_last_moved = 0;
-	clear_hijack_displaybuf(COLOR0);
-	(void)draw_string(ROWCOL(0,0), reducedisplay_menu_label, PROMPTCOLOR);
-	rowcol = draw_string(ROWCOL(2,0), "Reduce Overhead: ", PROMPTCOLOR);
-	(void)   draw_string_spaced(rowcol, disabled_enabled[hijack_reducedisplay_enabled], ENTRYCOLOR);
-	(void)   draw_string(ROWCOL(3,10), "(value is not saved)", PROMPTCOLOR);
-	return NEED_REFRESH;
-}
-
 static void
 carvisuals_move (int direction)
 {
@@ -3053,7 +3033,6 @@ static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 #endif // EMPEG_KNOB_SUPPORTED
 	{ delaytime_menu_label,		delaytime_display,	delaytime_move,		0},
 	{"Reboot Machine",		reboot_display,		NULL,			0},
-	{ reducedisplay_menu_label,	reducedisplay_display,	reducedisplay_move,	0},
 	{ carvisuals_menu_label,	carvisuals_display,	carvisuals_move,	0},
 	{ blankerfuzz_menu_label,	blankerfuzz_display,	blankerfuzz_move,	0},
 	{ blanker_menu_label,		blanker_display,	blanker_move,		0},
@@ -3960,6 +3939,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 				// Send initial button sequences, if any
 				input_append_code(IR_INTERNAL, IR_FAKE_INITIAL);
 				input_append_code(IR_INTERNAL, RELEASECODE(IR_FAKE_INITIAL));
+				init_notify();
 				player_state = started;
 			}
 			break;
@@ -5309,7 +5289,6 @@ hijack_init (void *animptr)
 	char buf[128], msg[32];
 	unsigned long anistart = HZ;
 
-	hijack_reducedisplay_enabled = 1;
 	hijack_khttpd_new_fid_dirs = 1;	// look for new fids directory structure
 	hijack_player_init_pid = 0;
 	hijack_game_animptr = animptr;

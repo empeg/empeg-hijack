@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v253"
+#define HIJACK_VERSION	"v254"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -443,9 +443,10 @@ static const char  *voladj_names[] = {"[Off]", "Low", "Medium", "High"};
 static unsigned int voladj_history[VOLADJ_HISTSIZE] = {0,}, voladj_last_histx = 0, voladj_histx = 0;
 static unsigned int hijack_voladj_parms[(1<<VOLADJ_BITS)-1][5];
 
-static int voladj_ldefault[] = {0x1800,	 100,	0x1000,	25,	60}; // Low
-static int voladj_mdefault[] = {0x2000,	 409,	0x1000,	27,	70}; // Medium (Normal)
-static int voladj_hdefault[] = {0x2000,	3000,	0x0c00,	30,	80}; // High
+// Default VolAdj parms courtesy of tfabris April-2002
+static int voladj_ldefault[] = {0x1500,	 400,	0x1000,	200,	1100}; // Low
+static int voladj_mdefault[] = {0x1700,	 600,	0x1000,	200,	 600}; // Medium
+static int voladj_hdefault[] = {0x2200,	1000,	0x1000,	100,	 500}; // High
 
 #ifdef CONFIG_NET_ETHERNET
 struct semaphore hijack_kftpd_startup_sem	= MUTEX_LOCKED;	// sema for waking up kftpd after we read config.ini
@@ -2510,7 +2511,7 @@ hijack_tone_init (void)
 {
 	(void) hijack_tone_set(hijack_db_table[hijack_bass_adj].value, hijack_bass_freq, hijack_bass_q,
 		hijack_db_table[hijack_treble_adj].value, hijack_treble_freq, hijack_treble_q);
-	printk("hijack_tone_init completed.\n");
+	//printk("hijack_tone_init completed.\n");
 }
 
 static void

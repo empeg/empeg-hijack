@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v187"
+#define HIJACK_VERSION	"v188"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -496,33 +496,6 @@ typedef struct menu_item_s {
 	unsigned long		userdata;
 } menu_item_t;
 static volatile short menu_item = 0, menu_size = 0, menu_top = 0;
-
-// format of eight-byte flash memory savearea used for our hijack'd settings
-typedef struct hijack_savearea_s {
-	unsigned voladj_ac_power	: VOLADJ_BITS;		// 2 bits
-	unsigned blanker_timeout	: BLANKER_BITS;		// 6 bits
-
-	unsigned voladj_dc_power	: VOLADJ_BITS;		// 2 bits
-	unsigned hightemp_threshold	: hightemp_BITS;		// 5 bits
-	unsigned restore_visuals	: 1;			// 1 bit
-
-	unsigned fsck_disabled		: 1;			// 1 bit
-	unsigned onedrive		: 1;			// 1 bit
-	unsigned timer_action		: TIMERACTION_BITS;	// 1 bit
-	unsigned force_power		: FORCEPOWER_BITS;	// 2 bits
-	unsigned byte3_leftover1	: 1;			// 1 bits (was seek)
-	unsigned homework		: 1;			// 1 bits
-	unsigned byte3_leftover		: 1;			// 1 bits
-
-	unsigned knob_ac		: 1+KNOBDATA_BITS;	// 4 bits
-	unsigned knob_dc		: 1+KNOBDATA_BITS;	// 4 bits
-
-	unsigned byte5_leftover		: 8;			// 8 bits
-	unsigned byte6_leftover		: 8;			// 8 bits
-
-	unsigned menu_item		: MENU_BITS;		// 5 bits
-	unsigned blanker_sensitivity	: SENSITIVITY_BITS;	// 3 bits
-} hijack_savearea_t;
 
 static unsigned char hijack_displaybuf[EMPEG_SCREEN_ROWS][EMPEG_SCREEN_COLS/2];
 
@@ -4088,6 +4061,33 @@ fix_visuals (unsigned char *buf)
 
 #define HIJACK_SAVEAREA_OFFSET (128 - 2 - sizeof(hijack_savearea_t))
 
+// format of eight-byte flash memory savearea used for our hijack'd settings
+typedef struct hijack_savearea_s {
+	unsigned voladj_ac_power	: VOLADJ_BITS;		// 2 bits
+	unsigned blanker_timeout	: BLANKER_BITS;		// 6 bits
+
+	unsigned voladj_dc_power	: VOLADJ_BITS;		// 2 bits
+	unsigned hightemp_threshold	: hightemp_BITS;		// 5 bits
+	unsigned restore_visuals	: 1;			// 1 bit
+
+	unsigned fsck_disabled		: 1;			// 1 bit
+	unsigned onedrive		: 1;			// 1 bit
+	unsigned timer_action		: TIMERACTION_BITS;	// 1 bit
+	unsigned force_power		: FORCEPOWER_BITS;	// 2 bits
+	unsigned byte3_leftover1	: 1;			// 1 bits (was seek)
+	unsigned homework		: 1;			// 1 bits
+	unsigned byte3_leftover		: 1;			// 1 bits
+
+	unsigned knob_ac		: 1+KNOBDATA_BITS;	// 4 bits
+	unsigned knob_dc		: 1+KNOBDATA_BITS;	// 4 bits
+
+	unsigned byte5_leftover		: 8;			// 8 bits
+	unsigned byte6_leftover		: 8;			// 8 bits
+
+	unsigned menu_item		: MENU_BITS;		// 5 bits
+	unsigned blanker_sensitivity	: SENSITIVITY_BITS;	// 3 bits
+} hijack_savearea_t;
+
 void	// invoked from empeg_state.c
 hijack_save_settings (unsigned char *buf)
 {
@@ -4102,11 +4102,10 @@ hijack_save_settings (unsigned char *buf)
 	savearea.blanker_timeout	= blanker_timeout;
 	savearea.hightemp_threshold	= hightemp_threshold;
 	savearea.onedrive		= hijack_onedrive;
-	if (knobdata_index == 0) {
+	if (knobdata_index == 1)
 		knob = (1 << KNOBDATA_BITS) | popup0_index;
-	} else {
+	else
 		knob = knobdata_index;
-	}
 	if (empeg_on_dc_power)
 		savearea.knob_dc = knob;
 	else
@@ -4133,13 +4132,11 @@ hijack_restore_settings (char *buf)
 
 	failed = empeg_state_restore(buf);
         memcpy(&savearea, buf+HIJACK_SAVEAREA_OFFSET, sizeof(savearea));
-
 	hijack_force_power		= savearea.force_power;
 	if (hijack_force_power & 2)
 		empeg_on_dc_power	= hijack_force_power & 1;
 	else
 		empeg_on_dc_power	= ((GPLR & EMPEG_EXTPOWER) != 0);
-
 	if (empeg_on_dc_power)
 		hijack_voladj_enabled	= savearea.voladj_dc_power;
 	else

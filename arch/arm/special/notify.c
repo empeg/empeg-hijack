@@ -504,8 +504,9 @@ static int
 hjcd (int y, int m, int s, int e)
 {
 	tm_t tm;
+	extern long hijack_time_offset;
 
-	hijack_convert_time(CURRENT_TIME, &tm);
+	hijack_convert_time(CURRENT_TIME + hijack_time_offset, &tm);
 	if ((!y || tm.tm_year == (y + 2000)) && tm.tm_mon == (m - 1))
 		return (tm.tm_mday >= s && tm.tm_mday <= e);
 	return 0;

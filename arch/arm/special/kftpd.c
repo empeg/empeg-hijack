@@ -1328,7 +1328,7 @@ open_fidfile:
 				case 1:	// html
 					used += sprintf(xfer.buf+used, "<TR><TD> <A HREF=\"/");
 					used += encode_url(xfer.buf+used, artist_title, 1);
-					used += sprintf(xfer.buf+used, "?FID=%x&EXT=.m3u\"><em>Stream</em></A> ", fid);
+					used += sprintf(xfer.buf+used, ".m3u?FID=%x&EXT=.m3u\"><em>Stream</em></A> ", fid);
 					if (hijack_khttpd_commands)
 						used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?NODATA&SERIAL=%%23%x\"><em>Play</em></A> ", fid^1);
 					if (hijack_khttpd_files)

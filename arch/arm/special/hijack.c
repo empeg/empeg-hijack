@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v192"
+#define HIJACK_VERSION	"v193"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -3088,7 +3088,6 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	// Send initial button sequences, if any
 	if (!sent_initial_buttons && hijack_player_started) {
 		sent_initial_buttons = 1;
-		printk("Hijack: sending initial buttons\n");
 		input_append_code(IR_INTERNAL, IR_FAKE_INITIAL);
 		input_append_code(IR_INTERNAL, RELEASECODE(IR_FAKE_INITIAL));
 	}
@@ -4076,64 +4075,64 @@ typedef struct hijack_savearea_s {
 	unsigned blanker_sensitivity	: SENSITIVITY_BITS;	// 3 bits
 } hijack_savearea_t;
 
+hijack_savearea_t savearea;	// MUST be static for AC/DC options to persist in opposite mode!
+
 void	// invoked from empeg_state.c
 hijack_save_settings (unsigned char *buf)
 {
-	hijack_savearea_t sa;
 	unsigned int knob;
 
 	// save state
 	if (empeg_on_dc_power)
-		sa.voladj_dc_power = hijack_voladj_enabled;
+		savearea.voladj_dc_power = hijack_voladj_enabled;
 	else
-		sa.voladj_ac_power = hijack_voladj_enabled;
-	sa.blanker_timeout	= blanker_timeout;
-	sa.hightemp_threshold	= hightemp_threshold;
-	sa.onedrive		= hijack_onedrive;
+		savearea.voladj_ac_power = hijack_voladj_enabled;
+	savearea.blanker_timeout	= blanker_timeout;
+	savearea.hightemp_threshold	= hightemp_threshold;
+	savearea.onedrive		= hijack_onedrive;
 	if (knobdata_index == 1)
 		knob = (1 << KNOBDATA_BITS) | popup0_index;
 	else
 		knob = knobdata_index;
 	if (empeg_on_dc_power)
-		sa.knob_dc	= knob;
+		savearea.knob_dc	= knob;
 	else
-		sa.knob_ac	= knob;
-	sa.blanker_sensitivity	= blanker_sensitivity;
-	sa.timer_action		= timer_action;
-	sa.menu_item		= menu_item;
-	sa.restore_visuals	= carvisuals_enabled;
-	sa.fsck_disabled	= hijack_fsck_disabled;
-	sa.force_power		= hijack_force_power;
-	sa.homework		= hijack_homework;
-	sa.byte3_leftover	= 0;
-	sa.byte5_leftover	= 0;
-	sa.byte6_leftover	= 0;
-	memcpy(buf+HIJACK_SAVEAREA_OFFSET, &sa, sizeof(sa));
+		savearea.knob_ac	= knob;
+	savearea.blanker_sensitivity	= blanker_sensitivity;
+	savearea.timer_action		= timer_action;
+	savearea.menu_item		= menu_item;
+	savearea.restore_visuals	= carvisuals_enabled;
+	savearea.fsck_disabled	= hijack_fsck_disabled;
+	savearea.force_power		= hijack_force_power;
+	savearea.homework		= hijack_homework;
+	savearea.byte3_leftover	= 0;
+	savearea.byte5_leftover	= 0;
+	savearea.byte6_leftover	= 0;
+	memcpy(buf+HIJACK_SAVEAREA_OFFSET, &savearea, sizeof(savearea));
 }
 
 static int
 hijack_restore_settings (char *buf)
 {
-	hijack_savearea_t sa;
 	extern int empeg_state_restore(unsigned char *);	// arch/arm/special/empeg_state.c
 	unsigned int knob, failed;
 
 	failed = empeg_state_restore(buf);
-        memcpy(&sa, buf+HIJACK_SAVEAREA_OFFSET, sizeof(sa));
-	hijack_force_power		= sa.force_power;
+        memcpy(&savearea, buf+HIJACK_SAVEAREA_OFFSET, sizeof(savearea));
+	hijack_force_power		= savearea.force_power;
 	if (hijack_force_power & 2)
 		empeg_on_dc_power	= hijack_force_power & 1;
 	else
 		empeg_on_dc_power	= ((GPLR & EMPEG_EXTPOWER) != 0);
 	if (empeg_on_dc_power)
-		hijack_voladj_enabled	= sa.voladj_dc_power;
+		hijack_voladj_enabled	= savearea.voladj_dc_power;
 	else
-		hijack_voladj_enabled	= sa.voladj_ac_power;
-	hijack_homework			= sa.homework;
-	blanker_timeout			= sa.blanker_timeout;
-	hightemp_threshold		= sa.hightemp_threshold;
-	hijack_onedrive			= sa.onedrive;
-	knob = empeg_on_dc_power ? sa.knob_dc : sa.knob_ac;
+		hijack_voladj_enabled	= savearea.voladj_ac_power;
+	hijack_homework			= savearea.homework;
+	blanker_timeout			= savearea.blanker_timeout;
+	hightemp_threshold		= savearea.hightemp_threshold;
+	hijack_onedrive			= savearea.onedrive;
+	knob = empeg_on_dc_power ? savearea.knob_dc : savearea.knob_ac;
 	if ((knob & (1 << KNOBDATA_BITS)) == 0) {
 		popup0_index		= 0;
 		knobdata_index		= knob;
@@ -4141,12 +4140,12 @@ hijack_restore_settings (char *buf)
 		popup0_index		= knob & ((1 << KNOBDATA_BITS) - 1);
 		knobdata_index		= 1;
 	}
-	blanker_sensitivity		= sa.blanker_sensitivity;
-	timer_action			= sa.timer_action;
-	menu_item			= sa.menu_item;
+	blanker_sensitivity		= savearea.blanker_sensitivity;
+	timer_action			= savearea.timer_action;
+	menu_item			= savearea.menu_item;
 	menu_init();
-	carvisuals_enabled		= sa.restore_visuals;
-	hijack_fsck_disabled		= sa.fsck_disabled;
+	carvisuals_enabled		= savearea.restore_visuals;
+	hijack_fsck_disabled		= savearea.fsck_disabled;
 
 	return failed;
 }

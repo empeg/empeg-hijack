@@ -171,9 +171,21 @@ ksock_rw (struct socket *sock, const char *buf, int buf_size, int minimum)
 		msg.msg_iovlen     = 1;
 
 		if (sending) {
+			int retries = 9;
 			msg.msg_flags = MSG_DONTWAIT;	// asynchronous send
-			while ((rc = sock_sendmsg(sock, &msg, len)) == -EAGAIN)
-				msg.msg_flags = 0;	// use synchronous send instead
+			again: switch (rc = sock_sendmsg(sock, &msg, len)) {
+				case -EAGAIN:
+					msg.msg_flags = 0;	// use synchronous send instead
+					goto again;
+				case -ENOMEM:
+				case -ENOBUFS:
+					printk("sock_sendmsg(): low memory\n");
+					if (retries--) {
+						current->state = TASK_INTERRUPTIBLE;
+						schedule_timeout(HZ);
+						goto again;
+					}
+			}
 		} else {
 			rc = sock_recvmsg(sock, &msg, len, 0);
 		}
@@ -957,8 +969,8 @@ open_fid_file (char *path)
 static int
 khttp_send_file_header (server_parms_t *parms, char *path, off_t length, char *buf, int bufsize)
 {
-	static char	*labels[] = {"type=", "artist=", "title=", "codec=", "genre=", NULL};
-	struct 		{char *type, *artist, *title, *codec, *genre;} tags;
+	static char	*labels[] = {"type=", "artist=", "title=", "codec=", NULL};
+	struct 		{char *type, *artist, *title, *codec;} tags;
 	int		len;
 	const char	*mimetype = application_octet, *rcode = "200 OK";
 	off_t		clength = length;
@@ -1011,9 +1023,7 @@ khttp_send_file_header (server_parms_t *parms, char *path, off_t length, char *b
 	if (mimetype)
 		len += sprintf(buf+len, "Content-Type: %s\r\n", mimetype);
 	if (artist_title[0]) {	// tune title for WinAmp, XMMS, Save-To-Disk, etc..
-		len += sprintf(buf+len, "x-audiocast-name:%s\r\n", artist_title);
-		if (tags.genre[0])
-			len += sprintf(buf+len, "x-audiocast-genre:%s\r\n", tags.genre);
+		len += sprintf(buf+len, "x-audiocast-name: %s\r\n", artist_title);
 		if (parms->icy_metadata)
 			len += sprintf(buf+len, "icy-name:%s\r\n", artist_title);
 		else
@@ -1177,7 +1187,7 @@ send_playlist (server_parms_t *parms, char *path)
 		if (!strxcmp(tags.codec, "mp3", 0)) {
 			secs = str_val(tags.duration) / 1000;
 			size  = sprintf(xfer.buf, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s\r\n\r\n#EXTM3U\r\n"
-				"#EXTINF:%u,%s\r\nhttp://%s%s?#%s.%s\r\n", audio_m3u, secs, artist_title, parms->hostname, path, artist_title, tags.codec);
+				"#EXTINF:%u,%s\r\nhttp://%s%s\r\n", audio_m3u, secs, artist_title, parms->hostname, path);
 			(void)ksock_rw(parms->datasock, xfer.buf, size, -1);
 		} else { // wma, wav
 			khttpd_redirect(parms, path);
@@ -1283,8 +1293,8 @@ open_fidfile:
 				combine_artist_title(tags.artist, tags.title, artist_title, sizeof(artist_title));
 				subpath[sublen - 1] = '0';
 				//fixme: Get rid of everything after '#' if iTunes is not any better with it
-				used += sprintf(xfer.buf+used, "#EXTINF:%u,%s\r\nhttp://%s%s?#%s.%s\r\n",
-					secs, artist_title, parms->hostname, subpath, artist_title, tags.codec);
+				used += sprintf(xfer.buf+used, "#EXTINF:%u,%s\r\nhttp://%s%s\r\n",
+					secs, artist_title, parms->hostname, subpath);
 			}
 		}
 		close(fidfiles[fidx--]);

@@ -60,13 +60,15 @@ typedef struct server_parms_s {
 	struct socket		*servsock;
 	struct socket		*datasock;
 	struct sockaddr_in	clientaddr;
-	char			verbose;	// bool
+	char			verbose;		// bool
 	char			generate_playlist;	// bool
-	char			use_http;	// bool
-	char			have_portaddr;	// bool
-	int			data_port;
-	off_t			start_offset;	// starting offset for next FTP/HTTP file transfer
-	off_t			end_offset;	// for current HTTP file read
+	char			use_http;		// bool
+	char			have_portaddr;		// bool
+	char			icy_metadata;		// bool
+	char			filler;		// not used.
+	short			data_port;
+	off_t			start_offset;		// starting offset for next FTP/HTTP file transfer
+	off_t			end_offset;		// for current HTTP file read
 	unsigned int		umask;
 	char			*servername;
 	struct sockaddr_in	portaddr;
@@ -912,7 +914,7 @@ open_fid_file (char *path, const char *tail)
 }
 
 static const char *
-get_fid_mime_title (char *path, char *buf, int bufsize, char *title, int titlelen)
+get_fid_mime_title (char *path, char *buf, int bufsize, char *title, int titlelen, char *ext)
 {
 	const char	*mimetype = application_octet;
 	char		type[12], codec[12];
@@ -929,11 +931,9 @@ get_fid_mime_title (char *path, char *buf, int bufsize, char *title, int titlele
 				case 'm': mimetype = audio_wma;	 break;
 				case 'a': mimetype = audio_wav;	 break;
 			}
-			if (title) {
-				get_tag(buf, "title=", title, titlelen - 1 - strlen(codec));
-				strcat(title, ".");
-				strcat(title, codec);
-			}
+			get_tag(buf, "title=", title, titlelen - 1);
+			*ext++ = '.';
+			strcpy(ext, codec);
 		}
 
 	}
@@ -946,11 +946,11 @@ khttp_send_file_header (server_parms_t *parms, char *path, off_t length, char *b
 	int		len;
 	const char	*mimetype, *rcode = "200 OK";
 	off_t		clength = length;
-	char		title[64];
+	char		title[64], ext[8];
 
 	title[0] = '\0';
 	if (glob_match(path, "/drive?/fids/*0")) {
-		mimetype = get_fid_mime_title(path, buf, bufsize, title, sizeof(title));
+		mimetype = get_fid_mime_title(path, buf, bufsize, title, sizeof(title), ext);
 	} else {
 		const char		*pattern;
 		const mime_type_t	*m = mime_types;
@@ -965,8 +965,12 @@ khttp_send_file_header (server_parms_t *parms, char *path, off_t length, char *b
 	len = sprintf(buf, "HTTP/1.1 %s\r\nConnection: close\r\n", rcode);
 	if (mimetype)
 		len += sprintf(buf+len, "Content-Type: %s\r\n", mimetype);
-	if (*title)	// tune title for WinAmp
-		len += sprintf(buf+len, "Content-Disposition: attachment; filename=%s\r\n", title);
+	if (*title) {	// tune title for WinAmp, XMMS, Save-To-Disk, etc..
+		if (parms->icy_metadata)
+			len += sprintf(buf+len, "icy-name: %s\r\n", title);
+		else
+			len += sprintf(buf+len, "Content-Disposition: attachment; filename=%s%s\r\n", title, ext);
+	}
 	if (clength) {
 		len += sprintf(buf+len, "Accept-Ranges: bytes\r\nContent-Length: %lu\r\n", clength);
 		if (parms->end_offset != -1)
@@ -1167,8 +1171,7 @@ send_playlist (server_parms_t *parms, char *path)
 			const char *extra = (*type == 't') ? "0" : "1?.html";
 			size += sprintf(xfer.buf+size, "<TR><TD> <A HREF=\"%x?.m3u\"><em>Play</em></A> ", fid);
 			size += sprintf(xfer.buf+size, "<TD> <A HREF=\"%x%s\">%s</A> <TD> %u:%02u <TD> %s "
-				"<TD> %s <TD> %s \r\n", fid>>4, extra, title,
-				secs / 60, secs % 60, type, artist, source);
+			  "<TD> %s <TD> %s \r\n", fid>>4, extra, title, secs/60, secs%60, type, artist, source);
 		} else if (*type == 't') {
 			size += sprintf(xfer.buf+size, "#EXTINF:%u,%s - %s\r\nhttp://%s%s\r\n",
 				secs, artist, title, parms->serverip, tags_path);
@@ -1624,17 +1627,22 @@ khttpd_handle_connection (server_parms_t *parms)
 	// HTTP "restart/resume" support:
 	for (x = p; *x; ++x) {
 		static const char Range[] = "\nRange: bytes=";
+		static const char Icy[] = "\nIcy-MetaData:1";
 		int start = 0, end = -1;
-		if (*x == '\n' && !strxcmp(x, Range, 1) && *(x += sizeof(Range) - 1)) {
-			if (*x != '-' && (!get_number(&x, &start, 10, "-") || start < 0))
-				break;
-			if (*x == '-') {
-				if ((c = *++x) == '\0' || c == '\r' || c == '\n' || (get_number(&x, &end, 10, "\r\n") && end >= start)) {
-					parms->start_offset = start;
-					parms->end_offset   = end;
+		if (*x == '\n') {
+			if (!strxcmp(x, Icy, 1)) {
+				parms->icy_metadata = 1;
+			} else if (!strxcmp(x, Range, 1) && *(x += sizeof(Range) - 1)) {
+				if (*x != '-' && (!get_number(&x, &start, 10, "-") || start < 0))
+					break;
+				if (*x == '-') {
+					if ((c = *++x) == '\0' || c == '\r' || c == '\n' || (get_number(&x, &end, 10, "\r\n") && end >= start)) {
+						parms->start_offset = start;
+						parms->end_offset   = end;
+					}
 				}
+				break;
 			}
-			break;
 		}
 	}
 	*p = '\0'; // zero-terminate the GET line

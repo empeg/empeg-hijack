@@ -543,6 +543,7 @@ setup_arch(char **cmdline_p, unsigned long * memory_start_p, unsigned long * mem
 #endif
 	}
 
+	// Empeg boot rom supplies mem=12m / mem=16m command line here.
 	parse_cmdline(cmdline_p, from);
 
 	if (!mem_end)
@@ -554,7 +555,18 @@ setup_arch(char **cmdline_p, unsigned long * memory_start_p, unsigned long * mem
 		empeg_setup_bank_mapping(7);
 	else
 		empeg_setup_bank_mapping(9);
+
+#ifdef CONFIG_MK2A_32MB
+	// Above, we used the cmdline parameter (mem=12m / mem=16m) from the boot ROM
+	// to select the correct size bank mappings above, which is fine.
+	// But now we need a way to correctly determine the real amount of memory..
+	// One way would be to use a temporary MMU mapping REALLY EARLY during startup
+	// so that we could test for the presence of an extra bank, or perhaps
+	// simply so we can access the MDCNFG register to see which banks are enabled.
+	// (upgraded players will have the newer e000 ROM which enables additional banks).
 	
+	mem_end = PAGE_OFFSET + 32*1024*1024;	// FIXME: Hard-coded for now
+#endif
 	init_task.mm->start_code = (unsigned long) &_text;
 	init_task.mm->end_code	 = (unsigned long) &_etext;
 	init_task.mm->end_data	 = (unsigned long) &_edata;

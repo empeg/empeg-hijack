@@ -121,14 +121,14 @@ extern unsigned long __phys_to_virt(unsigned long ppage);
 #define __virt_to_phys__is_a_macro
 #define __phys_to_virt__is_a_macro
 
-extern unsigned long empeg_virt_to_phys_mapping[4];
+extern unsigned long empeg_virt_to_phys_mapping[8];
 extern unsigned long empeg_phys_to_virt_mapping[4];
 /* setup the tables */
 extern void empeg_setup_bank_mapping(int hw_rev);
 
 static inline unsigned long __virt_to_phys(unsigned long x)
 {
-	return empeg_virt_to_phys_mapping[(x >> 22) & 3] | (x & 0x003fffff);
+	return empeg_virt_to_phys_mapping[(x >> 22) & 7] | (x & 0x003fffff);
 }
 
 static inline unsigned long __phys_to_virt(unsigned long x)

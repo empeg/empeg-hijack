@@ -151,12 +151,19 @@ static int empeg_ramtest_ioctl(struct inode *inode, struct file *filp,
 		copy_from_user(&args, (void *) arg,
 			       sizeof(struct empeg_ramtest_args_t));
 
+#if 0
 		if(empeg_hardwarerevision() < 6)
 		    mem_size = 8 * 1024 * 1024;
 		else if(empeg_hardwarerevision() < 9)
 		    mem_size = 12 * 1024 * 1024;
 		else
 		    mem_size = 16 * 1024 * 1024;
+#else
+{
+		extern unsigned long memory_end;
+		mem_size = memory_end & ~0xc0000000;
+}
+#endif
 
 		if((args.addr & (PAGE_SIZE - 1)) ||
 		   (args.addr >= mem_size))

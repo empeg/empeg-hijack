@@ -23,11 +23,25 @@
 
 #ifdef CONFIG_SA1100_EMPEG
 /* default mapping is 4 banks of 4MB */
-unsigned long empeg_virt_to_phys_mapping[4] = {
+unsigned long empeg_virt_to_phys_mapping[8] = {
 	0xc0000000,
 	0xc8000000,
 	0xd0000000,
-	0xd8000000
+	0xd8000000,
+	0xc0000000,	// phantom
+	0xc8000000,	// phantom
+	0xd0000000,	// phantom
+	0xd8000000	// phantom
+};
+unsigned long empeg_virt_to_phys_mapping_mk2a[8] = {
+	0xc0000000,
+	0xc0400000,
+	0xc0800000,
+	0xc0c00000,
+	0xc8000000,
+	0xc8400000,
+	0xc8800000,
+	0xc8c00000
 };
 unsigned long empeg_phys_to_virt_mapping[4] = {
 	0xc0000000,
@@ -156,45 +170,12 @@ unsigned long __phys_to_virt(unsigned long ppage)
 #ifdef CONFIG_SA1100_EMPEG
 void empeg_setup_bank_mapping(int hw_rev)
 {
-	const unsigned long *virt_mapping, *phys_mapping;
-	
-	static const unsigned long virt_to_phys_1bank[4] = {
-		0xc0000000,
-		0xc0400000,
-		0xc0800000,
-		0xc0c00000
-	};
-	static const unsigned long phys_to_virt_1bank[4] = {
-		0xc0000000,
-		0xc0000000,
-		0xc0000000,
-		0xc0000000
-	};
-	static const unsigned long virt_to_phys_4bank[4] = {
-		0xc0000000,
-		0xc8000000,
-		0xd0000000,
-		0xd8000000
-	};
-	static const unsigned long phys_to_virt_4bank[4] = {
-		0xc0000000,
-		0xc0400000,
-		0xc0800000,
-		0xc0c00000
-	};
-	
-	if(hw_rev < 9) {
-		virt_mapping = virt_to_phys_4bank;
-		phys_mapping = phys_to_virt_4bank;
+	if (hw_rev >= 9) {
+	//	empeg_phys_to_virt_mapping[0] = 0xc0000000;
+		empeg_phys_to_virt_mapping[1] = 0xc1000000;
+		empeg_phys_to_virt_mapping[2] = 0xc2000000;
+		empeg_phys_to_virt_mapping[3] = 0xc3000000;
+		memcpy(empeg_virt_to_phys_mapping,empeg_virt_to_phys_mapping_mk2a,sizeof(empeg_virt_to_phys_mapping));
 	}
-	else {
-		virt_mapping = virt_to_phys_1bank;
-		phys_mapping = phys_to_virt_1bank;
-	}
-
-	memcpy(empeg_virt_to_phys_mapping, virt_mapping,
-	       4 * sizeof(unsigned long));
-	memcpy(empeg_phys_to_virt_mapping, phys_mapping,
-	       4 * sizeof(unsigned long));
 }
 #endif

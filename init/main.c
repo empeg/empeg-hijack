@@ -413,7 +413,7 @@ extern void md_setup(char *str,int *ints) __init;
 extern void time_init(void);
 
 static unsigned long memory_start = 0;
-static unsigned long memory_end = 0;
+       unsigned long memory_end = 0;
 
 int rows, cols;
 
@@ -1363,6 +1363,31 @@ static void __init smp_init(void)
 
 extern void initialize_secondary(void);
 
+#ifdef CONFIG_MK2A_32MB
+static void empeg_ramtest (void *start_p, void *end_p, unsigned long test_pattern)
+{
+	unsigned long errors = 0;
+	unsigned long *p = start_p;
+
+	printk("Memtest: testing memory at %p pattern %08lx:\n", p, test_pattern);
+	while (p != end_p) {
+		*p++ = test_pattern;
+	}
+	p = start_p;
+	while (p != end_p) {
+		unsigned long rb = *p;
+		if (rb != test_pattern) {
+			printk("failed at %p: wrote %08lx read %08lx\n", p, test_pattern, rb);
+			if (++errors >= 100) {
+				printk("Memtest aborted: too many errors\n");
+				return;
+			}
+		}
+		++p;
+	}
+}
+#endif
+
 /*
  *	Activate the first processor.
  */
@@ -1473,6 +1498,12 @@ asmlinkage void __init start_kernel(void)
 	 *	make syscalls (and thus be locked).
 	 */
 	smp_init();
+#ifdef CONFIG_MK2A_32MB
+	if (memory_end == 0xc2000000) {
+		empeg_ramtest(0xc1000000, 0xc2000000, 0ul);
+		empeg_ramtest(0xc1000000, 0xc2000000, ~0ul);
+	}
+#endif
 	kernel_thread(init, NULL, CLONE_FS | CLONE_FILES | CLONE_SIGHAND);
 	current->need_resched = 1;
  	cpu_idle(NULL);

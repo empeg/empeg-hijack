@@ -823,6 +823,9 @@ int do_execve(char * filename, char ** argv, char ** envp, struct pt_regs * regs
 	int retval;
 	int i;
 	int subst_argv = 0;	// if player starting, and we're on DC, insert a "-s-" arg to free the serial port!
+	extern char hijack_zoneinfo[128];
+	extern void hijack_init_zoneinfo(void);
+	int fetch_zoneinfo = !hijack_zoneinfo[0];
 
 	bprm.p = PAGE_SIZE*MAX_ARG_PAGES-sizeof(void *);
 	for (i=0 ; i<MAX_ARG_PAGES ; i++)	/* clear page-table */
@@ -851,6 +854,7 @@ int do_execve(char * filename, char ** argv, char ** envp, struct pt_regs * regs
 		extern pid_t	hijack_player_init_pid;
 		extern int	empeg_on_dc_power, hijack_saveserial;
 		hijack_player_init_pid = -1;	// cannot use current->pid yet because player forks later
+		fetch_zoneinfo = 1;
 		if (bprm.argc == 1 && empeg_on_dc_power && hijack_saveserial) {
 			static char *a[] = {"player", "-s-"};
 			argv = a;
@@ -859,6 +863,9 @@ int do_execve(char * filename, char ** argv, char ** envp, struct pt_regs * regs
 		}
 	}
 	retval = prepare_binprm(&bprm);
+
+	if (fetch_zoneinfo)
+		hijack_init_zoneinfo();
 	
 	if (retval >= 0) {
 		bprm.p = copy_strings(1, &bprm.filename, bprm.page, bprm.p, 2);

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v377"
+#define HIJACK_VERSION	"v378"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -530,7 +530,7 @@ static	int hijack_old_style;			// 1 == don't highlite menu items
 static	int hijack_quicktimer_minutes;		// increment size for quicktimer function
 static	int hijack_standby_minutes;		// number of minutes after screen blanks before we go into standby
 	int hijack_suppress_notify;		// 1 == suppress player "notify" and "dhcp" text on serial port
-	int hijack_time_offset;			// adjust system time-of-day clock by this many minutes
+	long hijack_time_offset;		// adjust system time-of-day clock by this many seconds
 	int hijack_temperature_correction;	// adjust all h/w temperature readings by this celcius amount
 	int hijack_trace_fs;			// trace major filesystem accesses, on serial console
 	int hijack_standbyLED_on, hijack_standbyLED_off;	// on/off duty cycle for standby LED
@@ -656,7 +656,6 @@ static const hijack_option_t hijack_option_table[] =
 {"standby_minutes",		&hijack_standby_minutes,	30,			1,	0,	240},
 {"suppress_notify",		&hijack_suppress_notify,	1,			1,	0,	1},
 {"temperature_correction",	&hijack_temperature_correction,	-4,			1,	-20,	+20},
-{"time_offset",			&hijack_time_offset,		0,			1,	-24*60,	24*60},
 {"trace_fs",			&hijack_trace_fs,		0,			1,	0,	1},
 {"trace_tuner",			&hijack_trace_tuner,		0,			1,	0,	1},
 {button_names[4].name,		&hijack_voladj_parms[0][0],	(int)voladj_ldefault,	5,	0,	0x7ffe},
@@ -3521,10 +3520,10 @@ hijack_handle_button (unsigned int button, unsigned long delay, unsigned int pla
 			char	buf[24];
 			const char *wdays[7] = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
 			extern const char *hijack_months[12];
-			hijack_convert_time(CURRENT_TIME + (hijack_time_offset * 60), &tm);
+			hijack_convert_time(CURRENT_TIME + hijack_time_offset, &tm);
 			sprintf(buf, "%3s %02u:%02u %02u-%3s-%4u", wdays[tm.tm_wday], tm.tm_hour, tm.tm_min,
 				tm.tm_mday, hijack_months[tm.tm_mon], tm.tm_year);
-			show_message(buf, 4*HZ);
+			show_message(buf, 6*HZ);
 			hijacked = 1;
 			break;
 		}
@@ -5063,9 +5062,6 @@ set_fan_control (void)
 
 #endif // CONFIG_EMPEG_I2C_FAN_CONTROL
 
-char hijack_zoneinfo[128];
-static void init_zoneinfo(void);
-
 // invoked from fs/read_write.c on each read of config.ini at each player start-up.
 // This could be invoked multiple times if file is too large for a single read,
 // so we use the f_pos parameter to ensure we only do setup stuff once.
@@ -5082,7 +5078,6 @@ hijack_process_config_ini (char *buf, off_t f_pos)
 	if (f_pos)		// exit if not first read of this cycle
 		return;
 
-	init_zoneinfo();
 	printk("\n");
 	reset_hijack_options();
 	if (ir_setup_translations(buf))
@@ -5307,8 +5302,50 @@ hijack_restore_settings (char *buf, char *msg)
 	return failed;
 }
 
+
+static long
+lswap (void *z)
+{
+	unsigned char *p = z;
+	return (p[0]<<24)|(p[1]<<16)|(p[2]<<8)|p[3];
+}
+
+// Compute current GMT time offset from the zoneinfo file:
+//
+// If we wanted to be able to keep correctly adjusted
+// continuous time (over daylight savings changes),
+// then we would really need to do this calculation
+// *every* time we update our clock display.
+// But doing so requires keeping the zoneinfo file data
+// in memory, so.. no such luck.
+//
 static void
-init_zoneinfo (void)
+hijack_get_time_offset (int fd, long curtime)
+{
+	unsigned long zbuf = get_free_page(GFP_KERNEL);
+
+	// See man (5) tzfile if you want to know what this routine is doing
+	if (zbuf) {
+		unsigned char *z = 32 + (char *)zbuf;
+		extern asmlinkage int sys_read(int fd, void * buf, unsigned int count);
+		long timecnt, typecnt, i;
+		if (sys_read(fd, (void *)zbuf, 4096) >= 56) {
+			timecnt = lswap(z);
+			typecnt = lswap(z+4);
+			z += 12;
+			for (i = timecnt; i > 0 && curtime < lswap(z + (--i * 4)););
+			z += timecnt * 4;
+			z += timecnt + (z[i] * 6);
+			hijack_time_offset = lswap(z);
+		}
+		free_page(zbuf);
+	}
+}
+
+char hijack_zoneinfo[128];
+
+void
+hijack_init_zoneinfo (void)
 {
 	extern void *hijack_get_state_read_buffer (void);
 	unsigned char *tz = hijack_get_state_read_buffer() + 0x51;
@@ -5316,6 +5353,9 @@ init_zoneinfo (void)
 	mm_segment_t old_fs = get_fs();
 	set_fs(KERNEL_DS);
 
+	// Figure out which timezone file the player is using,
+	// based on the (up to) four directory indexes from flash.
+	// We use this in fs/open.c to redirect failed /etc/localtime attempts.
 	strcpy(hijack_zoneinfo, "/usr/share/zoneinfo");
 	for (z = 0; z < 4; ++z) {
 		int e, dcount = tz[z] + 2;		// 2 extra:  '.' and '..'
@@ -5326,6 +5366,7 @@ init_zoneinfo (void)
 		for (e = 0; e <= dcount; ++e) {
 			extern asmlinkage int old_readdir(unsigned int fd, void * dirent, unsigned int count);
 			if (old_readdir(fd, &de, 1) < 0) {
+				hijack_get_time_offset(fd, CURRENT_TIME);
 				sys_close(fd);
 				goto done;
 			}
@@ -5347,6 +5388,7 @@ hijack_init (void *animptr)
 	char buf[128], msg[32];
 	unsigned long anistart = HZ;
 
+	hijack_time_offset = 0;
 	hijack_zoneinfo[0] = '\0';
 	hijack_khttpd_new_fid_dirs = 1;	// look for new fids directory structure
 	hijack_player_init_pid = 0;

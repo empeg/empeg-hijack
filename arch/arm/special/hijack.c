@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v161"
+#define HIJACK_VERSION "v162"
 
 #include <linux/sched.h>
 #include <linux/kernel.h>
@@ -835,7 +835,9 @@ hijack_enq_button (hijack_buttonq_t *q, unsigned int button, unsigned long hold_
 	//if (head != q->tail && hold_time < hijack_button_pacing && q == &hijack_playerq && !IS_RELEASE(button))
 	if (head != q->tail && hold_time < hijack_button_pacing && q == &hijack_playerq)
 		hold_time = hijack_button_pacing;	// ensure we have sufficient delay between press/release pairs
-	//printk("ENQ.%c: %08x.%ld\n", (q == &hijack_playerq) ? 'P' : ((q == &hijack_inputq) ? 'I' : 'U'), button, hold_time);
+	if (hijack_ir_debug) {
+		printk("ENQ.%c: %08x.%ld\n", (q == &hijack_playerq) ? 'P' : ((q == &hijack_inputq) ? 'I' : 'U'), button, hold_time);
+	}
 	if (++head >= HIJACK_BUTTONQ_SIZE)
 		head = 0;
 	if (head != q->tail) {
@@ -2871,6 +2873,8 @@ input_append_code2 (unsigned int rawbutton)
 			unsigned short t_flags = t->flags;
 			if (t_flags & IR_FLAGS_POPUP)
 				break;	// no translations here for PopUp's
+			if (hijack_ir_debug)
+				printk("IA2: tflags=%02x, flags=%02x, match=%d\n", t_flags, flags, (t_flags & flags) == t_flags);
 			if ((t_flags & flags) == flags) {
 				if (released) {	// button release?
 					if ((t_flags & IR_FLAGS_LONGPRESS) && was_waiting) {
@@ -3270,8 +3274,21 @@ static int get_button_code (unsigned char **s_p, unsigned int *button, int eol_o
 	return get_number(s_p, button, 16, nextchars);
 }
 
+static void
+printline (const char *msg, char *s)
+{
+	char c, *e = s;
+
+	while (*e && *e != '\r' && *e != '\n')
+		++e;
+	c = *e;
+	*e = '\0';
+	printk("%s: '%s'\n", msg, s);
+	*e = c;
+}
+
 static int
-ir_setup_translations2 (unsigned char *buf, unsigned int *table)
+ir_setup_translations2 (unsigned char *buf, unsigned int *table, int *had_errors)
 {
 	const char header[] = "[ir_translate]";
 	unsigned char *s;
@@ -3281,17 +3298,20 @@ ir_setup_translations2 (unsigned char *buf, unsigned int *table)
 	if (!buf || !*buf || !(s = strstr(buf, header)) || !*s)
 		return 0;
 	s += sizeof(header) - 1;
-	while (skip_over(&s, " \t\n")) {
-		unsigned int old = 0, new;
+	while (skip_over(&s, " \t\n") && *s != '[') {
+		unsigned int old = 0, new, good = 0;
+		char *line = s;
 		ir_translation_t *t = NULL;
-		if (get_button_code(&s, &old, 0, ".=")) {
+		if (*s == ';') {
+			good = 1; // ignore the comment
+		} else if (get_button_code(&s, &old, 0, ".=")) {
 			unsigned short irflags = 0, flagmask, *defaults;
 			old &= ~(BUTTON_FLAGS^BUTTON_FLAGS_ALTNAME);
 			if (old <= 0xf)
 				old &= ~1;
 			if (old >= IR_FAKE_POPUP0 && old <= IR_FAKE_POPUP3) {
 				old |= IR_FLAGS_POPUP;
-			} else if (old < IR_NULL_BUTTON && old >= IR_FAKE_NEXTSRC) {
+			} else if (old > IR_NULL_BUTTON || old < IR_FAKE_NEXTSRC) {
 				if (*s == '.') {
 					ir_flags_t *f;
 					do {
@@ -3340,7 +3360,13 @@ ir_setup_translations2 (unsigned char *buf, unsigned int *table)
 				} while (match_char(&s, ','));
 				if (*s && !strchr(" ;\t\n", *s))
 					index = saved; // error: completely ignore this line
+				if (index != saved)
+					good = 1;
 			}
+		}
+		if (!good) {
+			printline("ir_translate: ERROR: ", line);
+			*had_errors = 1;
 		}
 		while (*s && *s != '\n')	// skip to end-of-line
 			++s;
@@ -3353,12 +3379,12 @@ ir_setup_translations2 (unsigned char *buf, unsigned int *table)
 	return index * sizeof(unsigned long);
 }
 
-static void
+static int
 ir_setup_translations (unsigned char *buf)
 {
 	unsigned int *table = NULL;
 	unsigned long flags;
-	int size;
+	int size, had_errors = 0;
 
 	save_flags_cli(flags);
 	if (ir_translate_table) {
@@ -3366,19 +3392,20 @@ ir_setup_translations (unsigned char *buf)
 		ir_translate_table = NULL;
 	}
 	restore_flags(flags);
-	size = ir_setup_translations2(buf, NULL);	// first pass to calculate table size
-	if (size <= 0)
-		return;
-	table = kmalloc(size, GFP_KERNEL);
-	if (!table) {
-		printk("ir_setup_translations failed: no memory\n");
-	} else {
-		memset(table, 0, size);
-		(void)ir_setup_translations2(buf, table);// second pass actually saves the data
-		save_flags_cli(flags);
-		ir_translate_table = table;
-		restore_flags(flags);
+	size = ir_setup_translations2(buf, NULL, &had_errors);	// first pass to calculate table size
+	if (size > 0) {
+		table = kmalloc(size, GFP_KERNEL);
+		if (!table) {
+			printk("ir_setup_translations failed: no memory\n");
+		} else {
+			memset(table, 0, size);
+			(void)ir_setup_translations2(buf, table, &had_errors);// second pass actually saves the data
+			save_flags_cli(flags);
+			ir_translate_table = table;
+			restore_flags(flags);
+		}
 	}
+	return had_errors;
 }
 
 // returns enu index >= 0,  or -ERROR
@@ -3580,6 +3607,7 @@ get_file (const char *path, unsigned char **buffer)
   	return rc;
 }
 
+#if 1  //fixme: delete someday
 static void
 print_ir_translates (void)
 {
@@ -3631,6 +3659,7 @@ print_ir_translates (void)
 		}
 	}
 }
+#endif
 
 int hijack_ioctl  (struct inode *inode, struct file *filp, unsigned int cmd, unsigned long arg)
 {
@@ -3859,8 +3888,10 @@ hijack_read_config_file (const char *path)
 		strcpy(button_names[2].name,"Popup2");
 		strcpy(button_names[3].name,"Popup3");
 
-		ir_setup_translations(buf);
-		print_ir_translates();
+		if (ir_setup_translations(buf))
+			show_message("IR Translation Errors", 5*HZ);
+
+		print_ir_translates();	//fixme: delete someday
 		get_hijack_options(buf);
 
 		if (ide_hwifs[0].drives[1].present || (MAX_HWIFS > 1 && ide_hwifs[1].drives[0].present)) {

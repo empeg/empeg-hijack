@@ -6,7 +6,7 @@
 // /* Basic sequence for userland app to bind into the menu, display, and IR buttons */
 // /* Not shown: all "rc" return codes have to be checked for success/failure */
 //
-//    #include <asm/arch/hijack.h>
+//    ?include <asm/arch/hijack.h>
 //    int fd;
 //    unsigned long data, buttons[5] = {5,
 //       IR_KW_PREVTRACK_PRESSED,

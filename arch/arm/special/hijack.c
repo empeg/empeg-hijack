@@ -202,7 +202,7 @@ static unsigned int hijack_voladj_parms[(1<<VOLADJ_BITS)-1][5] = { // Values as 
 // Externally tuneable parameters for config.ini; the voladj_parms are also tuneable
 static hijack_buttonq_t hijack_inputq, hijack_playerq, hijack_userq;
 static int hijack_button_pacing			=  8;	// minimum spacing between press/release pairs within playerq
-static int hijack_temperature_correction	= -4;	// adjust all h/w temperature readings by this celcius amount
+       int hijack_temperature_correction	= -4;	// adjust all h/w temperature readings by this celcius amount
 static int hijack_supress_notify		=  0;	// 1 == supress player "notify" (and "dhcp") lines from serial port
 static int hijack_old_style			=  0;	// 1 == don't highlite menu items
 static int hijack_quicktimer_minutes		= 30;	// increment size for quicktimer function
@@ -1663,7 +1663,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,18), " Enhancements.v107 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,18), " Enhancements.v108 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}

@@ -1,6 +1,6 @@
-// kftpd 0.1 by Mark Lord
+// kftpd 0.2 by Mark Lord
 //
-// This version can only RETRieve files.  LIST and STOR are not implemented yet.
+// This version can only LIST directories (buggy), and RETRieve files.  STOR is not implemented yet.
 
 #if 0
 #define SERVER_CONTROL_PORT	21
@@ -110,12 +110,12 @@ extract_portaddr (struct sockaddr_in *addr, char *s)
 			port += skip_atoi(&s) & 255;
 			if (port & 255) {
 				addr->sin_port = htons(port);
-				printk("destination addr = %s:%d\n", first, port);
+				printk("kftpd: destination addr = %s:%d\n", first, port);
 				return 0;
 			}
 		}
 	}
-	printk("bad destination addr\n");
+	printk("kftp: bad destination addr\n");
 	return -1;
 }
 
@@ -127,13 +127,13 @@ ksock_accept (struct socket *sock, struct sockaddr *address, int *len)
 
 	lock_kernel();
 	if (!(newsock = sock_alloc())) {
-		printk("sock_accept: sock_alloc() failed\n");
+		printk("kftp: sock_accept: sock_alloc() failed\n");
 	} else {
 		newsock->type = sock->type;
 		if (sock->ops->dup(newsock, sock) < 0) {
-			printk("sock_accept: dup() failed\n");
+			printk("kftp: sock_accept: dup() failed\n");
 		} else if (newsock->ops->accept(sock, newsock, sock->file->f_flags) < 0) {
-			printk("sock_accept: accept() failed\n");
+			printk("kftp: sock_accept: accept() failed\n");
 		} else if (!address || newsock->ops->getname(newsock, (struct sockaddr *)address, len, 1) >= 0) {
 			unlock_kernel();
 			return newsock;		// success
@@ -198,12 +198,12 @@ send_response (struct socket *sock, const char *response)
 	char	buf[256];
 	int	length, rc;
 
-	//printk("sending: %s\n", response);
+	//printk("kftp: sending: %s\n", response);
 	strcpy(buf, response);
 	strcat(buf, "\r\n");
 	length = strlen(buf);
 	if ((rc = ksock_rw(0, sock, buf, length, -1)) != length) {
-		printk("ksock_rw(response) '%s' failed: %d\n", response, rc);
+		printk("kftp: ksock_rw(response) '%s' failed: %d\n", response, rc);
 		return -1;
 	}
 	return 0;
@@ -219,11 +219,11 @@ make_socket (struct socket **sockp, int port)
 	*sockp = NULL;
 	rc = sock_create(AF_INET, SOCK_STREAM, 0, &sock);
 	if (rc) {
-		printk("sock_create() failed, rc=%d\n", rc);
+		printk("kftp: sock_create() failed, rc=%d\n", rc);
 	} else {
 		rc = sock_setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (char *)&turn_on, sizeof(turn_on));
 		if (rc) {
-			printk("setsockopt() failed, rc=%d\n", rc);
+			printk("kftp: setsockopt() failed, rc=%d\n", rc);
 			sock_release(sock);
 		} else {
 			memset(&servaddr, 0, sizeof(servaddr));
@@ -232,7 +232,7 @@ make_socket (struct socket **sockp, int port)
 			servaddr.sin_port        = htons(port);
 			rc = sock->ops->bind(sock, (struct sockaddr *)&servaddr, sizeof(servaddr));
 			if (rc) {
-				printk("bind(port=%d) failed: %d\n", port, rc);
+				printk("kftp: bind(port=%d) failed: %d\n", port, rc);
 				sock_release(sock);
 			} else {
 				*sockp = sock;
@@ -287,7 +287,7 @@ send_file (struct socket *sock, const char *path)
 	lock_kernel();
 	filp = filp_open(path,O_RDONLY,0);
 	if (IS_ERR(filp) || !filp) {
-		printk("filp_open(%s) failed\n", path);
+		printk("kftp: filp_open(%s) failed\n", path);
 		response = "550 file not found";
 	} else {
 		if (!filp->f_dentry || !filp->f_dentry->d_inode || !filp->f_op || !filp->f_op->read) {
@@ -299,7 +299,7 @@ send_file (struct socket *sock, const char *path)
 			do {
 				size = filp->f_op->read(filp, buf, sizeof(buf), &(filp->f_pos));
 				if (size < 0) {
-					printk("filp->f_op->read() failed; rc=%d\n", size);
+					printk("kftp: filp->f_op->read() failed; rc=%d\n", size);
 					response = "451 error reading file";
 				} else if (size && size != ksock_rw(1, datasock, buf, size, -1)) {
 					response = "426 error sending data; transfer aborted";
@@ -315,10 +315,107 @@ send_file (struct socket *sock, const char *path)
 	return response;
 }
 
+// gmtime - convert time_t into struct tm
+//
+// Adapted from version found in MINIX source tree
+
+struct tm
+{
+	int	tm_sec;		/* seconds	*/
+	int	tm_min;		/* minutes	*/
+	int	tm_hour;	/* hours	*/
+	int	tm_mday;	/* day of month	*/
+	int	tm_mon;		/* month	*/
+	int	tm_year;	/* full year	*/
+	int	tm_wday;	/* day of week	*/
+	int	tm_yday;	/* days in year	*/
+};
+
+#define	EPOCH_YR		(1970)		/* Unix EPOCH = Jan 1 1970 00:00:00 */
+#define	SECS_PER_HOUR		(60L * 60L)
+#define	SECS_PER_DAY		(24L * SECS_PER_HOUR)
+#define	IS_LEAPYEAR(year)	(!((year) % 4) && (((year) % 100) || !((year) % 400)))
+#define	DAYS_PER_YEAR(year)	(IS_LEAPYEAR(year) ? 366 : 365)
+
+const int DAYS_PER_MONTH[2][12] = {
+	{ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 },	// normal year
+	{ 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 } };	// leap year
+
+static char *MONTHS[12] =
+	{ "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+	  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+
+static struct tm *
+gmtime (time_t time, struct tm *tm)
+{
+	unsigned long clock, day;
+	const int *days_per_month;
+	int month = 0, year = EPOCH_YR;
+
+	clock   = (unsigned long)time % SECS_PER_DAY;
+	day = (unsigned long)time / SECS_PER_DAY;
+	tm->tm_sec   =  clock % 60;
+	tm->tm_min   = (clock % SECS_PER_HOUR) / 60;
+	tm->tm_hour  =  clock / SECS_PER_HOUR;
+	tm->tm_wday  = (day + 4) % 7;	/* day 0 was a thursday */
+	while ( day >= DAYS_PER_YEAR(year) ) {
+		day -= DAYS_PER_YEAR(year);
+		year++;
+	}
+	tm->tm_year  = year;
+	tm->tm_yday  = day;
+	days_per_month = DAYS_PER_MONTH[IS_LEAPYEAR(year)];
+	month          = 0;
+	while ( day >= days_per_month[month] ) {
+		day -= days_per_month[month];
+		month++;
+	}
+	tm->tm_mon   = month;
+	tm->tm_mday  = day + 1;
+	return tm;
+}
+
+static char *
+format_time (struct tm *tm, int current_year, char *buf)
+{
+	int		t, y;
+	const char	*s;
+
+	s = MONTHS[tm->tm_mon];
+	*buf++ = ' ';
+	*buf++ = s[0];
+	*buf++ = s[1];
+	*buf++ = s[2];
+	*buf++ = ' ';
+	t = tm->tm_mday;
+	*buf++ = (t / 10) ? '0' + (t / 10) : ' ';
+	*buf++ = '0' + (t % 10);
+	*buf++ = ' ';
+	y = tm->tm_year;
+	if (y == current_year) {
+		t = tm->tm_hour;
+		*buf++ = '0' + (t / 10);
+		*buf++ = '0' + (t % 10);
+		*buf++ = ':';
+		t = tm->tm_min;
+		*buf++ = '0' + (t / 10);
+		*buf++ = '0' + (t % 10);
+	} else {
+		*buf++ = ' ';
+		*buf++ = '0' +  (y / 1000);
+		*buf++ = '0' + ((y /  100) % 10);
+		*buf++ = '0' + ((y /   10) % 10);
+		*buf++ = '0' +  (y %   10);
+	}
+	*buf = '\0';
+	return buf;
+}
+
 #define MODE_XBIT(c,x,s)	((x) ? ((s) ? ((c)|0x20) : 'x') : ((s) ? (c) : '-'));
 
 typedef struct filldir_parms_s {
 	int			rc;
+	int			current_year;
 	unsigned long		blockcount;
 	struct socket		*datasock;
 	struct super_block	*super;
@@ -329,61 +426,90 @@ filldir (void *parms, const char *name, int namelen, off_t offset, ino_t ino)
 {
 	filldir_parms_t	*p = parms;
 	unsigned int	len, mode, sent;
-	char		buf[512], c;
 	struct inode	*i;
+	struct tm	tm;
+	char		buf[512], *b, c;
 
+	if (p->rc)
+		return -EIO;
 	i = iget(p->super, ino);
 	if (!i) {
-		printk("iget(%lu) failed\n", ino);
+		printk("kftp: iget(%lu) failed\n", ino);
 		return -ENOENT;
 	}
 
-	len = 0;
+	b = buf;
 	mode = i->i_mode;
 	switch (mode & S_IFMT) {
-		case S_IFLNK:	c = 'l'; break;	// FIXME: show link target
+		case S_IFLNK:	c = 'l'; break;
 		case S_IFDIR:	c = 'd'; break;
-		case S_IFCHR:	c = 'c'; break;	// FIXME: different format below
-		case S_IFBLK:	c = 'b'; break;	// FIXME: different format below
-		case S_IFIFO:	c = 'p'; break;	// FIXME: different format below
-		case S_IFSOCK:	c = 's'; break;	// FIXME: different format below
-		case S_IFREG:	c = '-'; break;	// FIXME?
+		case S_IFCHR:	c = 'c'; break;
+		case S_IFBLK:	c = 'b'; break;
+		case S_IFIFO:	c = 'p'; break;
+		case S_IFSOCK:	c = 's'; break;
+		case S_IFREG:	c = '-'; break;
 		default:	c = '-'; break;
 	}
-	buf[len++] = c;
-	buf[len++] = (mode & S_IRUSR) ? 'r' : '-';
-	buf[len++] = (mode & S_IWUSR) ? 'w' : '-';
-	buf[len++] = MODE_XBIT('S', mode & S_IXUSR, mode & S_ISUID);
-	buf[len++] = (mode & S_IRGRP) ? 'r' : '-';
-	buf[len++] = (mode & S_IWGRP) ? 'w' : '-';
-	buf[len++] = MODE_XBIT('S', mode & S_IXGRP, mode & S_ISGID);
-	buf[len++] = (mode & S_IROTH) ? 'r' : '-';
-	buf[len++] = (mode & S_IWOTH) ? 'w' : '-';
-	buf[len++] = MODE_XBIT('T', mode & S_IXOTH, mode & S_ISVTX);
+	*b++ = c;
+	*b++ = (mode & S_IRUSR) ? 'r' : '-';
+	*b++ = (mode & S_IWUSR) ? 'w' : '-';
+	*b++ = MODE_XBIT('S', mode & S_IXUSR, mode & S_ISUID);
+	*b++ = (mode & S_IRGRP) ? 'r' : '-';
+	*b++ = (mode & S_IWGRP) ? 'w' : '-';
+	*b++ = MODE_XBIT('S', mode & S_IXGRP, mode & S_ISGID);
+	*b++ = (mode & S_IROTH) ? 'r' : '-';
+	*b++ = (mode & S_IWOTH) ? 'w' : '-';
+	*b++ = MODE_XBIT('T', mode & S_IXOTH, mode & S_ISVTX);
 
-	len += sprintf(buf+len, "%5u",   i->i_nlink);
-	len += sprintf(buf+len, " %8u %8u", i->i_uid, i->i_gid);		// FIXME
-	len += sprintf(buf+len, " %8lu", i->i_size);
-	len += sprintf(buf+len, " %3s %2u %02u:%02u ", "Dec", 25, 0, 1);	// FIXME
+	b += sprintf(b, "%5u %-8u %-8u", i->i_nlink, i->i_uid, i->i_gid);
+	if (buf[0] == 'c' || buf[0] == 'b')
+		b += sprintf(b, " %3u, %3u", MAJOR(i->i_rdev), MINOR(i->i_rdev));
+	else
+		b += sprintf(b, " %8lu", i->i_size);
 
-	// free up the inode memory
+	b = format_time(gmtime(i->i_mtime, &tm), p->current_year, b);
+
+	*b++ = ' ';
+	while (namelen--)
+		*b++ = *name++;
+
+	// Get target of symbolic link: UGLY HACK, COPIED FROM ext2_readlink()
+	if (buf[0] == 'l' && i->i_sb) {
+		len = i->i_sb->s_blocksize - 1;
+		if (i->i_blocks) {
+			int err;
+			struct buffer_head * bh;
+			bh = ext2_bread(i, 0, 0, &err);
+			name = bh ? bh->b_data : NULL;
+		} else {
+			name = (char *) i->u.ext2_i.i_data;
+		}
+		if (name) {
+			*b++ = ' ';
+			*b++ = '-';
+			*b++ = '>';
+			*b++ = ' ';
+			while (len-- && *name)
+				*b++ = *name++;
+		}
+	}
+
+	*b++ = '\r';
+	*b++ = '\n';
+	*b   = '\0';
+
+	// free up the inode structure
 	iput(i);
 	i = NULL;
 
-	memcpy(buf+len, name, namelen);
-	len += namelen;
-	buf[len++] = '\r';
-	buf[len++] = '\n';
-	buf[len] = '\0';
-
-	//printk("%s\n", buf);
+	//printk("kftp: %s", buf);
+	len  = b - buf;
 	sent = ksock_rw(0, p->datasock, buf, len, -1);
 	if (sent != len) {
-		p->rc = sent;
-		printk("ksock_rw(,,,%d,) returned %d\n", len, p->rc);
-		return -EIO;
+		p->rc = -EIO;
+		printk("kftp: ksock_rw(%d) returned %d\n", len, sent);
 	}
-	return 0;
+	return p->rc;
 }
 
 static const char *
@@ -397,7 +523,7 @@ send_dirlist (struct socket *sock, const char *path)
 	lock_kernel();
 	filp = filp_open(path,O_RDONLY,0);
 	if (IS_ERR(filp) || !filp) {
-		printk("filp_open(%s) failed\n", path);
+		printk("kftp: filp_open(%s) failed\n", path);
 		response = "550 directory not found";
 	} else {
 		if (!filp->f_dentry || !filp->f_dentry->d_inode || !filp->f_op || !filp->f_op->readdir) {
@@ -407,7 +533,9 @@ send_dirlist (struct socket *sock, const char *path)
 			struct inode	*inode = filp->f_dentry->d_inode;
 			unsigned char	buf[64];
 			unsigned int	len, sent;
+			struct tm	tm;
 
+			p.current_year	= gmtime(CURRENT_TIME, &tm)->tm_year;
 			p.rc		= 0;
 			p.blockcount	= 0;
 			p.super		= inode->i_sb;
@@ -417,15 +545,22 @@ send_dirlist (struct socket *sock, const char *path)
 			filp->f_pos = 0;
 			do {
 				rc = filp->f_op->readdir(filp, &p, filldir);
-			} while (rc >= 0 && filp->f_pos < inode->i_size);
+			} while (rc >= 0 && !p.rc && filp->f_pos < inode->i_size);
 			up(&inode->i_sem);
-			if (rc)
-				printk("readdir() returned %d\n", rc);
-			len = sprintf(buf, "total %lu\r\n", p.blockcount);
-			sent = ksock_rw(0, datasock, buf, --len, -1);
-			if (sent != len) {
-				printk("ksock_rw(%d) returned %d\n", len, sent);
-				response = "426 error from ksock_rw";
+
+			if (p.rc) {
+				printk("kftp: ksock_rw() error %d\n", p.rc);
+				response = "426 ksock_rw() error";
+			} else if (rc) {
+				printk("kftp: readdir() returned %d\n", rc);
+				response = "426 readdir() error";
+			} else {
+				len = sprintf(buf, "total %lu\r\n", p.blockcount);
+				sent = ksock_rw(0, datasock, buf, --len, -1);
+				if (sent != len) {
+					printk("kftp: ksock_rw(%d) returned %d\n", len, sent);
+					response = "426 ksock_rw() error 2";
+				}
 			}
 			sock_release(datasock);
 		}
@@ -533,20 +668,20 @@ handle_command (struct socket *sock)
 
 	n = ksock_rw(0, sock, buf, sizeof(buf), 0);
 	if (n < 0) {
-		printk("client request too short, ksock_rw() failed: %d\n", n);
+		printk("kftp: client request too short, ksock_rw() failed: %d\n", n);
 		return -1;
 	} else if (n == 0) {
-		printk("EOF on client sock\n");
+		printk("kftp: EOF on client sock\n");
 		return -1;
 	}
 	if (n < 5 || n >= sizeof(buf)) {
 		response = "501 bad command length";
 	} else if (buf[--n] != '\n' || buf[--n] != '\r') {
-		printk("EOL not found\n");
+		printk("kftp: EOL not found\n");
 		response = "500 bad end of line";
 	} else {
 		buf[n] = '\0';	// overwrite '\r'
-		printk("'%s'\n", buf);
+		printk("kftp: '%s'\n", buf);
 		if (!strcasecmp(buf, "QUIT")) {
 			quit = 1;
 			response = "221 happy fishing";
@@ -615,7 +750,6 @@ handle_command (struct socket *sock)
 					response = "226 transmission completed";
 			}
 		} else {
-			printk("%s\n", buf);
 			response = "500 bad command";
 		}
 	}
@@ -630,9 +764,9 @@ handle_connection (struct socket *sock, struct sockaddr_in *clientaddr)
 
 	clientip[0] = '\0';
 	if (clientaddr->sin_family != AF_INET) {
-		printk("not AF_INET: %d\n", (int)clientaddr->sin_family);
+		printk("kftpd: not AF_INET: %d\n", (int)clientaddr->sin_family);
 	} else if (inet_ntop(AF_INET, &clientaddr->sin_addr.s_addr, clientip, sizeof(clientip)) == NULL) {
-		printk("inet_ntop(%08x) failed\n", (uint32_t)clientaddr->sin_addr.s_addr);
+		printk("kftpd: inet_ntop(%08x) failed\n", (uint32_t)clientaddr->sin_addr.s_addr);
 	} else {
 		printk("kftpd: connection from %s\n", clientip);
 		if (!send_response(sock, "220 connected")) {
@@ -657,12 +791,12 @@ int kftpd (void *unused)
 
 	rc = make_socket(&servsock, SERVER_CONTROL_PORT);
 	if (rc) {
-		printk("make_socket(port=%d) failed, rc=%d\n", SERVER_CONTROL_PORT, rc);
+		printk("kftpd: make_socket(port=%d) failed, rc=%d\n", SERVER_CONTROL_PORT, rc);
 		return 0;
 	}
 	rc = servsock->ops->listen(servsock, 1); /* allow only one client at a time */
 	if (rc < 0) {
-		printk("listen(port=%d) failed, rc=%d\n", SERVER_CONTROL_PORT, rc);
+		printk("kftpd: listen(port=%d) failed, rc=%d\n", SERVER_CONTROL_PORT, rc);
 		return 0;
 	}
 	while (1) {
@@ -672,7 +806,7 @@ int kftpd (void *unused)
 
 		clientsock = ksock_accept(servsock, (struct sockaddr *)&clientaddr, &clientaddr_len);
 		if (!clientsock) {
-			printk("accept() failed\n");
+			printk("kftpd: accept() failed\n");
 		} else {
 			handle_connection(clientsock, &clientaddr);
 		}

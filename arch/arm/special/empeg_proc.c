@@ -35,7 +35,7 @@ static int id_read_procmem(char *buf, char **start, off_t offset,
 	len += sprintf(buf+len, "flash : %dK\n",
 		       permset[9]==0xffffffff?1024:permset[9]);
 	len += sprintf(buf+len, "drives: %d\n", modset[0]);
-	len += sprintf(buf+len, "image : %08x\n", *user_splash);
+	len += sprintf(buf+len, "image : %08lx\n", *user_splash);
 	return len;
 }
 
@@ -44,6 +44,7 @@ static int therm_read_procmem(char *buf, char **start, off_t offset,
 {
 	int temp;
 	unsigned long flags;
+	extern int hijack_temperature_correction;	// arch/arm/special/hijack.c
 
 	/* Need to disable IRQs & FIQs during temperature read */
 	save_flags_clif(flags);
@@ -54,7 +55,7 @@ static int therm_read_procmem(char *buf, char **start, off_t offset,
 	if (temp&0x80) temp=-(128-(temp^0x80));
 
 	len = 0;
-	len += sprintf(buf+len, "%d\n",temp);
+	len += sprintf(buf+len, "%d\n",temp + hijack_temperature_correction);
 	return len;
 }
 

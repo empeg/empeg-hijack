@@ -537,7 +537,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v28 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v29 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -753,6 +753,35 @@ menu_display (int firsttime)
 	return NO_REFRESH;
 }
 
+static int userland_display_updated = 0;
+
+// this is invoked when a userland menu item is active
+static int
+userland_display (int firsttime)
+{
+	unsigned long flags;
+	int rc = NO_REFRESH;
+
+	if (firsttime) {
+		clear_hijack_displaybuf(COLOR0);
+		userland_display_updated = 0;
+	}
+	save_flags_cli(flags);
+	if (firsttime) {
+		struct wait_queue **wq = (struct wait_queue **)hijack_userdata;
+		if (wq && *wq)
+			wake_up(wq);
+		else
+			printk("userland_display(): wq=%p, *wq=%p", wq, wq ? *wq : 0);
+		rc = NEED_REFRESH;
+	} else if (userland_display_updated) {
+		userland_display_updated = 0;
+		rc = NEED_REFRESH;
+	}
+	restore_flags(flags);
+	return rc;
+}
+
 // This routine covertly intercepts all display updates,
 // giving us a chance to substitute our own display.
 //
@@ -787,7 +816,7 @@ void hijack_display(struct display_dev *dev, unsigned char *player_buf)
 				restore_flags(flags);
 				refresh = hijack_dispfunc(0);
 				save_flags_cli(flags);
-				if (ir_selected)
+				if (ir_selected && hijack_dispfunc != userland_display)
 					activate_dispfunc(0, menu_display, menu_move);
 			}
 			break;
@@ -847,25 +876,6 @@ hijack_move (int direction)
 		hijack_movefunc(direction);
 	hijack_last_moved = jiffies ? jiffies : 1;
 	return 1; // input WAS hijacked
-}
-
-static int userland_display_updated = 0;
-
-static int
-userland_display (int firsttime)
-{
-	// this is invoked when a userland menu item is active
-	if (firsttime || *((struct wait_queue **)hijack_userdata) != NULL) {
-		clear_hijack_displaybuf(COLOR0);
-		wake_up((struct wait_queue **)hijack_userdata);
-		userland_display_updated = 1;
-	}
-	if (userland_display_updated) {
-		userland_display_updated = 0;
-		return NEED_REFRESH;
-	}
-	ir_selected = 0;  // prevent accidental exits, which would leave the userland app dangling!
-	return NO_REFRESH;
 }
 
 static void hijack_enq_button (unsigned long data)
@@ -995,7 +1005,7 @@ static int
 extend_menu (const char *label, unsigned long userdata, int (*displayfunc)(int), void (*movefunc)(int))
 {
 	int i;
-	for (i = 0; i < (MENU_MAX_SIZE-1); ++i) {
+	for (i = 0; i < MENU_MAX_SIZE; ++i) {
 		if (menu_label[i] == NULL) {
 			// Insert new entry before last item [exit]
 			menu_label       [i] = menu_label[i-1];
@@ -1020,7 +1030,7 @@ userland_extend_menu (const char *label, unsigned long userdata)
 	unsigned long flags;
 
 	save_flags_cli(flags);
-	for (i = 0; i < (MENU_MAX_SIZE-1); ++i) {
+	for (i = 0; i < MENU_MAX_SIZE; ++i) {
 		if (menu_label[i] == NULL) {
 			int size = 1 + strlen(label);
 			unsigned char *buf = kmalloc(size, GFP_KERNEL);

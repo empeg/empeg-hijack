@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v160"
+#define HIJACK_VERSION "v161"
 
 #include <linux/sched.h>
 #include <linux/kernel.h>
@@ -334,6 +334,7 @@ static hijack_buttonq_t hijack_inputq, hijack_playerq, hijack_userq;
 // Externally tuneable parameters for config.ini; the voladj_parms are also tuneable
 //
 static int hijack_button_pacing			= 20;	// minimum spacing between press/release pairs within playerq
+static int hijack_ir_debug			=  0;	// printk() for every ir press/release code
        int hijack_extmute_off			=  0;	// buttoncode to inject when EXT-MUTE goes inactive
        int hijack_extmute_on			=  0;	// buttoncode to inject when EXT-MUTE goes active
 #ifdef CONFIG_NET_ETHERNET
@@ -350,7 +351,6 @@ static int hijack_quicktimer_minutes		= 30;	// increment size for quicktimer fun
 static int hijack_standby_minutes		= 30;	// number of minutes after screen blanks before we go into standby
        int hijack_supress_notify		=  0;	// 1 == supress player "notify" (and "dhcp") lines from serial port
        int hijack_temperature_correction	= -4;	// adjust all h/w temperature readings by this celcius amount
-       int hijack_rioremote_disabled		=  0;	// disable RIO remote
 
 typedef struct hijack_option_s {
 	char	*name;
@@ -363,7 +363,7 @@ typedef struct hijack_option_s {
 static const hijack_option_t hijack_option_table[] = {
 	// config.ini string		address-of-variable		howmany	min	max
 	{"button_pacing",		&hijack_button_pacing,		1,	0,	HZ},
-	{"rioremote_disabled",		&hijack_rioremote_disabled,	1,	0,	1},
+	{"ir_debug",			&hijack_ir_debug,		1,	0,	1},
 	{"extmute_off",			&hijack_extmute_off,		1,	0,	IR_NULL_BUTTON},
 	{"extmute_on",			&hijack_extmute_on,		1,	0,	IR_NULL_BUTTON},
 #ifdef CONFIG_NET_ETHERNET
@@ -2380,7 +2380,28 @@ static unsigned short
 get_current_mixer_source (void)
 {
 	unsigned short source;
-	switch (get_current_mixer_input()) {
+	int input = get_current_mixer_input();
+
+#if 1 //fixme temporary workaround for player bug
+	// A bug in the player software sometimes leads to saved-mixer
+	//  state ("channel") disagreeing with the actual mixer state.
+	// This here ensures it will get corrected, though not completely
+	//  until the next player restart happens.
+	static int done_once = 0;
+	if (!done_once) {
+		unsigned long flags;
+		unsigned char *empeg_statebuf = *empeg_state_writebuf;
+		done_once = 1;
+		save_flags_clif(flags);
+		if (input != (empeg_statebuf[0x0e] & 7)) {
+			empeg_statebuf[0x0e] = (empeg_statebuf[0x0e] & ~7) | (input & 7);
+			empeg_state_dirty = 1;
+		}
+		restore_flags(flags);
+	}
+#endif // 1
+
+	switch (input) {
 		case SOUND_MASK_LINE:	// Aux in
 			source = IR_FLAGS_AUX;
 			break;
@@ -2405,15 +2426,12 @@ toggle_input_source (void)
 	save_flags_cli(flags);
 	switch (get_current_mixer_source()) {
 		case IR_FLAGS_TUNER:
-			button = IR_KW_TAPE_PRESSED; // aux
-			break;
 		case IR_FLAGS_AUX:
-			button = IR_KW_CD_PRESSED;   // player
+			button = IR_RIO_SOURCE_PRESSED;
 			break;
-		//case IR_FLAGS_MAIN:
 		default:
 			// by hitting "aux" before "tuner", we handle "tuner not present"
-			hijack_enq_button_pair(IR_KW_TAPE_PRESSED);
+			hijack_enq_button_pair(IR_RIO_SOURCE_PRESSED);
 			button = IR_RIO_TUNER_PRESSED;  // tuner
 			break;
 	}
@@ -2818,9 +2836,12 @@ static void
 input_append_code2 (unsigned int rawbutton)
 {
 	unsigned int released = IS_RELEASE(rawbutton);
+	unsigned short mixer;
 
-	//printk("IA2:%lx.%c,dk=%lx,dr=%d,lk=%d\n", rawbutton, released ? 'R' : 'P',
-	//	ir_downkey, (ir_delayed_rotate != 0), (ir_current_longpress != NULL));
+	if (hijack_ir_debug) {
+		printk("IA2:%08x.%c,dk=%08x,dr=%d,lk=%d\n", rawbutton, released ? 'R' : 'P',
+			ir_downkey, (ir_delayed_rotate != 0), (ir_current_longpress != NULL));
+	}
 	if (released) {
 		if (ir_downkey == IR_NULL_BUTTON)	// or we could just send the code regardless.. ??
 			return;				// already taken care of (we hope)
@@ -2828,10 +2849,13 @@ input_append_code2 (unsigned int rawbutton)
 	} else {
 		if (ir_downkey == rawbutton || rawbutton == IR_NULL_BUTTON)
 			return;	// ignore repeated press with no intervening release
-		ir_downkey = rawbutton;
+		if (rawbutton > IR_NULL_BUTTON || rawbutton < IR_FAKE_NEXTSRC)
+			ir_downkey = rawbutton;
 	}
+	mixer = get_current_mixer_source();	//fixme: temporary here to workaround player bug;
+						//see get_current_mixer_source for details;
 	if (ir_translate_table != NULL) {
-		unsigned short	mixer		= get_current_mixer_source();
+		//fixme unsigned short mixer	= get_current_mixer_source();
 		unsigned short	carhome		= empeg_on_dc_power ? IR_FLAGS_CAR : IR_FLAGS_HOME;
 		unsigned short	shifted		= ir_shifted ? IR_FLAGS_SHIFTED : IR_FLAGS_NOTSHIFTED;
 		unsigned short	flags		= mixer | carhome | shifted;
@@ -2899,11 +2923,9 @@ input_append_code(void *dev, unsigned int button)  // empeg_input.c
 {
 	unsigned long flags;
 
-	if (dev != IR_INTERNAL && hijack_rioremote_disabled && (button & 0x00ffff00) == 0x0020df00)
-		return;
-
 	save_flags_cli(flags);
-	//printk("IA1:%lx,dk=%lx,dr=%d,lk=%d\n", button, ir_downkey, (ir_delayed_rotate != 0), (ir_current_longpress != NULL));
+	if (hijack_ir_debug)
+		printk("IA1:%08x,dk=%08x,dr=%d,lk=%d\n", button, ir_downkey, (ir_delayed_rotate != 0), (ir_current_longpress != NULL));
 
 	if (ir_delayed_rotate) {
 		if (button != IR_KNOB_PRESSED)
@@ -3925,7 +3947,6 @@ fix_visuals (unsigned char *buf)
 		}
 		if (restore_carvisuals)
 			empeg_state_dirty = 1;
-		printk("fix_visuals(): mixer=%02x, restore=%d, row=%d\n", buf[0x0e], restore_carvisuals, info_screenrow); //fixme: temporary
 	}
 }
 #endif // RESTORE_CARVISUALS

@@ -313,6 +313,27 @@ static _INLINE_ void rs_sched_event(struct async_struct *info,
 	mark_bh(SERIAL_BH);
 }
 
+void hijack_serial_insert (char *buf, int size)
+{
+	struct async_struct *info = IRQ_ports[17];
+	struct tty_struct *tty = info->tty;
+	unsigned long flags;
+	struct	async_icount *icount = &info->state->icount;
+	save_flags_clif(flags);
+	while (size-- > 0) {
+		while (tty->flip.count >= TTY_FLIPBUF_SIZE)
+			schedule();	// wait for some room in buffer
+		*tty->flip.char_buf_ptr = *buf++;
+		icount->rx++;
+		*tty->flip.flag_buf_ptr = 0;
+		tty->flip.flag_buf_ptr++;
+		tty->flip.char_buf_ptr++;
+		tty->flip.count++;
+	}
+	tty_flip_buffer_push(tty);
+	restore_flags(flags);
+}
+
 static _INLINE_ void receive_chars(struct async_struct *info,
 				 int *status0, int *status1)
 {

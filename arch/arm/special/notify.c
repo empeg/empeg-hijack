@@ -30,6 +30,7 @@ extern void input_append_code(void *dev, unsigned long button);						// hijack.c
 extern void show_message (const char *message, unsigned long time);					// hijack.c
 extern long sleep_on_timeout(struct wait_queue **p, long timeout);					// kernel/sched.c
 extern signed long schedule_timeout(signed long timeout);						// kernel/sched.c
+extern void hijack_serial_insert (char *buf, int size);							// drivers/char/serial_sa1100.c
 
 unsigned char notify_labels[] = "#AFGLMNSTV";	// 'F' must match next line
 #define NOTIFY_FIDLINE		2		// index of 'F' in notify_labels[]
@@ -334,7 +335,8 @@ hijack_do_command (const char *buffer, unsigned int count)
 		unsigned char *s;
 		s = nextline;
 		while (*nextline && *++nextline != '\n' && *nextline != ';');
-		*nextline = '\0';
+		if (*nextline)
+			*nextline++ = '\0';
 
 		if (!strxcmp(s, "BUTTON ", 1)) {
 			s = do_button(s+7, 0);
@@ -354,8 +356,9 @@ hijack_do_command (const char *buffer, unsigned int count)
 				show_message(s, secs * HZ);
 			else
 				rc = -EINVAL;
-		//} else if (!strxcmp(s, "SERIAL ", 1)) {
-		//	/* fixme: not implemented yet */
+		} else if (!strxcmp(s, "SERIAL ", 1) && *(s += 7)) {
+			hijack_serial_insert(s, strlen(s));
+			hijack_serial_insert("\n", 1);
 		} else {
 			rc = -EINVAL;
 		}

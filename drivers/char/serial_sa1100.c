@@ -1285,9 +1285,9 @@ static int rs_write(struct tty_struct * tty, int from_user,
 
 	if (from_user) {
 		if (info == IRQ_ports[15]) {	// Tuner interface (ttyS0)
-			extern int hijack_tuner_af_blocking;
+			extern int hijack_tuner_rds_disable;
 			//printk("count=%d, data=0x%02x 0x%02x\n", count, buf[0], (count>1)?buf[1]:0);
-			if (count == 1 && buf[0] == 0xf1 && hijack_tuner_af_blocking)
+			if (count == 1 && buf[0] == 0xf1 && hijack_tuner_rds_disable)
 				return count;
 		}
 		down(&tmp_buf_sem);

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v150"
+#define HIJACK_VERSION "v151"
 
 #include <linux/sched.h>
 #include <linux/kernel.h>
@@ -3096,21 +3096,23 @@ ir_setup_translations2 (unsigned char *buf, unsigned long *table)
 					new &= ~BUTTON_FLAGS;
 					if (new <= 0xf && new != IR_KNOB_LEFT)
 						new &= ~1;
-					if ((irflags & IR_FLAGS_UI))
-						new |= BUTTON_FLAGS_UI;
-					if ((irflags & IR_FLAGS_NOTUI))
-						new |= BUTTON_FLAGS_NOTUI;
+					if ((irflags & IR_FLAGS_UISTATE) == IR_FLAGS_UISTATE) {
+						irflags ^= IR_FLAGS_UISTATE;
+					} else {
+						if ((irflags & IR_FLAGS_UI))
+							new |= BUTTON_FLAGS_UI;
+						if ((irflags & IR_FLAGS_NOTUI))
+							new |= BUTTON_FLAGS_NOTUI;
+					}
 					if (*s == '.') {
-						++s;
 						do {
-							switch (*s) {
+							switch (*++s) {
 								case 'L': new |= BUTTON_FLAGS_LONGPRESS;	break;
 								case 'S': new |= BUTTON_FLAGS_SHIFT;		break;
 								case 'U': new |= BUTTON_FLAGS_UI;		break;
 								case 'N': new |= BUTTON_FLAGS_NOTUI;		break;
 								default: goto save_new;
 							}
-							++s;
 						} while (1);
 					}
 				save_new:

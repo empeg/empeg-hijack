@@ -61,7 +61,6 @@ static unsigned int info_screenrow = 0;
 static unsigned int hijack_status = HIJACK_INACTIVE;
 static unsigned long hijack_last_moved = 0, hijack_last_refresh = 0, blanker_triggered = 0, blanker_lastpoll = 0;
 static unsigned char blanker_lastbuf[EMPEG_SCREEN_BYTES] = {0,}, blanker_is_blanked = 0;
-static enum {muted, active, unknown} hijack_audio_state = unknown;
 
 static int  (*hijack_dispfunc)(int) = NULL;
 static void (*hijack_movefunc)(int) = NULL;
@@ -177,7 +176,7 @@ static unsigned int hijack_voladj_parms[(1<<VOLADJ_BITS)-1][5] = { // Values as 
 static hijack_buttonq_t hijack_inputq, hijack_playerq, hijack_userq;
 static int hijack_button_pacing			=  8;	// minimum spacing between press/release pairs within playerq
 static int hijack_temperature_correction	= -4;	// adjust all h/w temperature readings by this celcius amount
-static int hijack_block_serial_notify		=  0;	// 1 == block player "notify" (and "dhcp") lines from serial port
+static int hijack_supress_notify		=  0;	// 1 == supress player "notify" (and "dhcp") lines from serial port
 static int hijack_old_style			=  0;	// 1 == don't highlite menu items
 
 typedef struct hijack_option_s {
@@ -190,8 +189,7 @@ typedef struct hijack_option_s {
 
 static const hijack_option_t hijack_option_table[] = {
 	// config.ini string		address-of-variable		howmany	min	max
-	{"block_notify",		&hijack_block_serial_notify,	1,	0,	1},	// FIXME: delete this line
-	{"block_serial_notify",		&hijack_block_serial_notify,	1,	0,	1},
+	{"supress_notify",		&hijack_supress_notify,	1,	0,	1},	// FIXME: delete this line
 	{"button_pacing",		&hijack_button_pacing,		1,	0,	HZ},
 	{"old_style",			&hijack_old_style,		1,	0,	1},
 	{"temperature_correction",	&hijack_temperature_correction,	1,	-20,	+20},
@@ -395,10 +393,10 @@ hijack_serial_notify (const unsigned char *s, int size)
 
 			if (size >= notify_len && !memcmp(s, notify_thread, notify_len)) {
 				state = want_data;
-				return hijack_block_serial_notify;
+				return hijack_supress_notify;
 			} else if (size >= dhcp_len && !memcmp(s, dhcp_thread, dhcp_len)) {
 				state = want_eol;
-				return hijack_block_serial_notify;
+				return hijack_supress_notify;
 			}
 			break;
 		}
@@ -415,13 +413,6 @@ hijack_serial_notify (const unsigned char *s, int size)
 					size = (NOTIFY_MAX_LENGTH - 1);
 				if (size > 0) {
 					unsigned char i, c = *s;
-					if (c == 'S') {
-						switch (s[1]) {
-							case '0': hijack_audio_state = muted;	break;
-							case '1': hijack_audio_state = active;	break;
-							default:  hijack_audio_state = unknown;	break;
-						}
-					}
 					notify_labels[sizeof(notify_labels)-1] = c;
 					for (i = 0; c != notify_labels[i]; ++i);
 					line = notify_data[i];
@@ -431,7 +422,7 @@ hijack_serial_notify (const unsigned char *s, int size)
 					restore_flags(flags);
 				}
 				state = want_eol;
-				return hijack_block_serial_notify;
+				return hijack_supress_notify;
 			}
 			break;
 		}
@@ -439,7 +430,7 @@ hijack_serial_notify (const unsigned char *s, int size)
 		{
 			if (s[size-1] == '\n')
 				state = want_title;
-			return hijack_block_serial_notify;
+			return hijack_supress_notify;
 		}
 	}
 	return 0;
@@ -1257,7 +1248,7 @@ onedrive_display (int firsttime)
 static void
 notifications_move (int direction)
 {
-	hijack_block_serial_notify = (direction < 0);
+	hijack_supress_notify = (direction < 0);
 	empeg_state_dirty = 1;
 }
 
@@ -1272,7 +1263,7 @@ notifications_display (int firsttime)
 	clear_hijack_displaybuf(COLOR0);
 	(void)draw_string(ROWCOL(0,0), "Serial Port Notifications:", PROMPTCOLOR);
 	rowcol = draw_string(ROWCOL(2,0), "Notifications are: ", PROMPTCOLOR);
-	(void)   draw_string(rowcol, hijack_block_serial_notify ? " Disabled " : " Enabled ", ENTRYCOLOR);
+	(void)   draw_string(rowcol, hijack_supress_notify ? " Disabled " : " Enabled ", ENTRYCOLOR);
 	return NEED_REFRESH;
 }
 
@@ -1623,7 +1614,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v97 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v98 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -2776,8 +2767,11 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	// Prevent screen burn-in on an inactive/unattended player:
 	if (blanker_timeout) {
 		if (jiffies_since(blanker_lastpoll) >= (4*HZ/3)) {  // use an oddball interval to avoid patterns
+			int is_paused = 0;
+			if (get_current_mixer_source() == 'M' && ((*empeg_state_writebuf)[0x0c] & 0x02) == 0)
+				is_paused = 1;
 			blanker_lastpoll = jiffies;
-			if (hijack_audio_state != muted && screen_compare((unsigned long *)blanker_lastbuf, (unsigned long *)buf)) {
+			if (!is_paused && screen_compare((unsigned long *)blanker_lastbuf, (unsigned long *)buf)) {
 				memcpy(blanker_lastbuf, buf, EMPEG_SCREEN_BYTES);
 				blanker_triggered = 0;
 			} else if (!blanker_triggered) {

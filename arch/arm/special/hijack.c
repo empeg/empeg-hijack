@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v182"
+#define HIJACK_VERSION	"v183"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -44,7 +44,9 @@ extern int empeg_inittherm(volatile unsigned int *timerbase, volatile unsigned i
 #define EMPEG_KNOB_SUPPORTED	// Mk2 and later have a front-panel knob
 #endif
 
+int	kenwood_disabled;		// used by Nextsrc button
 int	empeg_on_dc_power;		// used in arch/arm/special/empeg_power.c
+int	empeg_tuner_present = 0;	// used by NextSrc button, perhaps has other uses
 int	hijack_fsck_disabled = 0;	// used in fs/ext2/super.c
 int	hijack_onedrive = 0;		// used in drivers/block/ide-probe.c
 int	hijack_reboot = 0;		// set to "1" to cause reboot on next display refresh
@@ -2464,16 +2466,17 @@ get_current_mixer_source (void)
 	int input = get_current_mixer_input();
 
 #if 1 //fixme temporary workaround for player bug
-	// A bug in the player software sometimes leads to saved-mixer
+	// A bug in the player software sometimes leads to the saved-mixer
 	//  state ("channel") disagreeing with the actual mixer state.
 	// This here ensures it will get corrected, though not completely
 	//  until the next player restart happens.
 	static int done_once = 0;
 	if (!done_once) {
 		unsigned long flags;
-		unsigned char *empeg_statebuf = *empeg_state_writebuf;
+		unsigned char *empeg_statebuf;
 		done_once = 1;
 		save_flags_clif(flags);
+		empeg_statebuf = *empeg_state_writebuf;
 		if (input != (empeg_statebuf[0x0e] & 7)) {
 			empeg_statebuf[0x0e] = (empeg_statebuf[0x0e] & ~7) | (input & 7);
 			empeg_state_dirty = 1;
@@ -2504,25 +2507,23 @@ toggle_input_source (void)
 	unsigned int button;
 	unsigned long flags;
 
+	// main -> aux -> tuner -> main
 	save_flags_cli(flags);
+	button = IR_RIO_SOURCE_PRESSED;
 	switch (get_current_mixer_source()) {
 		case IR_FLAGS_TUNER:
-		case IR_FLAGS_AUX:
-			button = IR_RIO_SOURCE_PRESSED;
+			if (kenwood_disabled)
+				hijack_enq_button_pair(IR_RIO_SOURCE_PRESSED);
+			else
+				button = IR_KW_CD_PRESSED;
 			break;
-		default:
-			// by hitting "aux" before "tuner", we handle "tuner not present"
-			hijack_enq_button_pair(IR_RIO_SOURCE_PRESSED);
-			button = IR_RIO_TUNER_PRESSED;  // tuner
+		case IR_FLAGS_AUX:
+			if (empeg_tuner_present || hijack_fake_tuner) 
+				button = IR_RIO_TUNER_PRESSED;
 			break;
 	}
-#if 1 // fixme: workaround for player bug
-	hijack_enq_button (&hijack_playerq, button, HZ/3);
-	hijack_enq_release(&hijack_playerq, button, 0);
-#else
-	hijack_enq_button_pair(button);
-#endif
 	restore_flags(flags);
+	hijack_enq_button_pair(button);
 }
 
 static int
@@ -2935,7 +2936,7 @@ input_append_code2 (unsigned int rawbutton)
 				ir_downkey = rawbutton;
 		}
 	}
-	mixer = get_current_mixer_source();	//fixme: temporary here to workaround player bug;
+	mixer = get_current_mixer_source();	//fixme: temporary workaround player for bug;
 						//see get_current_mixer_source for details;
 	if (ir_translate_table != NULL) {
 		//fixme unsigned short mixer	= get_current_mixer_source();
@@ -3030,12 +3031,13 @@ input_append_code(void *dev, unsigned int button)  // empeg_input.c
 void
 hijack_intercept_tuner (unsigned int button)
 {
+	empeg_tuner_present = 1;
 	if (hijack_trace_tuner)
 		printk("tuner: in=%08x\n", button);
 	button = htonl(button);
 	if (hijack_fake_tuner) {
 		hijack_fake_tuner = 0;
-		printk("tuner: set \"fake_tuner=0\"\n");
+		printk("tuner: \"fake_tuner=0\"\n");
 	} else {
 		hijack_serial_insert ((char *)&button, 4, 0);
 	}
@@ -3282,7 +3284,7 @@ skipchars (char *s, char *chars)
 }
 
 static int
-match_char (unsigned char **s, unsigned char c)
+match_char (unsigned char **s, const unsigned char c)
 {
 	*s = skipchars(*s, " \t");
 	if (**s == c) {
@@ -3361,17 +3363,22 @@ get_button_code (unsigned char **s_p, unsigned int *button, int eol_okay, const 
 	return get_number(s_p, button, 16, nextchars);
 }
 
-static int
-ir_setup_translations2 (unsigned char *buf, unsigned int *table, int *had_errors)
+static char *
+find_header (char *s, const char *header)
 {
-	const char header[] = "[ir_translate]";
-	unsigned char *s;
+	if (!s || !*s || !(s = strstr(s, header)) || !*s || !*(s += strlen(header)))
+		s = NULL;
+	return s;
+}
+
+static int
+ir_setup_translations2 (unsigned char *s, unsigned int *table, int *had_errors)
+{
 	int index = 0;
 
 	// find start of translations
-	if (!*buf || !(s = strstr(buf, header)) || !*s)
+	if (!(s = find_header(s, "[ir_translate]")))
 		return 0;
-	s += sizeof(header) - 1;
 	while (*(s = skipchars(s, " \n\t\r")) && *s != '[') {
 		unsigned int old = 0, new, good = 0;
 		ir_translation_t *t = NULL;
@@ -3838,49 +3845,61 @@ get_option_vals (int syntax_only, unsigned char **s, const hijack_option_t *opt)
 }
 
 static int
-hijack_get_options (unsigned char *s)
+hijack_get_options (unsigned char *buf)
 {
-	static const char header[] = "[hijack]";
 	static const char menu_delete[] = "menu_remove=";
 	const hijack_option_t *opt;
-	int errors = 0;
+	int errors;
+	unsigned char *s;
 
-	// find start of (config.ini) options:
-	if (s && *s && (s = strstr(s, header)) && *s) {
-		s += sizeof(header) - 1;
+	// look for [kenwood] disabled=0
+	kenwood_disabled = 0;
+	if ((s = find_header(buf, "[kenwood]"))) {
 		while (*(s = skipchars(s, " \n\t\r")) && *s != '[') {
-			char *line = s;
-			if (*s == ';')
-				goto nextline;
-			for (opt = &hijack_option_table[0]; (opt->name); ++opt) {
-				if (!strxcmp(s, opt->name, 1)) {
-					s += strlen(opt->name);
-					if (match_char(&s, '=')) {
-						unsigned char *test = s;
-						if (!get_option_vals(1, &test, opt))	// first pass validates
-							goto error;
-						(void)get_option_vals(0, &s, opt);	// second pass saves
-						goto nextline;
-					}
-				}
+			if (!strxcmp(s, "disabled=1", 1)) {
+				kenwood_disabled = 1;
+				break;
 			}
-			if (!strxcmp(s, menu_delete, 1)) {
-				unsigned char *label = s += sizeof(menu_delete)-1;
-				s = findchars(s, "\n;\r");
-				if (s != label) {
-					char saved = *s;
-					*s = '\0';
-					remove_menu_entry(label);
-					*s = saved;
+			s = findchars(s, "\n");
+		}
+	}
+
+	// look for [hijack] options:
+	if (!(s = find_header(buf, "[hijack]")))
+		return 0;
+	errors = 0;
+	while (*(s = skipchars(s, " \n\t\r")) && *s != '[') {
+		char *line = s;
+		if (*s == ';')
+			goto nextline;
+		for (opt = &hijack_option_table[0]; (opt->name); ++opt) {
+			if (!strxcmp(s, opt->name, 1)) {
+				s += strlen(opt->name);
+				if (match_char(&s, '=')) {
+					unsigned char *test = s;
+					if (!get_option_vals(1, &test, opt))	// first pass validates
+						goto error;
+					(void)get_option_vals(0, &s, opt);	// second pass saves
 					goto nextline;
 				}
 			}
-		error:
-			printline("[hijack] ERROR: ", line);
-			errors = 1;
-		nextline:
-			s = findchars(s, "\n");
 		}
+		if (!strxcmp(s, menu_delete, 1)) {
+			unsigned char *label = s += sizeof(menu_delete)-1;
+			s = findchars(s, "\n;\r");
+			if (s != label) {
+				char saved = *s;
+				*s = '\0';
+				remove_menu_entry(label);
+				*s = saved;
+				goto nextline;
+			}
+		}
+	error:
+		printline("[hijack] ERROR: ", line);
+		errors = 1;
+	nextline:
+		s = findchars(s, "\n");
 	}
 	return errors;
 }
@@ -3905,7 +3924,7 @@ set_drive_spindown_times (void)
 
 // edit the player's view of config.ini
 static int
-edit_config_ini (char *s, const char *lookfor)
+edit_config_ini (char *s, const char *lookfor, int just_looking)
 {
 	char *optname, *optend;
 	int count = 0;
@@ -3916,6 +3935,8 @@ edit_config_ini (char *s, const char *lookfor)
 			s += strlen(lookfor);
 			optname = skipchars(s, " \t");
 			if (optname != s) {		// verify whitespace after "lookfor"
+				if (just_looking)
+					return 1;
 				s = optname;
 				*(s - 1) = '\n';	// "uncomment" the portion after "lookfor"
 				++count;		// keep track of how many substitutions we do
@@ -3951,10 +3972,12 @@ hijack_process_config_ini (char *buf)
 	static const char *acdc_labels[2] = {";@AC", ";@DC"};
 	printk("\n");
 	reset_hijack_options();
-	(void) edit_config_ini(buf, acdc_labels[empeg_on_dc_power]);
-	if (!edit_config_ini(buf, homework_labels[hijack_homework])) {
-		// no HOME/WORK labels in config.ini, so we don't need it on the menu:
-		remove_menu_entry(homework_menu_label);
+	(void) edit_config_ini(buf, acdc_labels[empeg_on_dc_power], 0);
+	if (!edit_config_ini(buf, homework_labels[hijack_homework], 0)) {
+		if (!edit_config_ini(buf, homework_labels[!hijack_homework], 1)) {
+			// no HOME/WORK labels in config.ini, so we don't need it on the menu:
+			remove_menu_entry(homework_menu_label);
+		}
 	}
 	if (ir_setup_translations(buf))
 		show_message("[ir_translate] config errors", 5*HZ);

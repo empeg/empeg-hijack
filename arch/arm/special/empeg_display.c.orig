@@ -1034,9 +1034,6 @@ int display_ioctl(struct inode *inode, struct file *filp, unsigned int cmd,
 			
 			/* Turning display on */
 			empeg_displaypower(1);
-			
-			/* Turn on button LEDs, Hack by Brian Mihulka bmihulka@hulkster.net */
-			display_sendcontrol(244);
 
 			/* Wait for a while for it to come to life */
 			udelay(POWERFAIL_DISABLED_DELAY);
@@ -1047,9 +1044,6 @@ int display_ioctl(struct inode *inode, struct file *filp, unsigned int cmd,
 		} else {
 			/* Do this first in case powerfail triggers */
 			dev->power = FALSE;
-			
-			/* Turn off button LEDs, Hack by Brian Mihulka bmihulka@hulkster.net */
-			display_sendcontrol(242);
 			
 			/* Turning display off */
 			empeg_displaypower(0);

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v201"
+#define HIJACK_VERSION	"v202"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -367,6 +367,8 @@ typedef struct hijack_option_s {
 	int	max;
 } hijack_option_t; 
 
+char hijack_khttpd_xsl[32];
+
 static const hijack_option_t hijack_option_table[] =
 {
 // config.ini string		address-of-variable		default			howmany	min	max
@@ -392,6 +394,7 @@ static const hijack_option_t hijack_option_table[] =
 {"khttpd_files",		&hijack_khttpd_files,		1,			1,	0,	1},
 {"khttpd_playlists",		&hijack_khttpd_playlists,	1,			1,	0,	1},
 {"khttpd_commands",		&hijack_khttpd_commands,	1,			1,	0,	1},
+{"khttpd_xsl",			&hijack_khttpd_xsl,		(int)"default",		0,	0,	sizeof(hijack_khttpd_xsl)-1},
 {"max_connections",		&hijack_max_connections,	4,			1,	0,	20},
 #endif // CONFIG_NET_ETHERNET
 {"old_style",			&hijack_old_style,		0,			1,	0,	1},
@@ -2065,7 +2068,7 @@ delaytime_display (int firsttime)
 	if (delaytime) {
 		/* Remove sign, it's decoded also in empeg_audio3.c */ 
 		tmp = (delaytime >= 0) ? (delaytime) : (-delaytime);
-		sprintf(buf, "%3d.%d ms %s", (tmp /  10), (tmp % 10), (delaytime) ? ((delaytime > 0) ? "Left" : "Right") : "");
+		sprintf(buf, "%2d.%d ms %s", (tmp /  10), (tmp % 10), (delaytime) ? ((delaytime > 0) ? "Left" : "Right") : "");
 		(void) draw_string_spaced(rowcol, buf, ENTRYCOLOR);
 
 		/* Speed of sound is roughly 1200km/h = 333m/s */

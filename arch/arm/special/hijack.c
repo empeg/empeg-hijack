@@ -1,6 +1,6 @@
 // Empeg display/IR hijacking by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v121"
+#define HIJACK_VERSION "v122"
 //
 // Includes: font, drawing routines
 //           extensible menu system
@@ -219,6 +219,7 @@ static int hijack_standby_minutes		= 30;	// number of minutes after screen blank
        int hijack_kftpd_control_port		= 21;	// kftpd control port
        int hijack_kftpd_data_port		= 20;	// kftpd data port
        int hijack_kftpd_verbose			=  0;	// kftpd verbosity
+       int hijack_kftpd_show_dotdir		=  0;	// 0 == hide '.' directory in listings; 1 == show '.' in listings
 
 typedef struct hijack_option_s {
 	const char	*name;
@@ -234,6 +235,7 @@ static const hijack_option_t hijack_option_table[] = {
  	{"kftpd_control_port",		&hijack_kftpd_control_port,	1,	0,	65535},
  	{"kftpd_data_port",		&hijack_kftpd_data_port,	1,	0,	65535},
  	{"kftpd_verbose",		&hijack_kftpd_verbose,		1,	0,	1},
+ 	{"kftpd_show_dotdir",		&hijack_kftpd_show_dotdir,	1,	0,	1},
  	{"khttpd_port",			&hijack_khttpd_port,		1,	0,	65535},
  	{"khttpd_verbose",		&hijack_khttpd_verbose,		1,	0,	1},
 	{"old_style",			&hijack_old_style,		1,	0,	1},

@@ -30,6 +30,7 @@ extern int hijack_khttpd_verbose;			// from arch/arm/special/hijack.c
 extern int hijack_kftpd_control_port;			// from arch/arm/special/hijack.c
 extern int hijack_kftpd_data_port;			// from arch/arm/special/hijack.c
 extern int hijack_kftpd_verbose;			// from arch/arm/special/hijack.c
+extern int hijack_kftpd_show_dotdir;			// from arch/arm/special/hijack.c
 extern struct semaphore hijack_khttpd_startup_sem;	// from arch/arm/special/hijack.c
 extern struct semaphore hijack_kftpd_startup_sem;	// from arch/arm/special/hijack.c
 extern int sys_rmdir(const char *path); // fs/namei.c
@@ -39,6 +40,7 @@ extern int sys_chmod(const char *path, mode_t mode); // fs/open.c
 extern int sys_mkdir(const char *path, int mode); // fs/namei.c
 extern int sys_unlink(const char *path);
 extern void sys_sync(void);
+extern pid_t kernel_thread(int (*fn)(void *), void *arg, unsigned long flags);
 
 #define BUF_PAGES		2
 #define INET_ADDRSTRLEN		16
@@ -257,6 +259,8 @@ send_dir_response (server_parms_t *parms, int rcode, char *dir, char *suffix)
 		len = sprintf(buf, "%d \"%s\" %s\r\n", rcode, dir, suffix);
 	else
 		len = sprintf(buf, "%d \"%s\"\r\n", rcode, dir);
+	if (parms->verbose)
+		printk("%s: %s", parms->servername, buf);
 	if ((rc = ksock_rw(parms->clientsock, buf, len, -1)) != len) {
 		printk("%s: ksock_rw(dir_response) failed, rc=%d\n", parms->servername, rc);
 		return 1;
@@ -271,6 +275,8 @@ send_help_response (server_parms_t *parms, char *type, char *commands)
 	int	rc, len;
 
 	len = sprintf(buf, "214-The following %scommands are recognized (* =>'s unimplemented)\r\n", type);
+	if (parms->verbose)
+		printk("%s: %s%s", parms->servername, buf, commands);
 	if (len != (rc = ksock_rw(parms->clientsock, buf, len, -1))
 	 || len != (rc = ksock_rw(parms->clientsock, commands, len = strlen(commands), -1)))
 	{
@@ -508,7 +514,7 @@ filldir (void *data, const char *name, int namelen, off_t offset, ino_t ino)
 
 	if (name[0] == '.' && namelen <= 2) {
 		if (namelen == 1) {
-			if (p->use_http)
+			if (p->use_http || !hijack_kftpd_show_dotdir)
 				return 0;	// skip "." in khttpd listings
 		} else if (name[1] == '.' && p->path_len == 1) {
 			if (p->path[0] == '/')	// paranoia: path_len==1 ought to be sufficient
@@ -857,6 +863,7 @@ static const mime_type_t mime_types[] = {
 	{"/var/tags",		 text_plain			},
 	{"/etc/*",		 text_plain			},
 	{"/proc/*",		 text_plain			},
+	{"/drive?/fids/*1",	 text_plain			},
 	{"*bin/*",		"application/octet-stream"	},
 	{NULL,			NULL				}};
 
@@ -1350,77 +1357,88 @@ ksock_accept (server_parms_t *parms)
 	return 1;	// failure
 }
 
-static void
-run_server (int use_http, struct semaphore *sem_p)
+static int
+child_thread (void *arg)
+{
+	server_parms_t	*parms = arg;
+
+	if (parms->verbose && !get_clientip(parms))
+		printk("%s: connection from %s\n", parms->servername, parms->clientip);
+	(void) turn_on_sockopt(parms, parms->servsock, SOL_TCP, TCP_NODELAY); // don't care
+	if (parms->use_http) {
+		khttpd_handle_connection(parms);
+	} else if (!send_response(parms, 220)) {
+		strcpy(parms->cwd, "/");
+		parms->umask = 0022;
+		while (!kftpd_handle_command(parms));
+		sys_sync();	// useful for flash upgrades
+	}
+	sock_release(parms->clientsock);
+	kfree(parms);
+	return 0;
+}
+
+int
+kftpd_daemon (unsigned long use_http)	// invoked twice from init/main.c
 {
 	mm_segment_t		old_fs;
-	struct task_struct	*tsk = current;
-	server_parms_t		*parms = kmalloc(sizeof(server_parms_t), GFP_KERNEL);
-	int			control_port;
+	server_parms_t		*parms, *clientparms;
+	int			server_port;
+	struct semaphore	*sema;
+	const char		*servername;
 
-	if (!parms)
-		return;
-	memset(parms, 0, sizeof(parms));
-	parms->use_http  = use_http;
-	strcpy(parms->servername, use_http ? "khttpd" : "kftpd");
+	if (use_http) {
+		servername = "khttpd";
+		sema = &hijack_khttpd_startup_sem;
+	} else {
+		servername = "kftpd";
+		sema = &hijack_kftpd_startup_sem;
+	}
 
 	// kthread setup
-	tsk->session = 1;
-	tsk->pgrp = 1;
-	strcpy(tsk->comm, parms->servername);
-	sigfillset(&tsk->blocked);
+	current->session = 1;
+	current->pgrp = 1;
+	strcpy(current->comm, servername);
+	sigfillset(&current->blocked);
 
-	down(sem_p);	// wait for hijack.c to get our port numbers from config.ini
+	down(sema);	// wait for Hijack to get our port number from config.ini
+	server_port = use_http ? hijack_khttpd_port : hijack_kftpd_control_port;
 
-	old_fs = get_fs();
-	set_fs(KERNEL_DS);
-	if (use_http) {
-		control_port = hijack_khttpd_port;
-		parms->verbose = hijack_khttpd_verbose;
-	} else {
-		control_port = hijack_kftpd_control_port;
-		parms->data_port = hijack_kftpd_data_port;
-		parms->verbose = hijack_kftpd_verbose;
-	}
-	if (control_port) {
-		if (make_socket(parms, &parms->servsock, control_port)) {
-			printk("%s: make_socket(port=%d) failed\n", parms->servername, control_port);
-		} else if (parms->servsock->ops->listen(parms->servsock, use_http ? 5 : 1) < 0) {
-			printk("%s: listen(port=%d) failed\n", parms->servername, control_port);
+	if (server_port && (parms = kmalloc(sizeof(server_parms_t), GFP_KERNEL))) {
+		memset(parms, 0, sizeof(parms));
+		parms->use_http  = use_http;
+		strcpy(parms->servername, servername);
+		if (use_http) {
+			parms->verbose = hijack_khttpd_verbose;
 		} else {
-			printk("%s: listening on port %d\n", parms->servername, control_port);
+			parms->data_port = hijack_kftpd_data_port;
+			parms->verbose = hijack_kftpd_verbose;
+		}
+		old_fs = get_fs();
+		set_fs(KERNEL_DS);
+		if (make_socket(parms, &parms->servsock, server_port)) {
+			printk("%s: make_socket(port=%d) failed\n", parms->servername, server_port);
+		} else if (parms->servsock->ops->listen(parms->servsock, use_http ? 5 : 1) < 0) { // queued: http:5, ftp:1
+			printk("%s: listen(port=%d) failed\n", parms->servername, server_port);
+		} else {
+			printk("%s: listening on port %d\n", parms->servername, server_port);
 			while (1) {
 				if (ksock_accept(parms)) {
 					printk("%s: accept() failed\n", parms->servername);
 				} else {
-					if (parms->verbose && !get_clientip(parms))
-						printk("%s: connection from %s\n", parms->servername, parms->clientip);
-					(void) turn_on_sockopt(parms, parms->servsock, SOL_TCP, TCP_NODELAY); // don't care
-					if (parms->use_http) {
-						khttpd_handle_connection(parms);
-					} else if (!send_response(parms, 220)) {
-						strcpy(parms->cwd, "/");
-						parms->umask = 0022;
-						while (!kftpd_handle_command(parms));
-						sys_sync();	// useful for flash upgrades
+					if (!(clientparms = kmalloc(sizeof(server_parms_t), GFP_KERNEL))) {
+						printk("%s: no memory for client parms\n", parms->servername);
+						sock_release(parms->clientsock);
+					} else {
+						memcpy(clientparms, parms, sizeof(server_parms_t));
+						kernel_thread(child_thread, clientparms, CLONE_FS|CLONE_FILES|CLONE_SIGHAND);
 					}
 				}
-				sock_release(parms->clientsock);
 			}
 		}
+		set_fs(old_fs);
+		kfree(parms);
 	}
-	set_fs(old_fs);
-}
-
-int kftpd (void *unused)	// invoked from init/main.c
-{
-	run_server(0, &hijack_kftpd_startup_sem);
-	return 0;
-}
-
-int khttpd (void *unused)	// invoked from init/main.c
-{
-	run_server(1, &hijack_khttpd_startup_sem);
 	return 0;
 }
 

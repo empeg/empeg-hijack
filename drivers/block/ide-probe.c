@@ -886,7 +886,7 @@ int ideprobe_init (void)
 			/* Check for drives */
 			on_if0=release_and_probe(0);
 			//printk("found %d drives\n",on_if0);
-			if (on_if0 && hijack_onedrive)
+			if (on_if0 && hijack_onedrive && ide_hwifs[0].drives[0].present)
 				break;
 			if (on_if0<2) {
 				/* No. Sleep and rescan in 0.125 seconds */

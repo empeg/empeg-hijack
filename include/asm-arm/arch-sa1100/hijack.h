@@ -29,6 +29,7 @@
 //       }
 //       //rc = ioctl(fd,EMPEG_HIJACK_UNBINDBUTTONS, NULL); /* now done by WAITMENU */
 //    }
+//    rc = ioctl(fd,EMPEG_HIJACK_WAITMENU, NULL);	// release the menu system on program exit
 //
 
 #define INRANGE(c,min,max)	((c) >= (min) && (c) <= (max))

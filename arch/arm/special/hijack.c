@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v269"
+#define HIJACK_VERSION	"v270"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -4244,12 +4244,31 @@ menu_init (void)
 	menu_top = (menu_item ? menu_item : menu_size) - 1;
 }
 
+static void
+hijack_release_menu_and_buttons (void)
+{
+	unsigned long flags;
+
+	save_flags_cli(flags);
+	if (hijack_dispfunc == userland_display) {
+		unsigned long menu_pid = menu_table[menu_item].userdata >> 8;
+		if (menu_pid == current->pid) {
+			hijack_dispfunc = NULL;		// restart the main menu
+			if (hijack_buttonlist) {	// release any buttons we had grabbed
+				kfree(hijack_buttonlist);
+				hijack_buttonlist = NULL;
+			}
+		}
+	}
+	restore_flags(flags);
+}
+
 static int
 hijack_wait_on_menu (char *argv[])
 {
 	struct wait_queue wait = {current, NULL};
 	int i, rc, index, num_items, indexes[MENU_MAX_ITEMS];
-	unsigned long flags, userdata = (unsigned long)current->pid << 8;
+	unsigned long flags, menudata;
 
 	// (re)create the menu items, with our pid/index as userdata
 	for (i = 0; *argv && i < MENU_MAX_ITEMS; ++i) {
@@ -4261,7 +4280,7 @@ hijack_wait_on_menu (char *argv[])
 		label[size-1] = '\0';
 
 		save_flags_cli(flags);
-		index = userland_extend_menu(label, userdata | i);
+		index = userland_extend_menu(label, (current->pid << 8) | i);
 		restore_flags(flags);
 		if (index < 0)
 			return index;
@@ -4269,41 +4288,30 @@ hijack_wait_on_menu (char *argv[])
 	}
 	num_items = i;
 	save_flags_cli(flags);
-	if (hijack_dispfunc == userland_display && (menu_table[menu_item].userdata & ~0xff) == userdata) {
-		hijack_dispfunc = NULL;		// restart the main menu
-		if (hijack_buttonlist) {	// release any buttons we had grabbed
-			kfree(hijack_buttonlist);
-			hijack_buttonlist = NULL;
-		}
-	}
 	add_wait_queue(&hijack_menu_waitq, &wait);
 	while (1) {
-		unsigned long menudata;
 		current->state = TASK_INTERRUPTIBLE;
 		menudata = menu_table[menu_item].userdata;
 		if (signal_pending(current)) {
 			rc = -EINTR;
 			break;
 		}
-		if (hijack_dispfunc == userland_display && (menudata & ~0xff) == userdata) {
-			rc = menudata & 0x7f;
+		if (hijack_dispfunc == userland_display && (menudata >> 8) == current->pid) {
+			rc = menudata & 0xff;
 			break;
 		}
 		restore_flags(flags);
 		schedule();
 		save_flags_cli(flags);
 	}
-	if (rc < 0) {
-		if (hijack_dispfunc == userland_display && (menu_table[menu_item].userdata & ~0xff) == userdata)
-			hijack_dispfunc = NULL;		// restart the main menu
-		for (i = num_items - 1; i >= 0; --i)	{	// disable our menu items until next time
-			menu_item_t *item = &menu_table[indexes[i]];
-			remove_menu_entry(item->label);
-			//item->dispfunc = NULL;		// disable the menu item
-		}
-	}
 	current->state = TASK_RUNNING;
 	remove_wait_queue(&hijack_menu_waitq, &wait);
+	for (i = num_items - 1; i >= 0; --i)	{	// disable our menu items until next time
+		menu_item_t *item = &menu_table[indexes[i]];
+		remove_menu_entry(item->label);
+	}
+	if (rc < 0)
+		hijack_release_menu_and_buttons();
 	restore_flags(flags);
 	return rc;
 }
@@ -4342,7 +4350,10 @@ int hijack_ioctl  (struct inode *inode, struct file *filp, unsigned int cmd, uns
 			//              rc = ioctl(fd, EMPEG_HIJACK_WAITMENU, &menu_labels)
 			//              if (rc < 0) perror(); else selected_index = rc;
 			// The screen is then YOURS until you issue another EMPEG_HIJACK_WAITMENU
-			return hijack_wait_on_menu((char **)arg);
+			hijack_release_menu_and_buttons();
+			if (arg)
+				return hijack_wait_on_menu((char **)arg);
+			return 0;
 		}
 		case EMPEG_HIJACK_DISPWRITE:	// copy buffer to screen
 		{

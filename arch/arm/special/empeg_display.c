@@ -768,12 +768,11 @@ static unsigned long display_animation(unsigned long animation_base)
 		extern unsigned long hijack_init (void *);
 		nexttime = hijack_init(frameptr);
 	}
+	framenr++;	// Next frame
+
 	nexttime += jiffies;
 	animation_timer.expires = nexttime;
 	add_timer(&animation_timer);
-
-	/* Next frame */
-	framenr++;
 	return nexttime;
 }
 

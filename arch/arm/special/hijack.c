@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v264"
+#define HIJACK_VERSION	"v265"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -4992,7 +4992,8 @@ hijack_init (void *animptr)
 	extern void hijack_notify_init (void);
 	int failed;
 	char buf[128];
-	const unsigned long animstart = HZ/3;
+	//const unsigned long animstart = HZ/3;
+	const unsigned long animstart = HZ;  //FIXME: long pause to allow for flash erase
 
 	hijack_game_animptr = animptr;
 	hijack_buttonled_level = 0;	// turn off button LEDs

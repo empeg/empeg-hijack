@@ -785,7 +785,7 @@ static unsigned int subdirs[SUBDIR_HASH] = {0,}, fids_have_subdirs = 0;
 extern asmlinkage int sys_newstat(char * filename, struct stat * statbuf);
 
 static int
-fids_subdir_exists (unsigned int drive, unsigned int subdir, int writing)
+fids_subdir_exists (unsigned int drive, unsigned int subdir, int creating)
 {
 	char		path[24];
 	int		rc = 0;
@@ -793,7 +793,7 @@ fids_subdir_exists (unsigned int drive, unsigned int subdir, int writing)
 	unsigned int	lookup, subdir_drive = (0x40000000 | (subdir << 2) | drive), hash = subdir_drive & (SUBDIR_HASH-1);
 
 	lookup = subdirs[hash];
-	if (!(fids_have_subdirs && writing) && (lookup & 0x7fffffff) == subdir_drive) {
+	if (!(fids_have_subdirs && creating) && (lookup & 0x7fffffff) == subdir_drive) {
 		if ((lookup & 0x80000000) == 0) {
 			rc = 1;		// subdir doesn't exist (otherwise it does)
 		}
@@ -804,7 +804,7 @@ fids_subdir_exists (unsigned int drive, unsigned int subdir, int writing)
 		if (sys_newstat(path, &st) || !S_ISDIR(st.st_mode)) {
 			rc = 1;			// subdir doesn't exist
 			subdirs[hash] = subdir_drive;			// cache it for next time
-			if (fids_have_subdirs && writing) {
+			if (fids_have_subdirs && creating) {
 				extern asmlinkage int sys_mkdir(const char * pathname, int mode);
 				rc = sys_mkdir(path, 0775);
 				if (hijack_trace_fs)
@@ -820,23 +820,34 @@ fids_subdir_exists (unsigned int drive, unsigned int subdir, int writing)
 	return rc;
 }
 
+static inline int name_exists(const char *name)
+{
+	int rc = -1;
+	struct dentry *dentry = NULL;
+
+	dentry = lookup_dentry(name, NULL, LOOKUP_FOLLOW);
+	if (!IS_ERR(dentry)) {
+		if (dentry->d_inode)
+			rc = 0;
+		dput(dentry);
+	}
+	return !rc;
+}
+
 void
-hijack_mangle_fids (unsigned char *path, int writing)
+hijack_mangle_fids (unsigned char *path, int creating)
 {
 	unsigned int	drive, digits, fid, subdir;
 	unsigned char	*p = path;
 
-	// Only mangle on writes; let the player worry about reads:
-	if (!writing)
-		return;
-
-	// Check the path:
+	// Check the path; we only mangle entries accessed as "/empeg/fids/*":
 	if (strncmp(p, "/empeg/fids", 11) || (p[11] != '0' && p[11] != '1') || p[12] != '/')
 		return;
+
+	// Check for any ops involving a fids subdir, and zero the corresponding hash entry
 	drive = p[11] & 1;
 	p += 13;
 	if (*p == '_') {
-		// Check for any ops involving a fids subdir, and zero the corresponding hash entry
 		digits = fromhex(++p, &subdir, 0);
 		if (digits == 5 && !p[digits]) {
 			unsigned int subdir_drive = (0x40000000 | (subdir << 1) | drive), hash = subdir_drive & (SUBDIR_HASH-1);
@@ -844,14 +855,20 @@ hijack_mangle_fids (unsigned char *path, int writing)
 		}
 		return;
 	}
+
+	// Don't mangle if the specified pathname actually exists:
+	if (name_exists(path))
+		return;
+
+	// Don't mangle if this file isn't a FID file:
 	digits = fromhex(p, &fid, 0);
 	if (digits < 3 || p[digits])
 		return;			// not a fid path
-	//
+
 	// Okay, we have an old-style FID access.
 	// Now to remap it to the new style, if the subdir exists (or can be created).
 	//
-	if (fids_subdir_exists(drive, fid >> 12, writing) == 0) {
+	if (fids_subdir_exists(drive, fid >> 12, creating) == 0) {
 		if (hijack_trace_fs) printk("mangle_fids(\"%s\" ", path);
 		sprintf(path, "/empeg/fids%u/_%05x/%03x", drive, fid >> 12, fid & 0xfff);
 		if (hijack_trace_fs) printk("-> \"%s\")\n", path);
@@ -863,9 +880,9 @@ asmlinkage int sys_open(const char * filename, int flags, int mode)
 	char * tmp;
 	int fd, error;
 	
-	extern char *getname2(const char *filename, int writing);
+	extern char *getname2(const char *filename, int creating);
 
-	if ((mode & (O_CREAT|O_RDWR|O_WRONLY)))
+	if ((mode & O_CREAT))
 		tmp = getname2(filename,1);
 	else
 		tmp = getname2(filename,0);

@@ -689,7 +689,7 @@ send_dirlist (server_parms_t *parms, char *path, int full_listing)
 	}
 	filp = filp_open(path,O_RDONLY,0);
 	if (IS_ERR(filp) || !filp) {
-		printk("%s: filp_open(%s) failed\n", parms->servername, path);
+		printk("%s: filp_open(%s) failed (%d)\n", parms->servername, path, (int)filp);
 		response = 550;
 	} else {
 		int (*readdir) (struct file *, void *, filldir_t);

@@ -1644,7 +1644,7 @@ hijack_do_command (void *sparms, char *buf)
 {
 	int		rc = 0;
 	char		*nextline = buf;
-	server_parms_t	*parms = sparms;
+	server_parms_t	*parms = sparms;	// kftpd passes us NULL
 
 	while (!rc && *nextline) {
 		int nocache = 1;

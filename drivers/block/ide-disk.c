@@ -542,7 +542,6 @@ static ide_startstop_t idedisk_special (ide_drive_t *drive)
 
 	if (s->b.set_geometry) {
 		s->b.set_geometry = 0;
-printk("%s: set_geom(%u,%u,%u)\n", drive->name, drive->cyl, drive->head, drive->sect);
 		OUT_BYTE(drive->sect,IDE_SECTOR_REG);
 		OUT_BYTE(drive->cyl,IDE_LCYL_REG);
 		OUT_BYTE(drive->cyl>>8,IDE_HCYL_REG);

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v266"
+#define HIJACK_VERSION	"v267"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -3532,7 +3532,7 @@ input_append_code2 (unsigned int rawbutton)
 	unsigned int released	= IS_RELEASE(rawbutton);
 	unsigned int button	= PRESSCODE(rawbutton);
 
-	if (ir_downkey != IR_NULL_BUTTON && button != ir_downkey) {
+	if (ir_downkey != IR_NULL_BUTTON && button != PRESSCODE(ir_downkey)) {
 		unsigned int rcode = RELEASECODE(ir_downkey);
 		if (rcode != IR_NULL_BUTTON)
 			input_append_code2(rcode);

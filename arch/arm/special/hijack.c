@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v162"
+#define HIJACK_VERSION "v163"
 
 #include <linux/sched.h>
 #include <linux/kernel.h>
@@ -3256,7 +3256,8 @@ get_option_vals (int syntax_only, unsigned char **s, const hijack_option_t *opt)
 	return rc; // success
 }
 
-static int get_button_code (unsigned char **s_p, unsigned int *button, int eol_okay, const char *nextchars)
+int
+get_button_code (unsigned char **s_p, unsigned int *button, int eol_okay, const char *nextchars)
 {
 	button_name_t *bn = button_names;
 	unsigned char *s = *s_p;

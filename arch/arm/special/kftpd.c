@@ -47,6 +47,8 @@ extern int sys_chmod(const char *path, mode_t mode); // fs/open.c
 extern int sys_mkdir(const char *path, int mode); // fs/namei.c
 extern int sys_unlink(const char *path);
 extern int sys_newstat(char *, struct stat *);
+extern int sys_newfstat(int, struct stat *);
+extern int sys_fsync(int);
 extern pid_t kernel_thread(int (*fn)(void *), void *arg, unsigned long flags);
 extern int sys_wait4 (pid_t pid,unsigned int * stat_addr, int options, struct rusage * ru);
 
@@ -59,7 +61,7 @@ typedef struct server_parms_s {
 	struct socket		*datasock;
 	struct sockaddr_in	clientaddr;
 	char			verbose;	// bool
-	char			format_tagfile;	// bool
+	char			generate_playlist;	// bool
 	char			use_http;	// bool
 	char			have_portaddr;	// bool
 	int			data_port;
@@ -163,7 +165,7 @@ ksock_rw (struct socket *sock, char *buf, int buf_size, int minimum)
 		}
 		unlock_kernel();
 		if (rc < 0 || (!sending && rc == 0)) {
-			if (rc && rc != -EPIPE)
+			if (rc && rc != -EPIPE && rc != -ECONNRESET)
 				printk("ksock_rw: %s rc=%d\n", sending ? "sock_sendmsg()" : "sock_recvmsg()", rc);
 			break;
 		}
@@ -517,9 +519,10 @@ send_dirlist_buf (server_parms_t *parms, filldir_parms_t *p, int send_trailer)
 	}
 	sent = ksock_rw(parms->datasock, p->buf, p->buf_used, -1);
 	if (sent != p->buf_used) {
-		printk("%s: ksock_rw(%u) returned %d\n", parms->servername, p->buf_used, sent);
+		if (parms->verbose)
+			printk("%s: send_dirlist_buf(): ksock_rw(%u) returned %d\n", parms->servername, p->buf_used, sent);
 		if (sent >= 0)
-			sent = -EIO;
+			sent = -ECOMM;
 		return sent;
 	}
 	p->buf_used = 0;
@@ -756,7 +759,8 @@ send_dirlist (server_parms_t *parms, char *path, int full_listing)
 						pos = (pos + namelen + (1 + 3)) & ~3;
 						rc = format_dir(parms, &p, ino, name, namelen);
 						if (rc < 0) {
-							printk("%s: format_dir('%s') returned %d\n", parms->servername, p.name, rc);
+							if (parms->verbose)
+								printk("%s: format_dir('%s') returned %d\n", parms->servername, p.name, rc);
 							break;
 						}
 					}
@@ -803,7 +807,7 @@ khttpd_respond (server_parms_t *parms, int rcode, const char *title, const char 
 
 
 static void
-khttpd_redirect (server_parms_t *parms, const char *path, char *buf)
+khttpd_redirect (server_parms_t *parms, const char *path)
 {
 	static const char http_redirect[] =
 		"HTTP/1.1 302 Found\r\n"
@@ -817,14 +821,15 @@ khttpd_redirect (server_parms_t *parms, const char *path, char *buf)
 		"<H1>Found</H1>\r\n"
 		"The document has moved <A HREF=\"%s%s\">here</A>.<P>\r\n"
 		"</BODY></HTML>\r\n";
+	char *buf = parms->tmp3;
 
 	unsigned int	len, rc;
-	char *slash = parms->format_tagfile ? "" : "/";
+	char *slash = parms->generate_playlist ? "" : "/";
 
 	len = sprintf(buf, http_redirect, path, slash, path, slash);
 	rc = ksock_rw(parms->clientsock, buf, len, -1);
 	if (rc != len)
-		printk("%s: khttpd_redirect(): ksock_rw(%d) returned %d\n", parms->servername, len, rc);
+		printk("%s: redirect(): ksock_rw(%d) returned %d\n", parms->servername, len, rc);
 }
 
 static const char audio_mpeg[]		= "audio/mpeg";
@@ -885,29 +890,52 @@ get_tag (char *s, char *tag, char *buf, int buflen)
 	return '\0';
 }
 
+static int
+open_fid_file (char *path, const char *tail)
+{
+	int	fd;
+	char	*tailp = NULL, saved = '\0';
+
+	if (tail) {					// use a different tail character?
+		tailp = path + strlen(path) - 1;
+		saved = *tailp;
+		*tailp = *tail;				// substitute tail character
+	}
+	if (0 > (fd = open(path, O_RDONLY, 0))) {	// try the specified drive first
+		path[6] ^= 1;				// failed, now try the other drive
+		if (0 > (fd = open(path, O_RDONLY, 0)))
+			path[6] ^= 1;			// point back at original drive
+	}
+	if (tailp)
+		*tailp = saved;				// restore tail character
+	return fd;
+}
+
 static const char *
-get_fid_mimetype (char *path, char *buf, int bufsize)
+get_fid_mime_title (char *path, char *buf, int bufsize, char *title, int titlelen)
 {
 	const char	*mimetype = application_octet;
-	char		tag[12];
-	int		fd, size, lastchar = strlen(path) - 1;
+	char		type[12], codec[12];
+	int		fd, size;
 
-	if (path[lastchar] == '0') {
-		path[lastchar] = '1';
-		fd = open(path, O_RDONLY, 0);
-		if (fd >= 0) {
-			size = read(fd, buf, bufsize-1);
-			buf[size] = '\0';
-			close(fd);
-			get_tag(buf, "type=", tag, sizeof(tag));
-			if (*tag == 't' && get_tag(buf, "codec=", tag, sizeof(tag))) {
-				switch (tag[1]) {
-					case 'p': mimetype = audio_mpeg;	break;
-					case 'm': mimetype = audio_wma;		break;
-					case 'a': mimetype = audio_wav;		break;
-				}
+	if (0 <= (fd = open_fid_file(path, "1"))) {	// open tagfile
+		size = read(fd, buf, bufsize-1);
+		buf[size] = '\0';
+		close(fd);
+		get_tag(buf, "type=", type, sizeof(type));
+		if (*type == 't' && get_tag(buf, "codec=", codec, sizeof(codec)) && *codec) {
+			switch (codec[1]) {
+				case 'p': mimetype = audio_mpeg; break;
+				case 'm': mimetype = audio_wma;	 break;
+				case 'a': mimetype = audio_wav;	 break;
+			}
+			if (title) {
+				get_tag(buf, "title=", title, titlelen - 1 - strlen(codec));
+				strcat(title, ".");
+				strcat(title, codec);
 			}
 		}
+
 	}
 	return mimetype;
 }
@@ -918,11 +946,11 @@ khttp_send_file_header (server_parms_t *parms, char *path, off_t length, char *b
 	int		len;
 	const char	*mimetype, *rcode = "200 OK";
 	off_t		clength = length;
+	char		title[64];
 
-	if (parms->format_tagfile) {
-		mimetype = text_html;
-	} else if (glob_match(path, "/drive?/fids/*0")) {
-		mimetype = get_fid_mimetype(path, buf, bufsize);
+	title[0] = '\0';
+	if (glob_match(path, "/drive?/fids/*0")) {
+		mimetype = get_fid_mime_title(path, buf, bufsize, title, sizeof(title));
 	} else {
 		const char		*pattern;
 		const mime_type_t	*m = mime_types;
@@ -930,7 +958,6 @@ khttp_send_file_header (server_parms_t *parms, char *path, off_t length, char *b
 			++m;
 		mimetype = m->mime;
 	}
-	// 206 Partial content
 	if (clength && parms->end_offset != -1) {
 		clength = parms->end_offset + 1 - parms->start_offset;
 		rcode = "206 Partial content";
@@ -938,6 +965,8 @@ khttp_send_file_header (server_parms_t *parms, char *path, off_t length, char *b
 	len = sprintf(buf, "HTTP/1.1 %s\r\nConnection: close\r\n", rcode);
 	if (mimetype)
 		len += sprintf(buf+len, "Content-Type: %s\r\n", mimetype);
+	if (*title)	// tune title for WinAmp
+		len += sprintf(buf+len, "Content-Disposition: attachment; filename=%s\r\n", title);
 	if (clength) {
 		len += sprintf(buf+len, "Accept-Ranges: bytes\r\nContent-Length: %lu\r\n", clength);
 		if (parms->end_offset != -1)
@@ -948,6 +977,82 @@ khttp_send_file_header (server_parms_t *parms, char *path, off_t length, char *b
 	if (len != ksock_rw(parms->datasock, buf, len, -1))
 		return 426;
 	return 0;
+}
+
+typedef struct file_xfer_s {
+	int		fd;
+	unsigned int	buf_size;
+	char *		buf;
+	int		writing;
+	int		redirected;
+	struct stat	st;
+} file_xfer_t;
+
+
+static int
+prepare_file_xfer (server_parms_t *parms, char *path, file_xfer_t *xfer, int writing)
+{
+	int	fd, response = 0, flags;
+	off_t	start_offset = parms->start_offset;
+
+	parms->datasock = NULL;
+	xfer->buf_size = PAGE_SIZE;
+	xfer->buf = NULL;
+	xfer->writing = writing;
+	xfer->redirected = 0;
+	if (writing)
+		flags = start_offset ? O_RDWR : O_RDWR|O_CREAT|O_TRUNC;
+	else
+		flags = O_RDONLY;
+
+	fd = open(path, flags, 0666 & ~parms->umask);
+	if (fd < 0 && !writing && parms->use_http && glob_match(path, "/drive?/fids/*")) {
+		path[6] ^= 1;	// try the other drive; we cannot use httpd_redirect() here
+		if (0 > (fd = open(path, flags, 0))) 
+			path[6] ^= 1;	// restore original path
+	}
+	xfer->fd = fd;
+	if (fd < 0) {
+		printk("%s: open(%s) failed, rc=%d\n", parms->servername, path, fd);
+		response = 550;
+	} else if (!(xfer->buf = (unsigned char *)__get_free_page(GFP_KERNEL))) {
+		response = 451;
+	} else if (sys_newfstat(fd, &xfer->st)) {
+		printk("%s: fstat(%s) failed\n", parms->servername, path);
+		response = 550;
+	} else if (S_ISDIR(xfer->st.st_mode)) {
+		if (writing || !parms->use_http || parms->generate_playlist) {
+			response = 550;
+		} else {
+			khttpd_redirect(parms, path);
+			xfer->redirected = 1;
+		}
+	} else if (start_offset && (start_offset >= xfer->st.st_size || lseek(fd, start_offset, 0))) {
+		printk("%s: lseek(%s,%lu) failed\n", parms->servername, path, start_offset);
+		response = 553;
+	} else {
+		response = open_datasock(parms);
+	}
+	return response;
+}
+
+static void
+cleanup_file_xfer (server_parms_t *parms, file_xfer_t *xfer)
+{
+	int	fd = xfer->fd;
+	if (fd >= 0) {
+		if (xfer->writing)
+			sys_fsync(fd);
+		close(fd);
+	}
+	if (!parms->use_http && parms->datasock) {
+		sock_release(parms->datasock);
+		parms->datasock = NULL;
+	}
+	if (xfer->buf)
+		free_page((unsigned long)xfer->buf);
+	parms->start_offset =  0;
+	parms->end_offset   = -1;
 }
 
 static unsigned int
@@ -968,200 +1073,169 @@ get_duration (char *buf)
 // using symlinks (with extensions!) to point at the actual audio files.
 // At present, this is incredibly ugly code (but it works).  -ml
 //
-static void
-send_tagfile (server_parms_t *parms, char *path, unsigned char *buf, int size, int bufsize)
-{
-	unsigned int	secs;
-	int		pathlen = strlen(path);
-	char		subpath[64], *subpathtail, type[12], title[64], artist[32], source[32];
 
-	(void) set_sockopt(parms, parms->datasock, SOL_TCP, TCP_NODELAY, 0); // not critical if this works or not
-	if (size < PAGE_SIZE && pathlen < sizeof(subpath)) {	// Ouch.. we cannot handle HUGE tag files here
-		strcpy(subpath, path);
-		subpathtail = subpath + pathlen - 1;
-		while (*(subpathtail - 1) != '/')
-			--subpathtail;
-		buf[size] = '\0';	// Ensure zero-termination of the data
-		if (get_tag(buf, "type=", type, sizeof(type))) {
-			int playlist_fd;
-			path[strlen(path)-1] = '0';	// Select the corresponding data file
-			if (*type == 't') {		// tune?
-				(void) get_tag(buf, "codec=", type, sizeof(type));
-				if (!strxcmp(type, "mp3", 0)) {
-					(void) get_tag(buf, "title=",  title,  sizeof(title));
-					(void) get_tag(buf, "artist=", artist, sizeof(artist));
-					secs = get_duration(buf);
-					size  = sprintf(buf, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s\r\n\r\n#EXTM3U\r\n"
-						"#EXTINF:%u,%s - %s\r\nhttp://%s%s\r\n", audio_m3u, secs, artist, title, parms->serverip, path);
-					(void)ksock_rw(parms->datasock, buf, size, -1);
-				} else { // wma, wav
-					khttpd_redirect(parms, path, buf);
-				}
-				return;
-			}
-			if ((playlist_fd = open(path, O_RDONLY, 0)) >= 0) {
-				int rc = 0, fid = -1, done_header = 0;
-				while (sizeof(fid) == read(playlist_fd, (char *)&fid, sizeof(fid))) {
-					int subitem_fd;
-					fid |= 1;	// select the tagfile
-					sprintf(subpathtail, "%x", fid);
-					subitem_fd = open(subpath, O_RDONLY, 0);
-					if (subitem_fd >= 0) {
-						size = read(subitem_fd, buf, bufsize-1);
-						close(subitem_fd);
-						if (size > 0) {
-							int sent;
-							buf[size] = '\0';
-							(void) get_tag(buf, "type=",   type,   sizeof(type));
-							if (parms->format_tagfile == 2 && *type != 't')
-								continue;
-							(void) get_tag(buf, "title=",  title,  sizeof(title));
-							(void) get_tag(buf, "artist=", artist, sizeof(artist));
-							(void) get_tag(buf, "source=", source, sizeof(source));
-							secs = get_duration(buf);
-							size = 0;
-							if (!done_header) {
-								if (parms->format_tagfile == 1 || *type == 't') {
-									size  = sprintf(buf, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s\r\n\r\n",
-										(parms->format_tagfile == 2) ? audio_m3u : text_html);
-									if (parms->format_tagfile == 1) {
-										done_header = 1;
-										size += sprintf(buf+size, "<HTML><BODY><TABLE BORDER=2><THEAD>\r\n"
-											"<TR><TD> <TD> <b>Title</b> <TD> <b>Length</b> <TD> <b>Type</b> "
-											"<TD> <b>Artist</b> <TD> <b>Source</b> <TBODY>\r\n");
-									} else {
-										done_header = 1;
-										size += sprintf(buf+size, "#EXTM3U\r\n");
-									}
-								}
-							}
-							if (parms->format_tagfile == 1) {
-								const char *extra = (*type == 't') ? "0" : "1?.html";
-								size += sprintf(buf+size, "<TR><TD> <A HREF=\"%x?.m3u\"><em>Play</em></A> ", fid);
-								size += sprintf(buf+size, "<TD> <A HREF=\"%x%s\">%s</A> <TD> %u:%02u <TD> %s "
-									"<TD> %s <TD> %s \r\n", fid>>4, extra, title, secs / 60, secs % 60, type, artist, source);
-							} else if (*type == 't') {
-								*subpathtail = '\0';
-								size += sprintf(buf+size, "#EXTINF:%u,%s - %s\r\nhttp://%s%s%x\r\n",
-									secs, artist, title, parms->serverip, subpath, fid & ~1);
-							}
-							sent = ksock_rw(parms->datasock, buf, size, -1);
-							if (sent != size) {
-								printk("Size=%d, sent=%d\n", size, sent);
-								break;
-							}
-						}
-					}
-				}
-				if (parms->format_tagfile != 2 && done_header) {
-					static char trailer[] = "</TABLE></BODY></HTML>\r\n";
-					(void) ksock_rw(parms->datasock, trailer, sizeof(trailer)-1, -1);
-				}
-				close(playlist_fd);
-				if (parms->format_tagfile == 2 && !done_header) {
-					path[strlen(path)-1] = '1';
-					strcat(path,"?.html");
-					khttpd_redirect(parms, path, buf);
-					return;
-				}
-				if (!rc)
-					return;
+static int
+send_playlist (server_parms_t *parms, char *path)
+{
+	unsigned int	response, secs;
+	char		tags_path[] = "/driveX/fids/XXXXXXXXXX", type[12], codec[4], title[64], artist[32], source[32];
+	int		playlist_fd, fid = -1, done_header = 0, sent, size;
+	file_xfer_t	xfer;
+
+	if ((response = prepare_file_xfer(parms, path, &xfer, 0)))
+		goto cleanup;
+	size = read(xfer.fd, xfer.buf, xfer.buf_size);
+	close(xfer.fd); xfer.fd = -1;
+	if (size < 0)
+		size = 0;
+	xfer.buf[size] = '\0';	// Ensure zero-termination of the data
+	if (!get_tag(xfer.buf, "type=", type, sizeof(type))) {
+		response = 408;
+		goto cleanup;
+	}
+	(void) get_tag(xfer.buf, "artist=", artist, sizeof(artist));
+	(void) get_tag(xfer.buf, "title=",  title,  sizeof(title));
+	if (!*title)
+		strcpy(title, path);
+	if (!strxcmp("tune", type, 0)) {
+		path[strlen(path)-1] = '0';
+		(void) get_tag(xfer.buf, "codec=", codec, sizeof(codec));
+		if (!strxcmp(codec, "mp3", 0)) {
+			secs = get_duration(xfer.buf);
+			size  = sprintf(xfer.buf, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s\r\n\r\n#EXTM3U\r\n"
+				"#EXTINF:%u,%s - %s\r\nhttp://%s%s\r\n", audio_m3u, secs, artist, title, parms->serverip, path);
+			(void)ksock_rw(parms->datasock, xfer.buf, size, -1);
+		} else { // wma, wav
+			khttpd_redirect(parms, path);
+		}
+		goto cleanup;
+	}
+	if (strxcmp("playlist", type, 0)) {
+		response = 408;
+		goto cleanup;
+	}
+	playlist_fd = open_fid_file(path, "0");
+	if (playlist_fd < 0) {
+		response = 408;
+		goto cleanup;
+	}
+	set_sockopt(parms, parms->datasock, SOL_TCP, TCP_NODELAY, 0);
+	while (sizeof(fid) == read(playlist_fd, (char *)&fid, sizeof(fid))) {
+		int	tags_fd;
+		char	*tags_buf = parms->tmp3;
+		fid |= 1;
+		sprintf(tags_path, "/drive0/fids/%x", fid);
+		tags_fd = open_fid_file(tags_path, NULL);	// get tagfile
+		if (tags_fd < 0) {
+			printk("open subfid failed: '%s', rc=%d\n", tags_path, tags_fd);
+			continue;
+		}
+		size = read(tags_fd, tags_buf, sizeof(parms->tmp3)-1);
+		close(tags_fd);
+		if (size <= 0) {
+			printk("read subfid failed '%s', rc=%d\n", tags_path, size);
+			continue;
+		}
+		tags_buf[size] = '\0';
+		(void) get_tag(tags_buf, "type=", type, sizeof(type));
+		if (parms->generate_playlist != 1 && *type != 't')
+			continue;
+		size = 0;
+		if (!done_header) {
+			done_header = 1;
+			size  = sprintf(xfer.buf, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s\r\n\r\n",
+				(parms->generate_playlist == 2) ? audio_m3u : text_html);
+			if (parms->generate_playlist == 1) {
+				const char *hyphen = *artist ? " - " : "";
+				size += sprintf(xfer.buf+size, "<HTML><HEAD><TITLE>%s%s%s</TITLE></HEAD>\r\n<BODY>\r\n"
+					"<H2>%s%s%s</H2><TABLE BORDER=2><THEAD>\r\n"
+					"<HTML><BODY><TABLE BORDER=2><THEAD>\r\n"
+					"<TR><TD> <TD> <b>Title</b> <TD> <b>Length</b> <TD> <b>Type</b> "
+					"<TD> <b>Artist</b> <TD> <b>Source</b> <TBODY>\r\n",
+					artist, hyphen, title, artist, hyphen, title);
+			} else {
+				size += sprintf(xfer.buf+size, "#EXTM3U\r\n");
 			}
 		}
+		(void) get_tag(tags_buf, "artist=", artist, sizeof(artist));
+		(void) get_tag(tags_buf, "source=", source, sizeof(source));
+		(void) get_tag(tags_buf, "title=",  title,  sizeof(title));
+		if (!*title)
+			strcpy(title, tags_path);
+		secs = get_duration(tags_buf);
+		if (parms->generate_playlist == 1) {
+			const char *extra = (*type == 't') ? "0" : "1?.html";
+			size += sprintf(xfer.buf+size, "<TR><TD> <A HREF=\"%x?.m3u\"><em>Play</em></A> ", fid);
+			size += sprintf(xfer.buf+size, "<TD> <A HREF=\"%x%s\">%s</A> <TD> %u:%02u <TD> %s "
+				"<TD> %s <TD> %s \r\n", fid>>4, extra, title,
+				secs / 60, secs % 60, type, artist, source);
+		} else if (*type == 't') {
+			size += sprintf(xfer.buf+size, "#EXTINF:%u,%s - %s\r\nhttp://%s%s\r\n",
+				secs, artist, title, parms->serverip, tags_path);
+			xfer.buf[size-3] = '0';	// convert tags_path into tune path
+		}
+		sent = ksock_rw(parms->datasock, xfer.buf, size, -1);
+		if (sent != size) {
+			printk("Size=%d, sent=%d\n", size, sent);
+			break;
+		}
 	}
-	khttpd_respond(parms, 408, "Playlist Error", "Playlist is empty or corrupted");
+	if (done_header) {
+		if (parms->generate_playlist == 1) {
+			static char trailer[] = "</TABLE></BODY></HTML>\r\n";
+			(void) ksock_rw(parms->datasock, trailer, sizeof(trailer)-1, -1);
+		}
+	} else if (parms->generate_playlist == 1) {
+		khttpd_respond(parms, 200, "Empty Playlist", "empty playlist");
+	} else {
+		path[strlen(path)-1] = '1';
+		strcat(path,"?.html");
+		khttpd_redirect(parms, path);
+	}
+cleanup:
+	cleanup_file_xfer(parms, &xfer);
+	return response;
 }
 
 static int
 send_file (server_parms_t *parms, char *path)
 {
-	unsigned int	size, response = 0;
-	unsigned char	*buf;
-	struct file	*filp;
+	int		size;
+	unsigned int	response = 0;
+	file_xfer_t	xfer;
 
-	lock_kernel();
-	if (!(buf = (unsigned char *)__get_free_page(GFP_KERNEL))) {
-		response = 451;
-	} else {
-		filp = filp_open(path,O_RDONLY,0);
-		if (IS_ERR(filp) || !filp) {
-			printk("%s: filp_open(%s) failed\n", parms->servername, path);
-			response = 550;
-		} else {
-			struct file_operations *fops;
-			struct dentry *dentry = filp->f_dentry;
-			struct inode  *inode;
-			if (!dentry || !(inode = dentry->d_inode) || !(fops = filp->f_op)) {
-				response = 550;
-			} else if (fops->readdir) {
-				if (parms->use_http)
-					khttpd_redirect(parms, path, buf);
-				else
-					response = 553;
-			} else if (!fops->read) {
-				response = 550;
-			} else if (!(response = open_datasock(parms))) {
-				int sent_header = 0;
-				off_t i_size = inode->i_size;
-				if (parms->use_http) {
-					if (parms->start_offset > i_size)
-						parms->start_offset = i_size;
-					if (!i_size)
-						parms->end_offset = -1;
-					else if (parms->start_offset && parms->end_offset == -1)
-						parms->end_offset = i_size - 1;
-				} else if (parms->start_offset > i_size) {
-					response = 551;
-					goto done;
-				}
-				filp->f_pos = parms->start_offset;
-				do {
-					int read_size = PAGE_SIZE;
-					schedule(); // give the music player a chance to run
-					if (parms->end_offset != -1) {
-						read_size = parms->end_offset + 1 - filp->f_pos;
-						if (read_size <= 0)
-							break;
-						if (read_size > PAGE_SIZE)
-							read_size = PAGE_SIZE;
-					}
-					size = fops->read(filp, buf, read_size, &(filp->f_pos));
-					if (size < 0) {
-						printk("%s: read() failed; rc=%d\n", parms->servername, size);
-						response = 451;
-						break;
-					} else if (parms->format_tagfile) {
-						send_tagfile(parms, path, buf, size, PAGE_SIZE);
-						break;		// we assume tag file fits into one page
-					} else {
-						if (!sent_header && parms->use_http) {
-							//off_t length;
-							//if (parms->end_offset == -1)
-							//	length = i_size - parms->start_offset;
-							//else
-							//	length = parms->end_offset + 1 - parms->start_offset;
-							//if (khttp_send_file_header(parms, path, length, parms->tmp3, sizeof(parms->tmp3)))
-							if (khttp_send_file_header(parms, path, i_size, parms->tmp3, sizeof(parms->tmp3)))
-								break;
-						}
-						sent_header = 1;
-						if (size && size != ksock_rw(parms->datasock, buf, size, -1)) {
-							response = 426;
-							break;
-						}
-					}
-				} while (size > 0);
-			done:
-				if (!parms->use_http) {
-					parms->start_offset = 0;
-					sock_release(parms->datasock);
-				}
-			}
-			filp_close(filp,NULL);
+	response = prepare_file_xfer(parms, path, &xfer, 0);
+	if (!response) {
+		off_t	filepos, filesize = xfer.st.st_size;
+		if (parms->use_http) {
+			if (!filesize)
+				parms->end_offset = -1;
+			else if (parms->start_offset && parms->end_offset == -1)
+				parms->end_offset = filesize - 1;
 		}
-		free_page((unsigned long)buf);
+		if (!parms->use_http || !khttp_send_file_header(parms, path, filesize, parms->tmp3, sizeof(parms->tmp3))) {
+			filepos = parms->start_offset;
+			do {
+				int read_size = xfer.buf_size;
+				if (parms->end_offset != -1) {
+					size = parms->end_offset + 1 - filepos;
+					if (size > 0 && size < read_size)
+						read_size = size;
+				}
+				schedule(); // give the music player a chance to run
+				size = read(xfer.fd, xfer.buf, read_size);
+				filepos += size;
+				if (size < 0) {
+					printk("%s: read() failed; rc=%d\n", parms->servername, size);
+					response = 451;
+				} else if (size && size != ksock_rw(parms->datasock, xfer.buf, size, -1)) {
+					response = 426;
+					break;
+				}
+			} while (size > 0);
+		}
 	}
-	unlock_kernel();
+	cleanup_file_xfer(parms, &xfer);
 	return response;
 }
 
@@ -1217,62 +1291,26 @@ do_delete (server_parms_t *parms, const char *path)
 }
 
 static int
-receive_file (server_parms_t *parms, const char *path)
+receive_file (server_parms_t *parms, char *path)
 {
-	int		size, rc;
-	struct file	*filp;
+	int		size;
 	unsigned int	response = 0;
-	unsigned char	*buf;
+	file_xfer_t	xfer;
 
-	lock_kernel();
-	if (!(buf = (unsigned char *)__get_free_page(GFP_KERNEL))) {
-		response = 451;
-	} else {
-		int flags = O_RDWR;
-		if (!parms->start_offset)
-			flags |= O_CREAT|O_TRUNC;
-		filp = filp_open(path, flags, 0666 & ~parms->umask);
-		if (IS_ERR(filp) || !filp) {
-			printk("%s: open(%s) failed\n", parms->servername, path);
-			response = 550;
-		} else {
-			struct dentry *dentry;
-			struct inode  *inode;
-			struct file_operations *fops = filp->f_op;
-			if (!fops || !fops->write || !(dentry = filp->f_dentry) || !(inode = dentry->d_inode)) {
-				response = 550;
-			} else if (fops->readdir) {
-				response = 553;
-			} else if (parms->start_offset > inode->i_size) {
-				response = 550;
-			} else if (!(response = open_datasock(parms))) {
-				filp->f_pos = parms->start_offset;
-				parms->start_offset = 0;
-				do {
-					schedule(); // give the music player a chance to run
-					size = ksock_rw(parms->datasock, buf, PAGE_SIZE, 1);
-					if (size < 0) {
-						response = 426;
-						break;
-					} else if (size && size != (rc = fops->write(filp, buf, size, &(filp->f_pos)))) {
-						printk("%s: write(%d) failed; rc=%d\n", parms->servername, size, rc);
-						response = 451;
-						break;
-					}
-				} while (size > 0);
-				sock_release(parms->datasock);
+	response = prepare_file_xfer(parms, path, &xfer, 1);
+	if (!response) {
+		do {
+			schedule(); // give the music player a chance to run
+			size = ksock_rw(parms->datasock, xfer.buf, xfer.buf_size, 1);
+			if (size < 0) {
+				response = 426;
+			} else if (size && size != write(xfer.fd, xfer.buf, size)) {
+				printk("%s: write(%d) failed\n", parms->servername, size);
+				response = 451;
 			}
-			// fsync() the file's data:
-			if ((dentry = filp->f_dentry) && (inode = dentry->d_inode) && fops->fsync) {
-				down(&inode->i_sem);
-				fops->fsync(filp, dentry);
-				up(&inode->i_sem);
-			}
-			filp_close(filp,NULL);
-		}
-		free_page((unsigned long)buf);
+		} while (!response && size > 0);
 	}
-	unlock_kernel();
+	cleanup_file_xfer(parms, &xfer);
 	return response;
 }
 
@@ -1557,97 +1595,95 @@ khttpd_fix_hexcodes (char *buf)
 	return buf;
 }
 
-static int
+static void
 khttpd_handle_connection (server_parms_t *parms)
 {
-	char	*buf = parms->buf;
+	char	*buf = parms->buf, *cmds = NULL, c, *path, *p, *x;
 	int	response = 0, buflen = sizeof(parms->buf) - 1, n;
+	int	use_index = 1;	// look for index.html?
 
 	n = ksock_rw(parms->clientsock, buf, buflen, 0);
-	if (n < 0) {
-		printk("%s: client request too short, ksock_rw() failed: %d\n", parms->servername, n);
-		return -1;
-	} else if (n == 0) {
+	if (n <= 0) {
 		if (parms->verbose)
-			printk("%s: EOF on client sock\n", parms->servername);
-		return -1;
+			printk("%s: receive failed: %d\n", parms->servername, n);
+		return;
 	}
 	buf[n] = '\0';
 	if (n >= buflen) {
-		while (buflen == ksock_rw(parms->clientsock, buf, buflen, 0));	// fixme? flush incoming stream
 		khttpd_respond(parms, 400, "Bad command", "request too long");
-	} else if (!strxcmp(buf, "GET ", 1) && n > 4) {
-		int use_index = 1;	// look for index.html?
-		char c, *path = &buf[4], *p = path, *x;
-		while ((c = *p) && c != ' ' && c != '\r' && c != '\n')
-			++p;
-		// HTTP "restart/resume" support:
-		for (x = p; *x; ++x) {
-			static const char Range[] = "\nRange: bytes=";
-			int start = 0, end = -1;
-			if (*x == '\n' && !strxcmp(x, Range, 1) && *(x += sizeof(Range) - 1)) {
-				if (*x != '-' && (!get_number(&x, &start, 10, "-") || start < 0))
-					break;
-				if (*x == '-') {
-					if ((c = *++x) == '\0' || c == '\r' || c == '\n' || (get_number(&x, &end, 10, "\r\n") && end >= start)) {
-						parms->start_offset = start;
-						parms->end_offset   = end;
-					}
-				}
+		return;
+	}
+	if (strxcmp(buf, "GET ", 1) || n < 4) {
+		khttpd_respond(parms, 400, "Bad command", "server only supports GET");
+		return;
+	}
+	p = path = &buf[4];
+	// find path delimiter
+	while ((c = *p) && c != ' ' && c != '\r' && c != '\n')
+		++p;
+	// HTTP "restart/resume" support:
+	for (x = p; *x; ++x) {
+		static const char Range[] = "\nRange: bytes=";
+		int start = 0, end = -1;
+		if (*x == '\n' && !strxcmp(x, Range, 1) && *(x += sizeof(Range) - 1)) {
+			if (*x != '-' && (!get_number(&x, &start, 10, "-") || start < 0))
 				break;
-			}
-		}
-		*p = '\0';
-		if (parms->verbose)
-			printk("%s: GET '%s'\n", parms->servername, path);
-		path = khttpd_fix_hexcodes(path);
-		parms->format_tagfile = 0;
-		for (p = path; *p; ++p) {
-			if (*p == '?') {
-				char *cmds = p + 1;
-				*p = '\0';	// zero-terminate the path portion
-				if (*cmds) {
-					// translate '='/'+' into spaces, and '&' into ';'
-					while ((c = *++p)) {
-						if (c == '=' || c == '+')
-							*p = ' ';
-						else if (c == '&')
-							*p = ';';
-					}
-					if (glob_match(path, "/drive?/fids/*1")) {
-						if (!strxcmp(cmds, ".html", 1))
-							parms->format_tagfile = 1;
-						else if (!strxcmp(cmds, ".m3u", 1))
-							parms->format_tagfile = 2;
-					}
-					if (!parms->format_tagfile)
-						(void) hijack_do_command(cmds, p - cmds); // ignore errors
+			if (*x == '-') {
+				if ((c = *++x) == '\0' || c == '\r' || c == '\n' || (get_number(&x, &end, 10, "\r\n") && end >= start)) {
+					parms->start_offset = start;
+					parms->end_offset   = end;
 				}
-				use_index = 0;
-				break;
 			}
+			break;
 		}
-		if (!*path) {
-			khttpd_respond(parms, 404, "Bad/missing pathname", NULL);
-			return 0;
+	}
+	*p = '\0'; // zero-terminate the GET line
+	if (parms->verbose)
+		printk("%s: GET '%s'\n", parms->servername, path);
+	path = khttpd_fix_hexcodes(path);
+	for (p = path; *p; ++p) {
+		if (*p == '?') {
+			cmds = p + 1;
+			*p = '\0';	// zero-terminate the path portion
+			break;
+		}
+	}
+	if (!*path) {
+		response = 404;
+	} else {
+		if (cmds && *cmds) {
+			// translate '='/'+' into spaces, and '&' into ';'
+			while ((c = *++p)) {
+				if (c == '=' || c == '+')
+					*p = ' ';
+				else if (c == '&')
+					*p = ';';
+			}
+			if (glob_match(path, "/drive?/fids/*")) {
+				if (!strxcmp(cmds, ".html", 1))
+					parms->generate_playlist = 1;
+				else if (!strxcmp(cmds, ".m3u", 1))
+					parms->generate_playlist = 2;
+			}
+			if (parms->generate_playlist) {
+				response = send_playlist(parms, path);
+				goto quit;
+			}
+			(void) hijack_do_command(cmds, p - cmds); // ignore errors
+			use_index = 0;
 		}
 		n = strlen(path);
-		if (path[n-1] == '/') {
-			if (!use_index || !strcpy(path+n, "index.html") || 1 != classify_path(path)) {
-				path[n] = '\0';
-				response = send_dirlist(parms, path, 1);
-				return 0;
-			}
-		}
-		response = send_file(parms, path);
-		if (response) {
-			sprintf(buf, "(%d)", response);
-			khttpd_respond(parms, 404, "Error retrieving file", buf);
-		}
-	} else {
-		khttpd_respond(parms, 400, "Bad command", "server only supports GET");
+		if (path[n-1] == '/' && (!use_index || !strcpy(path+n, "index.html") || 1 != classify_path(path))) {
+			path[n] = '\0';
+			response = send_dirlist(parms, path, 1);
+		} else
+			response = send_file(parms, path);
 	}
-	return 0;
+quit:
+	if (response) {
+		sprintf(buf, "(%d)", response);
+		khttpd_respond(parms, 404, "Error retrieving file", buf);
+	}
 }
 
 static int

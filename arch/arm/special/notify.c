@@ -21,6 +21,7 @@
 #define IR_INTERNAL		((void *)-1)
 
 extern int strxcmp (const char *str, const char *pattern, int partial);					// hijack.c
+extern int get_button_code (unsigned char **s_p, unsigned int *button, int eol_okay, const char *nextchars); // hijack.c
 extern int hijack_reboot;										// hijack.c
 extern int do_remount(const char *dir,int flags,char *data);						// fs/super.c
 extern int get_filesystem_info(char *);									// fs/super.c
@@ -296,7 +297,7 @@ do_button (unsigned char *s, int raw)
 {
 	unsigned int button;
 
-	if (*s && get_number(&s, &button, 16, NULL)) {
+	if (*s && get_button_code(&s, &button, 1, ".\r")) {
 		if (raw) {
 			input_append_code(IR_INTERNAL, button);
 		} else {

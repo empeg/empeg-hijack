@@ -218,7 +218,7 @@ unsigned long jiffies_since(unsigned long past_jiffies)
 extern void enable_disable_voladj(int);
 extern void game_move_right(void);
 extern void game_move_left(void);
-extern unsigned short game_is_active, game_knob_down, game_left_down, game_right_down, game_select_count, game_paused;
+extern unsigned int game_is_active, game_knob_down, game_left_down, game_right_down, game_select_count, game_paused;
 unsigned long bottom_button_down = 0;
 
 static void input_append_code(struct input_dev *dev, input_code data)

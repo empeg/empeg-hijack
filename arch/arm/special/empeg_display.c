@@ -527,7 +527,7 @@ static short game_over, game_row, game_col, game_hdir, game_vdir, game_paddle_co
 static unsigned long game_starttime, game_ball_lastmove, game_paddle_lastmove, game_animbase = 0, game_animtime;
 
 // These are also used by empeg_input.c
-unsigned short game_is_active = 0, game_knob_down, game_left_down, game_right_down, game_select_count = 0, game_paused;
+unsigned int game_is_active = 0, game_knob_down, game_left_down, game_right_down, game_select_count = 0, game_paused;
 
 static void game_start (void)
 {

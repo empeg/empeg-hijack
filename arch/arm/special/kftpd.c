@@ -816,6 +816,8 @@ khttpd_redirect (server_parms_t *parms, const char *path, char *slash)
 
 static const char audio_mpeg[]		= "audio/mpeg";
 static const char audio_wav[]		= "audio/x-wav";
+static const char application_ogg[]	= "application/ogg";
+static const char audio_flac[]		= "audio/x-flac";	// or audio/flac, or application/x-flac ??
 static const char audio_wma[]		= "audio/x-ms-wma";
 static const char audio_m3u[]		= "audio/x-mpegurl";
 static const char text_plain[]		= "text/plain";
@@ -850,6 +852,8 @@ static const mime_type_t mime_types[] = {
 	{"*.m3u",		 audio_m3u,		1},
 	{"*.mp3",		 audio_mpeg,		0},
 	{"*.wma",		 audio_wma,		0},
+	{"*.ogg",		 application_ogg,	0},
+	{"*.flac",		 audio_flac,		0},
 	{"*.gz",		"application/x-gzip",	0},
 	{"*.tar",		 application_x_tar,	0},
 	{"*.tgz",		 application_x_tar,	0},
@@ -965,13 +969,17 @@ khttp_send_file_header (server_parms_t *parms, char *path, off_t length, char *b
 			buf[size] = '\0';
 			close(fd);
 			find_tags(buf, size, labels, (char **)&tags);
+			if (0 == strcmp(tags.codec,"vorbis"))
+				tags.codec = "ogg";
 			buf += size + 1;
 			c = tags.type[0];
 			if (TOUPPER(c) != 'P' && tags.codec[0]) {
 				switch (TOUPPER(tags.codec[1])) {
-					case 'P': mimetype = audio_mpeg; break;
-					case 'M': mimetype = audio_wma;	 break;
-					case 'A': mimetype = audio_wav;	 break;
+					case 'P': mimetype = audio_mpeg;	break;
+					case 'M': mimetype = audio_wma;		break;
+					case 'A': mimetype = audio_wav;		break;
+					case 'G': mimetype = application_ogg;	break;
+					case 'L': mimetype = audio_flac;	break;
 				}
 				combine_artist_title(tags.artist, tags.title, artist_title, sizeof(artist_title));
 			}
@@ -1207,6 +1215,8 @@ send_playlist (server_parms_t *parms, char *path)
 
 	// parse the tagfile for the tags we are interested in:
 	find_tags(parms->tmp3, size, labels, (char **)&tags);
+	if (0 == strcmp(tags.codec,"vorbis"))
+		tags.codec = "ogg";
 	fidtype = TOUPPER(tags.type[0]);
 	if (fidtype != 'T' && fidtype != 'P') {
 		response = &(http_response_t){408, "Invalid tag file"};
@@ -1338,6 +1348,8 @@ open_fidfile:
 
 			// parse the tagfile for the tags we are interested in:
 			find_tags(parms->tmp3, size, labels, (char **)&tags);
+			if (0 == strcmp(tags.codec,"vorbis"))
+				tags.codec = "ogg";
 			fidtype = TOUPPER(tags.type[0]);
 			if (fidtype == 'P') {
 				if (parms->generate_playlist == m3u) {
@@ -1760,7 +1772,7 @@ hijack_do_command (void *sparms, char *buf)
 				} else if (!strxcmp(s, ".xml", 0)) {
 					parms->generate_playlist = xml;
 				} else {
-					// Just ignore it:  .mp3, .wma, .wav, ...
+					// Just ignore it:  .mp3, .wma, .wav, .ogg, .flac, ...
 				}
 			}
 		}

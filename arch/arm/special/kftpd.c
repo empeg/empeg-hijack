@@ -879,15 +879,16 @@ static const mime_type_t mime_types[] = {
 	{NULL,			NULL			}};
 
 static void
-find_tags (char *buf, char *labels[], char *values[])
+find_tags (char *buf, int buflen, char *labels[], char *values[])
 {
-	int		n;
 	static char	*null_label = "";
+	char		*start = buf;
+	int		n;
 
 	for (n = 0; labels[n] != NULL; ++n)
 		values[n] = null_label;
 	
-	while (*buf) {
+	while ((buf - start) < buflen) { // allows handling of embedded '\0' characters
 		int	i;
 		char	c;
 		for (i = 0; i < n; ++i) {
@@ -900,8 +901,7 @@ find_tags (char *buf, char *labels[], char *values[])
 		}
 		while ((c = *buf) && c != '\n' && c != '\r')
 			++buf;
-		if (c)
-			*buf++ = '\0';
+		*buf++ = '\0';
 	}
 }
 
@@ -955,7 +955,7 @@ get_fid_info (char *path, char *buf, int bufsize, char *atitle, int atitlelen, c
 		size = read(fd, buf, bufsize-1);
 		buf[size] = '\0';
 		close(fd);
-		find_tags(buf, labels, (char **)&tags);
+		find_tags(buf, size, labels, (char **)&tags);
 		if (TOUPPER(*tags.type) != 'P' && *tags.codec) {
 			switch (TOUPPER(tags.codec[1])) {
 				case 'P': mimetype = audio_mpeg; break;
@@ -1153,10 +1153,12 @@ send_playlist (server_parms_t *parms, char *path)
 	parms->tmp3[size] = '\0';	// Ensure zero-termination of the data
 
 	// parse the tagfile for the tags we are interested in:
-	find_tags(parms->tmp3, labels, (char **)&tags);
+	find_tags(parms->tmp3, size, labels, (char **)&tags);
 	fidtype = TOUPPER(tags.type[0]);
-	if (fidtype != 'T' && fidtype != 'P')
-		fidtype = tags.codec[0] ? 'T' : 'P';
+	if (fidtype != 'T' && fidtype != 'P') {
+		response = &(http_response_t){408, "Invalid tag file"};
+		goto cleanup;
+	}
 	if (!tags.title[0])
 		tags.title = path;
 	combine_artist_title(tags.artist, tags.title, artist_title, sizeof(artist_title));
@@ -1225,10 +1227,12 @@ open_fidfile:
 			parms->tmp3[size] = '\0';	// Ensure zero-termination of the data
 
 			// parse the tagfile for the tags we are interested in:
-			find_tags(parms->tmp3, labels, (char **)&tags);
+			find_tags(parms->tmp3, size, labels, (char **)&tags);
 			fidtype = TOUPPER(tags.type[0]);
-			if (fidtype != 'T' && fidtype != 'P')
-				fidtype = tags.codec[0] ? 'T' : 'P';
+			if (fidtype != 'T' && fidtype != 'P') {
+				used += sprintf(xfer.buf+used, "<FONT COLOR=RED>%s: invalid 'type=%s'</FONT>\n", subpath, tags.type);
+				goto aborted;
+			}
 			if (fidtype == 'P' && parms->generate_playlist == 2)
 				goto open_fidfile;	// nest one level deeper for this playlist
 			if (!tags.title[0])

@@ -85,7 +85,7 @@ static unsigned int info_screenrow = 0;
 #endif // RESTORE_CARVISUALS
 static unsigned int hijack_status = HIJACK_INACTIVE;
 static unsigned long hijack_last_moved = 0, hijack_last_refresh = 0, blanker_triggered = 0, blanker_lastpoll = 0;
-static unsigned char blanker_lastbuf[EMPEG_SCREEN_BYTES] = {0,}, blanker_is_blanked = 0;
+static unsigned char blanker_lastbuf[EMPEG_SCREEN_BYTES] = {0,};
 
 static int  (*hijack_dispfunc)(int) = NULL;
 static void (*hijack_movefunc)(int) = NULL;
@@ -206,6 +206,7 @@ static int hijack_temperature_correction	= -4;	// adjust all h/w temperature rea
 static int hijack_supress_notify		=  0;	// 1 == supress player "notify" (and "dhcp") lines from serial port
 static int hijack_old_style			=  0;	// 1 == don't highlite menu items
 static int hijack_quicktimer_minutes		= 30;	// increment size for quicktimer function
+static int hijack_standby_minutes		= 30;	// number of minutes after screen blanks before we go into standby
 
 typedef struct hijack_option_s {
 	const char	*name;
@@ -225,6 +226,7 @@ static const hijack_option_t hijack_option_table[] = {
 	{"voladj_medium",		&hijack_voladj_parms[1][0],	5,	0,	0x7ffe},
 	{"voladj_high",			&hijack_voladj_parms[2][0],	5,	0,	0x7ffe},
  	{"quicktimer_minutes",		&hijack_quicktimer_minutes,	1,	1,	120},
+ 	{"standby_minutes",		&hijack_standby_minutes,	1,	0,	240},
 	{NULL,NULL,0,0,0} // end-of-list
 	};
 
@@ -1661,7 +1663,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,18), " Enhancements.v106 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,18), " Enhancements.v107 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -2903,13 +2905,21 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 				blanker_triggered = jiffies ? jiffies : -1;
 			}
 		}
-		if (!blanker_triggered) {
-			blanker_is_blanked = 0;
-		} else if (jiffies_since(blanker_triggered) > (blanker_timeout * (SCREEN_BLANKER_MULTIPLIER * HZ))) {
-			if (!blanker_is_blanked) {
+		if (blanker_triggered) {
+			unsigned long minimum = blanker_timeout * (SCREEN_BLANKER_MULTIPLIER * HZ);
+			if (jiffies_since(blanker_triggered) > minimum) {
 				buf = player_buf;
 				memset(buf, 0, EMPEG_SCREEN_BYTES);
 				refresh = NEED_REFRESH;
+				if (get_current_mixer_source() == 'M' && hijack_standby_minutes > 0) {
+					if (jiffies_since(blanker_triggered) >= ((hijack_standby_minutes * 60 * HZ) + minimum)) {
+						save_flags_cli(flags);
+						hijack_button_enq(&hijack_playerq, IR_RIO_SOURCE_PRESSED,   0);
+						hijack_button_enq(&hijack_playerq, IR_RIO_SOURCE_RELEASED, HZ);
+						restore_flags(flags);
+						blanker_triggered = jiffies - minimum;	// prevents repeating buttons over and over..
+					}
+				}
 			}
 		}
 	}

@@ -83,6 +83,7 @@ inet_ntop (int af, const void *src, char *dst, size_t cnt)
 
 static struct sockaddr_in	portaddr;
 static int			have_portaddr = 0;
+static int			binary_mode = 1;	// fixme
 
 //#define skip_atoi(sp) (strtol((*(sp)),(sp),10))
 
@@ -241,34 +242,42 @@ make_socket (struct socket **sockp, int port)
 	return rc;
 }
 
-static struct socket *
-open_datasock (struct socket *sock)
+static const char *
+open_datasock (struct socket *sock, struct socket **newsock)
 {
 	int		rc;
 	struct socket	*datasock = NULL;
+	const char	*response = NULL;
 
-	have_portaddr = 0;	// for next time
-	if ((rc = make_socket(&datasock, SERVER_DATA_PORT))) {
-		printk("make_socket(datasock) failed: %d\n", rc);
+	if (!have_portaddr) {
+		response = "425 no PORT specified";
 	} else {
-		if (!send_response(sock, "150 opening data connection")) {
-			int flags = 0;
-			rc = datasock->ops->connect(datasock, (struct sockaddr *)&portaddr,
-							sizeof(struct sockaddr_in), flags);
-			if (!rc)
-				return datasock;
-			printk("connect(datasock) failed: %d\n", rc);
+		have_portaddr = 0;	// for next time
+		if ((rc = make_socket(&datasock, SERVER_DATA_PORT))) {
+			response = "425 make_socket(datasock) failed";
+		} else {
+			if (send_response(sock, "150 opening BINARY mode data connection")) {
+				response = "451 error";
+			} else {
+				int flags = 0;
+				rc = datasock->ops->connect(datasock, (struct sockaddr *)&portaddr,
+								sizeof(struct sockaddr_in), flags);
+				if (rc)
+					response = "425 data connection failed";
+			}
+			if (response)
+				sock_release(datasock);
+			else
+				*newsock = datasock;
 		}
-		sock_release(datasock);
 	}
-	return NULL;
+	return response;
 }
 
 static const char *
 send_file (struct socket *sock, const char *path)
 {
 	unsigned int	size;
-	int		rc = 0;
 	struct file	*filp;
 	unsigned char	buf[PAGE_SIZE];
 	mm_segment_t	old_fs;
@@ -281,35 +290,24 @@ send_file (struct socket *sock, const char *path)
 		printk("filp_open(%s) failed\n", path);
 		response = "550 file not found";
 	} else {
-		if (!filp->f_dentry || !filp->f_dentry->d_inode) {
+		if (!filp->f_dentry || !filp->f_dentry->d_inode || !filp->f_op || !filp->f_op->read) {
 			response = "550 file read error";
-		} else {
-			size = filp->f_dentry->d_inode->i_size;
+		} else if (!(response = open_datasock(sock, &datasock))) {
 			filp->f_pos = 0;
-			if (!(datasock = open_datasock(sock))) {
-				response = "425 failed to open data connection";
-			} else {
-				old_fs = get_fs();
-				set_fs(KERNEL_DS);
-				while (size > 0) {
-					unsigned int thistime = size;
-					if (thistime > sizeof(buf))
-						thistime = sizeof(buf);
-					rc = filp->f_op->read(filp, buf, thistime, &(filp->f_pos));
-					if (rc <= 0) {
-						printk("filp->f_op->read() failed; rc=%d\n", rc);
-						response = "451 error reading file";
-						break;
-					}
-					size -= rc;
-					if (thistime != ksock_rw(1, datasock, buf, thistime, -1)) {
-						response = "426 error sending data; transfer aborted";
-						break;
-					}
+			old_fs = get_fs();
+			set_fs(KERNEL_DS);
+			do {
+				size = filp->f_op->read(filp, buf, sizeof(buf), &(filp->f_pos));
+				if (size < 0) {
+					printk("filp->f_op->read() failed; rc=%d\n", size);
+					response = "451 error reading file";
+				} else if (size && size != ksock_rw(1, datasock, buf, size, -1)) {
+					response = "426 error sending data; transfer aborted";
+					break;
 				}
-				set_fs(old_fs);
-				sock_release(datasock);
-			}
+			} while (size > 0);
+			set_fs(old_fs);
+			sock_release(datasock);
 		}
 		filp_close(filp,NULL);
 	}
@@ -317,24 +315,123 @@ send_file (struct socket *sock, const char *path)
 	return response;
 }
 
-static const char *
-send_dirlist (struct socket *sock, char *path)
+#define MODE_XBIT(c,x,s)	((x) ? ((s) ? ((c)|0x20) : 'x') : ((s) ? (c) : '-'));
+
+typedef struct filldir_parms_s {
+	int			rc;
+	unsigned long		blockcount;
+	struct socket		*datasock;
+	struct super_block	*super;
+} filldir_parms_t;
+
+static int	// callback routine for filp->f_op->readdir()
+filldir (void *parms, const char *name, int namelen, off_t offset, ino_t ino)
 {
-	int		rc, len;
-	char		buf[256];
-	struct socket	*datasock = NULL;
+	filldir_parms_t	*p = parms;
+	unsigned int	len, mode, sent;
+	char		buf[512], c;
+	struct inode	*i;
+
+	i = iget(p->super, ino);
+	if (!i) {
+		printk("iget(%lu) failed\n", ino);
+		return -ENOENT;
+	}
+
+	len = 0;
+	mode = i->i_mode;
+	switch (mode & S_IFMT) {
+		case S_IFLNK:	c = 'l'; break;	// FIXME: show link target
+		case S_IFDIR:	c = 'd'; break;
+		case S_IFCHR:	c = 'c'; break;	// FIXME: different format below
+		case S_IFBLK:	c = 'b'; break;	// FIXME: different format below
+		case S_IFIFO:	c = 'p'; break;	// FIXME: different format below
+		case S_IFSOCK:	c = 's'; break;	// FIXME: different format below
+		case S_IFREG:	c = '-'; break;	// FIXME?
+		default:	c = '-'; break;
+	}
+	buf[len++] = c;
+	buf[len++] = (mode & S_IRUSR) ? 'r' : '-';
+	buf[len++] = (mode & S_IWUSR) ? 'w' : '-';
+	buf[len++] = MODE_XBIT('S', mode & S_IXUSR, mode & S_ISUID);
+	buf[len++] = (mode & S_IRGRP) ? 'r' : '-';
+	buf[len++] = (mode & S_IWGRP) ? 'w' : '-';
+	buf[len++] = MODE_XBIT('S', mode & S_IXGRP, mode & S_ISGID);
+	buf[len++] = (mode & S_IROTH) ? 'r' : '-';
+	buf[len++] = (mode & S_IWOTH) ? 'w' : '-';
+	buf[len++] = MODE_XBIT('T', mode & S_IXOTH, mode & S_ISVTX);
+
+	len += sprintf(buf+len, "%5u",   i->i_nlink);
+	len += sprintf(buf+len, " %8u %8u", i->i_uid, i->i_gid);		// FIXME
+	len += sprintf(buf+len, " %8lu", i->i_size);
+	len += sprintf(buf+len, " %3s %2u %02u:%02u ", "Dec", 25, 0, 1);	// FIXME
+
+	// free up the inode memory
+	iput(i);
+	i = NULL;
+
+	memcpy(buf+len, name, namelen);
+	len += namelen;
+	buf[len++] = '\r';
+	buf[len++] = '\n';
+	buf[len] = '\0';
+
+	//printk("%s\n", buf);
+	sent = ksock_rw(0, p->datasock, buf, len, -1);
+	if (sent != len) {
+		p->rc = sent;
+		printk("ksock_rw(,,,%d,) returned %d\n", len, p->rc);
+		return -EIO;
+	}
+	return 0;
+}
+
+static const char *
+send_dirlist (struct socket *sock, const char *path)
+{
+	int		rc;
+	struct file	*filp;
+	struct socket	*datasock;
 	const char	*response = NULL;
 
-	if (!(datasock = open_datasock(sock))) {
-		response = "425 failed to open data connection";
+	lock_kernel();
+	filp = filp_open(path,O_RDONLY,0);
+	if (IS_ERR(filp) || !filp) {
+		printk("filp_open(%s) failed\n", path);
+		response = "550 directory not found";
 	} else {
-		len = sprintf(buf, "LIST not implemented; path='%s'\r\n", path);
-		if ((rc = ksock_rw(0, datasock, buf, len, -1)) != len) {
-			printk("ksock_rw(datasock) failed\n");
-			response = "426 error sending data; transfer aborted";
+		if (!filp->f_dentry || !filp->f_dentry->d_inode || !filp->f_op || !filp->f_op->readdir) {
+			response = "550 directory read error";
+		} else if (!(response = open_datasock(sock, &datasock))) {
+			filldir_parms_t	p;
+			struct inode	*inode = filp->f_dentry->d_inode;
+			unsigned char	buf[64];
+			unsigned int	len, sent;
+
+			p.rc		= 0;
+			p.blockcount	= 0;
+			p.super		= inode->i_sb;
+			p.datasock	= datasock;
+
+			down(&inode->i_sem);
+			filp->f_pos = 0;
+			do {
+				rc = filp->f_op->readdir(filp, &p, filldir);
+			} while (rc >= 0 && filp->f_pos < inode->i_size);
+			up(&inode->i_sem);
+			if (rc)
+				printk("readdir() returned %d\n", rc);
+			len = sprintf(buf, "total %lu\r\n", p.blockcount);
+			sent = ksock_rw(0, datasock, buf, --len, -1);
+			if (sent != len) {
+				printk("ksock_rw(%d) returned %d\n", len, sent);
+				response = "426 error from ksock_rw";
+			}
+			sock_release(datasock);
 		}
-		sock_release(datasock);
+		filp_close(filp,NULL);
 	}
+	unlock_kernel();
 	return response;
 }
 
@@ -429,7 +526,6 @@ append_path (char *path, char *new)
 static int
 handle_command (struct socket *sock)
 {
-	static char	xfer_mode = 'A';
 	char		path[256], buf[256];
 	const char	*response = NULL;
 	int		n, rc, quit = 0;
@@ -457,7 +553,7 @@ handle_command (struct socket *sock)
 		} else if (!strncasecmp(buf, "USER ", 5)) {
 			response = "230 user logged in";
 		} else if (!strncasecmp(buf, "PASS ", 5)) {
-			response = "230 password okay";
+			response = "202 password okay";
 		} else if (!strncasecmp(buf, "SYST", 4)) {
 			response = "215 UNIX Type: L8";
 		} else if (!strcasecmp(buf, "STRU F")) {
@@ -466,7 +562,7 @@ handle_command (struct socket *sock)
 			if (buf[5] != 'A' && buf[5] != 'I') {
 				response = "501 unsupported xfer TYPE";
 			} else {
-				xfer_mode = buf[5];
+				binary_mode = (buf[5] == 'I');
 				response = "200 type okay";
 			}
 		} else if (!strncasecmp(buf, "CWD ",4)) {
@@ -493,33 +589,33 @@ handle_command (struct socket *sock)
 				have_portaddr = 1;
 				response = "200 port accepted";
 			}
-		} else if (!strncasecmp(buf, "LIST", 4)
-		//	|| !strncasecmp(buf, "STOR", 4)		// FIXME
-			|| !strncasecmp(buf, "RETR", 4)) {
+		} else if (!strncasecmp(buf, "STOR ", 5)) {
+			response = "502 upload not supported yet";
+		} else if (!strncasecmp(buf, "LIST", 4)) {
 			strcpy(path, cwd);
-			if (buf[0] != 'L' && (buf[4] != ' ' || !buf[5])) {
+			if (buf[4] == ' ') {
+				buf[4] = '\0';
+				append_path(path, &buf[5]);
+			}
+			if (buf[4]) {
+				response = "500 bad command";
+			} else {
+				response = send_dirlist(sock, path);
+				if (!response)
+					response = "226 transmission completed";
+			}
+		} else if (!strncasecmp(buf, "RETR ", 5)) {
+			strcpy(path, cwd);
+			if (!buf[5]) {
 				response = "501 missing path";
 			} else {
-				if (buf[4] == ' ') {
-					buf[4] = '\0';
-					append_path(path, &buf[5]);
-				}
-				if (buf[4]) {
-					response = "500 bad command";
-				} else if (!have_portaddr) {
-					response = "425 no PORT specified";
-				} else {
-					if (buf[0] == 'R')
-						response = send_file(sock, path);
-					else
-						response = send_dirlist(sock, path);
-					if (!response)
-						response = "226 transmission completed";
-				}
+				append_path(path, &buf[5]);
+				response = send_file(sock, path);
+				if (!response)
+					response = "226 transmission completed";
 			}
-
 		} else {
-			printk("%02x - %s\n", buf[0], &buf[1]);
+			printk("%s\n", buf);
 			response = "500 bad command";
 		}
 	}

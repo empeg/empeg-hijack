@@ -285,7 +285,7 @@ static int write_flash_sector(unsigned short *ptr,const char* data,const int siz
 		write_loop_ctrl = 0;
 
 		while (!(*flash_ptr&STATUS_BUSY)) {
-			schedule();
+		        schedule();
 			udelay(5L);
 
 			if(++write_loop_ctrl==WRITE_TIME_LIMIT) {
@@ -395,9 +395,9 @@ static int flash_cached_read(	char *buf,
 			/*
 			 *	Otherwise we read the data directly from flash
 			 */
-			down(&flash_busy);
+			down(&flash_busy);			 
 			memcpy( buf, flash_start[minor] + offset, size );
-			up(&flash_busy);
+			up(&flash_busy);			
 #ifdef FLASH_DEBUG
 			printk("flash: READ from flash\n");
 #endif
@@ -471,7 +471,7 @@ static int flash_cached_write(	const char *buf,
 				flash_cache.size=flash_sectorsizes[minor];
 				flash_cache.start=(offset&~(flash_cache.size-1));
 				down(&flash_busy);
-				memcpy(	flash_cache.buf, 
+    				memcpy(	flash_cache.buf, 
 					flash_start[minor] + flash_cache.start, 
 					flash_cache.size );
 				up(&flash_busy);

@@ -194,7 +194,7 @@ struct input_dev
 };
 
 /* Rotary control deglitching support. When the rotary controls get
- * hold and worn out they start giving false codes in the opposite
+ * old and worn out they start giving false codes in the opposite
  * direction at the end or possibly in the middle of rotation - this
  * causes odd behaviour. So we arrange to ignore the codes indicating
  * an opposite direction if they occur within a certain time of the
@@ -202,7 +202,7 @@ struct input_dev
 
 #define ROTARY_CLOCKWISE_CODE (0xa)
 #define ROTARY_ANTICLOCKWISE_CODE (0xb)
-#define ROTARY_GLITCH_TIMEOUT_JIFFIES (HZ/8)
+#define ROTARY_GLITCH_TIMEOUT_JIFFIES (HZ/4)
 
 static struct input_dev input_devices[1];
 

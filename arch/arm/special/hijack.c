@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v170"
+#define HIJACK_VERSION "v171"
 
 #include <linux/sched.h>
 #include <linux/kernel.h>
@@ -335,6 +335,7 @@ static hijack_buttonq_t hijack_inputq, hijack_playerq, hijack_userq;
 //
 static int hijack_button_pacing			= 20;	// minimum spacing between press/release pairs within playerq
 static int hijack_ir_debug			=  0;	// printk() for every ir press/release code
+static int hijack_spindown_seconds		= 30;	// drive spindown timeout in seconds
        int hijack_extmute_off			=  0;	// buttoncode to inject when EXT-MUTE goes inactive
        int hijack_extmute_on			=  0;	// buttoncode to inject when EXT-MUTE goes active
 #ifdef CONFIG_NET_ETHERNET
@@ -368,9 +369,10 @@ typedef struct hijack_option_s {
 static const hijack_option_t hijack_option_table[] = {
 	// config.ini string		address-of-variable		howmany	min	max
 	{"button_pacing",		&hijack_button_pacing,		1,	0,	HZ},
-	{"ir_debug",			&hijack_ir_debug,		1,	0,	1},
+	{"spindown_seconds",		&hijack_spindown_seconds,	1,	0,	(239 * 5)},
 	{"extmute_off",			&hijack_extmute_off,		1,	0,	IR_NULL_BUTTON},
 	{"extmute_on",			&hijack_extmute_on,		1,	0,	IR_NULL_BUTTON},
+	{"ir_debug",			&hijack_ir_debug,		1,	0,	1},
 #ifdef CONFIG_NET_ETHERNET
  	{"kftpd_control_port",		&hijack_kftpd_control_port,	1,	0,	65535},
  	{"kftpd_data_port",		&hijack_kftpd_data_port,	1,	0,	65535},
@@ -3881,6 +3883,24 @@ get_hijack_options (unsigned char *s)
 	}
 }
 
+static void
+set_drive_spindown (ide_drive_t *drive)
+{
+	char buf[16];
+	if (drive->present)
+		(void) ide_wait_cmd(drive, WIN_SETIDLE1, ((hijack_spindown_seconds + 4) / 5), 0, 0, buf);
+}
+
+static void
+set_drive_spindown_times (void)
+{
+	unsigned int *permset=(unsigned int*)(EMPEG_FLASHBASE+0x2000);
+	int model = (permset[0] < 7);	// 1 == mk1; 0 == mk2(a)
+
+	set_drive_spindown(&ide_hwifs[model].drives[!model]);
+	set_drive_spindown(&ide_hwifs[0].drives[0]);
+}
+
 void	// invoked from arch/arm/special/empeg_input.c on the first IR poll
 hijack_read_config_file (const char *path)
 {
@@ -3941,6 +3961,8 @@ hijack_read_config_file (const char *path)
 	up(&hijack_kftpd_startup_sem);	// wake-up kftpd now that we've parsed config.ini for port numbers
 	up(&hijack_khttpd_startup_sem);	// wake-up kftpd now that we've parsed config.ini for port numbers
 #endif // CONFIG_NET_ETHERNET
+
+	set_drive_spindown_times();
 }
 
 #ifdef RESTORE_CARVISUALS

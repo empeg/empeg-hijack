@@ -28,6 +28,7 @@
 #include <net/udp.h>
 #include <net/scm.h>
 
+extern void sys_exit(int);
 extern int strxcmp (const char *str, const char *pattern, int partial);	// notify.c
 extern int hijack_do_command(const char *command, unsigned int size);	// notify.c 
 extern void show_message (const char *message, unsigned long time);	// hijack.c
@@ -46,6 +47,7 @@ extern int sys_mkdir(const char *path, int mode); // fs/namei.c
 extern int sys_unlink(const char *path);
 extern int sys_newstat(char *, struct stat *);
 extern pid_t kernel_thread(int (*fn)(void *), void *arg, unsigned long flags);
+extern int sys_wait4 (pid_t pid,unsigned int * stat_addr, int options, struct rusage * ru);
 
 #define BUF_PAGES		2
 #define INET_ADDRSTRLEN		16
@@ -108,36 +110,35 @@ inet_pton (int af, unsigned char *src, void *dst)
 	return 1;	// success
 }
 
+#if 0
 static int
 site_exec2 (void *command)
 {
-	int  rc;
 	char *envp[] = {"HOME=/", "PATH=/sbin:/bin", "TERM=linux", NULL};
 	char *argv[] = {"/bin/sh", "-c", command, NULL};
 
-	// kthread setup
-	current->session = 1;
-	current->pgrp = 1;
-	strcpy(current->comm, argv[0]);
-	sigfillset(&current->blocked);
-
-	close(0);close(1);close(2);
-	setsid();
-	(void) open("/dev/console",O_RDWR,0);
-	(void) dup(0);
-	(void) dup(0);
-	rc = execve(argv[0], argv, envp);	// never returns
-	return 0;
+        close(0);close(1);close(2);
+        setsid();
+        (void) open("/dev/console",O_RDWR,0);
+        (void) dup(0);
+        (void) dup(0);
+	return execve(argv[0], argv, envp);	// never returns
 }
 
 static int
 site_exec (char *command)
 {
-	pid_t pid = kernel_thread(site_exec2, command, CLONE_FS|CLONE_SIGHAND);
-	if (pid < 0)
+	int	status;
+	pid_t	pid = kernel_thread(site_exec2, command, SIGCHLD);
+
+	if (pid < 0) {
 		printk("site_exec(%s) failed, rc=%d\n", command, pid);
+		return 502;
+	}
+	while (pid != sys_wait4(-1, &status, 0, NULL));
 	return 200;
 }
+#endif
 
 // This  function  converts  the  network  address structure src
 // in the af address family into a character string, which is copied
@@ -656,7 +657,7 @@ format_dir (server_parms_t *parms, filldir_parms_t *p, ino_t ino, char *name, in
 	if (ftype == 'l') {
 		linklen = sys_readlink(p->path, p->lname, sizeof(p->lname));
 		if (linklen <= 0) {
-			printk("%s: readlink(%s) failed, rc=%d\n", parms->servername, p->path, linklen);
+			//printk("%s: readlink(%s) (dentry=%p) failed, rc=%d\n", parms->servername, p->path, dentry, linklen);
 			linklen = 0;
 		}
 	}
@@ -1215,12 +1216,12 @@ kftpd_handle_command (server_parms_t *parms)
 	} else if (!strxcmp(buf, "NOOP", 0)) {
 		response = 200;
 	} else if (!strxcmp(buf, "HELP", 0)) {
-		quit = send_help_response(parms, "", "   USER    PORT    STOR    NLST    MKD     CDUP    PASS    ABOR*   \r\n   SITE    TYPE*   DELE    SYST*   RMD     STRU*   CWD     MODE*   \r\n   HELP    PWD     QUIT    RETR    LIST    NOOP    \r\n");
+		quit = send_help_response(parms, "", "   USER    PORT    STOR    NLST    MKD     CDUP    PASS    ABOR*\r\n   SITE    TYPE*   DELE    SYST*   RMD     STRU*   CWD     MODE*\r\n   HELP    PWD     QUIT    RETR    LIST    NOOP\r\n");
 		response = 214;
 	} else if (!strxcmp(buf, "PWD", 0)) {
 		quit = send_dir_response(parms, 257, parms->cwd, NULL);
 	} else if (!strxcmp(buf, "SITE HELP", 0)) {
-		quit = send_help_response(parms, "SITE ", "   BUTTON CHMOD EXEC HELP POPUP REBOOT RO RW\r\n");
+		quit = send_help_response(parms, "SITE ", "   BUTTON CHMOD HELP POPUP REBOOT RO RW\r\n");
 		response = 214;
 	} else if (!strxcmp(buf, "SITE CHMOD ", 1)) {
 		unsigned char *p = &buf[11];
@@ -1232,8 +1233,10 @@ kftpd_handle_command (server_parms_t *parms)
 			append_path(path, p);
 			response = do_chmod(parms, mode, path);
 		}
+#if 0
 	} else if (!strxcmp(buf, "SITE EXEC ", 1)) {
 		response = site_exec(&buf[10]);
+#endif
 	} else if (!strxcmp(buf, "SITE ", 1)) {
 		response = hijack_do_command(&buf[5], n - 5) ? 541 : 200;
 	} else if (n == 2 && buf[0] == 0xff && buf[1] == 0xf4) {
@@ -1349,7 +1352,6 @@ khttpd_fix_hexcodes (char *buf)
 static int
 khttpd_handle_connection (server_parms_t *parms)
 {
-	const char	empeg_remote[] = "/proc/empeg_notify?";
 	char		*buf = parms->tmp;
 	int		response = 0, buflen = sizeof(parms->tmp) - 1, n;
 
@@ -1374,22 +1376,24 @@ khttpd_handle_connection (server_parms_t *parms)
 		if (parms->verbose)
 			printk("%s: GET '%s'\n", parms->servername, path);
 		path = khttpd_fix_hexcodes(path);
-		if (!strncmp(path, empeg_remote, sizeof(empeg_remote)-1)) {
-			char *cmds = path + (sizeof(empeg_remote)-1);
-			p = cmds - 1;	// *p == '?'
-			*p = '\0';	// zero-terminate the path portion
-			if (*cmds) {
-				while ((c = *++p)) {
-					if (c == '=' || c == '+')
-						*p = ' ';
-					else if (c == '&')
-						*p = ';';
+		for (p = path; *p; ++p) {
+			if (*p == '?') {
+				char *cmds = p + 1;
+				*p = '\0';	// zero-terminate the path portion
+				if (*cmds) {
+					// translate '='/'+' into spaces, and '&' into ';'
+					while ((c = *++p)) {
+						if (c == '=' || c == '+')
+							*p = ' ';
+						else if (c == '&')
+							*p = ';';
+					}
+					(void) hijack_do_command(cmds, p - cmds); // ignore errors
 				}
-				(void) hijack_do_command(cmds, p - cmds); // fixme? handle errors, or ignore them?
+				break;
 			}
 		}
 		n = strlen(path);
-printk("path='%s', n=%d\n", path, n);
 		if (n == 0) {
 			khttpd_respond(parms, 404, "Bad/missing pathname", NULL);
 			return 0;
@@ -1399,7 +1403,6 @@ printk("path='%s', n=%d\n", path, n);
 			struct stat statbuf;
 			strcat(path, "index.html");
 			rc = sys_newstat(path, &statbuf);
-printk("stat('%s') rc=%d, mode=0%o\n", path, rc, statbuf.st_mode);
 			if (rc < 0 || (statbuf.st_mode & S_IFMT) == S_IFDIR) {
 				path[n] = '\0';
 				response = send_dirlist(parms, path, 1);
@@ -1431,13 +1434,15 @@ get_clientip (server_parms_t *parms)
 static int
 ksock_accept (server_parms_t *parms)
 {
+	int rc;
+
 	lock_kernel();
 	if ((parms->clientsock = sock_alloc())) {
 		parms->clientsock->type = parms->servsock->type;
 		if (parms->servsock->ops->dup(parms->clientsock, parms->servsock) < 0) {
 			printk("%s: sock_accept: dup() failed\n", parms->servername);
-		} else if (parms->clientsock->ops->accept(parms->servsock, parms->clientsock, parms->servsock->file->f_flags) < 0) {
-			printk("%s: sock_accept: accept() failed\n", parms->servername);
+		} else if ((rc = parms->clientsock->ops->accept(parms->servsock, parms->clientsock, parms->servsock->file->f_flags)) < 0) {
+			printk("%s: sock_accept: accept() failed, rc=%d\n", parms->servername, rc);
 		} else {
 			unlock_kernel();
 			return 0;	// success
@@ -1466,17 +1471,29 @@ child_thread (void *arg)
 	}
 	sock_release(parms->clientsock);
 	kfree(parms);
+	sys_exit(0);
 	return 0;
+}
+
+static void
+my_reaper (int signo)
+{
+	pid_t	child;
+
+	do {
+		int status;
+		child = sys_wait4(-1, &status, WUNTRACED|WNOHANG|__WCLONE, NULL);
+	} while (child > 0);
 }
 
 int
 kftpd_daemon (unsigned long use_http)	// invoked twice from init/main.c
 {
-	mm_segment_t		old_fs;
 	server_parms_t		*parms, *clientparms;
 	int			server_port;
 	struct semaphore	*sema;
 	const char		*servername;
+	extern unsigned long	sys_signal(int, void *);
 
 	if (use_http) {
 		servername = "khttpd";
@@ -1487,6 +1504,7 @@ kftpd_daemon (unsigned long use_http)	// invoked twice from init/main.c
 	}
 
 	// kthread setup
+	set_fs(KERNEL_DS);
 	current->session = 1;
 	current->pgrp = 1;
 	strcpy(current->comm, servername);
@@ -1505,8 +1523,6 @@ kftpd_daemon (unsigned long use_http)	// invoked twice from init/main.c
 			parms->data_port = hijack_kftpd_data_port;
 			parms->verbose = hijack_kftpd_verbose;
 		}
-		old_fs = get_fs();
-		set_fs(KERNEL_DS);
 		if (make_socket(parms, &parms->servsock, server_port)) {
 			printk("%s: make_socket(port=%d) failed\n", parms->servername, server_port);
 		} else if (parms->servsock->ops->listen(parms->servsock, 10) < 0) {	// queued=10
@@ -1514,9 +1530,8 @@ kftpd_daemon (unsigned long use_http)	// invoked twice from init/main.c
 		} else {
 			printk("%s: listening on port %d\n", parms->servername, server_port);
 			while (1) {
-				if (ksock_accept(parms)) {
-					printk("%s: accept() failed\n", parms->servername);
-				} else {
+				my_reaper(0);
+				if (!ksock_accept(parms)) {
 					if (!(clientparms = kmalloc(sizeof(server_parms_t), GFP_KERNEL))) {
 						printk("%s: no memory for client parms\n", parms->servername);
 						sock_release(parms->clientsock);
@@ -1527,7 +1542,6 @@ kftpd_daemon (unsigned long use_http)	// invoked twice from init/main.c
 				}
 			}
 		}
-		set_fs(old_fs);
 		kfree(parms);
 	}
 	return 0;

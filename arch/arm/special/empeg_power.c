@@ -225,8 +225,18 @@ static void check_power(void *dev_id)
 
 	/* Changed? */
 	if (state!=dev->laststate) {
+		if ((state & EMPEG_POWER_FLAG_EXTMUTE) != (dev->laststate & EMPEG_POWER_FLAG_EXTMUTE)) {
+			extern void input_append_code(void *dev, unsigned long data);	// hijack.c
+			extern unsigned int hijack_extmute_on, hijack_extmute_off;	// hijack.c
+			unsigned int button = (state & EMPEG_POWER_FLAG_EXTMUTE) ? hijack_extmute_on : hijack_extmute_off;
+			if (button) {
+				input_append_code(NULL, button);
+				input_append_code(NULL, button | ((button > 0xf) ? 0x80000000 : 1));
+			}
+		}
 		/* Save new state */
 		dev->newstate=state;
+		
 
 		/* Something has happened, wake up any waiters */
 		wake_up_interruptible(&dev->wq);

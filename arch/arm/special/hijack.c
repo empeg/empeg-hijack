@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v127"
+#define HIJACK_VERSION "v128"
 
 #include <linux/sched.h>
 #include <linux/kernel.h>
@@ -197,6 +197,8 @@ static hijack_buttonq_t hijack_inputq, hijack_playerq, hijack_userq;
 static int hijack_button_pacing			=  8;	// minimum spacing between press/release pairs within playerq
        int hijack_temperature_correction	= -4;	// adjust all h/w temperature readings by this celcius amount
        int hijack_supress_notify		=  0;	// 1 == supress player "notify" (and "dhcp") lines from serial port
+       int hijack_extmute_on			=  0;	// buttoncode to inject when EXT-MUTE goes active
+       int hijack_extmute_off			=  0;	// buttoncode to inject when EXT-MUTE goes inactive
 static int hijack_old_style			=  0;	// 1 == don't highlite menu items
 static int hijack_quicktimer_minutes		= 30;	// increment size for quicktimer function
 static int hijack_standby_minutes		= 30;	// number of minutes after screen blanks before we go into standby
@@ -212,6 +214,8 @@ static int hijack_standby_minutes		= 30;	// number of minutes after screen blank
 static const hijack_option_t hijack_option_table[] = {
 	// config.ini string		address-of-variable		howmany	min	max
 	{"button_pacing",		&hijack_button_pacing,		1,	0,	HZ},
+	{"extmute_on",			&hijack_extmute_on,		1,	0,	0x7fffffff},
+	{"extmute_off",			&hijack_extmute_off,		1,	0,	0x7fffffff},
 #ifdef CONFIG_NET_ETHERNET
  	{"kftpd_control_port",		&hijack_kftpd_control_port,	1,	0,	65535},
  	{"kftpd_data_port",		&hijack_kftpd_data_port,	1,	0,	65535},

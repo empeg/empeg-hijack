@@ -1421,8 +1421,8 @@ static void __init do_basic_setup(void)
 	}
 #endif
 #ifdef CONFIG_NET_ETHERNET
-	kernel_thread(kftpd_daemon, (void *)0, CLONE_FS | CLONE_FILES | CLONE_SIGHAND);
-	kernel_thread(kftpd_daemon, (void *)1, CLONE_FS | CLONE_FILES | CLONE_SIGHAND);
+	kernel_thread(kftpd_daemon, (void *)0, CLONE_FS | CLONE_FILES);
+	kernel_thread(kftpd_daemon, (void *)1, CLONE_FS | CLONE_FILES);
 #endif
 
 #ifdef CONFIG_BLK_DEV_INITRD

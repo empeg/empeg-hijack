@@ -19,19 +19,14 @@
 
 #include "empeg_mixer.h"
 
-#define IR_INTERNAL		((void *)-1)
-
 extern int hijack_current_mixer_input;
 extern int hijack_current_mixer_volume;
 extern int hijack_player_started;
 extern int hijack_do_command (void *sparms, char *buf);
 extern int strxcmp (const char *str, const char *pattern, int partial);					// hijack.c
-extern int get_button_code (unsigned char **s_p, unsigned int *button, int eol_okay, const char *nextchars); // hijack.c
 extern int do_remount(const char *dir,int flags,char *data);						// fs/super.c
 extern int get_filesystem_info(char *);									// fs/super.c
 extern int hijack_supress_notify, hijack_reboot;							// hijack.c
-extern int get_number (unsigned char **src, int *target, unsigned int base, const char *nextchars);	// hijack.c
-extern void input_append_code(void *dev, unsigned long button);						// hijack.c
 extern void show_message (const char *message, unsigned long time);					// hijack.c
 extern long sleep_on_timeout(struct wait_queue **p, long timeout);					// kernel/sched.c
 extern signed long schedule_timeout(signed long timeout);						// kernel/sched.c
@@ -337,35 +332,6 @@ static struct proc_dir_entry proc_screen_raw_entry = {
 	NULL, 			/* use default operations */
 	&hijack_proc_screen_raw_read, /* get_info() */
 };
-
-#define RELEASECODE(b)	(((b) > 0xf) ? (b) | 0x80000000 : (b) | 1)
-
-unsigned char *
-do_button (unsigned char *s, int raw)
-{
-	unsigned int button;
-
-	if (*s && get_button_code(&s, &button, 1, ".\r")) {
-		if (raw) {
-			input_append_code(IR_INTERNAL, button);
-		} else {
-			struct wait_queue *wq = NULL;
-			unsigned int hold_time = 5;
-			button &= ~0xc0000000;
-			if (button <= 0xf && button != IR_KNOB_LEFT)
-				button &= ~1;
-			if (s[0] == '.' && s[1] == 'L')
-				hold_time = HZ+(HZ/5);
-			sleep_on_timeout(&wq, HZ/25);
-			input_append_code (IR_INTERNAL, button);
-			if (button != IR_KNOB_LEFT && button != IR_KNOB_RIGHT) {
-				sleep_on_timeout(&wq, hold_time);
-				input_append_code (IR_INTERNAL, RELEASECODE(button));
-			}
-		}
-	}
-	return s;
-}
 
 static int
 proc_notify_write (struct file *file, const char *buffer, unsigned long count, void *data)

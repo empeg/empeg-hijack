@@ -72,6 +72,10 @@ typedef struct hijack_geom_s {
 #define COLOR3	3	// bold
 // use "-COLOR3" for inverse video
 
+
+#define IR_INTERNAL		((void *)-1)
+
+
 // Front panel codes
 //
 #define IR_TOP_BUTTON_PRESSED		0x00000000

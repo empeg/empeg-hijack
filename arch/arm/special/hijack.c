@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v250"
+#define HIJACK_VERSION	"v251"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -95,7 +95,6 @@ static void (*hijack_movefunc)(int) = NULL;
 #define BUTTON_FLAGS_UISTATE	(BUTTON_FLAGS_UI|BUTTON_FLAGS_NOTUI)
 #define BUTTON_FLAGS		(0xff000000)
 #define IR_NULL_BUTTON		(~BUTTON_FLAGS)
-#define IR_INTERNAL		((void *)-1)
 
 // Sony Stalk packets look like this:
 //
@@ -4017,7 +4016,7 @@ printline (const char *msg, char *s)
 }
 
 int
-get_button_code (unsigned char **s_p, unsigned int *button, int eol_okay, const char *nextchars)
+get_button_code (unsigned char **s_p, unsigned int *button, int eol_okay, int raw, const char *nextchars)
 {
 	button_name_t *bn = button_names;
 	unsigned char *s = *s_p;
@@ -4035,7 +4034,7 @@ get_button_code (unsigned char **s_p, unsigned int *button, int eol_okay, const 
 	}
 	if (!get_number(s_p, &b, 16, nextchars))
 		return 0;
-	*button = PRESSCODE(b);
+	*button = raw ? b : PRESSCODE(b);
 	return 1;
 }
 
@@ -4061,7 +4060,7 @@ ir_setup_translations2 (unsigned char *s, unsigned int *table, int *had_errors)
 		char *line = s;
 		if (*s == ';') {
 			good = 1; // ignore the comment
-		} else if (get_button_code(&s, &old, 0, ".=")) {
+		} else if (get_button_code(&s, &old, 0, 0, ".=")) {
 			unsigned short irflags = 0, flagmask, *defaults;
 			irflags = old & (BUTTON_FLAGS ^ BUTTON_FLAGS_ALTNAME);
 			old ^= irflags;
@@ -4092,7 +4091,7 @@ ir_setup_translations2 (unsigned char *s, unsigned int *table, int *had_errors)
 				}
 				index += sizeof(ir_translation_t) / sizeof(unsigned long);
 				do {
-					if (!get_button_code(&s, &new, 1, ".,; \t\n")) {
+					if (!get_button_code(&s, &new, 1, 0, ".,; \t\n")) {
 						index = saved; // error: completely ignore this line
 						break;
 					}

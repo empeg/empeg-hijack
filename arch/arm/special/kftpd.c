@@ -31,10 +31,12 @@
 #define KHTTPD	"khttpd"
 #define KFTPD	"kftpd"
 
+extern int get_number (unsigned char **src, int *target, unsigned int base, const char *nextchars);	// hijack.c
+extern void input_append_code(void *dev, unsigned long button);						// hijack.c
+extern int get_button_code (unsigned char **s_p, unsigned int *button, int eol_okay, int raw, const char *nextchars); // hijack.c
 extern int hijack_reboot;
 extern void hijack_set_voladj_parms(void);
 extern int hijack_get_set_option (unsigned char **s_p);
-extern unsigned char * do_button (unsigned char *s, int raw);
 extern int remount_drives (int writeable);
 extern void hijack_serial_insert (const char *buf, int size, int port);	// drivers/char/serial_sa1100.c
 extern int hijack_glob_match (const char *n, const char *p);
@@ -110,8 +112,6 @@ typedef struct server_parms_s {
 	unsigned char		tmp2[768];
 	unsigned char		tmp3[768];
 } server_parms_t;
-
-extern int get_number (unsigned char **src, int *val, int base, const char *nextchars);	// hijack.c
 
 static const char *
 inet_ntop2 (struct sockaddr_in *addr, char *ipaddr)
@@ -1608,6 +1608,35 @@ khttpd_fix_hexcodes (char *buf)
 			}
 		}
 	}
+}
+
+#define RELEASECODE(b)	(((b) > 0xf) ? (b) | 0x80000000 : (b) | 1)
+
+static unsigned char *
+do_button (unsigned char *s, int raw)
+{
+	unsigned int button;
+
+	if (*s && get_button_code(&s, &button, 1, raw, ".\r")) {
+		if (raw) {
+			input_append_code(IR_INTERNAL, button);
+		} else {
+			struct wait_queue *wq = NULL;
+			unsigned int hold_time = 5;
+			button &= ~0xc0000000;
+			if (button <= 0xf && button != IR_KNOB_LEFT)
+				button &= ~1;
+			if (s[0] == '.' && s[1] == 'L')
+				hold_time = HZ+(HZ/5);
+			sleep_on_timeout(&wq, HZ/25);
+			input_append_code (IR_INTERNAL, button);
+			if (button != IR_KNOB_LEFT && button != IR_KNOB_RIGHT) {
+				sleep_on_timeout(&wq, hold_time);
+				input_append_code (IR_INTERNAL, RELEASECODE(button));
+			}
+		}
+	}
+	return s;
 }
 
 int

@@ -201,7 +201,7 @@ static struct fiq_handler fh = { NULL, "empeg_input", NULL, NULL };
 /* Work out how many jiffies have passed since the parameter. This
  * means that if past_jiffies is actually in the future it will appear
  * to be hugely in the past. */
-static inline unsigned long jiffies_since(unsigned long past_jiffies)
+unsigned long jiffies_since(unsigned long past_jiffies)
 {
 	/* Since jiffies is volatile we need to make sure we are using
          * a consistent value for it for the whole function. */

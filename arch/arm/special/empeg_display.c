@@ -557,7 +557,7 @@ static void game_start (void)
 	game_animtime = 0;
 	game_starttime = jiffies;
 }
-
+unsigned long jiffies_since(unsigned long past_jiffies);
 static void game_finale (void)
 {
 	unsigned char *d,*s;
@@ -566,7 +566,7 @@ static void game_finale (void)
 	static int framenr, frameadj;
 
 	// freeze the display for two seconds, so user knows game is over
-	if ((jiffies - game_ball_lastmove) < (HZ*2))
+	if (jiffies_since(game_ball_lastmove) < (HZ*2))
 		return;
 
 	// just exit if the user lost
@@ -576,7 +576,7 @@ static void game_finale (void)
 	}
 
 	// persistence pays off with a special reward
-	if ((jiffies - game_animtime) < (HZ/(ANIMATION_FPS - 2)))
+	if (jiffies_since(game_animtime) < (HZ/(ANIMATION_FPS - 2)))
 		return;
 
 	if (game_animtime == 0) { // first frame?
@@ -658,16 +658,16 @@ static void game_move_ball (void)
 		return;
 	}
 	save_flags_cli(flags);
-	if (game_left_down && (jiffies - game_left_down) >= (HZ/15)) {
+	if (game_left_down && jiffies_since(game_left_down) >= (HZ/15)) {
 		game_left_down = jiffies ? jiffies : 1;
 		game_move_left();
 	}
-	if (game_right_down && (jiffies - game_right_down) >= (HZ/15)) {
+	if (game_right_down && jiffies_since(game_right_down) >= (HZ/15)) {
 		game_right_down = jiffies ? jiffies : 1;
 		game_move_right();
 	}
 	// Yeah, I know, this allows minor cheating.. but some folks may crave for it
-	if (game_paused || ((jiffies - game_ball_lastmove) < (HZ/game_speed))) {
+	if (game_paused || (jiffies_since(game_ball_lastmove) < (HZ/game_speed))) {
 		restore_flags(flags);
 		return;
 	}
@@ -729,7 +729,7 @@ void display_queue_draw(struct display_dev *dev)
 		       dev->queue_used);
 	}
 	if (!game_is_active) {
-		if (game_select_count >= 3 || (game_knob_down && (jiffies - game_knob_down) >= HZ)) {
+		if (game_select_count >= 3 || (game_knob_down && jiffies_since(game_knob_down) >= HZ)) {
 			game_select_count = 0;
 			game_is_active = 1;
 			game_start();

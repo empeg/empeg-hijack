@@ -265,8 +265,6 @@ static struct display_dev devices[1];
 /* Timer to display boot animation */
 static struct timer_list animation_timer;
 
-static int framenr = -1;
-
 /* Timer to display user's splash screen */
 static struct timer_list display_timer;
 
@@ -518,17 +516,18 @@ static void display_queue_add(struct display_dev *dev)
 #define GAME_COLS (EMPEG_SCREEN_WIDTH*EMPEG_SCREEN_BPP/8)
 #define GAME_VBOUNCE 0xff
 #define GAME_BRICKS 0xee
+#define GAME_BRICKS_ROW 5
 #define GAME_HBOUNCE 0x77
 #define GAME_BALL 0xff
 #define GAME_OVER 0x11
 #define GAME_PADDLE_SIZE 8
 
 static unsigned char game_buffer[GAME_ROWS][GAME_COLS];
-static int game_over, game_row, game_col, game_hdir, game_vdir, game_paddle_col, game_paddle_lastdir, game_speed, game_bricks;
+static short game_over, game_row, game_col, game_hdir, game_vdir, game_paddle_col, game_paddle_lastdir, game_speed, game_bricks;
 static unsigned long game_starttime, game_ball_lastmove, game_paddle_lastmove, game_animbase = 0, game_animtime;
 
-// These are set by empeg_input.c
-unsigned int game_is_active = 0, game_knob_down, game_left_down, game_right_down, game_select_count = 0;
+// These are also used by empeg_input.c
+unsigned short game_is_active = 0, game_knob_down, game_left_down, game_right_down, game_select_count = 0, game_paused;
 
 static void game_start (void)
 {
@@ -539,7 +538,7 @@ static void game_start (void)
 	for (i = 0; i < GAME_COLS; ++i) {
 		game_buffer[0][i] = GAME_VBOUNCE;
 		game_buffer[GAME_ROWS-1][i] = GAME_OVER;
-		game_buffer[5][i] = GAME_BRICKS;
+		game_buffer[GAME_BRICKS_ROW][i] = GAME_BRICKS;
 	}
 	for (i = 0; i < GAME_ROWS; ++i)
 		game_buffer[i][0] = game_buffer[i][GAME_COLS-1] = GAME_HBOUNCE;
@@ -553,9 +552,9 @@ static void game_start (void)
 	game_ball_lastmove = jiffies;
 	game_bricks = GAME_COLS - 2;
 	game_over = 0;
+	game_paused = 0;
 	game_speed = 16;
 	game_animtime = 0;
-	framenr = 0;
 	game_starttime = jiffies;
 }
 
@@ -564,6 +563,7 @@ static void game_finale (void)
 	unsigned char *d,*s;
 	int a;
 	unsigned int *frameptr=(unsigned int*)game_animbase;
+	static int framenr, frameadj;
 
 	// freeze the display for two seconds, so user knows game is over
 	if ((jiffies - game_ball_lastmove) < (HZ*2))
@@ -576,21 +576,28 @@ static void game_finale (void)
 	}
 
 	// persistence pays off with a special reward
-	if ((jiffies - game_animtime) < (HZ/ANIMATION_FPS))
+	if ((jiffies - game_animtime) < (HZ/(ANIMATION_FPS - 2)))
 		return;
-	s=(unsigned char*)(game_animbase+frameptr[framenr]);
-	if (!frameptr[framenr]) {
+
+	if (game_animtime == 0) { // first frame?
+		framenr = 0;
+		frameadj = 1;
+	} else if (framenr < 0) {
 		game_is_active = 0;
 		return;
+	} else if (!frameptr[framenr]) {
+		frameadj = -1;  // play it again, backwards
+		framenr += frameadj;
 	}
+	s=(unsigned char*)(game_animbase+frameptr[framenr]);
 	d = (unsigned char *)game_buffer;
 	for(a=0;a<2048;a+=2) {
 		*d++=((*s&0xc0)>>2)|((*s&0x30)>>4);
 		*d++=((*s&0x0c)<<2)|((*s&0x03));
 		s++;
 	}
-	framenr++;
-	game_animtime = jiffies;
+	framenr += frameadj;
+	game_animtime = jiffies ? jiffies : 1;
 }
 
 // Invoked from empeg_input.c
@@ -633,7 +640,7 @@ void game_move_left (void)
 	restore_flags(flags);
 }
 
-static void game_nuke_brick (int row, int col)
+static void game_nuke_brick (short row, short col)
 {
 	if (col > 0 && col < GAME_COLS && game_buffer[row][col] == GAME_BRICKS) {
 		game_buffer[row][col] = 0;
@@ -659,7 +666,8 @@ static void game_move_ball (void)
 		game_right_down = jiffies ? jiffies : 1;
 		game_move_right();
 	}
-	if ((jiffies - game_ball_lastmove) < (HZ/game_speed)) {
+	// Yeah, I know, this allows minor cheating.. but some folks may crave for it
+	if (game_paused || ((jiffies - game_ball_lastmove) < (HZ/game_speed))) {
 		restore_flags(flags);
 		return;
 	}
@@ -672,7 +680,7 @@ static void game_move_ball (void)
 		game_hdir = 0 - game_hdir;
 		game_col += game_hdir;
 	}
-	if (game_buffer[game_row][game_col] == GAME_BRICKS) {
+	if (game_row == GAME_BRICKS_ROW) {
 		game_nuke_brick(game_row,game_col);
 		game_nuke_brick(game_row,game_col-1);
 		game_nuke_brick(game_row,game_col+1);
@@ -784,6 +792,9 @@ static void display_animation(unsigned long animation_base)
 {
 	struct display_dev *dev = devices;
 	unsigned int *frameptr=(unsigned int*)animation_base;
+
+	/* Used once only, so this can be static */
+	static int framenr=-1;
 
 	/* Called once to initialise */
 	if (framenr>=0) {

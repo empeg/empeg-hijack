@@ -218,7 +218,7 @@ static inline unsigned long jiffies_since(unsigned long past_jiffies)
 extern void enable_disable_voladj(int);
 extern void game_move_right(void);
 extern void game_move_left(void);
-extern unsigned int game_is_active, game_knob_down, game_left_down, game_right_down, game_select_count;
+extern unsigned short game_is_active, game_knob_down, game_left_down, game_right_down, game_select_count, game_paused;
 unsigned long bottom_button_down = 0;
 
 static void input_append_code(struct input_dev *dev, input_code data)
@@ -284,6 +284,18 @@ static void input_append_code(struct input_dev *dev, input_code data)
 		case 0x80b9460b: // IR_KW_NEXTTRACK_RELEASED
 		case 0x8020df11: // IR_RIO_NEXTTRACK_RELEASED
 			game_right_down = 0;
+			if (game_is_active)
+				return;
+			break;
+		case 0x00b9460e:// IR_KW_PAUSE_PRESSED
+		case 0x0020df16: // IR_RIO_PAUSE_PRESSED
+			if (game_is_active) {
+				game_paused = !game_paused;
+				return;
+			}
+			break;
+		case 0x80b9460e: // IR_KW_PAUSE_RELEASED
+		case 0x8020df16: // IR_RIO_PAUSE_RELEASED
 			if (game_is_active)
 				return;
 			break;

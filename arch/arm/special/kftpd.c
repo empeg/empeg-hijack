@@ -232,7 +232,7 @@ static response_t response_table[] = {
 		"   REST    SIZE\r\n"
 		"214 Okay"},
 	{216,	"-The following SITE commands are recognized\r\n"
-		"   BUTTON  CHMOD   HELP    POPUP   REBOOT  RO      RW\r\n"
+		"   BUTTON  CHMOD   EXEC    HELP    POPUP   REBOOT  RO      RW\r\n"
 		"216 Okay"},
 	{215,	" UNIX Type: L8"},
 	{220,	" Connected"},
@@ -1818,7 +1818,7 @@ hijack_do_command (void *sparms, char *buf)
 //	MINFO	like SITE NEWER, but gives extra information
 //	GPASS	give special group access password. Eg. SITE GPASS bar
 //	EXEC	execute a program.	Eg. SITE EXEC program params
-//		  --> output should be captured (pipe) and returned using a set of "200" responses
+//		  --> output should be captured (pipe) and returned using a set of "200-" responses
 //	SIZE	returns status 213 and bytecount of the specified file
 //
 // FIXME: add "MDTM 20030130102437 <pathname>"   (Modify Date TiMe command, used by ncftp)
@@ -1937,6 +1937,30 @@ kftpd_handle_command (server_parms_t *parms)
 			strcpy(path, parms->cwd);
 			append_path(path, p, parms->tmp3);
 			response = kftpd_do_chmod(parms, mode, path);
+		}
+	} else if (!strxcmp(buf, "SITE EXEC ", 1)) {
+		unsigned char *p = &buf[10];
+		while (*p == ' ')
+			++p;
+		if (!*p) {
+			response = 501;
+		} else {
+			extern int hijack_exec(char *cwd, char *cmdline);
+			int rc;
+			// prefix the user's command with "exec":
+			p = &buf[5];
+			p[0] = 'e';
+			p[1] = 'x';
+			p[2] = 'e';
+			p[3] = 'c';
+			if (0 == (rc = hijack_exec(parms->cwd, p))) {
+				response = 200;
+			} else {
+				char text[32];
+				sprintf(text, " ERROR (rc=%d)", rc);
+				kftpd_send_response2(parms, 541, text, "");
+				response = 0;
+			}
 		}
 	} else if (!strxcmp(buf, "SITE ", 1)) {
 		response = hijack_do_command(NULL, &buf[5]) ? 541 : 200;

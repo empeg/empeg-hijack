@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v360"
+#define HIJACK_VERSION	"v361"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -82,6 +82,7 @@ const unsigned char hexchars[] = "0123456789ABCDEFabcdef";
 
 static int  (*hijack_dispfunc)(int) = NULL;
 static void (*hijack_movefunc)(int) = NULL;
+static unsigned long hijack_userdata = 0;
 
 // This is broken.. we have run out of bits here because much of this
 //  because most of these flags really need to be processed by handle_buttons()
@@ -1318,6 +1319,7 @@ hijack_deactivate (int new_status)
 	ir_numeric_input = NULL;
 	hijack_movefunc = NULL;
 	hijack_dispfunc = NULL;
+	hijack_userdata = 0;
 	hijack_buttonlist = NULL;
 	ir_trigger_count = 0;
 	hijack_overlay_geom = NULL;
@@ -1332,11 +1334,12 @@ untrigger_blanker (void)
 }
 
 static void
-activate_dispfunc (int (*dispfunc)(int), void (*movefunc)(int))
+activate_dispfunc (int (*dispfunc)(int), void (*movefunc)(int), unsigned long userdata)
 {
 	hijack_deactivate(HIJACK_ACTIVE_PENDING);
 	hijack_dispfunc = dispfunc;
 	hijack_movefunc = movefunc;
+	hijack_userdata = userdata;
 	untrigger_blanker();
 	dispfunc(1);
 }
@@ -1905,6 +1908,39 @@ fsck_display (int firsttime)
 	(void)draw_string(ROWCOL(0,0), fsck_menu_label, PROMPTCOLOR);
 	rowcol = draw_string(ROWCOL(2,0), "Periodic checking: ", PROMPTCOLOR);
 	(void)   draw_string_spaced(rowcol, disabled_enabled[!hijack_fsck_disabled], ENTRYCOLOR);
+	return NEED_REFRESH;
+}
+
+void show_message (const char *message, unsigned long time);
+static unsigned int hijack_menuexec_no;
+static const char *no_yes[2] = {"No ", "Yes"};
+
+static void
+menuexec_move (int direction)
+{
+	hijack_menuexec_no = !hijack_menuexec_no;
+	empeg_state_dirty = 1;
+}
+
+static int
+menuexec_display (int firsttime)
+{
+	unsigned int rowcol;
+
+	if (firsttime)
+		hijack_menuexec_no = 1;
+	else if (!hijack_last_moved)
+		return NO_REFRESH;
+	hijack_last_moved = 0;
+	clear_hijack_displaybuf(COLOR0);
+	rowcol = draw_string(ROWCOL(0,0), "Execute this Command? ", PROMPTCOLOR);
+	(void)   draw_string_spaced(rowcol, no_yes[!hijack_menuexec_no], ENTRYCOLOR);
+	rowcol = draw_string(ROWCOL(2,0), (char *)hijack_userdata, PROMPTCOLOR);
+	if (ir_selected) {
+		if (!hijack_menuexec_no) {
+			// FIXME: not implemented
+		}
+	}
 	return NEED_REFRESH;
 }
 
@@ -3071,7 +3107,7 @@ menu_display (int firsttime)
 	}
 	if (ir_selected) {
 		menu_item_t *item = &menu_table[menu_item];
-		activate_dispfunc(item->dispfunc, item->movefunc);
+		activate_dispfunc(item->dispfunc, item->movefunc, item->userdata);
 	} else if (jiffies_since(hijack_last_moved) > (HZ*5)) {
 		hijack_deactivate(HIJACK_IDLE_PENDING); // menu timed-out
 	}
@@ -3079,7 +3115,6 @@ menu_display (int firsttime)
 }
 
 static int userland_display_updated = 0;
-static unsigned long userland_menudata = 0;
 
 // this is invoked when a userland menu item is active
 static int
@@ -3089,7 +3124,6 @@ userland_display (int firsttime)
 	int rc = NO_REFRESH;
 
 	if (firsttime) {
-		userland_menudata = menu_table[menu_item].userdata;
 		clear_hijack_displaybuf(COLOR0);
 #ifdef EMPEG_KNOB_SUPPORTED
 		ir_knob_down = 0;
@@ -3177,7 +3211,7 @@ popup_activate (unsigned int button, int seek_tool)
 	if (current_popup != NULL) {
 		if (current_popup->old == IR_FAKE_POPUP0)
 			current_popup->popup_index = (current_popup->popup_index & ~7) | popup0_index;
-		activate_dispfunc(popup_display, popup_move);
+		activate_dispfunc(popup_display, popup_move, 0);
 	}
 }
 
@@ -3379,7 +3413,7 @@ show_message (const char *message, unsigned long time)
 	if (message && *message) {
 		unsigned long flags;
 		save_flags_cli(flags);
-		activate_dispfunc(message_display, NULL);
+		activate_dispfunc(message_display, NULL, 0);
 		restore_flags(flags);
 	}
 }
@@ -3467,15 +3501,15 @@ hijack_handle_button (unsigned int button, unsigned long delay, unsigned int pla
 	}
 	switch (button) {
 		case IR_FAKE_HIJACKMENU:
-			activate_dispfunc(menu_display, menu_move);
+			activate_dispfunc(menu_display, menu_move, 0);
 			hijacked = 1;
 			break;
 		case IR_FAKE_BASSADJ:
-			activate_dispfunc(bass_display, tone_move);
+			activate_dispfunc(bass_display, tone_move, 0);
 			hijacked = 1;
 			break;
 		case IR_FAKE_TREBLEADJ:
-			activate_dispfunc(treble_display, tone_move);
+			activate_dispfunc(treble_display, tone_move, 0);
 			hijacked = 1;
 			break;
 		case IR_FAKE_VOLADJOFF:
@@ -3487,7 +3521,7 @@ hijack_handle_button (unsigned int button, unsigned long delay, unsigned int pla
 			hijacked = 1;
 			break;
 		case IR_FAKE_VOLADJMENU:
-			activate_dispfunc(voladj_prefix_display, voladj_move);
+			activate_dispfunc(voladj_prefix_display, voladj_move, 0);
 			hijacked = 1;
 			break;
 		case IR_FAKE_NEXTSRC:
@@ -3515,15 +3549,15 @@ hijack_handle_button (unsigned int button, unsigned long delay, unsigned int pla
 			break;
 		}
 		case IR_FAKE_QUICKTIMER:
-			activate_dispfunc(quicktimer_display, timer_move);
+			activate_dispfunc(quicktimer_display, timer_move, 0);
 			hijacked = 1;
 			break;
 		case IR_FAKE_KNOBSEEK:
-			activate_dispfunc(knobseek_display, NULL);
+			activate_dispfunc(knobseek_display, NULL, 0);
 			hijacked = 1;
 			break;
 		case IR_FAKE_VISUALSEEK:
-			activate_dispfunc(knobseek_display, knobseek_move_visuals);
+			activate_dispfunc(knobseek_display, knobseek_move_visuals, 0);
 			hijacked = 1;
 			break;
 #ifdef EMPEG_KNOB_SUPPORTED
@@ -3550,7 +3584,7 @@ hijack_handle_button (unsigned int button, unsigned long delay, unsigned int pla
 							index = 0;
 						button = knobdata_buttons[index];
 						if (index == 2) {
-							activate_dispfunc(voladj_prefix_display, voladj_move);
+							activate_dispfunc(voladj_prefix_display, voladj_move, 0);
 						} else if (index == 1 || (index && seek_tool == 1)) {
 							popup_activate(button, seek_tool);
 						} else {
@@ -3996,13 +4030,13 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 			 || (!ir_knob_busy && ir_knob_down && jiffies_since(ir_knob_down) >= HZ)
 #endif // EMPEG_KNOB_SUPPORTED
 			 || (ir_menu_down && jiffies_since(ir_menu_down) >= HZ)) {
-				activate_dispfunc(menu_display, menu_move);
+				activate_dispfunc(menu_display, menu_move, 0);
 			}
 			break;
 		case HIJACK_ACTIVE:
 			buf = (unsigned char *)hijack_displaybuf;
 			if (hijack_dispfunc == NULL) {  // userland app finished?
-				activate_dispfunc(menu_display, menu_move);
+				activate_dispfunc(menu_display, menu_move, 0);
 			} else {
 				if (hijack_movefunc != NULL)
 					hijack_move_repeat();
@@ -4013,11 +4047,11 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 					if (hijack_dispfunc != userland_display) {
 						if (hijack_dispfunc == menu_display) {
 							menu_item_t *item = &menu_table[menu_item];
-							activate_dispfunc(item->dispfunc, item->movefunc);
+							activate_dispfunc(item->dispfunc, item->movefunc, 0);
 						} else if (hijack_dispfunc == forcepower_display || hijack_dispfunc == homework_display || hijack_dispfunc == saveserial_display) {
-							activate_dispfunc(reboot_display, NULL);
+							activate_dispfunc(reboot_display, NULL, 0);
 						} else {
-							activate_dispfunc(menu_display, menu_move);
+							activate_dispfunc(menu_display, menu_move, 0);
 						}
 					}
 				}
@@ -4379,6 +4413,47 @@ remove_menu_entry (const char *label)
 
 // returns menu index >= 0,  or -ERROR
 static int
+menuexec_extend_menu (char *cmdline)
+{
+	int len, rc = -ENOMEM;
+	unsigned long flags;
+	menu_item_t item;
+	char *label, *p, *eol;
+
+	eol = findchars(cmdline, "\n\r");
+	len = eol - cmdline;
+	if (len < 3 || *cmdline == ' ')	// format of cmdline is:  "label command.."
+		return -EINVAL;
+
+	label = kmalloc(1 + eol - cmdline, GFP_KERNEL);
+	if (label == NULL)
+		return -ENOMEM;
+	memcpy(label, cmdline, len);
+	label[len] = '\0';
+
+	for (p = label; *p && *p != ' '; ++p) {
+		if (*p == '_')	// convert underscores to spaces within label portion
+			*p = ' ';
+	}
+	if (!*p || !*(p+1) || *(p+1) == ' ') {	// ensure we have a command after the label
+		kfree(label);
+		return -EINVAL;
+	}
+	*p++ = '\0';				// zero terminate the label portion
+	item.userdata = (unsigned long)p;	// everything else is the command
+	item.label    = (const char *)label;
+	item.dispfunc = menuexec_display;
+	item.movefunc = menuexec_move;
+	save_flags_cli(flags);
+	rc = extend_menu(&item);
+	restore_flags(flags);
+	if (rc < 0)
+		kfree(label);
+	return rc;
+}
+
+// returns menu index >= 0,  or -ERROR
+static int
 userland_extend_menu (char *label, unsigned long userdata)
 {
 	int rc = -ENOMEM;
@@ -4395,6 +4470,8 @@ userland_extend_menu (char *label, unsigned long userdata)
 	save_flags_cli(flags);
 	rc = extend_menu(&item);
 	restore_flags(flags);
+	if (rc < 0)
+		kfree(item.label);
 	return rc;
 }
 
@@ -4415,7 +4492,7 @@ hijack_release_menu_and_buttons (void)
 
 	save_flags_cli(flags);
 	if (hijack_dispfunc == userland_display) {
-		if ((userland_menudata & ~0xff) == (current->pid << 8)) {
+		if ((hijack_userdata & ~0xff) == (current->pid << 8)) {
 			hijack_dispfunc = NULL;		// restart the main menu
 			if (hijack_buttonlist) {	// release any buttons we had grabbed
 				kfree(hijack_buttonlist);
@@ -4772,12 +4849,14 @@ static unsigned char *
 hijack_exec_line (unsigned char *s)
 {
 	unsigned char *cmdline = s;
-	s = findchars(s, "\n\r");
-	if (s != cmdline) {
-		extern int hijack_exec(const char *);
+
+	memcpy(cmdline, "exec", 4);	// prefix the command with "exec"
+	s = findchars(cmdline+5, "\n\r");
+	if (s != (cmdline+5)) {
+		extern int hijack_exec(const char *, const char *);
 		char saved = *s;
 		*s = '\0';
-		hijack_exec(cmdline);
+		hijack_exec(NULL, cmdline);
 		*s = saved;
 	}
 	return s;
@@ -4804,12 +4883,26 @@ hijack_get_options (unsigned char *buf)
 	while (*(s = skipchars(s, " \n\t\r")) && *s != '[') {
 		char *line = s;
 		if (!strxcmp(s, ";@EXEC_ONCE ", 1)) {
-			if (!already_ran_once)
-				s = hijack_exec_line(s+12);
+			if (!already_ran_once) {
+				char *cmd = s+7;
+				s = hijack_exec_line(cmd);
+				memcpy(cmd, "ONCE", 4);	// restore prefix (hijack_exec_line overwrote it)
+			}
+			goto nextline;
+		}
+		if (!strxcmp(s, ";@MENUEXEC ", 1)) {
+			if (!already_ran_once) {
+				if (menuexec_extend_menu(s+11) < 0) {
+					printline("[hijack] ERROR", line);
+					errors = 1;
+				}
+			}
 			goto nextline;
 		}
 		if (!strxcmp(s, ";@EXEC ", 1)) {
-			s = hijack_exec_line(s+7);
+			char *cmd = s+2;
+			s = hijack_exec_line(cmd);
+			memcpy(cmd, "EXEC", 4);	// restore prefix (hijack_exec_line overwrote it)
 			goto nextline;
 		}
 		if (!strxcmp(s, ";@DELAY", 1)) {

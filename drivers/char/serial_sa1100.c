@@ -490,7 +490,7 @@ fake_tuner (unsigned char c)
 		case 0:
 			if (c == 0x01)
 				state = 1;
-			else
+			else if (hijack_trace_tuner)
 				printk("fake_tuner: ignored=%02x\n", c);
 			return;
 		case 1:

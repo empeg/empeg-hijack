@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v406"
+#define HIJACK_VERSION	"v407"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -702,7 +702,7 @@ static const unsigned int intercept_all_buttons[] = {1};
 static const unsigned int *hijack_buttonlist = NULL;
 //static unsigned long hijack_userq[HIJACK_USERQ_SIZE];
 //static unsigned short hijack_userq_head = 0, hijack_userq_tail = 0;
-static struct wait_queue *hijack_userq_waitq = NULL, *hijack_menu_waitq = NULL;
+static struct wait_queue *hijack_userq_waitq = NULL, *hijack_menu_waitq = NULL, *hijack_player_init_waitq = NULL;
 
 #define SCREEN_BLANKER_MULTIPLIER 15
 #define BLANKER_BITS 6
@@ -4015,6 +4015,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 				input_append_code(IR_INTERNAL, IR_FAKE_INITIAL);
 				input_append_code(IR_INTERNAL, RELEASECODE(IR_FAKE_INITIAL));
 				init_notify();
+				wake_up(&hijack_player_init_waitq);	// wake up any waiters
 				player_state = started;
 			}
 			break;
@@ -4816,6 +4817,29 @@ int hijack_ioctl  (struct inode *inode, struct file *filp, unsigned int cmd, uns
 			restore_flags(flags);
 			userland_display_updated = 1;
 			return 0;
+		}
+		case EMPEG_HIJACK_WAIT_FOR_PLAYER:	// Wait for player to finish starting up
+		{
+			struct wait_queue wait = {current, NULL};
+			save_flags_cli(flags);
+			add_wait_queue(&hijack_player_init_waitq, &wait);
+			rc = 0;
+			while (1) {
+				current->state = TASK_INTERRUPTIBLE;
+				if (player_state == started)
+					break;
+				if (signal_pending(current)) {
+					rc = -EINTR;
+					break;
+				}
+				restore_flags(flags);
+				schedule();
+				save_flags_cli(flags);
+			}
+			current->state = TASK_RUNNING;
+			remove_wait_queue(&hijack_player_init_waitq, &wait);
+			restore_flags(flags);
+			return rc;
 		}
 		case EMPEG_HIJACK_GETPLAYERBUFFER:	// get the contents of the player's screen
 		{

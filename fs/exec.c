@@ -824,13 +824,6 @@ int do_execve(char * filename, char ** argv, char ** envp, struct pt_regs * regs
 	int i;
 	int subst_argv = 0;	// if player starting, and we're on DC, insert a "-s-" arg to free the serial port!
 
-	if (!strcmp(filename, "/empeg/bin/player")) {
-		extern int empeg_on_dc_power, hijack_player_is_restarting;
-		hijack_player_is_restarting = 1;
-		if (empeg_on_dc_power)
-			subst_argv = 2;
-	}
-
 	bprm.p = PAGE_SIZE*MAX_ARG_PAGES-sizeof(void *);
 	for (i=0 ; i<MAX_ARG_PAGES ; i++)	/* clear page-table */
 		bprm.page[i] = 0;
@@ -850,17 +843,20 @@ int do_execve(char * filename, char ** argv, char ** envp, struct pt_regs * regs
 		dput(dentry);
 		return bprm.argc;
 	}
-	if (subst_argv && bprm.argc == 1) {
-		static char *a[] = {"player", "-s-"};
-		argv = a;
-		bprm.argc = 2;
-		printk("\nplayer starting with \"-s-\" flag\n");
-	}
 	if ((bprm.envc = count(envp, bprm.p / sizeof(void *))) < 0) {
 		dput(dentry);
 		return bprm.envc;
 	}
-
+	if (!strcmp(filename, "/empeg/bin/player")) {
+		extern int empeg_on_dc_power, hijack_player_is_restarting;
+		hijack_player_is_restarting = 1;
+		if (bprm.argc == 1 && empeg_on_dc_power) {
+			static char *a[] = {"player", "-s-"};
+			argv = a;
+			bprm.argc = subst_argv = 2;
+			printk("\nplayer starting with \"-s-\" flag\n");
+		}
+	}
 	retval = prepare_binprm(&bprm);
 	
 	if (retval >= 0) {

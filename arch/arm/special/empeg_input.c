@@ -92,7 +92,7 @@
 #include <asm/arch/hardware.h>
 #include <asm/irq.h>
 #include <asm/io.h>
-#include <asm/arch/empeg.h>
+#include <linux/empeg.h>
 #include <asm/uaccess.h>
 #include <linux/proc_fs.h>
 #include <linux/poll.h>

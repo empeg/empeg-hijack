@@ -14,7 +14,7 @@
 #include <linux/init.h>
 #include <linux/fs.h>
 #include <asm/arch/hardware.h>
-#include <asm/arch/empeg.h>
+#include <linux/empeg.h>
 
 #include "empeg_audio3.h"
 #include "empeg_mixer.h"

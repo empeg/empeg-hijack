@@ -26,7 +26,7 @@
 #include <asm/system.h>
 #include <asm/spinlock.h>
 #include <asm/leds.h>
-#include <asm/arch/empeg.h>
+#include <linux/empeg.h>
 
 /*****************************************************************************/
 #define FLASH_MINOR     160             /* MAJOR is 10 - miscdevice */

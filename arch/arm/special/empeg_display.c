@@ -135,7 +135,7 @@
 #include <asm/segment.h>
 #include <asm/irq.h>
 #include <asm/io.h>
-#include <asm/arch/empeg.h>
+#include <linux/empeg.h>
 #include <asm/uaccess.h>
 
 #ifdef NO_ANIMATION

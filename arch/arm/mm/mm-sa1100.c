@@ -41,7 +41,7 @@ unsigned long empeg_phys_to_virt_mapping[4] = {
 #define FLASH_MAPPING \
 	{ 0xd0000000, 0x00000000, 0x00200000, DOMAIN_IO, 1, 1 }, /* flash */
 #elif defined(CONFIG_SA1100_EMPEG)
-#include <asm/arch/empeg.h>
+#include <linux/empeg.h>
 #define FLASH_MAPPING \
         { EMPEG_FLASHBASE, 0x00000000, 0x00200000, DOMAIN_IO, 1, 1 }, /* flash */
 #elif defined(CONFIG_SA1100_THINCLIENT)

@@ -84,7 +84,7 @@
 #include <asm/uaccess.h>
 
 /* For the userspace interface */
-#include <asm/arch/empeg.h>
+#include <linux/empeg.h>
 
 #ifdef	CONFIG_PROC_FS
 #include <linux/stat.h>

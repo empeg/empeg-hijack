@@ -364,7 +364,7 @@ int i2c_write1(unsigned char device, unsigned short address,
 int dsp_write(unsigned short address, unsigned int data)
 {
 #if AUDIO_DEBUG
-	printk(AUDIO_NAME ": dsp_write %x=%x\n",address,data);
+	printk("DSP_WRITE %x=%x\n",address,data);
 #endif
 	return(i2c_write1(IICD_DSP,address,data));
 }  

@@ -17,7 +17,7 @@
 #include <asm/uaccess.h>	/* copy to/from user		*/
 #include <linux/videodev.h>	/* kernel radio structs		*/
 #include <linux/config.h>
-#include <asm/arch/empeg.h>
+#include <linux/empeg.h>
 
 #include "../arch/arm/special/empeg_mixer.h"
 

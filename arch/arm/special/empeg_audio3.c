@@ -82,7 +82,7 @@
 #endif
 
 /* For the userspace interface */
-#include <asm/arch/empeg.h>
+#include <linux/empeg.h>
 
 #include "empeg_dsp.h"
 #include "empeg_dsp_i2c.h"

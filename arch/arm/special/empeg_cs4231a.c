@@ -50,7 +50,7 @@
 #include <linux/poll.h>
 
 /* For the userspace interface */
-#include <asm/arch/empeg.h>
+#include <linux/empeg.h>
 
 #include "empeg_cs4231a.h"
 

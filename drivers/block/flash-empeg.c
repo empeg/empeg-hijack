@@ -3,6 +3,7 @@
  * driver, but with variable flash sector sizes (8k below 64k, 64k above).
  *
  * Tweaks by Hugo Fiennes <hugo@empeg.com>
+ * Bug fixes by Mark Lord <mlord@pobox.com>
  * Copyright (C) 1999 Nicolas Pitre <nico@cam.org>
  *
  *  1999-02-21	Stephane Dalton		Added write functions
@@ -24,7 +25,7 @@
 #include <asm/uaccess.h>
 #include <asm/delay.h>
 #include <asm/arch/hardware.h>
-#include <asm/arch/empeg.h>
+#include <linux/empeg.h>
 
 #define MAJOR_NR 60
 #define DEVICE_NAME "flash"
@@ -181,6 +182,7 @@ static int erase_flash_sector(unsigned short *ptr)
 	volatile unsigned short *flash_ptr;
 	int erase_loop_ctr;
 	unsigned short status;
+	int rc;
 
 	flash_ptr = ptr;
 
@@ -223,9 +225,11 @@ static int erase_flash_sector(unsigned short *ptr)
 
 	*flash_ptr =  FlashCommandClear;
 	*flash_ptr =  FlashCommandRead;
+
+	rc = full_status_check(status);
 	WP_OFF();
 
-   	return(full_status_check(status));
+   	return rc;
 }
 
 

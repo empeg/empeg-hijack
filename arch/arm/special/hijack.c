@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v236"
+#define HIJACK_VERSION	"v237"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -1814,7 +1814,7 @@ screen_compare (unsigned long *screen1, unsigned long *screen2)
 static unsigned int hijack_buttonled_on_level = 0;
 static unsigned int hijack_buttonled_level = 0;
 
-#ifdef EMPEG_KNOB_SUPPORTED
+//fixme #ifdef EMPEG_KNOB_SUPPORTED
 
 static const char buttonled_menu_label	[] = "Button Illumination Level";
 
@@ -1841,8 +1841,9 @@ static const char buttonled_menu_label	[] = "Button Illumination Level";
 // 242, then multiple 243's to step the brightness up (no idea why I never put
 // one to dim the other way...)
 
-static inline int
-dimmer_is_active (void)
+//fixme: experimentally using this in empeg_power.c as well: fix it there
+int
+headlight_sense_is_active (void)
 {
 	static unsigned long lasttime = 0;
 	static int dimmer = 0, last = 0;
@@ -1854,12 +1855,15 @@ dimmer_is_active (void)
 		if (sense != last) {
 			last = sense;
 			lasttime = jiffies;
-		} else if (jiffies_since(lasttime) > (HZ/2)) {
+		} else if (jiffies_since(lasttime) > (HZ/3)) {
 			dimmer = sense;
 		}
 	}
 	return !dimmer;
 }
+
+//fixme
+#ifdef EMPEG_KNOB_SUPPORTED
 
 static void	// invoked from empeg_display.c
 hijack_adjust_buttonled (int power)
@@ -1890,7 +1894,7 @@ hijack_adjust_buttonled (int power)
 		brightness = hijack_buttonled_off_level;
 	else
 		brightness = 0;
-	if (dimmer_is_active())
+	if (headlight_sense_is_active())
 		brightness = (brightness + 1) / 2;
 	brightness = bright_levels[brightness];
 	if (hijack_buttonled_level != brightness) {
@@ -1947,8 +1951,6 @@ buttonled_display (int firsttime)
 		(void) draw_string_spaced(rowcol,"[max]", ENTRYCOLOR);
 	else
 		(void) draw_number(rowcol, level, "%2u", ENTRYCOLOR);
-	//(void) draw_string(ROWCOL(3,20), 
-	//	dimmer_is_active() ? "Dimmer is On" : "Dimmer is Off", PROMPTCOLOR);
 	return NEED_REFRESH;
 }
 

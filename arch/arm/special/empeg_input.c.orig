@@ -222,37 +222,6 @@ static void input_append_code(struct input_dev *dev, input_code data)
 	   do it. */
 	input_code *new_wp;
 	unsigned long flags;
-{ // VOLADJ_BUTTON_HACK
-	static int bottom_button_down = 0, knob_down = 0;
-	extern void enable_disable_voladj(int);
-	//printk("Button: %08x\n",data);
-	switch (data) {
-		case 0x00000008: // IR_KNOB_PRESSED
-			knob_down = 1;
-			break;
-		case 0x00000009: // IR_KNOB_RELEASED
-			knob_down = 0;
-			break;
-		case 0x00000006: // IR_BOTTOM_BUTTON_PRESSED
-			bottom_button_down = 1;
-			break;
-		case 0x00000007: // IR_BOTTOM_BUTTON_RELEASED
-			bottom_button_down = 0;
-			break;
-		case 0x00000004: // IR_LEFT_BUTTON_PRESSED
-			if (bottom_button_down || knob_down) {
-				enable_disable_voladj(0);
-				return;
-			}
-			break;
-		case 0x00000002: // IR_RIGHT_BUTTON_PRESSED
-			if (bottom_button_down || knob_down) {
-				enable_disable_voladj(1);
-				return;
-			}
-			break;
-	}
-}
 	save_flags_cli(flags);
 	
 	new_wp = dev->buf_wp + 1;

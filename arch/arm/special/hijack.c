@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v210"
+#define HIJACK_VERSION	"v211"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -3980,7 +3980,7 @@ hijack_get_options (unsigned char *buf)
 		}
 		if (!strxcmp(s, "dance=", 1)) {
 			unsigned char *name = s += 6;
-			s = findchars(s, "\n;\r");
+			s = findchars(s, " \n;\r");
 			if (s != name && hijack_num_dances < HIJACK_MAX_DANCES) {
 				int size;
 				char *dance, *prefix, saved = *s;

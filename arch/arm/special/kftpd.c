@@ -94,7 +94,7 @@ typedef struct server_parms_s {
 	struct sockaddr_in	portaddr;
 	char			clientip[INET_ADDRSTRLEN];
 	char			hostname[48];		// serverip, or "Host:" field from HTTP header
-	char			style[64];		// path for stylesheet to embed into xml output
+	char			style[128];		// path for stylesheet to embed into xml output
 	unsigned char		cwd[1024];
 	unsigned char		buf[1024];
 	unsigned char		tmp2[768];
@@ -1227,7 +1227,7 @@ send_playlist (server_parms_t *parms, char *path)
 			break;
 		case 3: // xml
 			used += sprintf(xfer.buf+used,
-				"<?xml version=\"1.0\"?>\r\n"
+				"<?xml version=\"1.0\" encoding=\"iso-8859-1\"?>\r\n"
 				"<?xml-stylesheet type=\"text/xsl\" href=\"%s\"?>\r\n"
 				"<playlist stylesheet=\"%s\" host=\"%s\" allow_files=\"%d\" allow_commands=\"%d\" "
 				"type=\"%s\" tagfid=\"%x\" fid=\"%x\" length=\"%s\" "
@@ -1847,6 +1847,7 @@ khttpd_handle_connection (server_parms_t *parms)
 	const http_response_t *response = NULL;
 
 	parms->show_dotfiles = hijack_khttpd_show_dotfiles;
+	strcpy(parms->style, hijack_khttpd_style);
 
 	do {
 		int rc = ksock_rw(parms->clientsock, buf+size, buflen-size, 0);
@@ -1992,7 +1993,7 @@ khttpd_handle_connection (server_parms_t *parms)
 				response = send_playlist(parms, path);
 			goto quit;
 		}
-		use_index = 0;
+		// use_index = 0;	// Mmm...
 	}
 	if (!(pathlen = strlen(path))) {
 		response = &(http_response_t){400, "Missing Pathname"};
@@ -2106,7 +2107,6 @@ kftpd_daemon (unsigned long use_http)	// invoked twice from init/main.c
 		server_port	= hijack_khttpd_port;
 		parms.verbose	= hijack_khttpd_verbose;
 		parms.use_http	= 1;
-		strcpy(parms.style, hijack_khttpd_style);
 	} else {
 		server_port	= hijack_kftpd_control_port;
 		parms.data_port	= hijack_kftpd_data_port;
@@ -2132,6 +2132,7 @@ kftpd_daemon (unsigned long use_http)	// invoked twice from init/main.c
 						--childcount;
 				} while (child > 0);
 				if (!ksock_accept(&parms)) {
+					parms.verbose = use_http ? hijack_khttpd_verbose : hijack_kftpd_verbose;
 					if (!(clientparms = (server_parms_t *)__get_free_pages(GFP_KERNEL,1))) {
 						printk("%s: no memory for client parms\n", parms.servername);
 						sock_release(parms.clientsock);

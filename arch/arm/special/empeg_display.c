@@ -723,10 +723,11 @@ void display_bootfail(void)
 }
 
 /* Deal with next animation frame */
-static void display_animation(unsigned long animation_base)
+static unsigned long display_animation(unsigned long animation_base)
 {
 	struct display_dev *dev = devices;
 	unsigned int *frameptr=(unsigned int*)animation_base;
+	unsigned long nexttime;
 
 	/* Used once only, so this can be static */
 	static int framenr=-1;
@@ -740,7 +741,8 @@ static void display_animation(unsigned long animation_base)
 		s=(unsigned char*)(animation_base+frameptr[framenr]);
 
 		/* End of animation? */
-		if (!frameptr[framenr]) return;
+		if (!frameptr[framenr])
+			return 0;
 
 		/* Decompress and display */
 		d=dev->software_buffer;
@@ -761,16 +763,18 @@ static void display_animation(unsigned long animation_base)
 	animation_timer.data=animation_base;
 	animation_timer.function=display_animation;
 	if (framenr >= 0) {
-		animation_timer.expires = framenr ? (HZ/ANIMATION_FPS) : (HZ/2);
+		nexttime = framenr ? (HZ/ANIMATION_FPS) : (HZ/2);
 	} else {
 		extern unsigned long hijack_init (void *);
-		animation_timer.expires = hijack_init(frameptr);
+		nexttime = hijack_init(frameptr);
 	}
-	animation_timer.expires += jiffies;
+	nexttime += jiffies;
+	animation_timer.expires = nexttime;
 	add_timer(&animation_timer);
 
 	/* Next frame */
 	framenr++;
+	return nexttime;
 }
 
 #define CHARS_TO_ULONG(A, B, C, D) ((A) | ((B) << 8) | ((C) << 16) | ((D) << 24))
@@ -779,11 +783,10 @@ static void handle_splash(struct display_dev *dev)
 {
 	const int LOGO_EMPEG = 0;
 	const int LOGO_RIO = 1;
-	const int LOGO_MASK = 0xf;
 	const int LOGO_CUSTOM = 0x10;	
 	int logo_type;
 	unsigned char *user_splash=(unsigned char*)(EMPEG_FLASHBASE+0xa000);
-	int animation_time=(3*HZ);
+	int animation_time;
 	unsigned long animation_start;
 	unsigned long *ani_ptr;
 
@@ -813,24 +816,30 @@ static void handle_splash(struct display_dev *dev)
 	ani_ptr=(unsigned long*)hijack_ani;
 {
 	// look for custom animation at tail end of kernel flash partition:
-	unsigned char *p = (unsigned char *)(EMPEG_FLASHBASE + 0x10000 + 0xa0000 - 4);
-	if (p[0] == 'A' && p[1] == 'N' && p[2] == 'I' && p[3] == 'M') {
-		unsigned int offset = *(unsigned int *)(p - 4);
+	const unsigned int kernel_start = EMPEG_FLASHBASE + 0x10000;
+	unsigned int *p = (unsigned int *)(kernel_start + (0xa0000 - 4));
+	if (*p == ('A'|('N'<<8)|('I'<<16)|('M'<<24))) {
+		unsigned int offset = *(p - 1);
 		if (offset >= 0x90000 && offset < (0xa0000 - (1024 + 8 + 8))) {
 			printk("Found custom animation at offset 0x%x\n", offset);
-			ani_ptr = (unsigned long *)(EMPEG_FLASHBASE + 0x10000 + offset);
+			ani_ptr = (unsigned long *)(kernel_start + offset);
 		}
 	}
 }
-	display_animation((unsigned long)ani_ptr);
+	// Mmm.. bit of a race condition here:  we shouldn't be accessing
+	// the flash memory directly (playing the animation), in case empeg_state
+	// wants to write to it when accessed via hijack_init() from display_animation().
+	// So what we do about it is.. nothing.  Probably not an issue anyway.
 
-	/* Work out time to play animation: 1s (0.5 start & end) + frames */
-	animation_start=animation_timer.expires;
-	animation_time=HZ;
-	while(*ani_ptr++) animation_time+=(HZ/ANIMATION_FPS);
+	animation_start = display_animation((unsigned long)ani_ptr);
 
 	/* Setup timer to display user's image (if present) after the animation finishes */
 	if (logo_type & LOGO_CUSTOM) {
+		/* Work out time to play animation: 1s (0.5 start & end) + frames */
+		animation_time = HZ;
+		while (*ani_ptr++)
+			animation_time += (HZ/ANIMATION_FPS);
+
 		printk("Scheduling custom logo.\n");
 		init_timer(&display_timer);
 		display_timer.expires=(animation_start + animation_time);

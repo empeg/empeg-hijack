@@ -26,7 +26,7 @@ extern int hijack_do_command (void *sparms, char *buf);
 extern int strxcmp (const char *str, const char *pattern, int partial);					// hijack.c
 extern int do_remount(const char *dir,int flags,char *data);						// fs/super.c
 extern int get_filesystem_info(char *);									// fs/super.c
-extern int hijack_supress_notify, hijack_reboot;							// hijack.c
+extern int hijack_suppress_notify, hijack_reboot;							// hijack.c
 extern void show_message (const char *message, unsigned long time);					// hijack.c
 extern long sleep_on_timeout(struct wait_queue **p, long timeout);					// kernel/sched.c
 extern signed long schedule_timeout(signed long timeout);						// kernel/sched.c
@@ -62,10 +62,10 @@ hijack_serial_notify (const unsigned char *s, int size)
 		{
 			if (!strxcmp(s, "  serial_notify_thread.cpp", 1)) {
 				state = want_data;
-				return hijack_supress_notify;
+				return hijack_suppress_notify;
 			} else if (!strxcmp(s, "  dhcp_thread.cpp", 1)) {
 				state = want_eol;
-				return hijack_supress_notify;
+				return hijack_suppress_notify;
 			}
 			break;
 		}
@@ -94,7 +94,7 @@ hijack_serial_notify (const unsigned char *s, int size)
 				state = want_eol;
 				if (!hijack_player_started)
 					hijack_player_started = jiffies ? jiffies : -1;
-				return hijack_supress_notify;
+				return hijack_suppress_notify;
 			}
 			break;
 		}
@@ -102,7 +102,7 @@ hijack_serial_notify (const unsigned char *s, int size)
 		{
 			if (s[size-1] == '\n')
 				state = want_title;
-			return hijack_supress_notify;
+			return hijack_suppress_notify;
 		}
 	}
 	return 0;

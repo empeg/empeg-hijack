@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v251"
+#define HIJACK_VERSION	"v252"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -486,7 +486,7 @@ static int hijack_old_style;			// 1 == don't highlite menu items
 static int hijack_quicktimer_minutes;		// increment size for quicktimer function
 static int hijack_stalk_debug;			// trace button in/out actions to/from Stalk?
 static int hijack_standby_minutes;		// number of minutes after screen blanks before we go into standby
-       int hijack_supress_notify;		// 1 == supress player "notify" and "dhcp" text on serial port
+       int hijack_suppress_notify;		// 1 == suppress player "notify" and "dhcp" text on serial port
        int hijack_time_offset;			// adjust system time-of-day clock by this many minutes
        int hijack_temperature_correction;	// adjust all h/w temperature readings by this celcius amount
 
@@ -588,7 +588,8 @@ static const hijack_option_t hijack_option_table[] =
 {"stalk_lhs",			lhs_stalk_vals,			(int)lhs_stalk_default,	20,	0,	0xff},
 {"stalk_rhs",			rhs_stalk_vals,			(int)rhs_stalk_default,	20,	0,	0xff},
 {"standby_minutes",		&hijack_standby_minutes,	30,			1,	0,	240},
-{"supress_notify",		&hijack_supress_notify,		0,			1,	0,	1},
+{"supress_notify",		&hijack_suppress_notify,	0,			1,	0,	1},
+{"suppress_notify",		&hijack_suppress_notify,	0,			1,	0,	1},
 {"temperature_correction",	&hijack_temperature_correction,	-4,			1,	-20,	+20},
 {"time_offset",			&hijack_time_offset,		0,			1,	-24*60,	24*60},
 {"trace_tuner",			&hijack_trace_tuner,		0,			1,	0,	1},
@@ -3082,9 +3083,9 @@ timer_check_expiry (struct display_dev *dev)
 			return 0;
 		}
 	} else {
-		// A harmless method of waking up the player
+		// A harmless method of waking up the player (?)
 		hijack_enq_button_pair(IR_RIO_VOLPLUS_PRESSED);
-		hijack_enq_button_pair(IR_RIO_VOLMINUS_PRESSED);
+		//hijack_enq_button_pair(IR_RIO_VOLMINUS_PRESSED);
 		if (timer_action == 0) {  // Toggle Standby?
 			timer_timeout = 0; // cancel the timer
 			return 0;

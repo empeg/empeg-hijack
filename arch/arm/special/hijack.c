@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v136"
+#define HIJACK_VERSION "v137"
 
 #include <linux/sched.h>
 #include <linux/kernel.h>
@@ -743,7 +743,7 @@ hijack_enq_translations (ir_translation_t *t)
 		unsigned long button = code & ~(BUTTON_FLAGS^BUTTON_FLAGS_UISTATE);
 		if (button != IR_NULL_BUTTON) {
 			if (code & BUTTON_FLAGS_SHIFT)
-				ir_shifted ^= IR_FLAGS_SHIFTED;
+				ir_shifted = !ir_shifted;
 			hijack_enq_button(&hijack_inputq, button, 0);
 			if (count)
 				hijack_enq_release(&hijack_inputq, button|(code & BUTTON_FLAGS_LONGPRESS), 0);
@@ -1465,12 +1465,12 @@ blankerfuzz_display (int firsttime)
 static int
 screen_compare (unsigned long *screen1, unsigned long *screen2)
 {
-	const unsigned char bitcount4[16] = {0,1,1,2, 1,2,2,3, 1,2,3,4, 2,3,3,4};
+	const unsigned char bitcount4[16] = {0,1,1,2, 1,2,2,3, 1,2,2,3, 2,3,3,4};
 	int allowable_fuzz = blanker_sensitivity * (SENSITIVITY_MULTIPLIER * (2 * EMPEG_SCREEN_BYTES) / 100);
 	unsigned long *end = screen1 - 1;
 
 	if (allowable_fuzz == 0)
-		allowable_fuzz = 1;	// beta7 always has a single blinking pixel on track-info
+		allowable_fuzz = 2;	// beta7 always has a single blinking pixel on track-info
 	// Compare backwards, since changes occur most frequently near bottom of screen
 	screen1 += (EMPEG_SCREEN_BYTES / sizeof(unsigned long)) - 1;
 	screen2 += (EMPEG_SCREEN_BYTES / sizeof(unsigned long)) - 1;
@@ -2173,7 +2173,7 @@ test_row (const void *rowaddr, unsigned long color)
 	return 1;
 }
 
-static int
+static inline int
 check_if_equalizer_is_active (const unsigned char *buf)
 {
 	const unsigned char *row = buf + ROWOFFSET(31);
@@ -2186,21 +2186,21 @@ check_if_equalizer_is_active (const unsigned char *buf)
 	return 1;	// equalizer settings ARE displayed
 }
 
-static int
+static inline int
 check_if_soundadj_is_active (const unsigned char *buf)
 {
 	return (test_row(buf+TESTOFFSET( 8), 0x00000000) && test_row(buf+TESTOFFSET( 9), 0x11111111)
 	     && test_row(buf+TESTOFFSET(16), 0x11111111) && test_row(buf+TESTOFFSET(17), 0x00000000));
 }
 
-static int
+static inline int
 check_if_search_is_active (const unsigned char *buf)
 {
 	return ((test_row(buf+TESTOFFSET(4), 0x00000000) && test_row(buf+TESTOFFSET(5), 0x11111111))
 	     || (test_row(buf+TESTOFFSET(6), 0x00000000) && test_row(buf+TESTOFFSET(7), 0x11111111)));
 }
 
-static int
+static inline int
 check_if_menu_is_active (const unsigned char *buf)
 {
 	if (test_row(buf+TESTOFFSET(2), 0x00000000)) {
@@ -2648,7 +2648,8 @@ input_append_code2 (unsigned long rawbutton)
 	if ((table = ir_translate_table) != NULL) {
 		unsigned short	mixer		= get_current_mixer_source();
 		unsigned short	carhome		= empeg_on_dc_power ? IR_FLAGS_CAR : IR_FLAGS_HOME;
-		unsigned short	flags		= mixer | carhome | ir_shifted;
+		unsigned short	shifted		= ir_shifted ? IR_FLAGS_SHIFTED : IR_FLAGS_NOTSHIFTED;
+		unsigned short	flags		= mixer | carhome | shifted;
 		int		delayed_send	= 0;
 		int		was_waiting	= (ir_current_longpress != NULL);
 		unsigned long	button		= rawbutton & ~BUTTON_FLAGS;
@@ -3387,6 +3388,8 @@ print_ir_translates (void)
 			while (count--) {
 				unsigned long new = *newp++;
 				printk("%08lx", new & ~BUTTON_FLAGS);
+				if ((new & BUTTON_FLAGS_UISTATE) == BUTTON_FLAGS_UISTATE)
+					new ^= BUTTON_FLAGS_UISTATE;
 				if (new & BUTTON_FLAGS) {
 					printk(".");
 					if (new & BUTTON_FLAGS_LONGPRESS)

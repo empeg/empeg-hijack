@@ -215,6 +215,12 @@ static inline unsigned long jiffies_since(unsigned long past_jiffies)
 	}
 }
 
+extern void enable_disable_voladj(int);
+extern void game_move_right(void);
+extern void game_move_left(void);
+extern int  game_is_active;
+unsigned long bottom_button_down = 0, knob_down = 0;
+
 static void input_append_code(struct input_dev *dev, input_code data)
 {
 	/* Now this is called from the bottom half we need to make
@@ -222,37 +228,51 @@ static void input_append_code(struct input_dev *dev, input_code data)
 	   do it. */
 	input_code *new_wp;
 	unsigned long flags;
-{ // VOLADJ_BUTTON_HACK
-	static int bottom_button_down = 0, knob_down = 0;
-	extern void enable_disable_voladj(int);
+
 	//printk("Button: %08x\n",data);
 	switch (data) {
 		case 0x00000008: // IR_KNOB_PRESSED
-			knob_down = 1;
+			knob_down = jiffies ? jiffies : 1;
+			if (game_is_active)
+				return;
 			break;
 		case 0x00000009: // IR_KNOB_RELEASED
 			knob_down = 0;
+			if (game_is_active)
+				return;
+			break;
+		case 0x0000000a: // IR_KNOB_RIGHT
+			if (game_is_active) {
+				game_move_right();
+				return;
+			}
+			break;
+		case 0x0000000b: // IR_KNOB_LEFT
+			if (game_is_active) {
+				game_move_left();
+				return;
+			}
 			break;
 		case 0x00000006: // IR_BOTTOM_BUTTON_PRESSED
-			bottom_button_down = 1;
+			bottom_button_down = jiffies ? jiffies : 1;
 			break;
 		case 0x00000007: // IR_BOTTOM_BUTTON_RELEASED
 			bottom_button_down = 0;
 			break;
 		case 0x00000004: // IR_LEFT_BUTTON_PRESSED
-			if (bottom_button_down || knob_down) {
+			if (bottom_button_down) {
 				enable_disable_voladj(0);
 				return;
 			}
 			break;
 		case 0x00000002: // IR_RIGHT_BUTTON_PRESSED
-			if (bottom_button_down || knob_down) {
+			if (bottom_button_down) {
 				enable_disable_voladj(1);
 				return;
 			}
 			break;
 	}
-}
+
 	save_flags_cli(flags);
 	
 	new_wp = dev->buf_wp + 1;

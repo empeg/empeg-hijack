@@ -1090,7 +1090,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v72 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v73 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1881,9 +1881,8 @@ hijack_send_buttons_to_player (void)
 {
 	hijack_buttondata_t data;
 
-	while (hijack_button_deq(&hijack_playerq, &data, 0)) {
+	while (hijack_button_deq(&hijack_playerq, &data, 0))
 		(void)real_input_append_code(data.button);
-	}
 }
 
 static void
@@ -1899,14 +1898,14 @@ hijack_handle_buttons (void)
 	}
 }
 
-// Send a translated replacement sequence, except for the final release code
+// Send a release code
 static void
-ir_send_release (unsigned long button, int final)
+ir_send_release (unsigned long button)
 {
 	unsigned long new, delay = 0;
 
 	if (button != IR_NULL_BUTTON) {
-		if (!final && (button & 0x80000000))
+		if (button & 0x80000000)
 			delay = HZ;
 		//printk("%8lu: SENDREL(%ld): %08lx\n", jiffies, delay, button);
 		new = button & ~0xc0000000; // mask off the special flags bits
@@ -1930,8 +1929,8 @@ ir_send_buttons (ir_translation_t *t)
 				ir_shifted = !ir_shifted;
 			hijack_button_enq(&hijack_inputq, new, 0);
 			//printk("%8lu: SENDBUT: %08lx\n", jiffies, button);
-			if (count || !(button & 0x80000000))
-				ir_send_release(button, 0);
+			if (count)
+				ir_send_release(button);
 		}
 	}
 }
@@ -2327,16 +2326,13 @@ input_append_code(void *ignored, unsigned long button)  // empeg_input.c
 					 && (!t->source  || t->source == get_current_mixer_source())
 					 && (!t->shifted || ir_shifted)) {
 						if (released) {	// button release?
-							unsigned long final_button;
 							if (t->longpress && jiffies_since(ir_lastevent) < HZ) {
 								delayed_send = 1;
 								continue; // look for shortpress instead
 							}
 							if (delayed_send)
 								ir_send_buttons(t);
-							final_button = t->new[t->count - 1];
-							if (final_button & 0x80000000)	// not already sent?
-								ir_send_release(final_button, 1);
+							ir_send_release(t->new[t->count - 1]); // final button release
 						} else { // button press?
 							if (t->longpress)
 								ir_current_longpress = t;

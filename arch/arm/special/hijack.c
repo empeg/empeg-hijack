@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v202"
+#define HIJACK_VERSION	"v203"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -367,7 +367,7 @@ typedef struct hijack_option_s {
 	int	max;
 } hijack_option_t; 
 
-char hijack_khttpd_xsl[32];
+char hijack_khttpd_xsl[64];
 
 static const hijack_option_t hijack_option_table[] =
 {
@@ -394,7 +394,7 @@ static const hijack_option_t hijack_option_table[] =
 {"khttpd_files",		&hijack_khttpd_files,		1,			1,	0,	1},
 {"khttpd_playlists",		&hijack_khttpd_playlists,	1,			1,	0,	1},
 {"khttpd_commands",		&hijack_khttpd_commands,	1,			1,	0,	1},
-{"khttpd_xsl",			&hijack_khttpd_xsl,		(int)"default",		0,	0,	sizeof(hijack_khttpd_xsl)-1},
+{"khttpd_xsl",			&hijack_khttpd_xsl,		(int)"/default.xsl",	0,	0,	sizeof(hijack_khttpd_xsl)-1},
 {"max_connections",		&hijack_max_connections,	4,			1,	0,	20},
 #endif // CONFIG_NET_ETHERNET
 {"old_style",			&hijack_old_style,		0,			1,	0,	1},
@@ -869,7 +869,6 @@ hijack_enq_button (hijack_buttonq_t *q, unsigned int button, unsigned long hold_
 	save_flags_cli(flags);
 	head = q->head;
 	if (head != q->tail && hold_time < hijack_button_pacing && q == &hijack_playerq && !IS_RELEASE(button))
-	//fixme? if (head != q->tail && hold_time < hijack_button_pacing && q == &hijack_playerq)
 		hold_time = hijack_button_pacing;	// ensure we have sufficient delay between press/release pairs
 	if (hijack_ir_debug)
 		printk("ENQ.%c: %08x.%ld\n", (q == &hijack_playerq) ? 'P' : ((q == &hijack_inputq) ? 'I' : 'U'), button, hold_time);
@@ -3007,7 +3006,6 @@ input_append_code2 (unsigned int rawbutton)
 static void
 input_send_delayed_rotate (void)
 {
-	//hijack_enq_button(&hijack_inputq, ir_delayed_rotate, 0);
 	input_append_code2(ir_delayed_rotate);
 	ir_lasttime = ir_lastevent = jiffies;
 	ir_delayed_rotate = 0;

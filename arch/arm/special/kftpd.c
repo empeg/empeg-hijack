@@ -92,6 +92,7 @@ typedef struct server_parms_s {
 	struct sockaddr_in	portaddr;
 	char			clientip[INET_ADDRSTRLEN];
 	char			hostname[48];		// serverip, or "Host:" field from HTTP header
+	char			xsl[64];		// path for stylesheet to embed into xml output
 	unsigned char		cwd[1024];
 	unsigned char		buf[1024];
 	unsigned char		tmp2[768];
@@ -877,6 +878,7 @@ static const char text_plain[]		= "text/plain";
 static const char text_html[]		= "text/html";
 static const char text_css[]		= "text/css";
 static const char text_xml[]		= "text/xml";
+static const char text_xsl[]		= "text/xsl";
 static const char application_octet[]	= "application/octet-stream";
 static const char application_x_tar[]	= "application/x-tar";
 
@@ -892,6 +894,7 @@ static const mime_type_t mime_types[] = {
 	{"*.png",		"image/png",		1},
 	{"*.htm",		 text_html,		1},
 	{"*.xml",		 text_xml,		1},
+	{"*.xsl",		 text_xsl,		1},
 	{"*.css",		 text_css,		1},
 	{"*.html",		 text_html,		1},
 	{"*.txt",		 text_plain,		0},
@@ -1179,8 +1182,18 @@ encode_url (unsigned char *out, unsigned char *s, int partial_encode)
 		} else if (partial_encode == 1) { // for stupid iTunes playlist display
 			*out++ = (c == ' ' || c == '?') ? '_' : c;
 		} else {  // xml
-			if (c == '<' || c == '>' || c == '&')
-				c = '+';
+			if (c == '<' || c == '>' || c == '&') {
+				*out++ = '&';
+				if (c == '&') {
+					*out++ = 'a';
+					*out++ = 'm';
+					*out++ = 'p';
+				} else {
+					*out++ = (c == '>') ? 'g' : 'l';
+					*out++ = 't';
+				}
+				c = ';';
+			}
 			*out++ = c;
 		}
 	}
@@ -1291,10 +1304,10 @@ send_playlist (server_parms_t *parms, char *path)
 		case 3: // xml
 			used += sprintf(xfer.buf+used,
 				"<?xml version=\"1.0\"?>\r\n"
-				"<?xml-stylesheet type=\"text/xsl\" href=\"/%s.xsl\"?>\r\n"
-				"<%s host=\"%s\" type=\"%s\" tagfid=\"%x\" fid=\"%x\" length=\"%s\" "
+				"<?xml-stylesheet type=\"%s\" href=\"%s\"?>\r\n"
+				"<playlist host=\"%s\" type=\"%s\" tagfid=\"%x\" fid=\"%x\" length=\"%s\" "
 				"year=\"%s\" genre=\"%s\" options=\"%s\"",
-				hijack_khttpd_xsl, hijack_khttpd_xsl, parms->hostname, tagtype, pfid, pfid^1,
+				text_xsl, parms->xsl, parms->hostname, tagtype, pfid, pfid^1,
 				tags.length, tags.year, tags.genre, tags.options);
 			used += encode_tag1(xfer.buf+used, "title",   tags.title);
 			used += encode_tag1(xfer.buf+used, "artist",  tags.artist);
@@ -1450,7 +1463,7 @@ aborted:
 			used += sprintf(xfer.buf+used, "</TABLE><FONT SIZE=-2>%s</FONT></BODY></HTML>\r\n", hijack_vXXX_by_Mark_Lord);
 			break;
 		case 3: // xml
-			used += sprintf(xfer.buf+used, "\t</items>\r\n</%s>\r\n", hijack_khttpd_xsl);
+			used += sprintf(xfer.buf+used, "\t</items>\r\n</playlist>\r\n");
 			break;
 	}
 	if (used)
@@ -2005,6 +2018,21 @@ khttpd_handle_connection (server_parms_t *parms)
 				parms->generate_playlist = 2;
 			} else if (!strxcmp(end, ".xml", 1)) {
 				parms->generate_playlist = 3;
+				// look for alternative style-sheet to embed in the xml:
+				if (!strxcmp(cmds, "STYLE ", 1)) {
+					int len;
+					cmds += 6;
+					len = strlen(cmds) - 4;	// (discard ".xml" extension)
+					if (len > 0) {
+						if (len >= sizeof(parms->xsl))
+							len = sizeof(parms->xsl) - 1;
+						cmds[len] = '\0';
+						p = parms->xsl;
+						do {
+							*p++ = *cmds;
+						} while (*++cmds);
+					}
+				}
 			} else if (strxcmp(end, ".mp3", 1)) {	// just ignore a trailing .mp3 extension
 				end = saved;
 			}
@@ -2121,8 +2149,10 @@ kftpd_daemon (unsigned long use_http)	// invoked twice from init/main.c
 	struct semaphore	*sema;
 	extern unsigned long	sys_signal(int, void *);
 
-	if (sizeof(server_parms_t) > PAGE_SIZE)	// we allocate client parms as single pages
+	if (sizeof(server_parms_t) > PAGE_SIZE) {	// we allocate client parms as single pages
+		printk("kftpd: ERROR: parms too large (%u)\n", sizeof(server_parms_t));
 		return 0;
+	}
 	memset(&parms, 0, sizeof(parms));
 
 	if (use_http) {
@@ -2149,6 +2179,7 @@ kftpd_daemon (unsigned long use_http)	// invoked twice from init/main.c
 		server_port	= hijack_khttpd_port;
 		parms.verbose	= hijack_khttpd_verbose;
 		parms.use_http	= 1;
+		strcpy(parms.xsl, hijack_khttpd_xsl);
 	} else {
 		server_port	= hijack_kftpd_control_port;
 		parms.data_port	= hijack_kftpd_data_port;

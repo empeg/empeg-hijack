@@ -2,8 +2,7 @@
 //
 // This version can UPLOAD and DOWNLOAD files, directories..
 //
-// To Do:  fix result codes to conform to RFC (most of them are okay, but..)
-//         fix various buffers to use PATH_MAX (4096) instead of 256 or 512 bytes
+// To Do:  fix various buffers to use PATH_MAX (4096) instead of 256 or 512 bytes
 
 extern int hijack_khttpd_port;				// from arch/arm/special/hijack.c
 extern int hijack_khttpd_verbose;			// from arch/arm/special/hijack.c
@@ -179,6 +178,7 @@ static response_t response_table[] = {
 	{150, "Opening BINARY connection"},
 	{200, "Okay"},
 	{202, "Okay"},
+	{214, "Okay"},
 	{215, "UNIX Type: L8"},
 	{220, "Connected"},
 	{221, "Happy Fishing"},
@@ -227,6 +227,22 @@ send_dir_response (server_parms_t *parms, int rcode, char *dir, char *suffix)
 		len = sprintf(buf, "%d \"%s\"\r\n", rcode, dir);
 	if ((rc = ksock_rw(parms->clientsock, buf, len, -1)) != len) {
 		PRINTK("%s: ksock_rw(dir_response) failed, rc=%d\n", parms->servername, rc);
+		return 1;
+	}
+	return 0;
+}
+
+static int
+send_help_response (server_parms_t *parms, char *type, char *commands)
+{
+	char	buf[128];
+	int	rc, len;
+
+	len = sprintf(buf, "214-The following %scommands are recognized (* =>'s unimplemented)\r\n", type);
+	if (len != (rc = ksock_rw(parms->clientsock, buf, len, -1))
+	 || len != (rc = ksock_rw(parms->clientsock, commands, len = strlen(commands), -1)))
+	{
+		PRINTK("%s: ksock_rw(help_response) failed, rc=%d\n", parms->servername, rc);
 		return 1;
 	}
 	return 0;
@@ -560,9 +576,8 @@ formatdir (server_parms_t *parms, filldir_parms_t *p, char *name, int namelen)
 	}
 	p->lname[linklen] = '\0';
 
-	// FIXME: this calculation just uses 32 as a fudgefactor for expansions of embedded backslashes and quotes:
 	p->buf_len = b - p->buf;
-	if ((p->buf_size - p->buf_len) < ((parms->use_http ? (24+32) : 7) + namelen + (linklen ? (2 * linklen) : namelen))) {
+	if ((p->buf_size - p->buf_len) < ((parms->use_http ? (24+namelen) : 7) + namelen + (linklen ? (2 * linklen) : namelen))) {
 		if ((rc = send_dirlist_buf(parms, p, 0))) {	// empty the buffer
 			dput(dentry); // free up the inode structure
 			return rc;
@@ -772,7 +787,7 @@ khttp_send_file_header (server_parms_t *parms, char *path, unsigned long i_size,
 	}
 	len = sprintf(buf, hdr, type);
 	if (i_size)
-		len += sprintf(buf, "Content-Length: %lu\n", i_size);
+		len += sprintf(buf+len, "Content-Length: %lu\n", i_size);
 	buf[len++] = '\n';
 	if (len != ksock_rw(parms->datasock, buf, len, -1))
 		return 426;
@@ -1077,9 +1092,13 @@ kftpd_handle_command (server_parms_t *parms)
 		quit = send_dir_response(parms, 200, parms->cwd, NULL);
 	} else if (!strcmp(buf, "NOOP")) {
 		response = 200;
+	} else if (!strcmp(buf, "HELP")) {
+		quit = send_help_response(parms, "", "   USER    PORT    STOR    NLST    MKD     CDUP    PASS    ABOR*   \r\n   SITE    TYPE*   DELE    SYST*   RMD     STRU*   CWD     MODE*   \r\n   HELP    PWD     QUIT    RETR    LIST    NOOP    \r\n");
+		response = 214;
 	} else if (!strcmp(buf, "PWD")) {
 		quit = send_dir_response(parms, 257, parms->cwd, NULL);
 	} else if (!strcmp(buf, "SITE HELP")) {
+		quit = send_help_response(parms, "SITE ", "   CHMOD   HELP    \r\n");
 		response = 214;
 	} else if (!strncmp(buf, "SITE CHMOD 0", 12)) {
 		unsigned char *p = &buf[12];
@@ -1091,7 +1110,7 @@ kftpd_handle_command (server_parms_t *parms)
 		} else {
 			strcpy(path, parms->cwd);
 			append_path(path, p);
-			response = do_chmod(parms, mode, p);
+			response = do_chmod(parms, mode, path);
 		}
 	} else if (n == 2 && buf[0] == 0xff && buf[1] == 0xf4) {
 		response = 0;	// Ignore the telnet escape sequence
@@ -1099,8 +1118,8 @@ kftpd_handle_command (server_parms_t *parms)
 		response = 226;
 	} else if (!strcmp(buf, "ABOR")) {
 		response = 226;
-	} else if (!strncmp(buf, "SITE EXEC ", 10)) {
-		response = 502;
+	//} else if (!strncmp(buf, "SITE EXEC ", 10)) {
+	//	response = 502;
 	} else if (!strncmp(buf, "PORT ", 5)) {
 		parms->have_portaddr = 0;
 		if (extract_portaddr(&parms->portaddr, &buf[5])) {
@@ -1110,26 +1129,26 @@ kftpd_handle_command (server_parms_t *parms)
 			response = 200;
 		}
 	} else if (!strncmp(buf, "MKD ", 4)) {
-		strcpy(path, parms->cwd);
 		if (!buf[4]) {
 			response = 501;
 		} else {
+			strcpy(path, parms->cwd);
 			append_path(path, &buf[4]);
 			response = do_mkdir(parms, path);
 		}
 	} else if (!strncmp(buf, "RMD ", 4)) {
-		strcpy(path, parms->cwd);
 		if (!buf[4]) {
 			response = 501;
 		} else {
+			strcpy(path, parms->cwd);
 			append_path(path, &buf[4]);
 			response = do_rmdir(parms, path);
 		}
 	} else if (!strncmp(buf, "DELE ", 5)) {
-		strcpy(path, parms->cwd);
 		if (!buf[5]) {
 			response = 501;
 		} else {
+			strcpy(path, parms->cwd);
 			append_path(path, &buf[5]);
 			response = do_delete(parms, path);
 		}
@@ -1137,10 +1156,10 @@ kftpd_handle_command (server_parms_t *parms)
 		int j = 4;
 		if (buf[j] == ' ' && buf[j+1] == '-')
 			while (buf[++j] && buf[j] != ' ');
-		strcpy(path, parms->cwd);
 		if (buf[j] && buf[j] != ' ') {
 			response = 501;
 		} else {
+			strcpy(path, parms->cwd);
 			if (buf[j]) {
 				buf[j] = '\0';
 				append_path(path, &buf[j+1]);
@@ -1150,10 +1169,10 @@ kftpd_handle_command (server_parms_t *parms)
 				response = 226;
 		}
 	} else if (!strncmp(buf, "RETR ", 5) || !strncmp(buf, "STOR ", 5)) {
-		strcpy(path, parms->cwd);
 		if (!buf[5]) {
 			response = 501;
 		} else {
+			strcpy(path, parms->cwd);
 			append_path(path, &buf[5]);
 			if (buf[0] == 'R')
 				response = send_file(parms, path);

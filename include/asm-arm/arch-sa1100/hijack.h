@@ -64,10 +64,11 @@ typedef struct hijack_geom_s {
 // When using these colors from userland, or them with 0x80 first!
 // These can be the first byte of a string for EMPEG_HIJACK_DISPTEXT
 //
-#define COLOR0 0 // blank pixels
-#define COLOR1 1 // prefix with '-' for inverse video
-#define COLOR2 2 // prefix with '-' for inverse video
-#define COLOR3 3 // prefix with '-' for inverse video
+#define COLOR0	0	// blank pixels
+#define COLOR1	1	// faint
+#define COLOR2	2	// light
+#define COLOR3	3	// bold
+// use "-COLOR3" for inverse video
 
 // Front panel codes
 //

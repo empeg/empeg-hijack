@@ -36,6 +36,8 @@ extern int empeg_inittherm(volatile unsigned int *timerbase, volatile unsigned i
 #define EMPEG_KNOB_SUPPORTED	// Mk2 and later have a front-panel knob
 #endif
 
+unsigned int PROMPTCOLOR, ENTRYCOLOR;
+
 #define NEED_REFRESH		0
 #define NO_REFRESH		1
 
@@ -80,7 +82,7 @@ typedef struct knob_pair_s {
 
 #define KNOBDATA_SIZE (1 << KNOBDATA_BITS)
 static int knobdata_index = 0;
-static const char *knobdata_labels[] = {"[default]", "PopUp", "VolAdj+", "Details", "Hush", "Info", "Mark", "Shuffle"};
+static const char *knobdata_labels[] = {" [default] ", " PopUp ", " VolAdj+ ", " Details ", " Hush ", " Info ", " Mark ", " Shuffle "};
 static const knob_pair_t knobdata_pairs[1<<KNOBDATA_BITS] = {
 	{IR_KNOB_PRESSED,		IR_KNOB_RELEASED},
 	{IR_KNOB_PRESSED,		IR_KNOB_RELEASED},
@@ -93,7 +95,7 @@ static const knob_pair_t knobdata_pairs[1<<KNOBDATA_BITS] = {
 
 #define KNOBMENU_SIZE KNOBDATA_SIZE	// indexes share the same bits in flash..
 static int knobmenu_index = 0;
-static const char *knobmenu_labels[] = {"[default]", "Details", "Hush", "Info", "Mark", "Repeat", "Shuffle", "Visual"};
+static const char *knobmenu_labels[] = {" [default] ", " Details ", " Hush ", " Info ", " Mark ", " Repeat ", " Shuffle ", " Visual "};
 static const knob_pair_t knobmenu_pairs[KNOBMENU_SIZE] = {
 	{IR_KNOB_PRESSED,		IR_KNOB_RELEASED},
 	{IR_RIO_INFO_PRESSED,		IR_RIO_INFO_PRESSED},
@@ -142,7 +144,7 @@ typedef struct hijack_buttonq_s {
 #define VOLADJ_FIXEDPOINT(whole,fraction) ((((whole)<<MULT_POINT)|((unsigned int)((fraction)*(1<<MULT_POINT))&MULT_MASK)))
 #define VOLADJ_BITS 2
 int hijack_voladj_enabled = 0; // used by voladj code in empeg_audio3.c
-static const char  *voladj_names[] = {"[Off]", "Low", "Medium", "High"};
+static const char  *voladj_names[] = {" [Off] ", " Low ", " Medium ", " High "};
 static unsigned int voladj_history[VOLADJ_HISTSIZE] = {0,}, voladj_last_histx = 0, voladj_histx = 0;
 static unsigned int hijack_voladj_parms[(1<<VOLADJ_BITS)-1][5] = { // Values as suggested by Richard Lovejoy
 	{0x1800,	 100,	0x1000,	25,	60},  // Low
@@ -347,6 +349,13 @@ draw_pixel (unsigned short pixel_row, unsigned short pixel_col, int color)
 	*pixel_pair = (*pixel_pair & ~pixel_mask) ^ (color & pixel_mask);
 }
 
+static void
+draw_hline (unsigned short pixel_row, unsigned short pixel_col, unsigned short last_col, int color)
+{
+	while (pixel_col <= last_col)
+		draw_pixel(pixel_row, pixel_col++, color);
+}
+
 static hijack_geom_t *hijack_overlay_geom = NULL;
 
 static void
@@ -384,19 +393,22 @@ hijack_do_overlay (unsigned char *dest, unsigned char *src, const hijack_geom_t 
 }
 
 static void
-clear_text_row(unsigned int rowcol, unsigned short last_col)
+clear_text_row (unsigned int rowcol, unsigned short last_col, int do_top_row)
 {
-	unsigned short pixel_row, num_cols, row = (rowcol & 0xffff), pixel_col = (rowcol >> 16);
+	unsigned short num_cols, last_row, row = (rowcol & 0xffff), pixel_col = (rowcol >> 16);
 
 	num_cols = 1 + last_col - pixel_col;
 	if (row & 0x8000)
 		row = (row & ~0x8000) * KFONT_HEIGHT;
-	for (pixel_row = 0; pixel_row < KFONT_HEIGHT; ++pixel_row) {
+	last_row = row + (KFONT_HEIGHT - 1);
+	if (do_top_row && row > 0)
+		--row;
+	while (row <= last_row) {
 		unsigned int offset = 0;
 		unsigned char *displayrow, pixel_mask = (pixel_col & 1) ? 0xf0 : 0x0f;
-		if ((row + pixel_row) >= EMPEG_SCREEN_ROWS)
+		if (row >= EMPEG_SCREEN_ROWS)
 			return;
-		displayrow = &hijack_displaybuf[row + pixel_row][0];
+		displayrow = &hijack_displaybuf[row++][0];
 		do {
 			unsigned char *pixel_pair = &displayrow[(pixel_col + offset) >> 1];
 			*pixel_pair &= (pixel_mask = ~pixel_mask);
@@ -404,11 +416,10 @@ clear_text_row(unsigned int rowcol, unsigned short last_col)
 	}
 }
 	
-
 static unsigned char kfont_spacing = 0;  // 0 == proportional
 
 static int
-draw_char (unsigned short pixel_row, short pixel_col, unsigned char c, unsigned char color, unsigned char inverse)
+draw_char (unsigned short pixel_row, short pixel_col, unsigned char c, unsigned char foreground, unsigned char background)
 {
 	unsigned char num_cols;
 	const unsigned char *font_entry;
@@ -426,16 +437,16 @@ draw_char (unsigned short pixel_row, short pixel_col, unsigned char c, unsigned 
 		else
 			for (num_cols = KFONT_WIDTH; !font_entry[num_cols-2]; --num_cols);
 	}
-	if (pixel_col + num_cols + 1 >= EMPEG_SCREEN_COLS)
+	if ((pixel_col + num_cols) > EMPEG_SCREEN_COLS)
 		return -1;
 	for (pixel_row = 0; pixel_row < KFONT_HEIGHT; ++pixel_row) {
 		unsigned char pixel_mask = (pixel_col & 1) ? 0xf0 : 0x0f;
 		unsigned int offset = 0;
 		do {
 			unsigned char font_bit    = font_entry[offset] & (1 << pixel_row);
-			unsigned char new_pixel   = font_bit ? (color & pixel_mask) : 0;
+			unsigned char new_pixel   = (font_bit ? foreground : background) & pixel_mask;
 			unsigned char *pixel_pair = &displayrow[(pixel_col + offset) >> 1];
-			*pixel_pair = ((inverse & pixel_mask) | (*pixel_pair & (pixel_mask = ~pixel_mask))) ^ new_pixel;
+			*pixel_pair = ( (*pixel_pair & (pixel_mask = ~pixel_mask)) ) | new_pixel;
 		} while (++offset < num_cols);
 		displayrow += (EMPEG_SCREEN_COLS / 2);
 	}
@@ -444,35 +455,63 @@ draw_char (unsigned short pixel_row, short pixel_col, unsigned char c, unsigned 
 
 // 0x8000 in rowcol means "text_row"; otherwise "pixel_row"
 #define ROWCOL(text_row,pixel_col)  ((unsigned int)(((pixel_col)<<16)|((text_row)|0x8000)))
+#define ROUND_CORNERS
 
 static unsigned int
 draw_string (unsigned int rowcol, const unsigned char *s, int color)
 {
 	unsigned short row = (rowcol & 0xffff), col = (rowcol >> 16);
-	unsigned char inverse = 0;
+	unsigned char background, foreground;
+#ifdef ROUND_CORNERS
+	unsigned char firstchar;
+	int firstcol = (EMPEG_SCREEN_COLS*2), firstrow = 0;
+#endif // ROUND_CORNERS
 
+	if (!s || !*s)
+		return rowcol;
+#ifdef ROUND_CORNERS
+	firstchar = *s;
+#endif // ROUND_CORNERS
 	if (row & 0x8000)
 		row = (row & ~0x8000) * KFONT_HEIGHT;
-	if (color < 0)
-		color = inverse = -color;
-	color &= 3;
-	color |= color << 4;
-	if (inverse)
-		inverse = color;
-top:	if (s && row < EMPEG_SCREEN_ROWS) {
+	if (color < 0) {
+		background = (COLOR1<<4)|COLOR1;
+		foreground = (COLOR3<<4)|COLOR3;
+	} else {
+		background = (COLOR0<<4)|COLOR0;
+		foreground = (color <<4)|color;
+	}
+top:	if (row < EMPEG_SCREEN_ROWS) {
 		unsigned char c;
 		while ((c = *s)) {
 			int col_adj;
-			if ((c == '\n' && *s++) || -1 == (col_adj = draw_char(row, col, c, color, inverse))) {
+			if ((c == '\n' && *s++) || -1 == (col_adj = draw_char(row, col, c, foreground, background))) {
 				col  = 0;
 				row += KFONT_HEIGHT;
 				goto top;
 			}
+#ifdef ROUND_CORNERS
+			if (firstcol == (EMPEG_SCREEN_COLS*2)) {
+				firstcol = col;
+				firstrow = row;
+			}
+#endif // ROUND_CORNERS
 			col += col_adj;
 			++s;
 		}
 	}
-	return (col << 16) | row;
+	rowcol = (col << 16) | row;
+#ifdef ROUND_CORNERS
+	if (background && firstchar == ' ' && col-- > firstcol && row == firstrow && *(s-1) == ' ') {	// round corners?
+		draw_pixel(row + (KFONT_HEIGHT - 1), firstcol, COLOR0);
+		draw_pixel(row + (KFONT_HEIGHT - 1), col, COLOR0);
+		if (row > 0)
+			draw_hline(--row, firstcol+1, col-1, background);
+		draw_pixel(row, firstcol, COLOR0);
+		draw_pixel(row, col, COLOR0);
+	}
+#endif // ROUND_CORNERS
+	return rowcol;
 }
 
 static unsigned int
@@ -669,14 +708,14 @@ voladj_display (int firsttime)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
-	rowcol = draw_string(ROWCOL(0,0), "Auto Volume Adjust: ", COLOR2);
-	(void)draw_string(rowcol, voladj_names[hijack_voladj_enabled], COLOR3);
+	rowcol = draw_string(ROWCOL(0,0), "Auto Volume Adjust: ", PROMPTCOLOR);
+	(void)draw_string(rowcol, voladj_names[hijack_voladj_enabled], ENTRYCOLOR);
 	save_flags_cli(flags);
 	histx = voladj_last_histx = voladj_histx;
 	mult  = voladj_history[histx];
 	restore_flags(flags);
 	sprintf(buf, "Current Multiplier: %2u.%02u", mult >> MULT_POINT, (mult & MULT_MASK) * 100 / (1 << MULT_POINT));
-	(void)draw_string(ROWCOL(3,12), buf, COLOR2);
+	(void)draw_string(ROWCOL(3,12), buf, PROMPTCOLOR);
 	for (col = 0; col < VOLADJ_HISTSIZE; ++col)
 		(void)voladj_plot(1, col, voladj_history[++histx & (VOLADJ_HISTSIZE-1)], &prev);
 	return NEED_REFRESH;
@@ -686,7 +725,7 @@ voladj_display (int firsttime)
 static int
 voladj_prefix_display (int firsttime)
 {
-	static const hijack_geom_t geom = {8, 8+6+KFONT_HEIGHT, 16, EMPEG_SCREEN_COLS-16};
+	static const hijack_geom_t geom = {8, 8+6+KFONT_HEIGHT, 12, EMPEG_SCREEN_COLS-12};
 
 	ir_selected = 0; // paranoia?
 	if (firsttime) {
@@ -699,8 +738,8 @@ voladj_prefix_display (int firsttime)
 	} else {
 		unsigned int rowcol = (geom.first_row+4)|((geom.first_col+6)<<16);
 		rowcol = draw_string(rowcol, "Auto VolAdj: ", COLOR3);
-		clear_text_row(rowcol, geom.last_col-4);
-		rowcol = draw_string(rowcol, voladj_names[hijack_voladj_enabled], COLOR3);
+		clear_text_row(rowcol, geom.last_col-4, 1);
+		rowcol = draw_string(rowcol, voladj_names[hijack_voladj_enabled], ENTRYCOLOR);
 		return NEED_REFRESH;
 	}
 	return NO_REFRESH;
@@ -717,12 +756,10 @@ kfont_display (int firsttime)
 		return NO_REFRESH;
 	clear_hijack_displaybuf(COLOR0);
 	rowcol = draw_string(ROWCOL(0,0), " ", -COLOR3);
-	rowcol = draw_string(rowcol, " ", -COLOR2);
-	rowcol = draw_string(rowcol, " ", -COLOR1);
 	for (c = (unsigned char)' '; c <= (unsigned char)'~'; ++c) {
 		unsigned char s[2] = {0,0};
 		s[0] = c;
-		rowcol = draw_string(rowcol, &s[0], COLOR2);
+		rowcol = draw_string(rowcol, &s[0], COLOR3);
 	}
 	return NEED_REFRESH;
 }
@@ -786,7 +823,7 @@ static unsigned int
 draw_temperature (unsigned int rowcol, int temp, int offset, int color)
 {
 	unsigned char buf[32];
-	sprintf(buf, "%+dC/%+dF ", temp, temp * 180 / 100 + offset);
+	sprintf(buf, " %+dC/%+dF ", temp, temp * 180 / 100 + offset);
 	return draw_string(rowcol, buf, color);
 }
 
@@ -869,12 +906,12 @@ vitals_display (int firsttime)
 	if (!firsttime && jiffies_since(hijack_last_refresh) < (HZ*2))
 		return NO_REFRESH;
 	clear_hijack_displaybuf(COLOR0);
-	sprintf(buf, "Rev:%02d, Jiffies:%08lX\nTemperature: ", permset[0], jiffies);
-	rowcol = draw_string(ROWCOL(0,0), buf, COLOR2);
-	(void)draw_temperature(rowcol, read_temperature(), 32, COLOR2);
+	sprintf(buf, "Rev:%02d, Jiffies:%08lX\nTemperature:", permset[0], jiffies);
+	rowcol = draw_string(ROWCOL(0,0), buf, PROMPTCOLOR);
+	(void)draw_temperature(rowcol, read_temperature(), 32, PROMPTCOLOR);
 	si_meminfo(&si);
 	sprintf(buf, "Free: %lukB/%lukB\nLoadAvg: ", si.freeram/1024, si.totalram/1024);
-	rowcol = draw_string(ROWCOL(2,0), buf, COLOR2);
+	rowcol = draw_string(ROWCOL(2,0), buf, PROMPTCOLOR);
 	(void)get_loadavg(buf);
 	count = 0;
 	for (i = 0;; ++i) {
@@ -882,7 +919,7 @@ vitals_display (int firsttime)
 			break;
 	}
 	buf[i] = '\0';
-	(void)draw_string(rowcol, buf, COLOR2);
+	(void)draw_string(rowcol, buf, PROMPTCOLOR);
 	return NEED_REFRESH;
 }
 
@@ -901,11 +938,11 @@ forcedc_display (int firsttime)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
-	(void)draw_string(ROWCOL(0,0), "Force DC/Car Operation", COLOR2);
-	rowcol = draw_string(ROWCOL(1,0), "Current Mode: ", COLOR2);
-	(void)draw_string(rowcol, empeg_on_dc_power() ? "DC/Car" : "AC/Home", COLOR2);
-	rowcol = draw_string(ROWCOL(3,0), "Next reboot: ", COLOR2);
-	(void)draw_string(rowcol, hijack_savearea.force_dcpower ? "Force DC/Car" : "[Normal]", COLOR3);
+	(void)draw_string(ROWCOL(0,0), "Force DC/Car Operation", PROMPTCOLOR);
+	rowcol = draw_string(ROWCOL(1,0), "Current Mode: ", PROMPTCOLOR);
+	(void)draw_string(rowcol, empeg_on_dc_power() ? "DC/Car" : "AC/Home", PROMPTCOLOR);
+	rowcol = draw_string(ROWCOL(3,0), "Next reboot: ", PROMPTCOLOR);
+	(void)draw_string(rowcol, hijack_savearea.force_dcpower ? " Force DC/Car " : " [Normal] ", ENTRYCOLOR);
 	return NEED_REFRESH;
 }
 
@@ -921,11 +958,11 @@ draw_hhmmss (unsigned int rowcol, unsigned int seconds, int color)
 		if (minutes > 60) {
 			unsigned int hours = minutes / 60;
 			minutes = minutes % 60;
-			sprintf(buf, "%02u:%02u:%02u", hours, minutes, seconds);
+			sprintf(buf, " %02u:%02u:%02u ", hours, minutes, seconds);
 			goto draw;
 		}
 	}
-	sprintf(buf, "%02u:%02u", minutes, seconds);
+	sprintf(buf, " %02u:%02u ", minutes, seconds);
 draw:	return draw_string(rowcol, buf, color);
 }
 
@@ -962,7 +999,7 @@ timer_display (int firsttime)
 {
 	static int paused = 0;
 	unsigned int rowcol;
-	unsigned char *offmsg = "[Off]";
+	unsigned char *offmsg = " [Off] ";
 
 	if (firsttime) {
 		paused = 0;
@@ -973,7 +1010,7 @@ timer_display (int firsttime)
 				paused = 1;
 			} else {
 				timer_timeout = 0;  // turn alarm off if it was on
-				offmsg = "[Cancelled]";
+				offmsg = " [Cancelled] ";
 			}
 		}
 		ir_numeric_input = &timer_timeout;
@@ -983,15 +1020,15 @@ timer_display (int firsttime)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
-	(void)draw_string(ROWCOL(0,0), "Countdown Timer Timeout", COLOR2);
-	rowcol = draw_string(ROWCOL(2,0), "Duration: ", COLOR2);
+	(void)draw_string(ROWCOL(0,0), "Countdown Timer Timeout", PROMPTCOLOR);
+	rowcol = draw_string(ROWCOL(2,0), "Duration: ", PROMPTCOLOR);
 	if (timer_timeout) {
-		rowcol = draw_hhmmss(rowcol, timer_timeout, COLOR3);
+		rowcol = draw_hhmmss(rowcol, timer_timeout, ENTRYCOLOR);
 		if (paused)
-			(void)draw_string(rowcol, " [paused]", COLOR2);
+			(void)draw_string(rowcol, " [paused]", PROMPTCOLOR);
 	} else {
 		paused = 0;
-		(void)draw_string(rowcol, offmsg, COLOR3);
+		(void)draw_string(rowcol, offmsg, ENTRYCOLOR);
 	}
 	return NEED_REFRESH;
 }
@@ -1012,9 +1049,9 @@ timeraction_display (int firsttime)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
-	(void)draw_string(ROWCOL(0,0), "Countdown Timer Action", COLOR2);
-	rowcol = draw_string(ROWCOL(2,0), "On expiry: ", COLOR2);
-	(void)   draw_string(rowcol, timer_action ? "Beep Alarm" : "Toggle Standby", COLOR3);
+	(void)draw_string(ROWCOL(0,0), "Countdown Timer Action", PROMPTCOLOR);
+	rowcol = draw_string(ROWCOL(2,0), "On expiry: ", PROMPTCOLOR);
+	(void)   draw_string(rowcol, timer_action ? " Beep Alarm " : " Toggle Standby ", ENTRYCOLOR);
 	return NEED_REFRESH;
 }
 
@@ -1035,7 +1072,7 @@ static int maxtemp_check_threshold (void)
 		unsigned int rowcol;
 		int color = (elapsed & 1) ? COLOR3 : -COLOR3;
 		clear_hijack_displaybuf(color);
-		rowcol = draw_string(ROWCOL(2,18), " Too Hot: ", -color);
+		rowcol = draw_string(ROWCOL(2,18), " Too Hot:", -color);
 		(void)draw_temperature(rowcol, read_temperature(), 32, -color);
 		return 1;
 	}
@@ -1076,12 +1113,12 @@ blanker_display (int firsttime)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
-	(void)draw_string(ROWCOL(0,0), "Screen Inactivity Blanker", COLOR2);
-	rowcol = draw_string(ROWCOL(2,20), "Timeout: ", COLOR2);
+	(void)draw_string(ROWCOL(0,0), "Screen Inactivity Blanker", PROMPTCOLOR);
+	rowcol = draw_string(ROWCOL(2,20), "Timeout: ", PROMPTCOLOR);
 	if (blanker_timeout) {
-		(void)draw_hhmmss(rowcol, blanker_timeout * SCREEN_BLANKER_MULTIPLIER, COLOR3);
+		(void)draw_hhmmss(rowcol, blanker_timeout * SCREEN_BLANKER_MULTIPLIER, ENTRYCOLOR);
 	} else {
-		(void)draw_string(rowcol, "[Off]", COLOR3);
+		(void)draw_string(rowcol, " [Off] ", ENTRYCOLOR);
 	}
 	return NEED_REFRESH;
 }
@@ -1108,10 +1145,10 @@ blankerfuzz_display (int firsttime)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
-	(void)draw_string(ROWCOL(0,0), "Screen Blanker Sensitivity", COLOR2);
-	rowcol = draw_string(ROWCOL(2,0), "Examine ", COLOR2);
-	rowcol = draw_number(rowcol, 100 - (blankerfuzz_amount * BLANKERFUZZ_MULTIPLIER), "%u%%", COLOR3);
-	(void)   draw_string(rowcol, " of screen", COLOR2);
+	(void)draw_string(ROWCOL(0,0), "Screen Blanker Sensitivity", PROMPTCOLOR);
+	rowcol = draw_string(ROWCOL(2,0), "Examine ", PROMPTCOLOR);
+	rowcol = draw_number(rowcol, 100 - (blankerfuzz_amount * BLANKERFUZZ_MULTIPLIER), " %u%% ", ENTRYCOLOR);
+	(void)   draw_string(rowcol, " of screen", PROMPTCOLOR);
 	return NEED_REFRESH;
 }
 
@@ -1171,9 +1208,9 @@ knobdata_display (int firsttime)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
-	(void)draw_string(ROWCOL(0,0), "Knob Press Redefinition", COLOR2);
-	rowcol = draw_string(ROWCOL(2,0), "Quick press = ", COLOR2);
-	(void)draw_string(rowcol, knobdata_labels[knobdata_index], COLOR3);
+	(void)draw_string(ROWCOL(0,0), "Knob Press Redefinition", PROMPTCOLOR);
+	rowcol = draw_string(ROWCOL(2,0), "Quick press = ", PROMPTCOLOR);
+	(void)draw_string(rowcol, knobdata_labels[knobdata_index], ENTRYCOLOR);
 	return NEED_REFRESH;
 }
 
@@ -1200,7 +1237,7 @@ knobmenu_display (int firsttime)
 {
 	unsigned long flags;
 	hijack_buttondata_t data;
-	static const hijack_geom_t knobmenu_geom = {8, 8+6+KFONT_HEIGHT, 6, EMPEG_SCREEN_COLS-6};
+	static const hijack_geom_t knobmenu_geom = {8, 8+6+KFONT_HEIGHT, 4, EMPEG_SCREEN_COLS-4};
  
 	ir_selected = 0; // paranoia?
 	if (firsttime) {
@@ -1219,8 +1256,8 @@ knobmenu_display (int firsttime)
 		} else {
 			unsigned int rowcol = (knobmenu_geom.first_row+4)|((knobmenu_geom.first_col+6)<<16);
 			rowcol = draw_string(rowcol, "Select Action: ", COLOR3);
-			clear_text_row(rowcol, knobmenu_geom.last_col-4);
-			(void)draw_string(rowcol, knobmenu_labels[knobmenu_index], COLOR3);
+			clear_text_row(rowcol, knobmenu_geom.last_col-4, 1);
+			(void)draw_string(rowcol, knobmenu_labels[knobmenu_index], ENTRYCOLOR);
 		}
 	}
 	save_flags_cli(flags);
@@ -1264,7 +1301,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v79 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v80 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1274,7 +1311,7 @@ game_finale (void)
 		return NEED_REFRESH;
 	}
 	if (jiffies_since(game_animtime) < (HZ/(ANIMATION_FPS-2))) {
-		(void)draw_string(ROWCOL(2,44), "You Win", COLOR3);
+		(void)draw_string(ROWCOL(2,44), "You Win!", COLOR3);
 		return NEED_REFRESH;
 	}
 	if (game_animtime == 0) { // first frame?
@@ -1450,16 +1487,16 @@ maxtemp_display (int firsttime)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
-	rowcol = draw_string(ROWCOL(0,0), "High Temperature Warning.", COLOR2);
-	rowcol = draw_string(ROWCOL(1,0), "Threshold: ", COLOR2);
+	rowcol = draw_string(ROWCOL(0,0), "High Temperature Warning.", PROMPTCOLOR);
+	rowcol = draw_string(ROWCOL(1,0), "Threshold: ", PROMPTCOLOR);
 	if (maxtemp_threshold)
-		(void)draw_temperature(rowcol, maxtemp_threshold + MAXTEMP_OFFSET, 32, COLOR3);
+		(void)draw_temperature(rowcol, maxtemp_threshold + MAXTEMP_OFFSET, 32, ENTRYCOLOR);
 	else
-		rowcol = draw_string(rowcol, "[Off]", COLOR3);
-	rowcol = draw_string(ROWCOL(2,0), "Currently: ", COLOR2);
-	(void)draw_temperature(rowcol, read_temperature(), 32, COLOR2);
-	rowcol = draw_string(ROWCOL(3,0), "Corrected by ", COLOR2);
-	(void)draw_temperature(rowcol, hijack_temperature_correction, 0, COLOR2);
+		rowcol = draw_string(rowcol, " [Off] ", ENTRYCOLOR);
+	rowcol = draw_string(ROWCOL(2,0), "Currently: ", PROMPTCOLOR);
+	(void)draw_temperature(rowcol, read_temperature(), 32, PROMPTCOLOR);
+	rowcol = draw_string(ROWCOL(3,0), "Corrected by ", PROMPTCOLOR);
+	(void)draw_temperature(rowcol, hijack_temperature_correction, 0, PROMPTCOLOR);
 	return NEED_REFRESH;
 }
 
@@ -1552,12 +1589,12 @@ calculator_display (int firsttime)
 	}
 	restore_flags(flags);
 	clear_hijack_displaybuf(COLOR0);
-	(void) draw_string(ROWCOL(0,0), "Menu/CD: +-*/%=", COLOR2);
-	(void) draw_string(ROWCOL(1,0), "Cancel/*: CE,CA,Quit", COLOR2);
-	(void) draw_number(ROWCOL(2,8), total, "%11d", COLOR3);
+	(void) draw_string(ROWCOL(0,0), "Menu/CD: +-*/%=", PROMPTCOLOR);
+	(void) draw_string(ROWCOL(1,0), "Cancel/*: CE,CA,Quit", PROMPTCOLOR);
+	(void) draw_number(ROWCOL(2,8), total, "%11d ", ENTRYCOLOR);
 	opstring[0] = calculator_operators[operator];
-	(void) draw_string(ROWCOL(3,0), opstring, COLOR3);
-	(void) draw_number(ROWCOL(3,8), value, "%11d", COLOR3);
+	(void) draw_string(ROWCOL(3,0), opstring, ENTRYCOLOR);
+	(void) draw_number(ROWCOL(3,8), value, "%11d ", ENTRYCOLOR);
 	return NEED_REFRESH;
 }
 
@@ -1571,7 +1608,7 @@ reboot_display (int firsttime)
 
         if (firsttime) {
 		clear_hijack_displaybuf(COLOR0);
-		(void) draw_string(ROWCOL(0,0), "Press & hold Left/Right\n  buttons to reboot.\n\nAny other button aborts", COLOR3);
+		(void) draw_string(ROWCOL(0,0), "Press & hold Left/Right\n  buttons to reboot.\n\nAny other button aborts", PROMPTCOLOR);
 		left_pressed = right_pressed = 0;
 		hijack_buttonlist = intercept_all_buttons;
 		hijack_initq(&hijack_userq);
@@ -1603,7 +1640,7 @@ reboot_display (int firsttime)
 		}
 		if (left_pressed && right_pressed) {
 			clear_hijack_displaybuf(COLOR0);
-			(void) draw_string(ROWCOL(2,30), "Rebooting..", COLOR3);
+			(void) draw_string(ROWCOL(2,30), "Rebooting..", PROMPTCOLOR);
 			rc = NEED_REFRESH;
 			// reboot on next refresh, AFTER screen has been updated on this pass
 		}
@@ -1649,40 +1686,40 @@ showbutton_display (int firsttime)
 	if (firsttime || prev[0] != -1) {
 		unsigned long rowcol;
 		clear_hijack_displaybuf(COLOR0);
-		rowcol=draw_string(ROWCOL(0,0), "Button Codes Display.  ", COLOR3);
-		(void) draw_number(rowcol, counter, "%02d", COLOR2);
-		(void) draw_string(ROWCOL(1,0), "Repeat any button to exit", COLOR2);
+		rowcol=draw_string(ROWCOL(0,0), "Button Codes Display.  ", PROMPTCOLOR);
+		(void) draw_number(rowcol, counter, " %02d ", ENTRYCOLOR);
+		(void) draw_string(ROWCOL(1,0), "Repeat any button to exit", PROMPTCOLOR);
 		if (prev[3] != -1)
-			(void)draw_number(ROWCOL(2,4), prev[3], "%08X", COLOR2);
+			(void)draw_number(ROWCOL(2,4), prev[3], "%08X", PROMPTCOLOR);
 		if (prev[2] != -1)
-			(void)draw_number(ROWCOL(2,EMPEG_SCREEN_COLS/2), prev[2], "%08X", COLOR2);
+			(void)draw_number(ROWCOL(2,(EMPEG_SCREEN_COLS/2)), prev[2], " %08X ", PROMPTCOLOR);
 		if (prev[1] != -1)
-			(void)draw_number(ROWCOL(3,4), prev[1], "%08X", COLOR2);
+			(void)draw_number(ROWCOL(3,4), prev[1], "%08X", PROMPTCOLOR);
 		if (prev[0] != -1)
-			(void)draw_number(ROWCOL(3,EMPEG_SCREEN_COLS/2), prev[0], "%08X", COLOR3);
+			(void)draw_number(ROWCOL(3,(EMPEG_SCREEN_COLS/2)), prev[0], " %08X ", ENTRYCOLOR);
 		return NEED_REFRESH;
 	}
 	return NO_REFRESH;
 }
 
 static menu_item_t menu_table [MENU_MAX_ITEMS] = {
-	{"Auto Volume Adjust",		voladj_display,		voladj_move,		0},
-	{"Break-Out Game",		game_display,		game_move,		0},
-	{"Button Codes Display",	showbutton_display,	NULL,			0},
-	{"Calculator",			calculator_display,	NULL,			0},
-	{"Countdown Timer Timeout",	timer_display,		timer_move,		0},
-	{"Countdown Timer Action",	timeraction_display,	timeraction_move,	0},
-	{"Font Display",		kfont_display,		NULL,			0},
-	{"Force DC/Car Mode",		forcedc_display,	forcedc_move,		0},
-	{"High Temperature Warning",	maxtemp_display,	maxtemp_move,		0},
+	{" Auto Volume Adjust ",	voladj_display,		voladj_move,		0},
+	{" Break-Out Game ",		game_display,		game_move,		0},
+	{" Button Codes Display ",	showbutton_display,	NULL,			0},
+	{" Calculator ",		calculator_display,	NULL,			0},
+	{" Countdown Timer Timeout ",	timer_display,		timer_move,		0},
+	{" Countdown Timer Action ",	timeraction_display,	timeraction_move,	0},
+	{" Font Display ",		kfont_display,		NULL,			0},
+	{" Force DC/Car Mode ",		forcedc_display,	forcedc_move,		0},
+	{" High Temperature Warning ",	maxtemp_display,	maxtemp_move,		0},
 #ifdef EMPEG_KNOB_SUPPORTED
-	{"Knob Press Redefinition",	knobdata_display,	knobdata_move,		0},
+	{" Knob Press Redefinition ",	knobdata_display,	knobdata_move,		0},
 #endif // EMPEG_KNOB_SUPPORTED
-	{"Reboot Machine",		reboot_display,		NULL,			0},
-	{"Screen Blanker Timeout",	blanker_display,	blanker_move,		0},
-	{"Screen Blanker Sensitivity",	blankerfuzz_display,	blankerfuzz_move,	0},
-	{"Show Flash Savearea",		savearea_display,	savearea_move,		0},
-	{"Vital Signs",			vitals_display,		NULL,			0},
+	{" Reboot Machine ",		reboot_display,		NULL,			0},
+	{" Screen Blanker Timeout ",	blanker_display,	blanker_move,		0},
+	{" Screen Blanker Sensitivity ", blankerfuzz_display,	blankerfuzz_move,	0},
+	{" Show Flash Savearea ",	savearea_display,	savearea_move,		0},
+	{" Vital Signs ",		vitals_display,		NULL,			0},
 	{NULL,				NULL,			NULL,			0},};
 
 static void
@@ -1717,7 +1754,8 @@ menu_display (int firsttime)
 		save_flags_cli(flags);
 		for (text_row = 0; text_row < EMPEG_TEXT_ROWS; ++text_row) {
 			unsigned int index = (menu_top + text_row) % menu_size;
-			(void)draw_string(ROWCOL(text_row,0), menu_table[index].label, (index == menu_item) ? COLOR3 : COLOR2);
+			unsigned int color = (index == menu_item) ? ENTRYCOLOR : COLOR2;
+			(void)draw_string(ROWCOL(text_row,0), menu_table[index].label, color);
 		}
 		restore_flags(flags);
 		return NEED_REFRESH;
@@ -2573,17 +2611,20 @@ extend_menu (menu_item_t *new)
 static int
 userland_extend_menu (char *label, unsigned long userdata)
 {
-	int rc = -ENOMEM, size = 1 + strlen(label);
+	int rc = -ENOMEM, size = strlen(label);
 	unsigned long flags;
 	menu_item_t item;
 
-	item.label = kmalloc(size, GFP_KERNEL);
+	item.label = kmalloc(size+3, GFP_KERNEL);
 	if (item.label == NULL)
 		return -ENOMEM;
-	memcpy(item.label, label, size);
-	item.dispfunc	= userland_display;
-	item.movefunc	= NULL;
-	item.userdata	= userdata;
+	memcpy(item.label+1, label, size);
+	item.label[0]      = ' ';
+	item.label[size]   = ' ';
+	item.label[size+1] = '\0';
+	item.dispfunc = userland_display;
+	item.movefunc = NULL;
+	item.userdata = userdata;
 	save_flags_cli(flags);
 	rc = extend_menu(&item);
 	restore_flags(flags);
@@ -2603,10 +2644,9 @@ menu_init (void)
 void	// invoked from empeg_state.c
 hijack_save_settings (unsigned char *buf)
 {
+	int dc_power = empeg_on_dc_power();
 	// save state
-	hijack_savearea.byte2_leftover = hijack_savearea.byte3_leftover = 0;
-	hijack_savearea.byte5_leftover = hijack_savearea.byte6_leftover = 0;
-	if (empeg_on_dc_power())
+	if (dc_power)
 		hijack_savearea.voladj_dc_power	= hijack_voladj_enabled;
 	else
 		hijack_savearea.voladj_ac_power	= hijack_voladj_enabled;
@@ -2619,7 +2659,7 @@ hijack_save_settings (unsigned char *buf)
 		knob = (1 << KNOBDATA_BITS) | knobmenu_index;
 	else
 		knob = knobdata_index;
-	if (empeg_on_dc_power())
+	if (dc_power)
 		hijack_savearea.knob_dc = knob;
 	else
 		hijack_savearea.knob_ac = knob;
@@ -2629,25 +2669,33 @@ hijack_save_settings (unsigned char *buf)
 	hijack_savearea.timer_action		= timer_action;
 	hijack_savearea.menu_item		= menu_item;
 	//hijack_savearea.force_dcpower is only updated from the menu!
+	hijack_savearea.byte2_leftover = hijack_savearea.byte3_leftover = 0;
+	hijack_savearea.byte5_leftover = hijack_savearea.byte6_leftover = 0;
 	memcpy(buf, &hijack_savearea, sizeof(hijack_savearea));
 }
 
 void	// invoked from empeg_state.c
 hijack_restore_settings (const unsigned char *buf)
 {
+	int dc_power = empeg_on_dc_power();
 	// restore state
 	memcpy(&hijack_savearea, buf, sizeof(hijack_savearea));
 	hijack_force_dcpower		= hijack_savearea.force_dcpower;
-	if (empeg_on_dc_power())
+	if (dc_power) {
 		hijack_voladj_enabled	= hijack_savearea.voladj_dc_power;
-	else
+		//PROMPTCOLOR		=  COLOR3;
+		//ENTRYCOLOR		= -COLOR3;
+	} else {
 		hijack_voladj_enabled	= hijack_savearea.voladj_ac_power;
+		//PROMPTCOLOR		=  COLOR2;
+		//ENTRYCOLOR		=  COLOR3;
+	}
 	blanker_timeout			= hijack_savearea.blanker_timeout;
 	maxtemp_threshold		= hijack_savearea.maxtemp_threshold;
 #ifdef EMPEG_KNOB_SUPPORTED
 {
 	unsigned int knob;
-	knob = empeg_on_dc_power() ? hijack_savearea.knob_dc : hijack_savearea.knob_ac;
+	knob = dc_power ? hijack_savearea.knob_dc : hijack_savearea.knob_ac;
 	if ((knob & (1 << KNOBDATA_BITS)) == 0) {
 		knobmenu_index		= 0;
 		knobdata_index		= knob;
@@ -3023,6 +3071,8 @@ hijack_init (void)
 
 	if (!initialized) {
 		initialized = 1;
+		PROMPTCOLOR = COLOR3;
+		ENTRYCOLOR  = -COLOR3;
 		(void)init_temperature();
 		hijack_initq(&hijack_inputq);
 		hijack_initq(&hijack_playerq);

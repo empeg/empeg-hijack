@@ -88,7 +88,9 @@ static ir_translation_t *ir_current_longpress = NULL;
 static unsigned long *ir_translate_table = NULL, ir_init_buttoncode = 0x3ffffff0, ir_init_car = 0, ir_init_home = 0;
 
 #define KNOBDATA_BITS 3
+
 #ifdef EMPEG_KNOB_SUPPORTED
+
 static unsigned long ir_knob_busy = 0, ir_knob_down = 0;
 
 typedef struct knob_pair_s {
@@ -113,16 +115,17 @@ static const knob_pair_t knobdata_pairs[1<<KNOBDATA_BITS] = {
 #define KNOBMENU_SIZE KNOBDATA_SIZE	// indexes share the same bits in flash..
 static int knobmenu_index = 0;
 static const char *knobmenu_labels[] = {" Info+ ", " Mark ", " Repeat ", " SelMode ", " Shuffle ", " Source ", " Tuner+ ", " Visuals+ "};
-static const knob_pair_t knobmenu_pairs[KNOBMENU_SIZE] = {
-	{IR_RIO_INFO_PRESSED,		IR_RIO_INFO_RELEASED},
-	{IR_RIO_MARK_PRESSED,		IR_RIO_MARK_RELEASED},
-	{IR_RIO_REPEAT_PRESSED,		IR_RIO_REPEAT_RELEASED},
-	{IR_RIO_SELECTMODE_PRESSED,	IR_RIO_SELECTMODE_RELEASED},
-	{IR_RIO_SHUFFLE_PRESSED,	IR_RIO_SHUFFLE_RELEASED},
-	{IR_RIO_SOURCE_PRESSED,		IR_RIO_SOURCE_RELEASED},
-	{IR_RIO_TUNER_PRESSED,		IR_RIO_TUNER_RELEASED},
-	{IR_RIO_VISUAL_PRESSED,		IR_RIO_VISUAL_RELEASED} };
-#endif
+static const unsigned long knobmenu_buttons[KNOBMENU_SIZE] = {
+	IR_RIO_INFO_PRESSED,
+	IR_RIO_MARK_PRESSED,
+	IR_RIO_REPEAT_PRESSED,
+	IR_RIO_SELECTMODE_PRESSED,
+	IR_RIO_SHUFFLE_PRESSED,
+	IR_RIO_SOURCE_PRESSED,
+	IR_RIO_TUNER_PRESSED,
+	IR_RIO_VISUAL_PRESSED};
+
+#endif // EMPEG_KNOB_SUPPORTED
 
 // How button press/release events are handled:
 //
@@ -655,7 +658,7 @@ top:	if (row < EMPEG_SCREEN_ROWS) {
 static unsigned int
 draw_number (unsigned int rowcol, unsigned int number, const char *format, int color)
 {
-	unsigned char buf[16];
+	unsigned char buf[32];
 	unsigned char saved;
 
 	sprintf(buf, format, number);
@@ -983,13 +986,16 @@ savearea_display (int firsttime)
 	unsigned char *empeg_statebuf = *empeg_state_writebuf;
 	if (firsttime) {
 		if (!last_savearea)
-			last_savearea  = kmalloc(128, GFP_KERNEL);
-		if (last_savearea)
-			memcpy(last_savearea, empeg_statebuf, 128);
+			last_savearea = kmalloc(128, GFP_KERNEL);
 		if (!last_updated)
-			last_updated  = kmalloc(128 * sizeof(long), GFP_KERNEL);
-		if (last_updated)
-			memset(last_updated, 0, 128 * sizeof(long));
+			last_updated = kmalloc(128 * sizeof(long), GFP_KERNEL);
+		if (!last_savearea || !last_updated) {
+			printk("savearea_display: no memory\n");
+			ir_selected = 1;
+			return NO_REFRESH;
+		}
+		memcpy(last_savearea, empeg_statebuf, 128);
+		memset(last_updated, 0, 128 * sizeof(long));
 		rc = NEED_REFRESH;
 	} else if (jiffies_since(hijack_last_refresh) >= (HZ/4)) {
 		rc = NEED_REFRESH;
@@ -999,18 +1005,16 @@ savearea_display (int firsttime)
 		for (offset = savearea_display_offset & 0x7f; offset != ((savearea_display_offset + 32) & 0x7f);) {
 			int color = COLOR2;
 			unsigned char b = empeg_statebuf[offset];
-			if (last_updated && last_savearea) {
-				unsigned long elapsed;
-				if (b != last_savearea[offset])
-					last_updated[offset] = jiffies ? jiffies : -1;
-				last_savearea[offset] = b;
-				if (last_updated[offset]) {
-					elapsed = jiffies_since(last_updated[offset]);
-					if (elapsed < (10*HZ))
-						color = (elapsed < (3*HZ)) ? -COLOR3 : COLOR3;
-					else
-						last_updated[offset] = 0;
-				}
+			unsigned long elapsed;
+			if (b != last_savearea[offset])
+				last_updated[offset] = jiffies ? jiffies : -1;
+			last_savearea[offset] = b;
+			if (last_updated[offset]) {
+				elapsed = jiffies_since(last_updated[offset]);
+				if (elapsed < (10*HZ))
+					color = (elapsed < (3*HZ)) ? -COLOR3 : COLOR3;
+				else
+					last_updated[offset] = 0;
 			}
 			if ((offset & 7) == 0)
 				rowcol = draw_number(ROWCOL(row++,0), offset, "%02x:", COLOR1);
@@ -1456,7 +1460,7 @@ knobdata_display (int firsttime)
 }
 
 static unsigned long knobmenu_pressed;
-static const unsigned long knobmenu_buttons[3] = {3, IR_KNOB_PRESSED, IR_KNOB_RELEASED};
+static const unsigned long knobmenu_buttonlist[3] = {3, IR_KNOB_PRESSED, IR_KNOB_RELEASED};
 
 static void
 knobmenu_move (int direction)
@@ -1486,7 +1490,7 @@ knobmenu_display (int firsttime)
 		knobmenu_pressed = 0;
 		hijack_last_moved = jiffies ? jiffies : -1;
 		ir_numeric_input = &knobmenu_index;	// allows cancel/top to reset it to 0
-		hijack_buttonlist = knobmenu_buttons;;
+		hijack_buttonlist = knobmenu_buttonlist;
 		hijack_initq(&hijack_userq);
 		clear_hijack_displaybuf(COLOR0);
 		draw_frame((unsigned char *)hijack_displaybuf, &knobmenu_geom);
@@ -1507,10 +1511,9 @@ knobmenu_display (int firsttime)
 	while (hijack_status == HIJACK_ACTIVE && hijack_button_deq(&hijack_userq, &data, 0)) {
 		if (!knobmenu_pressed && data.button == IR_KNOB_PRESSED) {
 			knobmenu_pressed = jiffies ? jiffies : -1;
-			hijack_button_enq(&hijack_playerq, knobmenu_pairs[knobmenu_index].pressed, 0);
-			//send_knob_pair(&knobmenu_pairs[knobmenu_index]);
+			hijack_button_enq(&hijack_playerq, knobmenu_buttons[knobmenu_index], 0);
 		} else if (knobmenu_pressed && data.button == IR_KNOB_RELEASED) {
-			hijack_button_enq(&hijack_playerq, knobmenu_pairs[knobmenu_index].pressed|0x80000000, jiffies_since(knobmenu_pressed));
+			hijack_button_enq(&hijack_playerq, knobmenu_buttons[knobmenu_index]|0x80000000, jiffies_since(knobmenu_pressed));
 			hijack_deactivate(HIJACK_INACTIVE);
 		}
 	}
@@ -1544,7 +1547,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v90 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v91 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -2425,6 +2428,30 @@ ir_send_buttons (ir_translation_t *t)
 	}
 }
 
+#ifdef RESTORE_CARVISUALS
+static int
+test_info_screenrow (unsigned char *buf, int row)
+{
+	if (row) {
+		// look for a solid line, any color(s)
+		unsigned long *screen = (unsigned long *)(&buf[row * (EMPEG_SCREEN_COLS / 2)]);
+		unsigned long test = (*(unsigned long *)screen) & 0x33333333;
+		return (((test | (test << 1)) & 0x22222222) == 0x22222222);
+	} else {
+		// look for the distinctive Tuner "chickenfoot" character
+		static const unsigned long chickenfoot[] =
+			{0x000f0000, 0xf00f00f0, 0x0f0f0f00, 0x00fff000, 0x000f0000, 0x000f0000, 0x000f0000};
+		const unsigned long *foot = &chickenfoot[0];
+		for (row = 0; row < (sizeof(chickenfoot) / sizeof(unsigned long)); ++row) {
+			unsigned long *screen = (unsigned long *)(&buf[(row + 15) * (EMPEG_SCREEN_COLS / 2)]);
+			if (*screen != *foot++)
+				return 0;
+		}
+		return 1;
+	}
+}
+#endif // RESTORE_CARVISUALS
+
 // This routine covertly intercepts all display updates,
 // giving us a chance to substitute our own display.
 //
@@ -2455,12 +2482,9 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 		display_blat(dev, player_buf);
 		return;
 	}
-
 #ifdef RESTORE_CARVISUALS
 	if (restore_carvisuals) {
-		unsigned char *row = &player_buf[info_screenrow * EMPEG_SCREEN_COLS / 2];
-		unsigned long test = (*(unsigned long *)row) & 0x33333333;
-		if (((test | (test << 1)) & 0x22222222) == 0x22222222) { // solid line any color(s)?
+		if (test_info_screenrow(player_buf, info_screenrow)) {
 			while (restore_carvisuals) {
 				--restore_carvisuals;
 				save_flags_cli(flags);
@@ -2999,12 +3023,14 @@ fix_visuals (unsigned char *buf)
 {
 	restore_carvisuals = 0;
 	if (carvisuals_enabled) {
-		switch (buf[0x0e] & 3) { // examine the saved mixer source
-			case 0: // Tuner AM??
-			case 1: // Tuner FM??
-				//
-				// FIXME: need to work out the Tuner mode here also!
-				//
+		switch (buf[0x0e] & 7) { // examine the saved mixer source
+			case 1: // Tuner FM
+				if ((buf[0x4c] & 0x10) == 0) {	// FM visuals visible ?
+					info_screenrow = 0;	// "chickenfoot"
+					restore_carvisuals = (buf[0x42] - 1) & 3;
+					buf[0x4c] = buf[0x4c] |  0x10;
+					buf[0x42] = buf[0x42] & ~0x03;
+				}
 				break;
 			case 2: // Main/Mp3
 				if ((buf[0x4c] & 0x04) == 0) {	// MP3 visuals visible ?
@@ -3023,6 +3049,14 @@ fix_visuals (unsigned char *buf)
 					restore_carvisuals = (buf[0x41] & 3) + 1;
 					buf[0x41] = (buf[0x41] & ~0x03) | 0x02;
 					buf[0x4c] =  buf[0x4c]          | 0x08;
+				}
+				break;
+			case 4: // Tuner AM
+				if ((buf[0x4c] & 0x20) == 0) {	// AM visuals visible ?
+					info_screenrow = 0;	// "chickenfoot"
+					restore_carvisuals = (buf[0x43] - 1) & 3;
+					buf[0x4c] = buf[0x4c] |  0x20;
+					buf[0x43] = buf[0x43] & ~0x03;
 				}
 				break;
 		}

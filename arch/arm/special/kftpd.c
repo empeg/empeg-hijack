@@ -1235,7 +1235,7 @@ send_playlist (server_parms_t *parms, char *path)
 	if (parms->generate_playlist == 1) {
 		used += sprintf(xfer.buf+used, "<HTML><HEAD><TITLE>%s playlists: %s</TITLE></HEAD>\r\n<BODY>"
 			"<TABLE BGCOLOR=\"WHITE\" BORDER=\"2\"><THEAD>\r\n<TR>"
-			"<TD> <A HREF=\"%x.m3u\"><B>Stream</B></A> ", parms->hostname, artist_title, pfid);
+			"<TD> <A HREF=\"%x?.m3u\"><B>Stream</B></A> ", parms->hostname, artist_title, pfid);
 		if (hijack_khttpd_commands)
 			used += sprintf(xfer.buf+used, "<TD> <A HREF=\"%x?SERIAL=%%23%x.htm\"><B>Play</B></A> ", pfid, pfid^1);
 		if (hijack_khttpd_files)

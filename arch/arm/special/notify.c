@@ -217,7 +217,7 @@ static struct proc_dir_entry proc_kflash_entry = {
 	12,			/* length of name */
 	"empeg_kernel",		/* name */
 	S_IFBLK|S_IRUSR|S_IWUSR,/* mode */
-	1, 0, 0, 		/* links, owner, group */
+	1, 0, 0,		/* links, owner, group */
 	MKDEV(60,8),		/* size holds device number */
 	&kflash_ops,		/* inode operations */
 };

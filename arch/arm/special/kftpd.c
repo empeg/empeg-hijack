@@ -435,9 +435,7 @@ glob_match (const char *n, const char *p)
 		while (*n) {
 			while (*n && (*n != *p && *p != '?'))
 				++n;
-			if (!*n)
-				break;
-			if (glob_match(n++, p))
+			if (*n && glob_match(n++, p))
 				return 1;
 		}
 	}
@@ -459,7 +457,7 @@ typedef struct filldir_parms_s {
 	unsigned int		nam_used;	// number of bytes used in nam[]
 	char			*nam;		// allocated buffer for names from filldir()
 	int			path_len;	// length of (non-zero terminated) base path in path[]
-	char			*path;		// full dir prefix, plus current name appended for dentry lookups
+	char			path[768];	// full dir prefix, plus current name appended for dentry lookups
 } filldir_parms_t;
 
 // Callback routine for readdir().
@@ -727,7 +725,6 @@ send_dirlist (server_parms_t *parms, char *path, int full_listing)
 			p.buf_size	= BUF_PAGES*PAGE_SIZE;
 			p.nam_size	= NAM_PAGES*PAGE_SIZE;
 			p.full_listing	= full_listing;
-			p.path		= parms->tmp2;
 			strcpy(p.path, path);
 			p.path_len	= pathlen;
 			if (p.path[pathlen - 1] != '/')
@@ -735,7 +732,6 @@ send_dirlist (server_parms_t *parms, char *path, int full_listing)
 			p.name		= p.path + pathlen;
 			p.use_http	= parms->use_http;
 			p.sb		= dentry->d_sb;
-
 			if (parms->use_http)
 				p.buf_used = sprintf(p.buf, dirlist_header, path, path);
 			do {

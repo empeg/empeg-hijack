@@ -209,6 +209,10 @@ typedef struct hijack_geom_s {
 #define IR_RIO_VOLMINUS_PRESSED		0x0020df17
 #define IR_RIO_VOLMINUS_RELEASED	0x8020df17
 
+// New in v2-rc1
+#define IR_PREV_VISUAL_PRESSED		0x0020df18
+#define IR_PREV_VISUAL_RELEASED		0x8020df18
+
 // Rio buttons with alternate names
 #define IR_RIO_SHUFFLE_PRESSED		IR_RIO_0_PRESSED
 #define IR_RIO_SHUFFLE_RELEASED		IR_RIO_0_RELEASED

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v301"
+#define HIJACK_VERSION	"v302"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -225,7 +225,8 @@ typedef struct button_name_s {
 #define IR_FAKE_BASSADJ		(IR_NULL_BUTTON-14)
 #define IR_FAKE_TREBLEADJ	(IR_NULL_BUTTON-15)
 #define IR_FAKE_QUICKTIMER	(IR_NULL_BUTTON-16)
-#define IR_FAKE_HIJACKMENU	(IR_NULL_BUTTON-17)	// This MUST be the lowest numbered FAKE code
+#define IR_FAKE_VISUALSEEK	(IR_NULL_BUTTON-17)
+#define IR_FAKE_HIJACKMENU	(IR_NULL_BUTTON-18)	// This MUST be the lowest numbered FAKE code
 #define ALT			BUTTON_FLAGS_ALTNAME
 
 typedef struct ir_translation_s {
@@ -254,7 +255,7 @@ static struct {
 		{IR_FAKE_CLOCK,		IR_RIO_INFO_PRESSED,
 		 IR_FAKE_KNOBSEEK,	IR_RIO_MARK_PRESSED|ALT,
 		 IR_FAKE_NEXTSRC,	IR_RIO_0_PRESSED|ALT,
-		 IR_FAKE_VOLADJMENU,	IR_RIO_VISUAL_PRESSED,
+		 IR_FAKE_VOLADJMENU,	IR_FAKE_VISUALSEEK,
 		 IR_KNOB_PRESSED}
 	};
 
@@ -280,6 +281,7 @@ static button_name_t button_names[] = {
 	{"VolAdj",	IR_FAKE_VOLADJMENU},
 	{"QuickTimer",	IR_FAKE_QUICKTIMER},
 	{"HijackMenu",	IR_FAKE_HIJACKMENU},
+	{"VisualSeek",	IR_FAKE_VISUALSEEK},
 
 	{"Initial",	IR_FAKE_INITIAL},
 	{"null",	IR_NULL_BUTTON},
@@ -375,8 +377,8 @@ static button_name_t button_names[] = {
 	{"KSRear",	IR_KSREAR_PRESSED},	// Stalk
 	{"KSBottom",	IR_KSBOTTOM_PRESSED},	// Stalk
 
-	{"Visual+",	IR_RIO_VISUAL_PRESSED|ALT},
-	{"Visual-",	IR_KSNEXT_PRESSED|ALT},	// Stalk
+	{"NextVisual",	IR_RIO_VISUAL_PRESSED|ALT},
+	{"PrevVisual",	IR_PREV_VISUAL_PRESSED},// v2-rc1
 	{"Visual",	IR_RIO_VISUAL_PRESSED},
 
 	{"\0",		IR_NULL_BUTTON}		// end-of-table-marker
@@ -387,10 +389,10 @@ static button_name_t button_names[] = {
 #define KNOBDATA_SIZE (1 << KNOBDATA_BITS)
 static int knobdata_index = 0;
 static int popup0_index = 0;		// (PopUp0) saved/restored index
+static int hijack_knobseek = 0;
 
 #ifdef EMPEG_KNOB_SUPPORTED
 
-static int hijack_knobseek = 0;
 static unsigned long ir_knob_busy = 0, ir_knob_down = 0;
 
 // Mmm.. this *could* be eliminated entirely, in favour of IR-translations and PopUp's..
@@ -2223,7 +2225,18 @@ knobdata_display (int firsttime)
 	return NEED_REFRESH;
 }
 
+#endif // EMPEG_KNOB_SUPPORTED
+
 static unsigned long knobseek_lasttime;
+
+static void
+knobseek_move_visuals (int direction)
+{
+	unsigned int button;
+
+	button = (direction > 0) ? IR_RIO_VISUAL_PRESSED : IR_PREV_VISUAL_PRESSED;
+	hijack_enq_button_pair(button);
+}
 
 static void
 knobseek_move_tuner (int direction)
@@ -2254,7 +2267,10 @@ knobseek_display (int firsttime)
 	if (firsttime) {
 		unsigned int rowcol;
 		const char *msg;
-		if (get_current_mixer_source() == IR_FLAGS_TUNER) {
+		if (hijack_movefunc == knobseek_move_visuals) {
+			geom = (hijack_geom_t){8, 8+6+KFONT_HEIGHT, 46, EMPEG_SCREEN_COLS-46};
+			msg  = "Visuals";
+		} else if (get_current_mixer_source() == IR_FLAGS_TUNER) {
 			geom = (hijack_geom_t){8, 8+6+KFONT_HEIGHT, 8, EMPEG_SCREEN_COLS-50};
 			msg  = "Manual Tuning";
 			hijack_movefunc = knobseek_move_tuner;
@@ -2274,8 +2290,6 @@ knobseek_display (int firsttime)
 	}
 	return NO_REFRESH;	// gets overridden if overlay still active
 }
-
-#endif // EMPEG_KNOB_SUPPORTED
 
 static ir_translation_t *
 ir_next_match (ir_translation_t *table, unsigned int button)
@@ -3433,11 +3447,15 @@ hijack_handle_button (unsigned int button, unsigned long delay, int any_ui_is_ac
 			activate_dispfunc(quicktimer_display, timer_move);
 			hijacked = 1;
 			break;
-#ifdef EMPEG_KNOB_SUPPORTED
 		case IR_FAKE_KNOBSEEK:
 			activate_dispfunc(knobseek_display, NULL);
 			hijacked = 1;
 			break;
+		case IR_FAKE_VISUALSEEK:
+			activate_dispfunc(knobseek_display, knobseek_move_visuals);
+			hijacked = 1;
+			break;
+#ifdef EMPEG_KNOB_SUPPORTED
 		case IR_KNOB_PRESSED:
 			hijacked = 1; // hijack it and later send it with the release
 			ir_knob_busy = 0;

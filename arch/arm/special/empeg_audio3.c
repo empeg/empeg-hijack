@@ -68,6 +68,7 @@
 #include <linux/init.h>
 #include <linux/vmalloc.h>
 #include <linux/soundcard.h>
+#include <linux/poll.h>
 #include <asm/segment.h>
 #include <asm/irq.h>
 #include <asm/io.h>
@@ -637,6 +638,7 @@ static void empeg_audio_emit_action(void *);
 static int empeg_audio_read_proc(char *buf, char **start, off_t offset,
 				 int length, int *eof, void *private);
 #endif
+static unsigned int empeg_audio_poll(struct file *file, poll_table *wait);
 
 static struct tq_struct emit_task =
 {
@@ -651,6 +653,7 @@ static struct tq_struct i2c_queue =
 static struct file_operations audio_fops =
 {
 	write:		empeg_audio_write,
+	poll:		empeg_audio_poll,
 	ioctl:		empeg_audio_ioctl,
 	open:		empeg_audio_open,
 };
@@ -1009,6 +1012,22 @@ static int empeg_audio_write(struct file *file,
 
 	/* Write complete */
 	return total;
+}
+
+static unsigned int empeg_audio_poll(struct file *file, poll_table *wait)
+{
+	audio_dev *dev = &audio[0];
+	int free;
+
+	/* This tells select/poll to include our ISR signal in the things it waits for
+	   (it returns immediately in all cases) */
+	poll_wait(file, &dev->waitq, wait);
+
+	/* Now we check our state and return corresponding flags */
+	if( dev->free > 0 )
+	        return POLLOUT | POLLWRNORM;
+	else
+                return 0;
 }
 
 /* Throw away all complete blocks waiting to go out to the DAC and return how

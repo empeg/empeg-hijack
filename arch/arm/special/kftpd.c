@@ -976,7 +976,7 @@ send_tagfile (server_parms_t *parms, char *path, unsigned char *buf, int size, i
 			path[strlen(path)-1] = '0';	// Select the corresponding data file
 			if (*type == 't') {		// tune?
 				(void) get_tag(buf, "codec=", type, sizeof(type));
-				if (strxcmp(type, "mp3", 0)) {
+				if (!strxcmp(type, "mp3", 0)) {
 					(void) get_tag(buf, "title=",  title,  sizeof(title));
 					(void) get_tag(buf, "artist=", artist, sizeof(artist));
 					secs = get_duration(buf);

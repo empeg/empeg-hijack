@@ -1634,14 +1634,14 @@ hijack_do_command (void *sparms, char *buf)
 				s = do_button(s+10, 1);
 				goto next;
 			} else if (!strxcmp(s, "RW", 0)) {
-				rc = remount_drives(1);
+				remount_drives(1);
 				goto next;
 			} else if (!strxcmp(s, "RO", 0)) {
-				rc = remount_drives(0);
+				remount_drives(0);
 				sys_sync();
 				goto next;
 			} else if (!strxcmp(s, "REBOOT", 0)) {
-				rc = remount_drives(0);
+				remount_drives(0);
 				sys_sync();
 				hijack_reboot = 1;
 				goto next;

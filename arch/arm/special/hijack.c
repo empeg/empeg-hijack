@@ -14,8 +14,9 @@
 //           Reboot Machine from menu
 //           ... and tons more
 
-#include <asm/arch/hijack.h>
-#include <linux/soundcard.h>	// for SOUND_MASK_*
+#include <asm/arch/hijack.h>		// for ioctls, IR_ definitions, etc..
+#include <linux/soundcard.h>		// for SOUND_MASK_*
+#include "../../../drivers/block/ide.h"	// for ide_hwifs[]
 
 extern int get_loadavg(char * buffer);					// fs/proc/array.c
 extern void machine_restart(void *);					// arch/arm/kernel/process.c
@@ -1564,7 +1565,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v92 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v93 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1967,35 +1968,37 @@ showbutton_display (int firsttime)
 	return NO_REFRESH;
 }
 
+static char onedrive_menu_label[] = "Hard Disk Detection";
+
 static menu_item_t menu_table [MENU_MAX_ITEMS] = {
-	{" Auto Volume Adjust ",	voladj_display,		voladj_move,		0},
-	{" Break-Out Game ",		game_display,		game_move,		0},
-	{" Button Codes Display ",	showbutton_display,	NULL,			0},
-	{" Calculator ",		calculator_display,	NULL,			0},
-	{" Countdown Timer Timeout ",	timer_display,		timer_move,		0},
-	{" Countdown Timer Action ",	timeraction_display,	timeraction_move,	0},
-	{" Filesystem Check on Sync ",	fsck_display,		fsck_move,		0},
-	{" Font Display ",		kfont_display,		NULL,			0},
-	{" Force DC/Car Mode ",		forcedc_display,	forcedc_move,		0},
-	{" Hard Disk Detection ",	onedrive_display,	onedrive_move,		0},
-	{" High Temperature Warning ",	maxtemp_display,	maxtemp_move,		0},
+	{"Auto Volume Adjust",		voladj_display,		voladj_move,		0},
+	{"Break-Out Game",		game_display,		game_move,		0},
+	{"Button Codes Display",	showbutton_display,	NULL,			0},
+	{"Calculator",			calculator_display,	NULL,			0},
+	{"Countdown Timer Timeout",	timer_display,		timer_move,		0},
+	{"Countdown Timer Action",	timeraction_display,	timeraction_move,	0},
+	{"Filesystem Check on Sync",	fsck_display,		fsck_move,		0},
+	{"Font Display",		kfont_display,		NULL,			0},
+	{"Force DC/Car Mode",		forcedc_display,	forcedc_move,		0},
+	{  onedrive_menu_label,		onedrive_display,	onedrive_move,		0},
+	{"High Temperature Warning",	maxtemp_display,	maxtemp_move,		0},
 #ifdef EMPEG_KNOB_SUPPORTED
-	{" Knob Press Redefinition ",	knobdata_display,	knobdata_move,		0},
+	{"Knob Press Redefinition",	knobdata_display,	knobdata_move,		0},
 #endif // EMPEG_KNOB_SUPPORTED
 #ifdef DISPLAY_NOTIFICATIONS
-	{" Notify Display ",		notify_display,		notify_move,		0},
+	{"Notify Display",		notify_display,		notify_move,		0},
 #endif // DISPLAY_NOTIFICATIONS
-	{" Reboot Machine ",		reboot_display,		NULL,			0},
+	{"Reboot Machine",		reboot_display,		NULL,			0},
 #ifdef RESTORE_CARVISUALS
-	{" Restore DC/Car Visuals ",	carvisuals_display,	carvisuals_move,	0},
+	{"Restore DC/Car Visuals",	carvisuals_display,	carvisuals_move,	0},
 #endif // RESTORE_CARVISUALS
-	{" Screen Blanker Timeout ",	blanker_display,	blanker_move,		0},
-	{" Screen Blanker Sensitivity ", blankerfuzz_display,	blankerfuzz_move,	0},
+	{"Screen Blanker Timeout",	blanker_display,	blanker_move,		0},
+	{"Screen Blanker Sensitivity",	blankerfuzz_display,	blankerfuzz_move,	0},
 #ifdef DISPLAY_NOTIFICATIONS
-	{" Serial Port Notifications ", notifications_display,	notifications_move,	0},
+	{"Serial Port Notifications",	notifications_display,	notifications_move,	0},
 #endif // DISPLAY_NOTIFICATIONS
-	{" Show Flash Savearea ",	savearea_display,	savearea_move,		0},
-	{" Vital Signs ",		vitals_display,		NULL,			0},
+	{"Show Flash Savearea",		savearea_display,	savearea_move,		0},
+	{"Vital Signs",			vitals_display,		NULL,			0},
 	{NULL,				NULL,			NULL,			0},};
 
 static void
@@ -2030,9 +2033,10 @@ menu_display (int firsttime)
 		save_flags_cli(flags);
 		for (text_row = 0; text_row < EMPEG_TEXT_ROWS; ++text_row) {
 			unsigned int index = (menu_top + text_row) % menu_size;
-			//unsigned int color = (index == menu_item) ? ENTRYCOLOR : PROMPTCOLOR;
-			unsigned int color = (index == menu_item) ? ENTRYCOLOR : COLOR2;
-			(void)draw_string(ROWCOL(text_row,0), menu_table[index].label, color);
+			unsigned int color = (index == menu_item) ? ENTRYCOLOR : COLOR2;  // COLOR2 <> PROMPTCOLOR
+			unsigned char label[64];
+			sprintf(label, " %s ", menu_table[index].label);
+			(void)draw_string(ROWCOL(text_row,0), label, color);
 		}
 		restore_flags(flags);
 		return NEED_REFRESH;
@@ -2705,43 +2709,6 @@ get_option_vals (int syntax_only, unsigned char **s, const hijack_option_t *opt)
 	return rc; // success
 }
 
-static void
-get_hijack_option (unsigned char *s, const hijack_option_t *opt)
-{
-	int optlen = strlen(opt->name);
-
-	while (skip_over(&s, " \t\r\n") && *s != '[') {
-		if (!strncmp(s, opt->name, optlen)) {
-			s += optlen;
-			if (match_char(&s, '=')) {
-				unsigned char *test = s;
-				if (get_option_vals(1, &test, opt)) {		// first pass to validate all args
-					(void)get_option_vals(0, &s, opt);	// second pass to actually save the data
-					return;  // done
-				}
-			}
-		}
-		while (*s && *s != '\n') // skip to end-of-line
-			++s;
-	}
-}
-
-static void
-get_hijack_options (unsigned char *buf)
-{
-	const char header[] = "[hijack]";
-	const hijack_option_t *opt = &hijack_option_table[0];
-
-	// find start of options
-	if (buf && *buf && (buf = strstr(buf, header)) && *buf) {
-		buf += sizeof(header) - 1;
-		while (opt->name) {
-			get_hijack_option(buf, opt);
-			++opt;
-		}
-	}
-}
-
 static int
 ir_setup_translations2 (unsigned char *buf, unsigned long *table)
 {
@@ -2974,21 +2941,42 @@ extend_menu (menu_item_t *new)
 	return -ENOMEM; // no room; menu is full
 }
 
+static void
+remove_menu_entry (char *label)
+{
+	int i, found = 0;
+	for (i = 0; i < MENU_MAX_ITEMS; ++i) {
+		menu_item_t *item = &menu_table[i];
+		if (found) {
+			menu_table[i-1] = *item;
+			if (!item->label)
+				break;
+		} else if (!strcmp(item->label, label)) {
+			printk("hijack: removed menu entry: '%s'\n", label);
+			found = 1;
+		}
+	}
+	if (found) {
+		if (menu_item >= --menu_size)
+			--menu_item;
+		if (menu_top >= menu_size)
+			--menu_top;
+		memset(&menu_table[MENU_MAX_ITEMS-1], 0, sizeof(menu_item_t));
+	}
+}
+
 // returns menu index >= 0,  or -ERROR
 static int
 userland_extend_menu (char *label, unsigned long userdata)
 {
-	int rc = -ENOMEM, size = strlen(label);
+	int rc = -ENOMEM;
 	unsigned long flags;
 	menu_item_t item;
 
-	item.label = kmalloc(size+3, GFP_KERNEL);
+	item.label = kmalloc(strlen(label)+1, GFP_KERNEL);
 	if (item.label == NULL)
 		return -ENOMEM;
-	memcpy(item.label+1, label, size);
-	item.label[0]      = ' ';
-	item.label[size+1] = ' ';
-	item.label[size+2] = '\0';
+	strcpy(item.label, label);
 	item.dispfunc = userland_display;
 	item.movefunc = NULL;
 	item.userdata = userdata;
@@ -3001,7 +2989,12 @@ userland_extend_menu (char *label, unsigned long userdata)
 static void
 menu_init (void)
 {
-	// menu_size, menu_item, and menu_top
+	extern ide_hwif_t ide_hwifs[];
+
+	if (ide_hwifs[0].drives[1].present)
+		remove_menu_entry(onedrive_menu_label);
+
+	// Initialize menu_size, menu_item, and menu_top
 	for (menu_size = 0; menu_table[menu_size].label != NULL; ++menu_size); // Calculate initial menu size
 	while (menu_table[menu_item].label == NULL)
 		--menu_item;
@@ -3124,18 +3117,53 @@ hijack_save_settings (unsigned char *buf)
 	memcpy(buf+HIJACK_SAVEAREA_OFFSET, &hijack_savearea, sizeof(hijack_savearea));
 }
 
+#ifdef HIJACK_DETECT_DOCK
+static int
+hijack_check_if_docked (void)
+{
+	unsigned long start_time = jiffies, poll = start_time;
+	unsigned int count = 0, previous_dcd = 0;
+
+	printk("\nChecking whether docked (serial TX->DCD)..\n");
+
+	while (jiffies_since(start_time) < (HZ/4)) {
+		unsigned int dcd = ((GPLR & EMPEG_SERIALDCD) != 0);
+		if (dcd != previous_dcd) {
+			printk("%d", dcd);
+			if (++count >= 5) {
+				printk(" Docked!\n");
+				return 1; // docked
+			}
+		}
+		previous_dcd = dcd;
+		if (jiffies_since(poll) > (HZ/20)) {
+			poll = jiffies;
+			printk(".");
+		}
+	}
+	printk(" not docked (%d).\n", count);
+	return 0; // not docked
+}
+#endif // HIJACK_DETECT_DOCK
+
 void	// invoked from empeg_state.c
 hijack_restore_settings (unsigned char *buf)
 {
-	on_dc_power = empeg_on_dc_power();
 	// restore state
 	memcpy(&hijack_savearea, buf+HIJACK_SAVEAREA_OFFSET, sizeof(hijack_savearea));
-	hijack_force_dcpower		= hijack_savearea.force_dcpower;
-	if (on_dc_power) {
+
+#ifdef HIJACK_DETECT_DOCK
+	if (empeg_on_dc_power()) // "Real" power status
+		hijack_force_dcpower	= hijack_check_if_docked();
+	else 
+#endif // HIJACK_DETECT_DOCK
+		hijack_force_dcpower	= hijack_savearea.force_dcpower;
+	on_dc_power = empeg_on_dc_power(); // "Effective" power status
+
+	if (on_dc_power)
 		hijack_voladj_enabled	= hijack_savearea.voladj_dc_power;
-	} else {
+	else
 		hijack_voladj_enabled	= hijack_savearea.voladj_ac_power;
-	}
 	blanker_timeout			= hijack_savearea.blanker_timeout;
 	maxtemp_threshold		= hijack_savearea.maxtemp_threshold;
 	hijack_onedrive			= hijack_savearea.onedrive;
@@ -3260,7 +3288,7 @@ get_file (const char *path, unsigned char **buffer)
 	struct file *filp;
 
 	*buffer = NULL;
-	lock_kernel();	// FIXME?  Is this necessary?
+	lock_kernel();	// Is this necessary?
 	filp = filp_open(path,O_RDONLY,0);
 	if (IS_ERR(filp) || !filp) {
 		rc = -ENOENT;
@@ -3336,42 +3364,6 @@ print_ir_translates (void)
 			table = &t->new[t->count];
 		}
 	}
-}
-
-void
-hijack_read_config_file (const char *path)
-{
-	unsigned char *buf = NULL;
-	unsigned long flags;
-	int rc;
-
-	printk("\n");
-	rc = get_file(path, &buf);
-	if (rc < 0) {
-		printk("hijack.c: open(%s) failed (errno=%d)\n", path, rc);
-	} else if (rc > 0 && buf && *buf) {
-		get_hijack_options(buf);
-		if (hijack_old_style) {
-			PROMPTCOLOR		=  COLOR2;
-			ENTRYCOLOR		=  COLOR3;
-		} else {
-			PROMPTCOLOR		=  COLOR3;
-			ENTRYCOLOR		= -COLOR3;
-		}
-		ir_setup_translations(buf);
-		print_ir_translates();
-
-		// Send initial button sequences, if any
-		save_flags_cli(flags);
-		if ( on_dc_power && ir_init_car)
-			input_append_code(NULL, ir_init_car);
-		if (!on_dc_power && ir_init_home)
-			input_append_code(NULL, ir_init_home);
-		restore_flags(flags);
-	}
-	if (buf)
-		kfree(buf);
-	hijack_set_voladj_parms();
 }
 
 int hijack_ioctl  (struct inode *inode, struct file *filp, unsigned int cmd, unsigned long arg)
@@ -3539,6 +3531,83 @@ int hijack_ioctl  (struct inode *inode, struct file *filp, unsigned int cmd, uns
 			return display_ioctl(inode, filp, cmd, arg);
 		}
 	}
+}
+
+static void
+get_hijack_options (unsigned char *s)
+{
+	static const char header[] = "[hijack]";
+	static const char menu_delete[] = "menu_remove=";
+	const hijack_option_t *opt;
+
+	// find start of options
+	if (s && *s && (s = strstr(s, header)) && *s) {
+		s += sizeof(header) - 1;
+		while (skip_over(&s, " \t\r\n") && *s != '[') {
+			for (opt = &hijack_option_table[0]; (opt->name); ++opt) {
+				int optlen = strlen(opt->name);
+				if (!strncmp(s, opt->name, optlen)) {
+					s += optlen;
+					if (match_char(&s, '=')) {
+						unsigned char *test = s;
+						if (get_option_vals(1, &test, opt))		// first pass validates
+							(void)get_option_vals(0, &s, opt);	// second pass saves
+						goto nextline;
+					}
+				}
+			}
+			if (!strncmp(s, menu_delete, sizeof(menu_delete)-1)) {
+				unsigned char *label = s += sizeof(menu_delete)-1;
+				while (*s && *s != '\n')
+					++s;
+				if (s != label) {
+					char saved = *s;
+					*s = '\0';
+					remove_menu_entry(label);
+					*s = saved;
+				}
+			}
+		nextline:
+			while (*s && *s != '\n') // skip to end-of-line
+				++s;
+		}
+	}
+}
+
+void	// invoked from arch/arm/special/empeg_input.c on the first IR poll
+hijack_read_config_file (const char *path)
+{
+	unsigned char *buf = NULL;
+	unsigned long flags;
+	int rc;
+
+	printk("\n");
+	rc = get_file(path, &buf);
+	if (rc < 0) {
+		printk("hijack.c: open(%s) failed (errno=%d)\n", path, rc);
+	} else if (rc > 0 && buf && *buf) {
+		get_hijack_options(buf);
+		if (hijack_old_style) {
+			PROMPTCOLOR		=  COLOR2;
+			ENTRYCOLOR		=  COLOR3;
+		} else {
+			PROMPTCOLOR		=  COLOR3;
+			ENTRYCOLOR		= -COLOR3;
+		}
+		ir_setup_translations(buf);
+		print_ir_translates();
+
+		// Send initial button sequences, if any
+		save_flags_cli(flags);
+		if ( on_dc_power && ir_init_car)
+			input_append_code(NULL, ir_init_car);
+		if (!on_dc_power && ir_init_home)
+			input_append_code(NULL, ir_init_home);
+		restore_flags(flags);
+	}
+	if (buf)
+		kfree(buf);
+	hijack_set_voladj_parms();
 }
 
 // initial setup of hijack menu system

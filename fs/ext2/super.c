@@ -276,6 +276,11 @@ static int parse_options (char * options, unsigned long * sb_block,
 static void ext2_setup_super (struct super_block * sb,
 			      struct ext2_super_block * es)
 {
+	extern int hijack_fsck_disabled;
+	if (hijack_fsck_disabled) {
+		es->s_lastcheck = CURRENT_TIME;
+		es->s_mnt_count=cpu_to_le16(0);
+	}
 	if (le32_to_cpu(es->s_rev_level) > EXT2_MAX_SUPP_REV) {
 			printk ("EXT2-fs warning: revision level too high, "
 				"forcing read/only mode\n");

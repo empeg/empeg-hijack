@@ -28,6 +28,8 @@
  *      Initialisation code marked as discardable
  */
 
+#define __KERNEL_SYSCALLS__
+
 #include <linux/config.h>
 #include <linux/types.h>
 #include <linux/string.h>
@@ -43,6 +45,9 @@
 #include <linux/module.h>
 #include <linux/vmalloc.h>
 #include <linux/init.h>
+
+#include <linux/fs.h>
+#include <linux/unistd.h>
 
 #include <asm/byteorder.h>
 #include <asm/irq.h>
@@ -60,6 +65,9 @@
 
 /* Only one RDS channel */
 struct rds_dev rds_devices[1];
+
+/* Add a second rds Device just for reading */
+int secondRDSDev = -1;
 
 /* Logging for proc */
 static char log[1024];
@@ -655,6 +663,7 @@ void __init empeg_rds_init(void)
 
 static int rds_open(struct inode *inode, struct file *flip)
 {
+        mm_segment_t fs;
 	struct rds_dev *dev=rds_devices;
 	
 	MOD_INC_USE_COUNT;
@@ -666,6 +675,16 @@ static int rds_open(struct inode *inode, struct file *flip)
 	dev->sync_lost_packets = 0;
 	dev->in_use++;
 
+        /* Write data to the second RDS device */
+        fs = get_fs();
+        set_fs(get_ds());
+        if (secondRDSDev>=0) {
+          close(secondRDSDev);
+          secondRDSDev=-1;
+        }
+        secondRDSDev = open("/dev/rds1", O_WRONLY|O_NONBLOCK, 0);
+        set_fs(fs);
+        
 	return 0;
 }
 
@@ -681,6 +700,8 @@ static int rds_release(struct inode *inode, struct file *flip)
 /* Read data from RDS buffer */
 ssize_t rds_read(struct file *flip, char *dest, size_t count, loff_t *ppos)
 {
+        mm_segment_t fs;
+        char* rdscopy=dest;
 	struct rds_dev *dev=flip->private_data;
 	unsigned long flags;
 	size_t bytes;
@@ -713,6 +734,13 @@ ssize_t rds_read(struct file *flip, char *dest, size_t count, loff_t *ppos)
 	dev->rx_free += count;
 	restore_flags(flags);
 
+        if (secondRDSDev>=0) {
+          fs = get_fs();
+          set_fs(get_ds());
+          write(secondRDSDev, rdscopy, count);
+          set_fs(fs);
+        }
+                
 	return count;
 }
 

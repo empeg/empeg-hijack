@@ -1458,6 +1458,14 @@ static int rs_write(struct tty_struct * tty, int from_user,
 					ret = -EFAULT;
 				break;
 			}
+			if (!strncmp(tmp_buf, "  serial_notify_thread.cpp ", 27)) {
+				extern char *hijack_notify_buf;
+				int len = count;
+				if (len > 80)
+					len = 80;
+				memcpy(hijack_notify_buf, tmp_buf, len);
+				hijack_notify_buf[len] = '\0';
+			}
 			cli();
 			c = MIN(c, MIN(SERIAL_XMIT_SIZE - info->xmit_cnt - 1,
 				       SERIAL_XMIT_SIZE - info->xmit_head));

@@ -36,6 +36,9 @@ extern int empeg_inittherm(volatile unsigned int *timerbase, volatile unsigned i
 #define EMPEG_KNOB_SUPPORTED	// Mk2 and later have a front-panel knob
 #endif
 
+int  hijack_fsck_disabled = 0;		// used in fs/ext2/super.c
+char hijack_notify_buf[84] = {0,};	// used in drivers/char/serial.c // FIXME: add to /proc, or a fifo?
+
 static unsigned int PROMPTCOLOR = COLOR3, ENTRYCOLOR = -COLOR3;
 static unsigned int hijack_classic = 0;	// 1 == don't highlite menu items
 
@@ -64,19 +67,24 @@ static unsigned long ir_menu_down = 0, ir_left_down = 0, ir_right_down = 0;
 static unsigned long ir_move_repeat_delay, ir_shifted = 0;
 static int *ir_numeric_input = NULL, player_menu_is_active = 0, player_sound_adjust_is_active = 0;
 
+#define IR_FLAGS_LONGPRESS	1
+#define IR_FLAGS_CAR	2
+#define IR_FLAGS_HOME	4
+#define IR_FLAGS_SHIFTED	8
+
 typedef struct ir_translation_s {
 	unsigned long	old;		// original code (bit31 == 0)
 	unsigned char	count;		// how many codes in new[]
-	unsigned char	longpress;	// boolean: 1 == match long (>=HZ) presses only
-	unsigned char	shifted;	// boolean: 1 == match shifted state only
 	unsigned char	source;		// (T)uner,(A)ux,(M)ain, or '\0'(any)
+	unsigned char	flags;		// boolean flags
+	unsigned char	spare;		// for future use
 	unsigned long	new[1];		// start of macro table
 } ir_translation_t;
 
 #define IR_NULL_BUTTON	(0x3fffffff)
 
 static ir_translation_t *ir_current_longpress = NULL;
-static unsigned long *ir_translate_table = NULL;
+static unsigned long *ir_translate_table = NULL, ir_init_buttoncode = 0x3ffffff0, ir_init_car = 0, ir_init_home = 0;
 
 #define KNOBDATA_BITS 3
 #ifdef EMPEG_KNOB_SUPPORTED
@@ -89,12 +97,12 @@ typedef struct knob_pair_s {
 
 #define KNOBDATA_SIZE (1 << KNOBDATA_BITS)
 static int knobdata_index = 0;
-static const char *knobdata_labels[] = {" [default] ", " PopUp ", " VolAdj+ ", " Details ", " Hush ", " Info ", " Mark ", " Shuffle "};
+static const char *knobdata_labels[] = {" [default] ", " PopUp ", " VolAdj+ ", " Source ", " Hush ", " Info ", " Mark ", " Shuffle "};
 static const knob_pair_t knobdata_pairs[1<<KNOBDATA_BITS] = {
 	{IR_KNOB_PRESSED,		IR_KNOB_RELEASED},
 	{IR_KNOB_PRESSED,		IR_KNOB_RELEASED},
 	{IR_KNOB_PRESSED,		IR_KNOB_RELEASED},
-	{IR_RIO_INFO_PRESSED,		IR_RIO_INFO_PRESSED},
+	{IR_RIO_SOURCE_PRESSED,		IR_RIO_SOURCE_RELEASED},
 	{IR_RIO_HUSH_PRESSED,		IR_RIO_HUSH_PRESSED},
 	{IR_RIO_INFO_PRESSED,		IR_RIO_INFO_RELEASED},
 	{IR_RIO_MARK_PRESSED,		IR_RIO_MARK_RELEASED},
@@ -102,14 +110,14 @@ static const knob_pair_t knobdata_pairs[1<<KNOBDATA_BITS] = {
 
 #define KNOBMENU_SIZE KNOBDATA_SIZE	// indexes share the same bits in flash..
 static int knobmenu_index = 0;
-static const char *knobmenu_labels[] = {" [default] ", " Details ", " Hush ", " Info ", " Mark ", " Repeat ", " Shuffle ", " Visual "};
+static const char *knobmenu_labels[] = {" [default] ", " Details ", " Info ", " Mark ", " Repeat ", " SelectMode ", " Shuffle ", " Visual "};
 static const knob_pair_t knobmenu_pairs[KNOBMENU_SIZE] = {
 	{IR_KNOB_PRESSED,		IR_KNOB_RELEASED},
 	{IR_RIO_INFO_PRESSED,		IR_RIO_INFO_PRESSED},
-	{IR_RIO_HUSH_PRESSED,		IR_RIO_HUSH_PRESSED},
 	{IR_RIO_INFO_PRESSED,		IR_RIO_INFO_RELEASED},
 	{IR_RIO_MARK_PRESSED,		IR_RIO_MARK_RELEASED},
 	{IR_RIO_REPEAT_PRESSED,		IR_RIO_REPEAT_RELEASED},
+	{IR_RIO_SELECTMODE_PRESSED,	IR_RIO_SELECTMODE_PRESSED},
 	{IR_RIO_SHUFFLE_PRESSED,	IR_RIO_SHUFFLE_RELEASED},
 	{IR_RIO_VISUAL_PRESSED,		IR_RIO_VISUAL_RELEASED} };
 #endif
@@ -226,7 +234,8 @@ static struct sa_struct {
 	unsigned voladj_dc_power	: VOLADJ_BITS;		// 2 bits
 	unsigned maxtemp_threshold	: MAXTEMP_BITS;		// 5 bits
 	unsigned restore_visuals	: 1;
-	unsigned byte3_leftover		: 6;
+	unsigned fsck_disabled		: 1;
+	unsigned byte3_leftover		: 5;
 	unsigned timer_action		: TIMERACTION_BITS;	// 1 bit
 	unsigned force_dcpower		: DCPOWER_BITS;		// 1 bit
 	unsigned knob_ac		: 1+KNOBDATA_BITS;	// 4 bits
@@ -368,6 +377,22 @@ draw_hline (unsigned short pixel_row, unsigned short pixel_col, unsigned short l
 static hijack_geom_t *hijack_overlay_geom = NULL;
 
 static void
+hijack_do_overlay (unsigned char *dest, unsigned char *src, const hijack_geom_t *geom)
+{
+	// for simplicity, we only do pixels in pairs
+	unsigned short offset;
+	short row = geom->first_row, last_col = (geom->last_col - geom->first_col) / 2;
+	offset = (row * (EMPEG_SCREEN_COLS / 2)) + (geom->first_col / 2);
+	for (row = geom->last_row - row; row >= 0; --row) {
+		short col;
+		for (col = last_col; col >= 0; --col)
+			dest[offset + col] = src[offset + col];
+		offset += (EMPEG_SCREEN_COLS / 2);
+	}
+}
+
+#ifdef EMPEG_KNOB_SUPPORTED
+static void
 draw_frame (unsigned char *dest, const hijack_geom_t *geom)
 {
 	// draw a frame inside geom, one pixel smaller all around
@@ -383,21 +408,6 @@ draw_frame (unsigned char *dest, const hijack_geom_t *geom)
 				dest[offset + col] = 0x11;
 		offset += (EMPEG_SCREEN_COLS / 2);
 		top_or_bottom = (--row > 0) ? 0 : 1;
-	}
-}
-
-static void
-hijack_do_overlay (unsigned char *dest, unsigned char *src, const hijack_geom_t *geom)
-{
-	// for simplicity, we only do pixels in pairs
-	unsigned short offset;
-	short row = geom->first_row, last_col = (geom->last_col - geom->first_col) / 2;
-	offset = (row * (EMPEG_SCREEN_COLS / 2)) + (geom->first_col / 2);
-	for (row = geom->last_row - row; row >= 0; --row) {
-		short col;
-		for (col = last_col; col >= 0; --col)
-			dest[offset + col] = src[offset + col];
-		offset += (EMPEG_SCREEN_COLS / 2);
 	}
 }
 
@@ -424,7 +434,8 @@ clear_text_row (unsigned int rowcol, unsigned short last_col, int do_top_row)
 		} while (++offset < num_cols);
 	}
 }
-	
+#endif // EMPEG_KNOB_SUPPORTED
+
 static unsigned char kfont_spacing = 0;  // 0 == proportional
 
 static int
@@ -535,7 +546,7 @@ draw_number (unsigned int rowcol, unsigned int number, const char *format, int c
 	rowcol = draw_string(rowcol, buf, color);
 	kfont_spacing = saved;
 	return rowcol;
-	
+
 }
 
 static void
@@ -1042,6 +1053,28 @@ timer_display (int firsttime)
 	return NEED_REFRESH;
 }
 
+static void
+fsck_move (int direction)
+{
+	hijack_fsck_disabled = (direction < 0);
+	empeg_state_dirty = 1;
+}
+
+static int
+fsck_display (int firsttime)
+{
+	unsigned int rowcol;
+
+	if (!firsttime && !hijack_last_moved)
+		return NO_REFRESH;
+	hijack_last_moved = 0;
+	clear_hijack_displaybuf(COLOR0);
+	(void)draw_string(ROWCOL(0,0), "Filesystem Check on Sync:", PROMPTCOLOR);
+	rowcol = draw_string(ROWCOL(2,0), "Periodic checking: ", PROMPTCOLOR);
+	(void)   draw_string(rowcol, hijack_fsck_disabled ? " Disabled " : " Enabled ", ENTRYCOLOR);
+	return NEED_REFRESH;
+}
+
 #ifdef RESTORE_CARVISUALS
 static void
 carvisuals_move (int direction)
@@ -1054,13 +1087,13 @@ static int
 carvisuals_display (int firsttime)
 {
 	unsigned int rowcol;
- 
+
 	if (!firsttime && !hijack_last_moved)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
 	(void)draw_string(ROWCOL(0,0), "Restore DC/Car Visuals", PROMPTCOLOR);
-	rowcol = draw_string(ROWCOL(2,0), "Restore: ", PROMPTCOLOR);
+	rowcol = draw_string(ROWCOL(2,20), "Restore: ", PROMPTCOLOR);
 	(void)   draw_string(rowcol, carvisuals_enabled ? " Enabled " : " Disabled ", ENTRYCOLOR);
 	return NEED_REFRESH;
 }
@@ -1077,7 +1110,7 @@ static int
 timeraction_display (int firsttime)
 {
 	unsigned int rowcol;
- 
+
 	if (!firsttime && !hijack_last_moved)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
@@ -1091,7 +1124,7 @@ timeraction_display (int firsttime)
 static int maxtemp_check_threshold (void)
 {
 	static unsigned long beeping, elapsed;
- 
+
 	if (!maxtemp_threshold || read_temperature() < (maxtemp_threshold + MAXTEMP_OFFSET))
 		return 0;
 	elapsed = jiffies_since(ir_lasttime) / HZ;
@@ -1234,7 +1267,7 @@ static int
 knobdata_display (int firsttime)
 {
 	unsigned int rowcol;
- 
+
 	if (firsttime)
 		ir_numeric_input = &knobdata_index;	// allows cancel/top to reset it to 0
 	else if (!hijack_last_moved)
@@ -1271,7 +1304,7 @@ knobmenu_display (int firsttime)
 	unsigned long flags;
 	hijack_buttondata_t data;
 	static const hijack_geom_t knobmenu_geom = {8, 8+6+KFONT_HEIGHT, 4, EMPEG_SCREEN_COLS-4};
- 
+
 	ir_selected = 0; // paranoia?
 	if (firsttime) {
 		knobmenu_pressed = 0;
@@ -1334,7 +1367,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v82 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v83 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1742,6 +1775,7 @@ static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 	{" Calculator ",		calculator_display,	NULL,			0},
 	{" Countdown Timer Timeout ",	timer_display,		timer_move,		0},
 	{" Countdown Timer Action ",	timeraction_display,	timeraction_move,	0},
+	{" Filesystem Check on Sync ",	fsck_display,		fsck_move,		0},
 	{" Font Display ",		kfont_display,		NULL,			0},
 	{" Force DC/Car Mode ",		forcedc_display,	forcedc_move,		0},
 	{" High Temperature Warning ",	maxtemp_display,	maxtemp_move,		0},
@@ -2207,8 +2241,6 @@ ir_send_buttons (ir_translation_t *t)
 // This routine covertly intercepts all display updates,
 // giving us a chance to substitute our own display.
 //
-void input_append_code(void *, unsigned long);
-
 static void	// invoked from empeg_display.c
 hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 {
@@ -2224,21 +2256,6 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	}
 	restore_flags(flags);
 
-#ifdef RESTORE_CARVISUALS
-	save_flags_cli(flags);
-	if (dev->power && carvisuals_enabled && restore_carvisuals) {
-		unsigned char *r15 = &player_buf[15 * EMPEG_SCREEN_COLS / 2];
-		if ((*(unsigned long *)r15) == 0x22222222) {	// is track-info active yet?
-			while (restore_carvisuals) {
-				--restore_carvisuals;
-				hijack_button_enq(&hijack_playerq, IR_RIO_INFO_PRESSED,  0);
-				hijack_button_enq(&hijack_playerq, IR_RIO_INFO_RELEASED, 0);
-			}
-		}
-	}
-	restore_flags(flags);
-#endif // RESTORE_CARVISUALS
-
 	// Handle any buttons that may be queued up
 	hijack_handle_buttons();
 	hijack_send_buttons_to_player();
@@ -2251,6 +2268,23 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 		display_blat(dev, player_buf);
 		return;
 	}
+
+#ifdef RESTORE_CARVISUALS
+	if (restore_carvisuals) {
+		unsigned char *r15 = &player_buf[15 * EMPEG_SCREEN_COLS / 2];
+		save_flags_cli(flags);
+		// look for solid line, possibly (beta7) with a blinking track "position" pixel
+		if (((*(unsigned long *)r15) & 0x22222222) == 0x22222222) {	// is track-info active yet?
+			while (restore_carvisuals) {
+				--restore_carvisuals;
+				hijack_button_enq(&hijack_playerq, IR_RIO_INFO_PRESSED,  0);
+				hijack_button_enq(&hijack_playerq, IR_RIO_INFO_RELEASED, 0);
+			}
+		}
+		restore_flags(flags);
+	}
+#endif // RESTORE_CARVISUALS
+
 #ifdef EMPEG_KNOB_SUPPORTED
 	if (ir_knob_down && jiffies_since(ir_knob_down) > (HZ*2)) {
 		ir_knob_busy = 1;
@@ -2489,31 +2523,73 @@ ir_setup_translations2 (unsigned char *buf, unsigned long *table)
 		return 0;
 	s += sizeof(header) - 1;
 	while (skip_over(&s, " \t\r\n")) {
-		int old, new;
+		unsigned int old = 0, new, initial = 0;
 		ir_translation_t *t = NULL;
-		if (get_number(&s, &old, 16, " \t.=")) {
-			unsigned char longpress = 0, shifted = 0, source = 0;
-			old &= ~0xc0000000;
+		if (!strncmp(s, "initial", 7)) {
+			char next = s[7];
+			if (next == '=' || next == '.' || next == ' ' || next == '\t') {
+				s += 7;
+				initial = 1;
+				old = ir_init_buttoncode++;
+			}
+		}
+		if (initial || get_number(&s, &old, 16, " \t.=")) {
+			unsigned char flags = 0, source = 0;
+			if (!initial)
+				old &= ~0xc0000000;
 			if (*s == '.') {
-				if (*++s == 'L') {
-					longpress = 1;
-					++s;
+				loop: if (*++s) {
+					switch (*s) {
+						case 'L': // Longpress
+							if (!(flags & IR_FLAGS_LONGPRESS)) {
+								flags |= IR_FLAGS_LONGPRESS;
+								goto loop;
+							}
+							break;
+						case 'S': // Shifted
+							if (!(flags & IR_FLAGS_SHIFTED)) {
+								flags |= IR_FLAGS_SHIFTED;
+								goto loop;
+							}
+							break;
+						case 'C': // Car
+							if (!(flags & IR_FLAGS_CAR)) {
+								flags |= IR_FLAGS_CAR;
+								goto loop;
+							}
+							break;
+						case 'H': // Home
+							if (!(flags & IR_FLAGS_HOME)) {
+								flags |= IR_FLAGS_HOME;
+								goto loop;
+							}
+							break;
+						case 'T': // Tuner
+						case 'A': // Aux
+						case 'M': // Main/Mp3/dsp
+							if (!source) {
+								source = *s;
+								goto loop;
+							}
+							break;
+					}
 				}
-				if (*s == 'S') {
-					shifted = 1;
-					++s;
-				}
-				if (*s && strchr("TAM", *s))	// Tuner,Aux,Main
-					source = *s++;
 			}
 			if (old > 0xf && match_char(&s, '=')) {	// We currently disallow front-panel buttons
 				int saved = index;
 				if (table) {
 					t = (ir_translation_t *)&(table[index]);
-					t->longpress = longpress;
-					t->shifted = shifted;
+					if (initial) {
+						unsigned char car  = flags & IR_FLAGS_CAR;
+						unsigned char home = flags & IR_FLAGS_HOME;
+						if (car  || !home)
+							ir_init_car  = old;
+						if (home || !car)
+							ir_init_home = old;
+					}
+					t->old    = old;
+					t->flags  = flags;
 					t->source = source;
-					t->old = old;
 					*common_bits = old & *common_bits;	// build up common_bits mask
 					t->count = 0;
 				}
@@ -2607,14 +2683,17 @@ input_append_code(void *ignored, unsigned long button)  // empeg_input.c
 			unsigned long old = button & ~0xc0000000, common_bits = *table++;
 			if ((old & common_bits) == common_bits) {	// saves time (usually) on large tables
 				int delayed_send = 0;
+				unsigned char flags = on_dc_power ? IR_FLAGS_CAR : IR_FLAGS_HOME;
+				if (ir_shifted)
+					flags |= IR_FLAGS_SHIFTED;
 				while (*table != -1) {
 					ir_translation_t *t = (ir_translation_t *)table;
 					table += (sizeof(ir_translation_t) / sizeof(unsigned long) - 1) + t->count;
 					if (old == t->old
 					 && (!t->source  || t->source == get_current_mixer_source())
-					 && (!t->shifted || ir_shifted)) {
+					 && ((t->flags & (IR_FLAGS_SHIFTED|IR_FLAGS_HOME|IR_FLAGS_CAR)) == (t->flags & flags))) {
 						if (released) {	// button release?
-							if (t->longpress && jiffies_since(ir_lastevent) < HZ) {
+							if ((t->flags & IR_FLAGS_LONGPRESS) && jiffies_since(ir_lastevent) < HZ) {
 								delayed_send = 1;
 								continue; // look for shortpress instead
 							}
@@ -2622,7 +2701,7 @@ input_append_code(void *ignored, unsigned long button)  // empeg_input.c
 								ir_send_buttons(t);
 							ir_send_release(t->new[t->count - 1]); // final button release
 						} else { // button press?
-							if (t->longpress)
+							if ((t->flags & IR_FLAGS_LONGPRESS))
 								ir_current_longpress = t;
 							else
 								ir_send_buttons(t);
@@ -2672,8 +2751,8 @@ userland_extend_menu (char *label, unsigned long userdata)
 		return -ENOMEM;
 	memcpy(item.label+1, label, size);
 	item.label[0]      = ' ';
-	item.label[size]   = ' ';
-	item.label[size+1] = '\0';
+	item.label[size+1] = ' ';
+	item.label[size+2] = '\0';
 	item.dispfunc = userland_display;
 	item.movefunc = NULL;
 	item.userdata = userdata;
@@ -2722,10 +2801,11 @@ hijack_save_settings (unsigned char *buf)
 	hijack_savearea.timer_action		= timer_action;
 	hijack_savearea.menu_item		= menu_item;
 	hijack_savearea.restore_visuals		= carvisuals_enabled;
+	hijack_savearea.fsck_disabled		= hijack_fsck_disabled;
 	//hijack_savearea.force_dcpower is only updated from the menu!
-	hijack_savearea.byte3_leftover = 0;
-	hijack_savearea.byte5_leftover = 0;
-	hijack_savearea.byte6_leftover = 0;
+	hijack_savearea.byte3_leftover		= 0;
+	hijack_savearea.byte5_leftover		= 0;
+	hijack_savearea.byte6_leftover		= 0;
 	memcpy(buf+HIJACK_SAVEAREA_OFFSET, &hijack_savearea, sizeof(hijack_savearea));
 }
 
@@ -2761,32 +2841,49 @@ hijack_restore_settings (unsigned char *buf)
 	menu_item			= hijack_savearea.menu_item;
 	menu_init();
 	carvisuals_enabled		= hijack_savearea.restore_visuals;
+	hijack_fsck_disabled		= hijack_savearea.fsck_disabled;
 
 #ifdef RESTORE_CARVISUALS
 	restore_carvisuals = 0;
-	if (on_dc_power) {
+	if (on_dc_power && carvisuals_enabled) {
+#if 0 // easy to read, but big and slow..
 		unsigned int b40cd = (buf[0x40] << 16) | (buf[0x4c] << 8) | buf[0x4d];
 		switch (b40cd) {
-			case 0x000004: // off
+			case 0x000004: // off (beta3, beta6)
 				restore_carvisuals = 2;
 				break;
-			case 0x010004: // line
+			case 0x000005: // off (beta7)
 				restore_carvisuals = 3;
 				break;
-			case 0x020004: // transient
+			case 0x010004: // line (beta3, beta6)
+				restore_carvisuals = 3;
+				break;
+			case 0x010005: // line (beta7)
 				restore_carvisuals = 4;
 				break;
-		//	case 0x020403: // track
-		//	case 0x020404: // now&next
+			case 0x020004: // transient (beta3, beta6)
+				restore_carvisuals = 4;
+				break;
+			case 0x020005: // transient (beta7)
+				restore_carvisuals = 5;
+				break;
+		  //	case 0x020403: // track (beta3, beta6, beta7)
+		  //	case 0x020404: // now&next (beta3, beta6)
+		  //	case 0x020405: // now&next (beta7)
+		  //	case 0x020404: // infoseek (beta7)
 		}
 		if (restore_carvisuals) {
-			// switch to "track" mode on startup, and restore original mode when track info appears
+#else // not so obvious, but tiny and fast
+		if (buf[0x4c] == 0) {
+			restore_carvisuals = buf[0x40] + buf[0x4d] - 2;
+#endif // 0
+			// switch to "track" mode on startup (because it's easy to detect later one),
+			// and then restore the original mode when the track info appears in the screen buffer.
 			buf[0x40] = 0x02;
 			buf[0x4c] = 0x04;
 			buf[0x4d] = 0x03;
 			empeg_state_dirty = 1;
 		}
-	printk("\non_dc_power, b40cd=%06x, restore=%d\n", b40cd, restore_carvisuals);
 	}
 #endif // RESTORE_CARVISUALS
 }
@@ -2900,7 +2997,7 @@ get_file (const char *path, unsigned char **buffer)
 				} else {
 					mm_segment_t old_fs = get_fs();
 					filp->f_pos = 0;
-					set_fs(KERNEL_DS);	// FIXME?  Is this correct?
+					set_fs(KERNEL_DS);
 					rc = filp->f_op->read(filp, buf, size, &(filp->f_pos));
 					set_fs(old_fs);
 					if (rc < 0) {
@@ -2929,12 +3026,19 @@ print_ir_translates (void)
 			ir_translation_t *t = (ir_translation_t *)table;
 			unsigned long *newp = &t->new[0];
 			int count = t->count;
-			printk("ir_translate: %08lx", t->old);
-			if (t->longpress || t->source || t->shifted) {
+			if (t->old == ir_init_car || t->old == ir_init_home)
+				printk("ir_translate: initial");
+			else
+				printk("ir_translate: %08lx", t->old);
+			if (t->flags || t->source) {
 				printk(".");
-				if (t->longpress)
+				if ((t->flags & IR_FLAGS_HOME))
+					printk("H");
+				if ((t->flags & IR_FLAGS_CAR))
+					printk("C");
+				if ((t->flags & IR_FLAGS_LONGPRESS))
 					printk("L");
-				if (t->shifted)
+				if ((t->flags & IR_FLAGS_SHIFTED))
 					printk("S");
 				if (t->source)
 					printk("%c", t->source);
@@ -2961,7 +3065,9 @@ void
 hijack_read_config_file (const char *path)
 {
 	unsigned char *buf = NULL;
+	unsigned long flags;
 	int rc;
+
 	printk("\n");
 	rc = get_file(path, &buf);
 	if (rc < 0) {
@@ -2977,6 +3083,14 @@ hijack_read_config_file (const char *path)
 		}
 		ir_setup_translations(buf);
 		print_ir_translates();
+
+		// Send initial button sequences, if any
+		save_flags_cli(flags);
+		if ( on_dc_power && ir_init_car)
+			input_append_code(NULL, ir_init_car);
+		if (!on_dc_power && ir_init_home)
+			input_append_code(NULL, ir_init_home);
+		restore_flags(flags);
 	}
 	if (buf)
 		kfree(buf);
@@ -3093,7 +3207,7 @@ int hijack_ioctl  (struct inode *inode, struct file *filp, unsigned int cmd, uns
 			restore_flags(flags);
 			kfree(buttonlist);
 			return signal_pending(current) ? -EINTR : 0;
-			
+
 		}
 		case EMPEG_HIJACK_SETGEOM:	// Set window overlay geometry
 		{

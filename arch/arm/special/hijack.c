@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v274"
+#define HIJACK_VERSION	"v275"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -39,6 +39,7 @@ extern void hijack_beep (int pitch, int duration_msecs, int vol_percent);// arch
 extern unsigned long jiffies_since(unsigned long past_jiffies);		// arch/arm/special/empeg_input.c
 extern void display_blat(struct display_dev *dev, unsigned char *source_buffer); // empeg_display.c
 extern tm_t *hijack_convert_time(time_t, tm_t *);			// from arch/arm/special/notify.c
+extern void hijack_set_displaypower (int off_on);			// arch/arm/special/empeg_power.c
 
 extern void empeg_mixer_select_input(int input);			// arch/arm/special/empeg_mixer.c
 extern void hijack_tone_set(int, int, int, int, int, int);					// arch/arm/special/empeg_mixer.c
@@ -633,6 +634,7 @@ static const char carvisuals_menu_label	[] = "Restore DC/Car Visuals";
 static const char homevisuals_menu_label[] = "Restore Visuals (v2beta11)";	// fixme: workaround for beta11
 static const char blankerfuzz_menu_label[] = "Screen Blanker Sensitivity";
 static const char blanker_menu_label	[] = "Screen Blanker Timeout";
+static const char blankeraction_menu_label[] = "Screen Blanker Action";
 static const char bass_menu_label       [] = "Tone: Bass Adjust";
 static const char treble_menu_label     [] = "Tone: Treble Adjust";
 
@@ -642,6 +644,9 @@ static const unsigned int *hijack_buttonlist = NULL;
 //static unsigned long hijack_userq[HIJACK_USERQ_SIZE];
 //static unsigned short hijack_userq_head = 0, hijack_userq_tail = 0;
 static struct wait_queue *hijack_userq_waitq = NULL, *hijack_menu_waitq = NULL;
+
+#define BLANKERACTION_BITS 1
+static int blanker_action = 0;
 
 #define SCREEN_BLANKER_MULTIPLIER 15
 #define BLANKER_BITS 6
@@ -1180,13 +1185,20 @@ hijack_deactivate (int new_status)
 	restore_flags(flags);
 }
 
+static inline void
+untrigger_blanker (void)
+{
+	hijack_set_displaypower(1);
+	blanker_triggered = 0;
+}
+
 static void
 activate_dispfunc (int (*dispfunc)(int), void (*movefunc)(int))
 {
 	hijack_deactivate(HIJACK_ACTIVE_PENDING);
 	hijack_dispfunc = dispfunc;
 	hijack_movefunc = movefunc;
-	blanker_triggered = 0;
+	untrigger_blanker();
 	dispfunc(1);
 }
 
@@ -1878,6 +1890,30 @@ static int hightemp_check_threshold (void)
 		return 1;
 	}
 	return 0;
+}
+
+static void
+blankeraction_move (int direction)
+{
+	blanker_action = !blanker_action;
+	empeg_state_dirty = 1;
+}
+
+static const char *blankeraction_msg[2] = {"Clear Display", "PowerOff Display"};
+
+static int
+blankeraction_display (int firsttime)
+{
+	unsigned int rowcol;
+
+	if (!firsttime && !hijack_last_moved)
+		return NO_REFRESH;
+	hijack_last_moved = 0;
+	clear_hijack_displaybuf(COLOR0);
+	(void)draw_string(ROWCOL(0,0), blankeraction_menu_label, PROMPTCOLOR);
+	rowcol = draw_string(ROWCOL(2,0), "On Blank: ", PROMPTCOLOR);
+	(void)   draw_string_spaced(rowcol, blankeraction_msg[blanker_action], ENTRYCOLOR);
+	return NEED_REFRESH;
 }
 
 static void
@@ -2856,6 +2892,7 @@ static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 	{"Reboot Machine",		reboot_display,		NULL,			0},
 	{ carvisuals_menu_label,	carvisuals_display,	carvisuals_move,	0},
 	{ homevisuals_menu_label,	homevisuals_display,	homevisuals_move,	0},
+	{ blankeraction_menu_label,	blankeraction_display,	blankeraction_move,	0},
 	{ blankerfuzz_menu_label,	blankerfuzz_display,	blankerfuzz_move,	0},
 	{ blanker_menu_label,		blanker_display,	blanker_move,		0},
 	{"Show Flash Savearea",		savearea_display,	savearea_move,		0},
@@ -3168,7 +3205,7 @@ message_display (int firsttime)
 		rowcol = (geom.first_row+4)|((geom.first_col+6)<<16);
 		rowcol = draw_string(rowcol, message_text, COLOR3);
 		hijack_last_moved = jiffies ? jiffies : -1;
-		blanker_triggered = 0;
+		untrigger_blanker();
 	} else if (jiffies_since(hijack_last_moved) >= message_time) {
 		hijack_deactivate(HIJACK_IDLE);
 	}
@@ -3250,7 +3287,7 @@ hijack_handle_button (unsigned int button, unsigned long delay, int any_ui_is_ac
 		ir_shifted = !ir_shifted;
 	button &= ~(BUTTON_FLAGS_UISTATE|BUTTON_FLAGS_SHIFT);
 
-	blanker_triggered = 0;
+	untrigger_blanker();
 	if (hijack_status == HIJACK_ACTIVE) {
 #if 1 //fixme someday
 		// special case to allow embedding PopUp's
@@ -3818,8 +3855,9 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	}
 
 	// Manage buttonLED illumination level
-	if (!hijack_standby_time || jiffies_since(hijack_standby_time) > (HZ/4))
+	if (!hijack_standby_time || jiffies_since(hijack_standby_time) > (HZ/4)) {
 		hijack_adjust_buttonled(dev->power);
+	}
 
 	save_flags_cli(flags);
 	if (!dev->power) {  // do (almost) nothing if unit is in standby mode
@@ -3851,7 +3889,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 #endif // EMPEG_KNOB_SUPPORTED
 	if (jiffies > (10*HZ) && (timer_check_expiry(dev) || hightemp_check_threshold())) {
 		buf = (unsigned char *)hijack_displaybuf;
-		blanker_triggered = 0;
+		untrigger_blanker();
 	}
 	switch (hijack_status) {
 		case HIJACK_IDLE:
@@ -3916,7 +3954,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 
 	// Prevent screen burn-in on an inactive/unattended player:
 	if (hijack_dispfunc == message_display) {
-		blanker_triggered = 0;
+		untrigger_blanker();
 	} else if (blanker_timeout) {
 		if (jiffies_since(blanker_lastpoll) >= (4*HZ/3)) {  // use an oddball interval to avoid patterns
 			int is_paused = 0;
@@ -3925,7 +3963,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 			blanker_lastpoll = jiffies;
 			if (!is_paused && screen_compare((unsigned long *)blanker_lastbuf, (unsigned long *)buf)) {
 				memcpy(blanker_lastbuf, buf, EMPEG_SCREEN_BYTES);
-				blanker_triggered = 0;
+				untrigger_blanker();
 			} else if (!blanker_triggered) {
 				blanker_triggered = jiffies ? jiffies : -1;
 			}
@@ -3933,9 +3971,13 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 		if (blanker_triggered) {
 			unsigned long minimum = blanker_timeout * (SCREEN_BLANKER_MULTIPLIER * HZ);
 			if (jiffies_since(blanker_triggered) > minimum) {
-				buf = player_buf;
-				memset(buf, 0, EMPEG_SCREEN_BYTES);
-				refresh = NEED_REFRESH;
+				if (blanker_action) {
+					hijack_set_displaypower(0);
+				} else {
+					buf = player_buf;
+					memset(buf, 0, EMPEG_SCREEN_BYTES);
+					refresh = NEED_REFRESH;
+				}
 				if (get_current_mixer_source() == IR_FLAGS_MAIN && hijack_standby_minutes > 0) {
 					if (jiffies_since(blanker_triggered) >= ((hijack_standby_minutes * 60 * HZ) + minimum)) {
 						save_flags_cli(flags);
@@ -4921,7 +4963,8 @@ typedef struct hijack_savearea_s {
 	unsigned timer_action		: TIMERACTION_BITS;	// 1 bit
 	unsigned homework		: 1;			// 1 bits
 	unsigned fix_beta11		: 1;			// 1 bits
-	unsigned spare5			: 5;			// 5 bits
+	unsigned blanker_action		: 1;			// 1 bits
+	unsigned spare4			: 4;			// 4 bits
 
 	unsigned spare16		: 16;			// 16 bits
 	unsigned spare8			:  8;			//  8 bits
@@ -4966,6 +5009,7 @@ hijack_save_settings (unsigned char *buf)
 	savearea.fsck_disabled		= hijack_fsck_disabled;
 	savearea.onedrive		= hijack_onedrive;
 	savearea.timer_action		= timer_action;
+	savearea.blanker_action		= blanker_action;
 	savearea.homework		= hijack_homework;
 	savearea.fix_beta11		= homevisuals_enabled;
 	savearea.layout_version		= SAVEAREA_LAYOUT;
@@ -5022,6 +5066,7 @@ hijack_restore_settings (char *buf)
 	hijack_fsck_disabled		= savearea.fsck_disabled;
 	hijack_onedrive			= savearea.onedrive;
 	timer_action			= savearea.timer_action;
+	blanker_action			= savearea.blanker_action;
 	hijack_homework			= savearea.homework;
 	homevisuals_enabled		= savearea.fix_beta11;
 

@@ -475,3 +475,30 @@ extern void empeg_displaypower(int on)
 	/* Record the state */
 	dev->displaystate=on?1:0;
 }
+
+void hijack_set_displaypower (int off_on)
+{
+	static int displaystate = -1;
+
+	if (displaystate != off_on) {
+		displaystate = off_on;
+		if (off_on) {
+			/* Disable powerfail interrupts */
+			enable_powerfail(FALSE);
+		}
+		if (empeg_hardwarerevision()<9) {
+			/* Just twiddle appropriate line */
+			if (off_on) GPSR=EMPEG_DISPLAYPOWER;
+			else GPCR=EMPEG_DISPLAYPOWER;
+		} else {
+			/* Send actual command */
+			powercontrol(off_on?3:4);
+		}
+		if (off_on) {
+			#define POWERFAIL_DISABLED_DELAY 100000
+			/* Wait for a while for it to come to life */
+			udelay(POWERFAIL_DISABLED_DELAY);
+			enable_powerfail(TRUE);
+		}
+	}
+}

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v294"
+#define HIJACK_VERSION	"v295"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -3774,25 +3774,6 @@ check_screen_grab (unsigned char *buf)
 #endif // CONFIG_NET_ETHERNET
 }
 
-void
-hijack_detect (void)
-{
-	static int	done = 0;
-	tm_t		tm;
-
-	if (jiffies_since(hijack_player_started) > 3 && !done) {
-		done = 1;
-		hijack_convert_time(CURRENT_TIME + (hijack_time_offset * 60), &tm);
-		if (tm.tm_year == 2002 && tm.tm_mon == 8 && tm.tm_mday >= 21 && tm.tm_mday <= 22) {
-			static char m[19] = "Hsfbu!nffu-!Mbvsb\"\0";
-			unsigned int i;
-			for (i = 0; i < 18; i++)
-				m[i] -= 1;
-			show_message(m, HZ*7);
-		}
-	}
-}
-
 enum {poweringup, booting, booted, waiting, started} player_state = booting;
 
 // The Hijack equivalent of main()
@@ -3894,8 +3875,6 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 		buf = (unsigned char *)hijack_displaybuf;
 		untrigger_blanker();
 	}
-	if (player_state == started)
-		hijack_detect();
 	switch (hijack_status) {
 		case HIJACK_IDLE:
 			if (ir_trigger_count >= 3

@@ -68,6 +68,7 @@ typedef struct server_parms_s {
 	char			*servername;
 	struct sockaddr_in	portaddr;
 	char			clientip[INET_ADDRSTRLEN];
+	char			serverip[INET_ADDRSTRLEN];
 	unsigned char		cwd[1024];
 	unsigned char		buf[1024];
 	unsigned char		tmp2[768];
@@ -79,19 +80,16 @@ typedef struct server_parms_s {
 
 extern int get_number (char **src, int *val, int base, const char *nextchars);	// hijack.c
 
-// This  function  converts  the  network  address structure src
-// in the af address family into a character string, which is copied
-// to a character buffer dst, which is cnt bytes long.
-//
 static const char *
-inet_ntop (int af, void *src, char *dst, size_t cnt)
+inet_ntop2 (struct sockaddr_in *addr, char *ipaddr)
 {
-	unsigned char *s = src;
+	char *s;
 
-	if (af != AF_INET || cnt < INET_ADDRSTRLEN)
+	if (addr->sin_family != AF_INET)
 		return NULL;
-	sprintf(dst, "%u.%u.%u.%u", s[0], s[1], s[2], s[3]);
-	return dst;
+	s = (char *)&addr->sin_addr.s_addr;
+	sprintf(ipaddr, "%u.%u.%u.%u", s[0], s[1], s[2], s[3]);
+	return ipaddr;
 }
 
 // This  function  converts  the  character string src
@@ -500,7 +498,7 @@ filldir (void *data, const char *name, int namelen, off_t offset, ino_t ino)
 	return 0;			// continue reading directory entries
 }
 
-const char dirlist_html_trailer[] = "</PRE><HR>\n</BODY></HTML>\n";
+const char dirlist_html_trailer[] = "</PRE><HR>\r\n</BODY></HTML>\r\n";
 #define DIRLIST_TRAILER_MAX	(sizeof(dirlist_html_trailer))
 
 static int
@@ -661,16 +659,16 @@ exit:
 }
 
 static const char dirlist_header[] =
-	"HTTP/1.1 200 OK\n"
-	"Connection: close\n"
-	"Content-Type: text/html\n\n"
-	"<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 3.2 Final//EN\">\n"
-	"<HTML>\n"
-	"<HEAD><TITLE>Index of %s</TITLE></HEAD>\n"
-	"<BODY>\n"
-	"<H2>Index of %s</H2>\n"
-	"<PRE>\n"
-	"<HR>\n";
+	"HTTP/1.1 200 OK\r\n"
+	"Connection: close\r\n"
+	"Content-Type: text/html\r\n\r\n"
+	"<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 3.2 Final//EN\">\r\n"
+	"<HTML>\r\n"
+	"<HEAD><TITLE>Index of %s</TITLE></HEAD>\r\n"
+	"<BODY>\r\n"
+	"<H2>Index of %s</H2>\r\n"
+	"<PRE>\r\n"
+	"<HR>\r\n";
 
 static int
 send_dirlist (server_parms_t *parms, char *path, int full_listing)
@@ -781,16 +779,16 @@ static void
 khttpd_respond (server_parms_t *parms, int rcode, const char *title, const char *text)
 {
 	static const char kttpd_response[] =
-		"HTTP/1.1 %d %s\n"
-		"Connection: close\n"
-		"Content-Type: text/html\n\n"
-		"<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\">\n"
-		"<HTML><HEAD>\n"
-		"<TITLE>%d %s</TITLE>\n"
-		"</HEAD><BODY>\n"
-		"<H1>%s</H1>\n"
-		"%s<P>\n"
-		"</BODY></HTML>\n";
+		"HTTP/1.1 %d %s\r\n"
+		"Connection: close\r\n"
+		"Content-Type: text/html\r\n\r\n"
+		"<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\">\r\n"
+		"<HTML><HEAD>\r\n"
+		"<TITLE>%d %s</TITLE>\r\n"
+		"</HEAD><BODY>\r\n"
+		"<H1>%s</H1>\r\n"
+		"%s<P>\r\n"
+		"</BODY></HTML>\r\n";
 
 	char		*buf = parms->cwd;
 	unsigned int	len, rc;
@@ -798,7 +796,7 @@ khttpd_respond (server_parms_t *parms, int rcode, const char *title, const char 
 	len = sprintf(buf, kttpd_response, rcode, title, rcode, title, title, text ? text : "");
 	rc = ksock_rw(parms->clientsock, buf, len, -1);
 	if (rc != len && parms->verbose)
-		printk("%s: respond(): ksock_rw(%d) returned %d\n", parms->servername, len, rc);
+		printk("%s: respond(): ksock_rw(%d) returned %d, data='%s'\n", parms->servername, len, rc, buf);
 }
 
 
@@ -806,17 +804,17 @@ static void
 khttpd_redirect (server_parms_t *parms, const char *path, char *buf)
 {
 	static const char http_redirect[] =
-		"HTTP/1.1 302 Found\n"
-		"Location: %s\n"
-		"Connection: close\n"
-		"Content-Type: text/html\n\n"
-		"<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\">\n"
-		"<HTML><HEAD>\n"
-		"<TITLE>302 Found</TITLE>\n"
-		"</HEAD><BODY>\n"
-		"<H1>Found</H1>\n"
-		"The document has moved <A HREF=\"%s%s\">here</A>.<P>\n"
-		"</BODY></HTML>\n";
+		"HTTP/1.1 302 Found\r\n"
+		"Location: %s\r\n"
+		"Connection: close\r\n"
+		"Content-Type: text/html\r\n\r\n"
+		"<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\">\r\n"
+		"<HTML><HEAD>\r\n"
+		"<TITLE>302 Found</TITLE>\r\n"
+		"</HEAD><BODY>\r\n"
+		"<H1>Found</H1>\r\n"
+		"The document has moved <A HREF=\"%s%s\">here</A>.<P>\r\n"
+		"</BODY></HTML>\r\n";
 
 	unsigned int	len, rc;
 	char *slash = parms->format_tagfile ? "" : "/";
@@ -828,8 +826,12 @@ khttpd_redirect (server_parms_t *parms, const char *path, char *buf)
 }
 
 static const char audio_mpeg[]		= "audio/mpeg";
+static const char audio_wav[]		= "audio/x-wav";
+static const char audio_wma[]		= "audio/x-ms-wma";
+static const char audio_m3u[]		= "audio/x-mpegurl";
 static const char text_plain[]		= "text/plain";
 static const char text_html[]		= "text/html";
+static const char application_octet[]	= "application/octet-stream";
 static const char application_x_tar[]	= "application/x-tar";
 
 typedef struct mime_type_s {
@@ -838,60 +840,32 @@ typedef struct mime_type_s {
 } mime_type_t;
 
 static const mime_type_t mime_types[] = {
-	{"*.tiff",		"image/tiff"			},
-	{"*.jpg",		"image/jpeg"			},
-	{"*.png",		"image/png"			},
-	{"*.htm",		 text_html			},
-	{"*.html",		 text_html			},
-	{"*.txt",		 text_plain			},
-	{"*.text",		 text_plain			},
-	{"*.wav",		"audio/x-wav"			},
-	{"*.mp3",		 audio_mpeg			},
-	{"*.gz",		"application/x-gzip"		},
-	{"*.tar",		 application_x_tar		},
-	{"*.tgz",		 application_x_tar		},
-	{"*/config.ini",	 text_plain			},
-	{"*/tags",		 text_plain			},
-	{"/etc/*",		 text_plain			},
-	{"/proc/*",		 text_plain			},
-	{"/drive?/fids/*1",	 text_plain			},
-	{"*bin/*",		"application/octet-stream"	},
-	{NULL,			NULL				}};
-
-static int
-khttp_send_file_header (server_parms_t *parms, char *path, unsigned long i_size, char *buf)
-{
-	int		len;
-	const char	*mimetype;
-
-	// Crude "tune" recognition; can mislabel WAVs
-	if (parms->format_tagfile) {
-		mimetype = text_html;
-	} else if (i_size > 1000 && glob_match(path, "/drive?/fids/*0")) {
-		mimetype = audio_mpeg;	// Ugh.. could be a WAV, but too bad.
-	} else {
-		const char		*pattern;
-		const mime_type_t	*m = mime_types;
-		while ((pattern = m->pattern) && !glob_match(path, pattern))
-			++m;
-		mimetype = m->mime;
-	}
-	len = sprintf(buf, "HTTP/1.1 200 OK\nConnection: close\nAccept-Ranges: bytes\n");
-	if (mimetype)
-		len += sprintf(buf+len, "Content-Type: %s\n", mimetype);
-	if (i_size)
-		len += sprintf(buf+len, "Content-Length: %lu\n", i_size);
-	buf[len++] = '\n';
-	if (len != ksock_rw(parms->datasock, buf, len, -1))
-		return 426;
-	return 0;
-}
+	{"*.tiff",		"image/tiff"		},
+	{"*.jpg",		"image/jpeg"		},
+	{"*.png",		"image/png"		},
+	{"*.htm",		 text_html		},
+	{"*.html",		 text_html		},
+	{"*.txt",		 text_plain		},
+	{"*.text",		 text_plain		},
+	{"*.wav",		 audio_wav		},
+	{"*.m3u",		 audio_m3u		},
+	{"*.mp3",		 audio_mpeg		},
+	{"*.wma",		 audio_wma		},
+	{"*.gz",		"application/x-gzip"	},
+	{"*.tar",		 application_x_tar	},
+	{"*.tgz",		 application_x_tar	},
+	{"*/config.ini",	 text_plain		},
+	{"*/tags",		 text_plain		},
+	{"/etc/*",		 text_plain		},
+	{"/proc/*",		 text_plain		},
+	{"/drive?/fids/*1",	 text_plain		},
+	{"*bin/*",		 application_octet	},
+	{NULL,			NULL			}};
 
 static char
 get_tag (char *s, char *tag, char *buf, int buflen)
 {
 	*buf = '\0';
-	//printk("get_tag(,%s):\n%s\n------------\n", tag,s);
 	while (*s) {
 		if (*s == *tag && !strxcmp(s, tag, 1)) {
 			char *val = buf;
@@ -899,7 +873,6 @@ get_tag (char *s, char *tag, char *buf, int buflen)
 			while (*s && *s != '\n' && --buflen > 0)
 				*buf++ = *s++;
 			*buf = '\0';
-			//printk(" --> '%s'\n\n", val);
 			return *val;
 		}
 		while (*s && *s != '\n')
@@ -910,16 +883,88 @@ get_tag (char *s, char *tag, char *buf, int buflen)
 	return '\0';
 }
 
+static const char *
+get_fid_mimetype (char *path, char *buf, int bufsize)
+{
+	const char	*mimetype = application_octet;
+	char		tag[12];
+	int		fd, size, lastchar = strlen(path) - 1;
+
+	if (path[lastchar] == '0') {
+		path[lastchar] = '1';
+		fd = open(path, O_RDONLY, 0);
+		if (fd >= 0) {
+			size = read(fd, buf, bufsize-1);
+			buf[size] = '\0';
+			close(fd);
+			get_tag(buf, "type=", tag, sizeof(tag));
+			if (*tag == 't' && get_tag(buf, "codec=", tag, sizeof(tag))) {
+				switch (tag[1]) {
+					case 'p': mimetype = audio_mpeg;	break;
+					case 'm': mimetype = audio_wma;		break;
+					case 'a': mimetype = audio_wav;		break;
+				}
+			}
+		}
+	}
+	return mimetype;
+}
+
+static int
+khttp_send_file_header (server_parms_t *parms, char *path, unsigned long i_size, char *buf, int bufsize)
+{
+	int		len;
+	const char	*mimetype;
+
+	if (parms->format_tagfile) {
+		mimetype = text_html;
+	} else if (glob_match(path, "/drive?/fids/*0")) {
+		mimetype = get_fid_mimetype(path, buf, bufsize);
+	} else {
+		const char		*pattern;
+		const mime_type_t	*m = mime_types;
+		while ((pattern = m->pattern) && !glob_match(path, pattern))
+			++m;
+		mimetype = m->mime;
+	}
+	len = sprintf(buf, "HTTP/1.1 200 OK\r\nConnection: close\r\nAccept-Ranges: bytes\r\n");
+	if (mimetype)
+		len += sprintf(buf+len, "Content-Type: %s\r\n", mimetype);
+	if (i_size)
+		len += sprintf(buf+len, "Content-Length: %lu\r\n", i_size);
+	buf[len++] = '\r';
+	buf[len++] = '\n';
+	if (len != ksock_rw(parms->datasock, buf, len, -1))
+		return 426;
+	return 0;
+}
+
+static unsigned int
+get_duration (char *buf)
+{
+	char		duration[16], *d = duration;
+	unsigned int	secs = 0;
+
+	if (get_tag(buf, "duration=", duration, sizeof(duration))) {
+		if (get_number(&d, &secs, 10, NULL))
+			secs = (secs + 800) / 1000;	// convert msecs to secs
+	}
+	return secs;
+}
+
 // Mmmm.. probably the wrong approach, but it will do for starters.
 // Much better might be to implement an on-the-fly "/proc/playlists" tree,
 // using symlinks (with extensions!) to point at the actual audio files.
+// At present, this is incredibly ugly code (but it works).  -ml
+//
 static int
-send_tagfile (server_parms_t *parms, char *path, unsigned char *buf, int size)
+send_tagfile (server_parms_t *parms, char *path, unsigned char *buf, int size, int bufsize)
 {
-	char	type[12], subpath[64], *pathtail;
-	int	pathlen = strlen(path);
+	unsigned int	secs;
+	int		pathlen = strlen(path);
+	char		subpath[64], *pathtail, type[12], title[64], artist[32], source[32];
 
-	(void) set_sockopt(parms, parms->datasock, SOL_TCP, TCP_NODELAY, 0); // don't care
+	(void) set_sockopt(parms, parms->datasock, SOL_TCP, TCP_NODELAY, 0); // not critical if this works or not
 	if (size < PAGE_SIZE && pathlen < sizeof(subpath)) {	// Ouch.. we cannot handle HUGE tag files here
 		strcpy(subpath, path);
 		pathtail = subpath + pathlen - 1;
@@ -928,57 +973,83 @@ send_tagfile (server_parms_t *parms, char *path, unsigned char *buf, int size)
 		buf[size] = '\0';	// Ensure zero-termination of the data
 		if (get_tag(buf, "type=", type, sizeof(type))) {
 			int playlist_fd;
-			path[strlen(path)-1] = '0';	// for the next phase (whichever) below:
-			if (strxcmp(type, "playlist", 0)) {
-				// fixme: need to somehow specify the audio type (mp3,wav,wma)
-				khttpd_redirect(parms, path, buf);
+			path[strlen(path)-1] = '0';	// Select the corresponding data file
+			if (*type == 't') {		// tune?
+				(void) get_tag(buf, "codec=", type, sizeof(type));
+				if (strxcmp(type, "mp3", 0)) {
+					(void) get_tag(buf, "title=",  title,  sizeof(title));
+					(void) get_tag(buf, "artist=", artist, sizeof(artist));
+					secs = get_duration(buf);
+					size  = sprintf(buf, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s\r\n\r\n#EXTM3U\r\n"
+						"#EXTINF:%u,%s - %s\r\nhttp://%s%s\r\n", audio_m3u, secs, artist, title, parms->serverip, path);
+					(void)ksock_rw(parms->datasock, buf, size, -1);
+				} else { // wma, wav
+					khttpd_redirect(parms, path, buf);
+				}
 				return 0;
 			}
 			if ((playlist_fd = open(path, O_RDONLY, 0)) >= 0) {
 				int rc = 0, fid = -1, done_header = 0;
-				if (khttp_send_file_header(parms, path, 0, buf)) {
-					printk("send header failed\n");
-					rc = -1;
-				} else {
-					while (sizeof(fid) == read(playlist_fd, (char *)&fid, sizeof(fid))) {
-						int subitem_fd;
-						fid |= 1;	// select the tagfile
-						sprintf(pathtail, "%x", fid);
-						subitem_fd = open(subpath, O_RDONLY, 0);
-						if (subitem_fd >= 0) {
-							size = read(subitem_fd, buf, PAGE_SIZE-1);
-							close(subitem_fd);
-							if (size > 0) {
-								int sent;
-								char title[64], artist[32], source[32];
-								buf[size] = '\0';
-								(void) get_tag(buf, "type=",   type,   sizeof(type));
-								(void) get_tag(buf, "title=",  title,  sizeof(title));
-								(void) get_tag(buf, "artist=", artist, sizeof(artist));
-								(void) get_tag(buf, "source=", source, sizeof(source));
-								size = 0;
-								if (!done_header) {
-									done_header = 1;
-									size += sprintf(buf+size, "<HTML><BODY><TABLE BORDER=2><THEAD>");
-									size += sprintf(buf+size, "<TR><TD> <b>Title</b> <TD> <b>Type</b> <TD> <b>Artist</b> <TD> <b>Source</b> <TBODY>\n");
+				getfids: while (sizeof(fid) == read(playlist_fd, (char *)&fid, sizeof(fid))) {
+					int subitem_fd;
+					fid |= 1;	// select the tagfile
+					sprintf(pathtail, "%x", fid);
+					subitem_fd = open(subpath, O_RDONLY, 0);
+					if (subitem_fd >= 0) {
+						size = read(subitem_fd, buf, bufsize-1);
+						close(subitem_fd);
+						if (size > 0) {
+							int sent;
+							buf[size] = '\0';
+							(void) get_tag(buf, "type=",   type,   sizeof(type));
+							if (parms->format_tagfile == 2 && *type != 't')
+								continue;
+							(void) get_tag(buf, "title=",  title,  sizeof(title));
+							(void) get_tag(buf, "artist=", artist, sizeof(artist));
+							(void) get_tag(buf, "source=", source, sizeof(source));
+							secs = get_duration(buf);
+							size = 0;
+							if (!done_header) {
+								if (parms->format_tagfile == 1 || *type == 't') {
+									size  = sprintf(buf, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s\r\n\r\n",
+										(parms->format_tagfile == 2) ? audio_m3u : text_html);
+									if (parms->format_tagfile == 1) {
+										done_header = 1;
+										size += sprintf(buf+size, "<HTML><BODY><TABLE BORDER=2><THEAD>\r\n"
+											"<TR><TD> <TD> <b>Title</b> <TD> <b>Length</b> <TD> <b>Type</b> "
+											"<TD> <b>Artist</b> <TD> <b>Source</b> <TBODY>\r\n");
+									} else {
+										done_header = 1;
+										size += sprintf(buf+size, "#EXTM3U\r\n");
+									}
 								}
-								if (*type == 't')
-									size += sprintf(buf+size, "<TR><TD> <A HREF=\"%x\">%s</A> ", fid & ~1, title);
-								else
-									size += sprintf(buf+size, "<TR><TD> <A HREF=\"%x?FORMAT\">%s</A> ", fid, title);
-								size += sprintf(buf+size, "<TD> %s <TD> %s <TD> %s \n", type, artist, source);
-								sent = ksock_rw(parms->datasock, buf, size, -1);
-								if (sent != size) {
-									printk("Size=%d, sent=%d\n", size, sent);
-									break;
-								}
+							}
+							if (parms->format_tagfile == 1) {
+								size += sprintf(buf+size, "<TR><TD> <A HREF=\"%x?.m3u\"><em>Play</em></A> ", fid);
+								size += sprintf(buf+size, "<TD> <A HREF=\"%x?.html\">%s</A> <TD> %u:%02u <TD> %s "
+									"<TD> %s <TD> %s \r\n", fid, title, secs / 60, secs % 60,
+									type, artist, source);
+							} else if (*type == 't') {
+								*pathtail = '\0';
+								size += sprintf(buf+size, "#EXTINF:%u,%s - %s\r\nhttp://%s%s%d\r\n",
+									secs, artist, title, parms->serverip, subpath, fid & ~1);
+							}
+							sent = ksock_rw(parms->datasock, buf, size, -1);
+							if (sent != size) {
+								printk("Size=%d, sent=%d\n", size, sent);
+								break;
 							}
 						}
 					}
-					if (done_header) {
-						size = sprintf(buf, "</TABLE></BODY></HTML>\n");
-						(void) ksock_rw(parms->datasock, buf, size, -1);
-					}
+				}
+				if (parms->format_tagfile != 2 && done_header) {
+					static char trailer[] = "</TABLE></BODY></HTML>\r\n";
+					(void) ksock_rw(parms->datasock, trailer, sizeof(trailer)-1, -1);
+				}
+				if (parms->format_tagfile == 2 && !done_header) {
+					parms->format_tagfile = 1;
+					lseek(playlist_fd, 0, 0);
+					goto getfids;
 				}
 				close(playlist_fd);
 				if (!rc)
@@ -1020,7 +1091,7 @@ send_file (server_parms_t *parms, char *path)
 			} else if (!fops->read) {
 				response = 550;
 			} else if (!(response = open_datasock(parms))) {
-				if ((parms->use_http && !parms->format_tagfile) && (response = khttp_send_file_header(parms, path, inode->i_size, buf))) {
+				if ((parms->use_http && !parms->format_tagfile) && (response = khttp_send_file_header(parms, path, inode->i_size, buf, BUF_PAGES*PAGE_SIZE))) {
 					; /* error */
 				} else {
 					do {
@@ -1031,7 +1102,7 @@ send_file (server_parms_t *parms, char *path)
 							response = 451;
 							break;
 						} else if (parms->format_tagfile) {
-							response = send_tagfile(parms, path, buf, size);
+							response = send_tagfile(parms, path, buf, size, BUF_PAGES*PAGE_SIZE);
 							size = 0;	// we assume tag file fits into one page
 						} else if (size && size != ksock_rw(parms->datasock, buf, size, -1)) {
 							response = 426;
@@ -1462,11 +1533,14 @@ khttpd_handle_connection (server_parms_t *parms)
 						else if (c == '&')
 							*p = ';';
 					}
-					if (!strxcmp(cmds, "FORMAT", 1) && glob_match(path, "/drive?/fids/*1")) {
-						parms->format_tagfile = 1;
-					} else {
-						(void) hijack_do_command(cmds, p - cmds); // ignore errors
+					if (glob_match(path, "/drive?/fids/*1")) {
+						if (!strxcmp(cmds, ".html", 1))
+							parms->format_tagfile = 1;
+						else if (!strxcmp(cmds, ".m3u", 1))
+							parms->format_tagfile = 2;
 					}
+					if (!parms->format_tagfile)
+						(void) hijack_do_command(cmds, p - cmds); // ignore errors
 				}
 				use_index = 0;
 				break;
@@ -1496,15 +1570,16 @@ khttpd_handle_connection (server_parms_t *parms)
 }
 
 static int
-get_clientip (server_parms_t *parms)
+get_ipaddr (struct socket *sock, char *ipaddr, int peer)	// peer: 0=local, 1=remote
 {
-	int	rc, addrlen = sizeof(struct sockaddr_in);
+	int rc, len;
+	struct sockaddr_in addr;
 
-	parms->clientip[0] = '\0';
-	rc = parms->clientsock->ops->getname(parms->clientsock, (struct sockaddr *)&parms->clientaddr, &addrlen, 1);
-	return rc < 0
-	 || parms->clientaddr.sin_family != AF_INET
-	 || !inet_ntop(AF_INET, &parms->clientaddr.sin_addr.s_addr, parms->clientip, INET_ADDRSTRLEN);
+	if ((rc = sock->ops->getname(sock, (struct sockaddr *)&addr, &len, peer)))
+		return rc;
+	if (!inet_ntop2(&addr, ipaddr))
+		return -EINVAL;
+	return 0;
 }
 
 static int
@@ -1519,6 +1594,8 @@ ksock_accept (server_parms_t *parms)
 			printk("%s: sock_accept: dup() failed\n", parms->servername);
 		} else if ((rc = parms->clientsock->ops->accept(parms->servsock, parms->clientsock, parms->servsock->file->f_flags)) < 0) {
 			printk("%s: sock_accept: accept() failed, rc=%d\n", parms->servername, rc);
+		} else if (get_ipaddr(parms->clientsock, parms->clientip, 1) || get_ipaddr(parms->clientsock, parms->serverip, 0)) {
+			printk("%s: sock_accept: get_ipaddr() failed\n", parms->servername);
 		} else {
 			unlock_kernel();
 			return 0;	// success
@@ -1534,8 +1611,8 @@ child_thread (void *arg)
 {
 	server_parms_t	*parms = arg;
 
-	if (parms->verbose && !get_clientip(parms))
-		printk("%s: connection from %s\n", parms->servername, parms->clientip);
+	if (parms->verbose)
+		printk("%s: %s connection from %s\n", parms->servername, parms->serverip, parms->clientip);
 	(void) set_sockopt(parms, parms->servsock, SOL_TCP, TCP_NODELAY, 1); // don't care
 	if (parms->use_http) {
 		khttpd_handle_connection(parms);

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v156"
+#define HIJACK_VERSION "v157"
 
 #include <linux/sched.h>
 #include <linux/kernel.h>
@@ -146,7 +146,8 @@ typedef struct button_name_s {
 #define IR_FAKE_POPUP2		IR_NULL_BUTTON-4
 #define IR_FAKE_POPUP1		IR_NULL_BUTTON-5
 #define IR_FAKE_POPUP0		IR_NULL_BUTTON-6
-#define IR_FAKE_NEXTSRC		IR_NULL_BUTTON-7	// This MUST be just after POPUP0 on this list!!
+#define IR_FAKE_VOLADJ		IR_NULL_BUTTON-7
+#define IR_FAKE_NEXTSRC		IR_NULL_BUTTON-8	// This MUST be last on this list!!
 
 #define ALT BUTTON_FLAGS_ALTNAME
 static button_name_t button_names[] = {
@@ -155,11 +156,12 @@ static button_name_t button_names[] = {
 	{IR_FAKE_POPUP2,		"PopUp2"},	// index 2 assumed later in hijack_option_table[]
 	{IR_FAKE_POPUP3,		"PopUp3"},	// index 3 assumed later in hijack_option_table[]
 	{IR_FAKE_NEXTSRC,		"NextSrc"},
+	{IR_FAKE_VOLADJ,		"VolAdj"},
 
 	{IR_FAKE_INITCAR,		"Initial.C"},
 	{IR_FAKE_INITHOME,		"Initial.H"},
 	{IR_NULL_BUTTON,		"null"},
-
+	{IR_RIO_SOURCE_PRESSED,		"Source"},
 	{IR_RIO_1_PRESSED|ALT,		"Time"},
 	{IR_RIO_1_PRESSED,		"One"},
 	{IR_RIO_2_PRESSED|ALT,		"Artist"},
@@ -796,8 +798,7 @@ static unsigned long
 RELEASECODE (unsigned int button)
 {
 	button &= ~BUTTON_FLAGS;
-	if ((button >= IR_FAKE_NEXTSRC && button <= IR_FAKE_POPUP3)
-	 || button == IR_NULL_BUTTON || button == IR_KNOB_LEFT || button == IR_KNOB_RIGHT)
+	if ((button >= IR_FAKE_NEXTSRC && button <= IR_NULL_BUTTON) || button == IR_KNOB_LEFT || button == IR_KNOB_RIGHT)
 		return IR_NULL_BUTTON;
 	return (button > 0xf) ? button | 0x80000000 : button | 1;
 }
@@ -1052,7 +1053,6 @@ voladj_display (int firsttime)
 	return NEED_REFRESH;
 }
 
-#ifdef EMPEG_KNOB_SUPPORTED
 static int
 voladj_prefix_display (int firsttime)
 {
@@ -1071,7 +1071,6 @@ voladj_prefix_display (int firsttime)
 	}
 	return NO_REFRESH;	// gets overridden if overlay still active
 }
-#endif // EMPEG_KNOB_SUPPORTED
 
 static int
 kfont_display (int firsttime)
@@ -1774,6 +1773,7 @@ popup_activate (unsigned int button)
 {
 	button &= ~BUTTON_FLAGS;
 	current_popup = ir_next_match(NULL, button);
+printk("popup_activate(0%x): %p\n", button, current_popup);
 	if (current_popup != NULL) {
 		if (current_popup->old == IR_FAKE_POPUP0)
 		 	current_popup->popup_index = (current_popup->popup_index & ~7) | popup0_index;
@@ -2613,11 +2613,14 @@ hijack_handle_button (unsigned int button, unsigned long delay, int any_ui_is_ac
 			goto done;	// just pass all buttons straight through to userland
 	}
 	switch (button) {
+		case IR_FAKE_VOLADJ:	//fixme: not tested yet
+			activate_dispfunc(voladj_prefix_display, voladj_move);
+			hijacked = 1;
+			break;
 		case IR_FAKE_NEXTSRC:
 			toggle_input_source();
 			hijacked = 1;
 			break;
-
 		case IR_FAKE_POPUP0:
 		case IR_FAKE_POPUP1:
 		case IR_FAKE_POPUP2:
@@ -3267,7 +3270,7 @@ ir_setup_translations2 (unsigned char *buf, unsigned int *table)
 				old &= ~1;
 			if (old >= IR_FAKE_POPUP0 && old <= IR_FAKE_POPUP3) {
 				old |= IR_FLAGS_POPUP;
-			} else if (old != IR_FAKE_INITCAR && old != IR_FAKE_INITHOME && old != IR_FAKE_NEXTSRC) {
+			} else if (old < IR_NULL_BUTTON && old >= IR_FAKE_NEXTSRC) {
 				if (*s == '.') {
 					ir_flags_t *f;
 					do {
@@ -3818,6 +3821,7 @@ get_hijack_options (unsigned char *s)
 void	// invoked from arch/arm/special/empeg_input.c on the first IR poll
 hijack_read_config_file (const char *path)
 {
+	static int sent_initial_buttons = 0;
 	unsigned char *buf = NULL;
 	unsigned long flags;
 	int rc;
@@ -3828,7 +3832,12 @@ hijack_read_config_file (const char *path)
 		printk("hijack.c: open(%s) failed (errno=%d)\n", path, rc);
 	} else if (rc > 0 && buf && *buf) {
 
-		// sequence "matters" here, since get_hijack_options() might rename the "PopUpx" buttons
+		// Ugh.
+		strcpy(button_names[0].name,"Popup0");
+		strcpy(button_names[1].name,"Popup1");
+		strcpy(button_names[2].name,"Popup2");
+		strcpy(button_names[3].name,"Popup3");
+
 		ir_setup_translations(buf);
 		print_ir_translates();
 		get_hijack_options(buf);
@@ -3847,15 +3856,18 @@ hijack_read_config_file (const char *path)
 		}
 
 		// Send initial button sequences, if any
-		save_flags_cli(flags);
-		if (empeg_on_dc_power) {
-			input_append_code(IR_INTERNAL, IR_FAKE_INITCAR);
-			input_append_code(IR_INTERNAL, RELEASECODE(IR_FAKE_INITCAR));
-		} else {
-			input_append_code(IR_INTERNAL, IR_FAKE_INITHOME);
-			input_append_code(IR_INTERNAL, RELEASECODE(IR_FAKE_INITHOME));
+		if (!sent_initial_buttons) {
+			sent_initial_buttons = 1;
+			save_flags_cli(flags);
+			if (empeg_on_dc_power) {
+				input_append_code(IR_INTERNAL, IR_FAKE_INITCAR);
+				input_append_code(IR_INTERNAL, RELEASECODE(IR_FAKE_INITCAR));
+			} else {
+				input_append_code(IR_INTERNAL, IR_FAKE_INITHOME);
+				input_append_code(IR_INTERNAL, RELEASECODE(IR_FAKE_INITHOME));
+			}
+			restore_flags(flags);
 		}
-		restore_flags(flags);
 	}
 	if (buf)
 		kfree(buf);

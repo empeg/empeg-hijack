@@ -884,7 +884,7 @@ static int input_open(struct inode *inode, struct file *filp)
 		return -EBUSY;
 
 	hijack_init();
-	hijack_got_config_file = 0;
+	hijack_got_config_file = 0;	// re-read config.ini each time player restarts
 	users++;
 	MOD_INC_USE_COUNT;
 	

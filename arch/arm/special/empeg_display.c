@@ -1019,7 +1019,7 @@ void hijack_set_standbyLED (int off_on)
 int display_ioctl(struct inode *inode, struct file *filp, unsigned int cmd,
 		  unsigned long arg)
 {
-	extern int hijack_standbyLED_automatic;
+	extern int hijack_standbyLED_on;
 	struct display_dev *dev =
 		(struct display_dev *)filp->private_data;
 
@@ -1079,8 +1079,7 @@ int display_ioctl(struct inode *inode, struct file *filp, unsigned int cmd,
 			empeg_displaypower(0);
 			
 			/* Set standby LED mode */
-			hijack_set_standbyLED(0);	// Off!
-			hijack_standbyLED_automatic = 1;
+			hijack_standbyLED_automatic = (hijack_standbyLED_on > 0);
 		}
 		break;
 		

@@ -1608,6 +1608,7 @@ hijack_do_command (void *sparms, char *buf)
 	server_parms_t	*parms = sparms;
 
 	while (!rc && *nextline) {
+		int nocache = 1;
 		char *s;
 		s = nextline;
 		while (*nextline && *++nextline != '\n' && *nextline != ';' && *nextline != '&');
@@ -1636,11 +1637,15 @@ hijack_do_command (void *sparms, char *buf)
 			hijack_serial_insert("\n", 1, 1);
 		} else if (parms && !strxcmp(s, "FID=", 1)) {
 			sprintf(parms->cwd, "/drive0/fids/%s", s+4);
+			nocache = 0;
 		} else if (parms && !strxcmp(s, "STYLE=", 1) && *(s += 6) && strlen(s) < sizeof(parms->style)) {
 			strcpy(parms->style, s);
+			nocache = 0;
 		} else {
 			rc = -EINVAL;
 		}
+		if (nocache && parms)
+			parms->nocache = 1;
 	}
 	return rc;
 }
@@ -1973,7 +1978,6 @@ khttpd_handle_connection (server_parms_t *parms)
 	if (cmds && *cmds) {
 		char *end;
 
-		parms->nocache = 1;
 		// translate '+' into ' '
 		while ((c = *++p)) {
 			if (c == '+')

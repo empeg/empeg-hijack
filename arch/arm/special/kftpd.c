@@ -40,6 +40,8 @@ extern int hijack_kftpd_control_port;			// from arch/arm/special/hijack.c
 extern int hijack_kftpd_data_port;			// from arch/arm/special/hijack.c
 extern int hijack_kftpd_verbose;			// from arch/arm/special/hijack.c
 extern int hijack_rootdir_dotdot;			// from arch/arm/special/hijack.c
+extern int hijack_kftpd_show_dotfiles;			// from arch/arm/special/hijack.c
+extern int hijack_khttpd_show_dotfiles;			// from arch/arm/special/hijack.c
 extern int hijack_max_connections;			// from arch/arm/special/hijack.c
 extern int hijack_khttpd_commands;			// from arch/arm/special/hijack.c
 extern int hijack_khttpd_dirs;				// from arch/arm/special/hijack.c
@@ -77,7 +79,9 @@ typedef struct server_parms_s {
 	char			need_password;		// bool
 	char			rename_pending;		// bool
 	char			nocache;		// bool
-	unsigned int		data_port;
+	char			show_dotfiles;		// bool
+	char			filler;
+	unsigned short		data_port;
 	off_t			start_offset;		// starting offset for next FTP/HTTP file transfer
 	off_t			end_offset;		// for current HTTP file read
 	unsigned int		umask;
@@ -461,8 +465,9 @@ glob_match (const char *n, const char *p)
 
 typedef struct filldir_parms_s {
 	unsigned short		current_year;	// current calendar year (YYYY), according to the Empeg
-	unsigned short		full_listing;	// 0 == names only, 1 == "ls -al"
-	unsigned short		use_http;	// 0 == ftp, 1 == http
+	unsigned short		full_listing;	// 0 == names only, 1 == "ls -l"
+	unsigned char		use_http;	// bool
+	unsigned char		show_dotfiles;	// bool
 	unsigned short		filecount;	// 0 == end of directory
 	unsigned long		blockcount;	// for "total xxxx" line at end of kftpd dir listing
 	struct super_block	*sb;		// superblock of filesystem, needed for inode lookups
@@ -489,9 +494,13 @@ filldir (void *data, const char *name, int namelen, off_t offset, ino_t ino)
 	unsigned int	len;
 
 	++p->filecount;
-	if (namelen == 2 && name[0] == '.' && name[1] == '.') {
-		if (!hijack_rootdir_dotdot && p->path_len == 1 && p->path[0] == '/')
-			return 0;	// hide '..' in rootdir
+	if (name[0] == '.' && (!p->pattern || p->pattern[0] != '.')) {
+		if (!p->show_dotfiles)
+			return 0;
+		if (namelen == 2 && name[1] == '.') {
+			if (!hijack_rootdir_dotdot && p->path_len == 1 && p->path[0] == '/')
+				return 0;	// hide '..' in rootdir
+		}
 	}
 	// determine next aligned location in p->nam buffer:
 	len = (p->nam_used + 3) & ~3;
@@ -693,6 +702,7 @@ send_dirlist (server_parms_t *parms, char *path, int full_listing)
 	filldir_parms_t	p;
 
 	memset(&p, 0, sizeof(p));
+	p.show_dotfiles	= parms->show_dotfiles;
 	pathlen = strlen(path);
 	if (path[pathlen-1] == '/') {
 		if (pathlen > 1)
@@ -712,6 +722,8 @@ send_dirlist (server_parms_t *parms, char *path, int full_listing)
 			}
 			*d++ = '\0';
 			p.pattern = d;
+			if (*d == '.')
+				p.show_dotfiles = 1;
 		}
 	}
 	filp = filp_open(path,O_RDONLY,0);
@@ -1239,8 +1251,10 @@ open_fidfile:
 					used += sprintf(xfer.buf+used, "<TR><TD COLSPAN=7><FONT COLOR=RED>%s: invalid 'type=%s'</FONT>\n", subpath, tags.type);
 				continue;
 			}
-			if (fidtype == 'P' && parms->generate_playlist == 2)
-				goto open_fidfile;	// nest one level deeper for this playlist
+			if (fidtype == 'P' && parms->generate_playlist == 2) {
+				if (!tags.length[0] || str_val(tags.length))
+					goto open_fidfile;	// nest one level deeper for this playlist
+			}
 			if (!tags.title[0])
 				tags.title = subpath;
 			secs = str_val(tags.duration) / 1000;
@@ -1426,7 +1440,7 @@ append_path (char *path, char *new, char *tmp)
 		strcat(tmp, "/");
 		strcat(tmp, new);
 	}
-	// Now fix-up the path, resolving '..' and removing consecutive '/'
+	// Now fix-up the path, resolving '.' and '..' and removing consecutive '/'
 	*p++ = '/';
 	while (*tmp) {
 		while (*tmp == '/')
@@ -1436,6 +1450,9 @@ append_path (char *path, char *new, char *tmp)
 			while (*--p != '/');
 			if (p == path)
 				++p;
+		} else if (tmp[0] == '.' && (tmp[1] == '/' || tmp[1] == '\0')) {
+			if (*++tmp)
+				++tmp;
 		} else if (*tmp) { // copy simple path element
 			if (*(p-1) != '/')
 				*p++ = '/';
@@ -1554,8 +1571,12 @@ kftpd_handle_command (server_parms_t *parms)
 		response = 530;	// login incorrect
 	} else if (!strxcmp(buf, "LIST", 1) || !strxcmp(buf, "NLST", 1)) {
 		int j = 4;
+		parms->show_dotfiles = hijack_kftpd_show_dotfiles;
 		if (buf[j] == ' ' && buf[j+1] == '-') {
-			while (buf[++j] && buf[j] != ' ');
+			while (buf[++j] && buf[j] != ' ') {
+				if (buf[j] == 'a')
+					parms->show_dotfiles = 1;
+			}
 		}
 		if (buf[j] && buf[j] != ' ') {
 			response = 501;
@@ -1723,6 +1744,7 @@ khttpd_handle_connection (server_parms_t *parms)
 	int	size, use_index = 1;	// look for index.html?
 	const http_response_t *response = NULL;
 
+	parms->show_dotfiles = hijack_khttpd_show_dotfiles;
 	size = ksock_rw(parms->clientsock, buf, buflen, 0);
 	if (size <= 0) {
 		if (parms->verbose)

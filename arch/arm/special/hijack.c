@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v184"
+#define HIJACK_VERSION	"v185"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -353,6 +353,8 @@ static int hijack_spindown_seconds;		// drive spindown timeout in seconds
        int hijack_kftpd_data_port;		// kftpd data port
        int hijack_kftpd_verbose;		// kftpd verbosity
        int hijack_rootdir_dotdot;		// 1 == show '..' in rootdir listings
+       int hijack_kftpd_show_dotfiles;		// 1 == show '.*' in rootdir listings
+       int hijack_khttpd_show_dotfiles;		// 1 == show '.*' in rootdir listings
        int hijack_max_connections;		// restricts memory use
        int hijack_khttpd_port;			// khttpd port
        int hijack_khttpd_verbose;		// khttpd verbosity
@@ -393,6 +395,8 @@ static const hijack_option_t hijack_option_table[] =
 {"kftpd_password",		&hijack_kftpd_password,		(int)"",		0,	0,	sizeof(hijack_kftpd_password)-1},
 {"kftpd_verbose",		&hijack_kftpd_verbose,		0,			1,	0,	1},
 {"rootdir_dotdot",		&hijack_rootdir_dotdot,		0,			1,	0,	1},
+{"kftpd_show_dotfiles",		&hijack_kftpd_show_dotfiles,	0,			1,	0,	1},
+{"khttpd_show_dotfiles",	&hijack_khttpd_show_dotfiles,	1,			1,	0,	1},
 {"khttpd_port",			&hijack_khttpd_port,		80,			1,	0,	65535},
 {"khttpd_verbose",		&hijack_khttpd_verbose,		0,			1,	0,	1},
 {"khttpd_dirs",			&hijack_khttpd_dirs,		1,			1,	0,	1},

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v220"
+#define HIJACK_VERSION	"v221"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -3236,6 +3236,22 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	unsigned char *buf = player_buf;
 	unsigned long flags;
 	int refresh = NEED_REFRESH;
+
+	// fixme: lockup detection logic
+	static unsigned long oldjiffies = 0, oldcount = 0;
+	if (jiffies == oldjiffies) {
+		if (++oldcount >= 5)
+			show_message("ERROR: stuck jiffies", 60*HZ);
+	} else {
+		if (oldcount >= 5) {
+			unsigned long elapsed = jiffies_since(oldjiffies);
+			char buf[36];
+			sprintf(buf, "unstuck at %lu.%lu secs", elapsed / HZ, 100 * elapsed % HZ);
+			show_message(buf, 20*60*HZ);
+		}
+		oldjiffies = jiffies;
+		oldcount = 0;
+	}
 
 	if (hijack_reboot)
 		hijack_reboot_now(dev);

@@ -370,7 +370,8 @@ const unsigned char kfont [1 + '~' - ' '][KFONT_WIDTH] = {  // variable width fo
 #include <linux/proc_fs.h>
 
 
-unsigned char notify_labels[] = "#AFGLMNSTV";	// # must be first, for vitals_display()
+unsigned char notify_labels[] = "#AFGLMNSTV";	// 'F' must match next line
+#define NOTIFY_FIDLINE		2		// index of 'F' in notify_labels[]
 #define NOTIFY_MAX_LINES	(sizeof(notify_labels))
 #define NOTIFY_MAX_LENGTH	64
 static char notify_data[NOTIFY_MAX_LINES][NOTIFY_MAX_LENGTH] = {{0,},};
@@ -1038,34 +1039,52 @@ savearea_display (int firsttime)
 }
 
 static int
+get_drive_size (int hwif, int unit)
+{
+	extern unsigned long idedisk_capacity (ide_drive_t  *drive);
+	unsigned long capacity = idedisk_capacity(&(ide_hwifs[hwif].drives[unit]));
+	return (capacity + (1000 * 1000)) / (2 * 1000 * 1000);
+}
+
+static int
 vitals_display (int firsttime)
 {
 	extern int nr_free_pages;
 	unsigned int *permset=(unsigned int*)(EMPEG_FLASHBASE+0x2000);
-	unsigned char *model, buf[80];
-	int rowcol, i, count;
+	unsigned char *sa, buf[80];
+	int rowcol, i, count, model = 0x2a;
+	unsigned long flags;
 
 	if (!firsttime && jiffies_since(hijack_last_refresh) < HZ)
 		return NO_REFRESH;
 	clear_hijack_displaybuf(COLOR0);
-	rowcol = ROWCOL(0,0);
-	// Hardware Rev; Current FID info:
-	model = "Mk2a";
+
+	// Model, Drives, Temperature:
 	if (permset[0] < 7) 
-		model = "Mk1";
+		model = 1;
 	else if (permset[0] < 9)
-		model = "Mk2";
-	sprintf(buf, "%s, FID:%s\n", model, notify_data[0]);
-	rowcol = draw_string(rowcol, buf, PROMPTCOLOR);
-	// Temperature:
+		model = 2;
+	count = sprintf(buf, "Mk%x:%dG", model, get_drive_size(0,0));
+	model = (model == 1);	// 0 == Mk2(a); 1 == Mk1
+	if (ide_hwifs[model].drives[!model].present)
+		sprintf(buf+count, "+%dG", get_drive_size(model,!model));
+	rowcol = draw_string(ROWCOL(0,0), buf, PROMPTCOLOR);
+	rowcol = draw_string(rowcol, ", ", PROMPTCOLOR);
 	rowcol = draw_temperature(rowcol, read_temperature(), 32, PROMPTCOLOR);
+
+	// Current Playlist and Fid:
+	save_flags_cli(flags);
+	sa = *empeg_state_writebuf;
+	sprintf(buf, "\nPlaylist:%02x%02x, Fid:%s", sa[0x45], sa[0x44], &notify_data[NOTIFY_FIDLINE][3]);
+	restore_flags(flags);
+	rowcol = draw_string(rowcol, buf, PROMPTCOLOR);
+
 	// Virtual Memory Pages Status:  Physical,Cached,Buffers,Free
-	//sprintf(buf,", PgStats:\nP:%lu,C:%lu,B:%lu,F:%u",
-	//	num_physpages, page_cache_size, buffermem/PAGE_SIZE, nr_free_pages);
-	sprintf(buf,", PgStats:\nCach:%lu,Buf:%lu,Free:%u",
+	sprintf(buf,"\nCach:%lu,Buf:%lu,Free:%u",
 		page_cache_size, buffermem/PAGE_SIZE, nr_free_pages);
 	rowcol = draw_string(rowcol, buf, PROMPTCOLOR);
-	// CPU Load Average:
+
+	// System Load Averages:
 	rowcol = draw_string(rowcol, "\nLoadAvg:", PROMPTCOLOR);
 	(void)get_loadavg(buf);
 	count = 0;
@@ -1616,7 +1635,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,18), " Enhancements.v100 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,18), " Enhancements.v101 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}

@@ -518,7 +518,7 @@ static int idedisk_media_change (ide_drive_t *drive)
  * current_capacity() returns the capacity (in sectors) of a drive
  * according to its current geometry/LBA settings.
  */
-static unsigned long idedisk_capacity (ide_drive_t  *drive)
+unsigned long idedisk_capacity (ide_drive_t  *drive)
 {
 	struct hd_driveid *id = drive->id;
 	unsigned long capacity = drive->cyl * drive->head * drive->sect;

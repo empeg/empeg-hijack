@@ -120,7 +120,7 @@ const unsigned char kfont [1 + '~' - ' '][KFONT_WIDTH] = {  // variable width fo
 	{0x42,0x61,0x51,0x49,0x46,0x00}, // 2
 	{0x22,0x49,0x49,0x49,0x36,0x00}, // 3
 	{0x18,0x14,0x12,0x7f,0x10,0x00}, // 4
-	{0x27,0x49,0x49,0x49,0x31,0x00}, // 5
+	{0x2f,0x49,0x49,0x49,0x31,0x00}, // 5
 	{0x3e,0x49,0x49,0x49,0x32,0x00}, // 6
 	{0x01,0x01,0x61,0x19,0x07,0x00}, // 7
 	{0x36,0x49,0x49,0x49,0x36,0x00}, // 8
@@ -438,7 +438,7 @@ static void vitals_refresh (unsigned long ignored, int firsttime)
 	unsigned int *permset=(unsigned int*)(EMPEG_FLASHBASE+0x2000);
 	unsigned char buf[80];
 	int temp, col;
-	unsigned long flags;
+	struct sysinfo i;
 
 	if (firsttime || jiffies_since(vitals_lasttime) > (2*HZ)) {
 		clear_hijacked_displaybuf(COLOR0);
@@ -447,6 +447,8 @@ static void vitals_refresh (unsigned long ignored, int firsttime)
 		sprintf(buf, "Flash:%dk, Ram:%dk", permset[9]==0xffffffff?1024:permset[9], permset[8]==0xffffffff?8192:permset[8]);
 		(void)draw_string(1, 0, buf, COLOR2);
 #if 0 // locks up the machine.
+{
+		unsigned long flags;
 		save_flags_cli(flags);
 		temp = empeg_readtherm(&OSMR0,&GPLR);
 		restore_flags(flags);
@@ -455,10 +457,13 @@ static void vitals_refresh (unsigned long ignored, int firsttime)
 			temp = -(128 - (temp ^ 0x80));
 		sprintf(buf, "Temperature: %dC/%dF", temp, temp * 180 / 100 + 32);
 		(void)draw_string(2, 0, buf, COLOR2);
+}
+#else
+		si_meminfo(&i);
+		sprintf(buf, "Free: %lu/%lu", i.freeram, i.totalram);
+		(void)draw_string(2, 0, buf, COLOR2);
 #endif
-		save_flags_cli(flags);
 		(void)get_loadavg(buf);
-		restore_flags(flags);
 		temp = 0;
 		for (col = 0;; ++col) {
 			if (buf[col] == ' ' && ++temp == 3)
@@ -521,7 +526,7 @@ static void game_finale (void)
 	if (jiffies_since(game_ball_lastmove) < (HZ*2))
 		return;
 	if (game_bricks) {
-		(void)draw_string(1, 20, " Enhancements.v21 ", -COLOR3);
+		(void)draw_string(1, 20, " Enhancements.v22 ", -COLOR3);
 		(void)draw_string(2, 33, "by Mark Lord", COLOR3);
 		if (jiffies_since(game_ball_lastmove) < (HZ*3))
 			return;

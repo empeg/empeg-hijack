@@ -17,6 +17,9 @@
 #include <asm/hardirq.h>
 #include <asm/delay.h>
 #include <asm/irq.h>
+#if defined(CONFIG_KDB)
+#include <linux/kdb.h>
+#endif
 
 extern void dump_thread(struct pt_regs *, struct user *);
 extern int dump_fpu(elf_fpregset_t *);
@@ -118,4 +121,18 @@ EXPORT_SYMBOL(mca_is_adapter_used);
 
 #ifdef CONFIG_VT
 EXPORT_SYMBOL(screen_info);
+#endif
+
+#if defined(CONFIG_KDB)
+EXPORT_SYMBOL(kdb_register);
+EXPORT_SYMBOL(kdb_unregister);
+EXPORT_SYMBOL(kdbgetword);
+EXPORT_SYMBOL(kdbgetularg);
+EXPORT_SYMBOL(kdbgetenv);
+EXPORT_SYMBOL(kdbgetintenv);
+EXPORT_SYMBOL(kdbgetaddrarg);
+EXPORT_SYMBOL(kdb);
+EXPORT_SYMBOL(kdbgetsymval);
+EXPORT_SYMBOL(kdbnearsym);
+EXPORT_SYMBOL(kdb_printf);
 #endif

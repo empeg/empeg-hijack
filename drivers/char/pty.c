@@ -75,6 +75,7 @@ static void pty_close(struct tty_struct * tty, struct file * filp)
 			return;
 	}
 	wake_up_interruptible(&tty->read_wait);
+	wake_up_interruptible(&tty->poll_wait);
 	wake_up_interruptible(&tty->write_wait);
 	tty->packet = 0;
 	if (!tty->link)
@@ -82,6 +83,7 @@ static void pty_close(struct tty_struct * tty, struct file * filp)
 	tty->link->packet = 0;
 	wake_up_interruptible(&tty->link->read_wait);
 	wake_up_interruptible(&tty->link->write_wait);
+	wake_up_interruptible(&tty->link->poll_wait);
 	set_bit(TTY_OTHER_CLOSED, &tty->link->flags);
 	if (tty->driver.subtype == PTY_TYPE_MASTER) {
 		set_bit(TTY_OTHER_CLOSED, &tty->flags);
@@ -119,6 +121,7 @@ static void pty_unthrottle(struct tty_struct * tty)
 	    o_tty->ldisc.write_wakeup)
 		(o_tty->ldisc.write_wakeup)(o_tty);
 	wake_up_interruptible(&o_tty->write_wait);
+	wake_up_interruptible(&o_tty->poll_wait);
 	set_bit(TTY_THROTTLED, &tty->flags);
 }
 
@@ -168,7 +171,9 @@ static int pty_write(struct tty_struct * tty, int from_user,
 		}
 		up(&tty->flip.pty_sem);
 	} else {
-		c = MIN(count, to->ldisc.receive_room(to));
+		c = to->ldisc.receive_room(to);
+		if (c > count)
+			c = count;
 		to->ldisc.receive_buf(to, buf, 0, c);
 	}
 	
@@ -294,6 +299,7 @@ static void pty_flush_buffer(struct tty_struct *tty)
 	if (to->packet) {
 		tty->ctrl_status |= TIOCPKT_FLUSHWRITE;
 		wake_up_interruptible(&to->read_wait);
+		wake_up_interruptible(&to->poll_wait);
 	}
 }
 

@@ -15,11 +15,7 @@
  * breaking the fragile cmd640.c support.
  */
 
-#if defined(CONFIG_BLK_DEV_CMD640) || \
-    defined(CONFIG_IDE_CHIPSETS) || \
-    defined(CONFIG_BLK_DEV_OPTI621) || \
-    defined(CONFIG_BLK_DEV_IDE_PMAC) || \
-    defined(CONFIG_BLK_DEV_SL82C105)
+#if defined(CONFIG_BLK_DEV_CMD640) || defined(CONFIG_IDE_CHIPSETS) || defined(CONFIG_BLK_DEV_OPTI621) || defined(CONFIG_BLK_DEV_IDE_PMAC) || defined(CONFIG_BLK_DEV_CS5530) || defined(CONFIG_BLK_DEV_SL82C105)
 
 /*
  * Standard (generic) timings for PIO modes, from ATA2 specification.

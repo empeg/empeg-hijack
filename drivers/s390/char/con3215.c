@@ -3,7 +3,7 @@
  *    3215 line mode terminal driver.
  *
  *  S390 version
- *    Copyright (C) 1999 IBM Deutschland Entwicklung GmbH, IBM Corporation
+ *    Copyright (C) 1999,2000 IBM Deutschland Entwicklung GmbH, IBM Corporation
  *    Author(s): Martin Schwidefsky (schwidefsky@de.ibm.com),
  */
 
@@ -22,7 +22,7 @@
 #include <asm/uaccess.h>
 
 #include "../../../arch/s390/kernel/cpcmd.h"
-#include "../../../arch/s390/kernel/irq.h"
+#include <asm/irq.h>
 
 #define NR_3215		    1
 #define NR_3215_REQ	    (4*NR_3215)
@@ -30,8 +30,9 @@
 #define RAW3215_INBUF_SIZE  256	      /* input buffer size */
 #define RAW3215_MIN_SPACE   128	      /* minimum free space for wakeup */
 #define RAW3215_MIN_WRITE   1024      /* min. length for immediate output */
-#define RAW3215_MAX_CCWLEN  3968      /* max. bytes to write with one ccw */
-#define RAW3215_NR_CCWS	    ((RAW3215_BUFFER_SIZE/RAW3215_MAX_CCWLEN)+2)
+#define RAW3215_MAX_BYTES   3968      /* max. bytes to write with one ssch */
+#define RAW3215_MAX_NEWLINE 50        /* max. lines to write with one ssch */
+#define RAW3215_NR_CCWS	    3
 #define RAW3215_TIMEOUT	    HZ/10     /* time for delayed output */
 
 #define RAW3215_FIXED	    1	      /* 3215 console device is not be freed */
@@ -42,14 +43,17 @@
 #define RAW3215_CLOSING	    32	      /* set while in close process */
 #define RAW3215_TIMER_RUNS  64	      /* set if the output delay timer is on */
 #define RAW3215_FLUSHING    128	      /* set to flush buffer (no delay) */
+#define RAW3215_BH_PENDING  256       /* indication for bh scheduling */
 
 struct _raw3215_info;		      /* forward declaration ... */
+
+int raw3215_condevice = -1;           /* preset console device */
 
 /*
  * Request types for a 3215 device
  */
 typedef enum {
-	RAW3215_READ, RAW3215_WRITE
+	RAW3215_FREE, RAW3215_READ, RAW3215_WRITE
 } raw3215_type;
 
 /*
@@ -57,7 +61,8 @@ typedef enum {
  */
 typedef struct _raw3215_req {
 	raw3215_type type;	      /* type of the request */
-	int start, end;		      /* start/end index into output buffer */
+	int start, len;		      /* start index & len in output buffer */
+        int delayable;                /* indication to wait for more data */
 	int residual;		      /* residual count for read request */
 	ccw1_t ccws[RAW3215_NR_CCWS]; /* space for the channel program */
 	struct _raw3215_info *info;   /* pointer to main structure */
@@ -71,6 +76,7 @@ typedef struct _raw3215_info {
 	char *inbuf;		      /* pointer to input buffer */
 	int head;		      /* first free byte in output buffer */
 	int count;		      /* number of bytes in output buffer */
+        int written;                  /* number of bytes in write requests */
 	devstat_t devstat;	      /* device status structure for do_IO */
 	struct tty_struct *tty;	      /* pointer to tty structure if present */
 	struct tq_struct tqueue;      /* task queue to bottom half */
@@ -97,6 +103,16 @@ static int tty3215_refcount;
 #define MIN(a,b)	((a) < (b) ? (a) : (b))
 #endif
 
+__initfunc(void con3215_setup(char *str, char *ints))
+{
+        int vdev;
+
+        vdev = simple_strtoul(str,&str,10);
+        if (vdev >= 0 && vdev < 65536)
+                raw3215_condevice = vdev;
+        return;
+}
+
 /*
  * Get a request structure from the free list
  */
@@ -117,6 +133,9 @@ extern inline raw3215_req *raw3215_alloc_req(void) {
 extern inline void raw3215_free_req(raw3215_req *req) {
 	unsigned long flags;
 
+        if (req->type == RAW3215_FREE)
+                return;         /* don't free a free request */
+        req->type = RAW3215_FREE;
 	spin_lock_irqsave(&raw3215_freelist_lock, flags);
 	req->next = raw3215_freelist;
 	raw3215_freelist = req;
@@ -124,35 +143,15 @@ extern inline void raw3215_free_req(raw3215_req *req) {
 }
 
 /*
- * Get a write request structure. That is either a new or the last
- * queued write request. The request structure is set up in 
- * raw3215_mk_write_ccw.
+ * Set up a read request that reads up to 160 byte from the 3215 device.
+ * If there is a queued read request it is used, but that shouldn't happen
+ * because a 3215 terminal won't accept a new read before the old one is
+ * completed.
  */
-static raw3215_req *raw3215_mk_write_req(raw3215_info *raw)
+static void raw3215_mk_read_req(raw3215_info *raw)
 {
 	raw3215_req *req;
-
-	/* check if there is a queued write request */
-	req = raw->queued_write;
-	if (req == NULL) {
-		/* no queued write request, use new req structure */
-		req = raw3215_alloc_req();
-		req->type = RAW3215_WRITE;
-		req->info = raw;
-		req->start = raw->head;
-	} else
-		raw->queued_write = NULL;
-	return req;
-}
-
-/*
- * Get a read request structure. If there is a queued read request
- * it is used, but that shouldn't happen because a 3215 terminal
- * won't accept a new read before the old one is completed.
- */
-static raw3215_req *raw3215_mk_read_req(raw3215_info *raw)
-{
-	raw3215_req *req;
+        ccw1_t *ccw;
 
 	/* there can only be ONE read request at a time */
 	req = raw->queued_read;
@@ -161,24 +160,66 @@ static raw3215_req *raw3215_mk_read_req(raw3215_info *raw)
 		req = raw3215_alloc_req();
 		req->type = RAW3215_READ;
 		req->info = raw;
-	} else
-		raw->queued_read = NULL;
-	return req;
+                raw->queued_read = req;
+	}
+
+        ccw = req->ccws;
+        ccw->cmd_code = 0x0A; /* read inquiry */
+        ccw->flags = 0x20;    /* ignore incorrect length */
+        ccw->count = 160;
+        ccw->cda = (void *) virt_to_phys(raw->inbuf);
 }
 
 /*
  * Set up a write request with the information from the main structure.
- * A ccw chain is created that writes everything in the output buffer
- * to the 3215 device.
+ * A ccw chain is created that writes as much as possible from the output
+ * buffer to the 3215 device. If a queued write exists it is replaced by
+ * the new, probably lengthened request.
  */
-static int raw3215_mk_write_ccw(raw3215_info *raw, raw3215_req *req)
+static void raw3215_mk_write_req(raw3215_info *raw)
 {
+	raw3215_req *req;
 	ccw1_t *ccw;
-	int len, count, ix;
+	int len, count, ix, lines;
+
+        if (raw->count <= raw->written)
+                return;
+        /* check if there is a queued write request */
+        req = raw->queued_write;
+	if (req == NULL) {
+                /* no queued write request, use new req structure */
+		req = raw3215_alloc_req();
+                req->type = RAW3215_WRITE;
+		req->info = raw;
+                raw->queued_write = req;
+        } else {
+                raw->written -= req->len;
+}
 
 	ccw = req->ccws;
-	req->end = (raw->head - 1) & (RAW3215_BUFFER_SIZE - 1);
-	len = ((req->end - req->start) & (RAW3215_BUFFER_SIZE - 1)) + 1;
+        req->start = (raw->head - raw->count + raw->written) &
+                     (RAW3215_BUFFER_SIZE - 1);
+/*
+         * now we have to count newlines. We can at max accept
+         * RAW3215_MAX_NEWLINE newlines in a single ssch due to
+         * a restriction in VM
+ */
+        lines = 0;
+        ix = req->start;
+        while (lines < RAW3215_MAX_NEWLINE && ix != raw->head) {
+                if (raw->buffer[ix] == '\n')
+                        lines++;
+                ix = (ix + 1) & (RAW3215_BUFFER_SIZE - 1);
+        }
+	len = ((ix - 1 - req->start) & (RAW3215_BUFFER_SIZE - 1)) + 1;
+        if (len > RAW3215_MAX_BYTES)
+                len = RAW3215_MAX_BYTES;
+        req->len = len;
+        raw->written += len;
+
+        /* set the indication if we should try to enlarge this request */
+        req->delayable = (ix == raw->head) && (len < RAW3215_MIN_WRITE);
+
 	ix = req->start;
 	while (len > 0) {
 		if (ccw > req->ccws)
@@ -187,8 +228,7 @@ static int raw3215_mk_write_ccw(raw3215_info *raw, raw3215_req *req)
 		ccw->flags = 0x20;    /* ignore incorrect length ind.  */
 		ccw->cda =
 			(void *) virt_to_phys(raw->buffer + ix);
-		count = (len > RAW3215_MAX_CCWLEN) ? 
-			RAW3215_MAX_CCWLEN : len;
+		count = len;
 		if (ix + count > RAW3215_BUFFER_SIZE)
 			count = RAW3215_BUFFER_SIZE-ix;
 		ccw->count = count;
@@ -196,32 +236,17 @@ static int raw3215_mk_write_ccw(raw3215_info *raw, raw3215_req *req)
 		ix = (ix + count) & (RAW3215_BUFFER_SIZE - 1);
 		ccw++;
 	}
-	if (ccw > req->ccws)
-		ccw[-1].flags |= 0x40;	/* use command chaining */
-	ccw->cmd_code = 0x03; /* nop at the end */
-	ccw->flags = 0x20;    /* ignore incorrect length */
-	ccw->cda = NULL;      /* no data address for nop */
-	ccw->count = 0;	      /* no count for nop */
-	return len;
-}
-
 /*
- * Set up a read request that reads up to 160 byte from the 3215 device.
+         * Add a NOP to the channel program. 3215 devices are purely
+         * emulated and its much better to avoid the channel end 
+         * interrupt in this case.
  */
-static void raw3215_mk_read_ccw(raw3215_info *raw, raw3215_req *req)
-{
-	ccw1_t *ccw;
-
-	ccw = req->ccws;
-	ccw->cmd_code = 0x0A; /* read inquiry */
-	ccw->flags = 0x60;    /* ignore incorrect length & command chaining */
-	ccw->count = 160;
-	ccw->cda = (void *) virt_to_phys(raw->inbuf);
-	ccw++;
-	ccw->cmd_code = 0x03; /* nop at the end */
-	ccw->flags = 0x20;    /* ignore incorrect length ind. */
-	ccw->cda = NULL;      /* no data address for nop */
-	ccw->count = 0;	      /* no count for nop */
+        if (ccw > req->ccws)
+                ccw[-1].flags |= 0x40; /* use command chaining */
+        ccw->cmd_code = 0x03; /* NOP */
+        ccw->flags = 0;
+        ccw->cda = 0;
+        ccw->count = 1;
 }
 
 /*
@@ -272,6 +297,7 @@ static void raw3215_timeout(unsigned long __data)
 	if (raw->flags & RAW3215_TIMER_RUNS) {
 		del_timer(&raw->timer);
 		raw->flags &= ~RAW3215_TIMER_RUNS;
+                raw3215_mk_write_req(raw);
 		raw3215_start_io(raw);
 	}
 	s390irq_spin_unlock_irqrestore(raw->irq, flags);
@@ -290,7 +316,7 @@ extern inline void raw3215_try_io(raw3215_info *raw)
 	if (raw->queued_read != NULL)
 		raw3215_start_io(raw);
 	else if (raw->queued_write != NULL) {
-		if (raw->count >= RAW3215_MIN_WRITE ||
+		if ((raw->queued_write->delayable == 0) ||
 		    (raw->flags & RAW3215_FLUSHING)) {
 			/* execute write requests bigger than minimum size */
 			raw3215_start_io(raw);
@@ -322,7 +348,9 @@ static void raw3215_softint(void *data)
 
 	raw = (raw3215_info *) data;
 	s390irq_spin_lock_irqsave(raw->irq, flags);
-	raw3215_try_io((raw3215_info *) data);
+        raw3215_mk_write_req(raw);
+        raw3215_try_io(raw);
+        raw->flags &= ~RAW3215_BH_PENDING;
 	s390irq_spin_unlock_irqrestore(raw->irq, flags);
 	/* Check for pending message from raw3215_irq */
 	if (raw->message != NULL) {
@@ -336,7 +364,23 @@ static void raw3215_softint(void *data)
 		    tty->ldisc.write_wakeup)
 			(tty->ldisc.write_wakeup)(tty);
 		wake_up_interruptible(&tty->write_wait);
+                wake_up_interruptible(&tty->poll_wait);
 	}
+}
+
+/*
+ * Function to safely add raw3215_softint to tq_immediate.
+ * The s390irq spinlock must be held.
+ */
+static inline void raw3215_sched_bh(raw3215_info *raw)
+{
+        if (raw->flags & RAW3215_BH_PENDING)
+                return;       /* already pending */
+        raw->flags |= RAW3215_BH_PENDING;
+        raw->tqueue.routine = raw3215_softint;
+        raw->tqueue.data = raw;
+        queue_task(&raw->tqueue, &tq_immediate);
+        mark_bh(IMMEDIATE_BH);
 }
 
 /*
@@ -365,7 +409,7 @@ static void raw3215_irq(int irq, void *int_parm, struct pt_regs *regs)
 	struct tty_struct *tty;
 	devstat_t *stat;
         int cstat, dstat;
-	int count;
+	int count, slen;
 
 	stat = (devstat_t *) int_parm;
 	req = (raw3215_req *) stat->intparm;
@@ -379,22 +423,11 @@ static void raw3215_irq(int irq, void *int_parm, struct pt_regs *regs)
 				"(dev %i, dev sts 0x%2x, sch sts 0x%2x)";
 			raw->msg_dstat = dstat;
 			raw->msg_cstat = cstat;
-			queue_task(&raw->tqueue, &tq_immediate);
-			mark_bh(IMMEDIATE_BH);
+                        raw3215_sched_bh(raw);
 		}
 	}
         if (dstat & 0x01) { /* we got a unit exception */
-		raw = raw3215_find_info(irq);
-		if (raw != NULL) {
-                        raw->message = KERN_WARNING
-                                "Got a unit exception in raw3215_irq "
-                                "(dev %i, dev sts 0x%2x, sch sts 0x%2x)";
-                        raw->msg_dstat = dstat;
-                        raw->msg_cstat = cstat;
-                        queue_task(&raw->tqueue, &tq_immediate);
-                        mark_bh(IMMEDIATE_BH);
-		}
-		dstat &= ~0x01;
+		dstat &= ~0x01;  /* we can ignore it */
         }
 	switch (dstat) {
 	case 0x80:
@@ -404,16 +437,16 @@ static void raw3215_irq(int irq, void *int_parm, struct pt_regs *regs)
 		if ((raw = raw3215_find_info(irq)) == NULL)
 			return;              /* That shouldn't happen ... */
 		/* Setup a read request */
-		req = raw3215_mk_read_req(raw);
-		raw3215_mk_read_ccw(raw, req);
-		raw->queued_read = req;
-		queue_task(&raw->tqueue, &tq_immediate);
-		mark_bh(IMMEDIATE_BH);
+		raw3215_mk_read_req(raw);
+                if (MACHINE_IS_P390)
+                        memset(raw->inbuf, 0, RAW3215_INBUF_SIZE);
+                raw3215_sched_bh(raw);
 		break;
 	case 0x08:
 	case 0x0C:
 		/* Channel end interrupt. */
-		raw = req->info;
+		if ((raw = req->info) == NULL)
+                        return;              /* That shouldn't happen ... */
 		if (req->type == RAW3215_READ) {
 			/* store residual count, then wait for device end */
 			req->residual = stat->rescnt;
@@ -422,29 +455,42 @@ static void raw3215_irq(int irq, void *int_parm, struct pt_regs *regs)
 			break;
 	case 0x04:
 		/* Device end interrupt. */
-		raw = req->info;
+                if ((raw = req->info) == NULL)
+                        return;              /* That shouldn't happen ... */
 		if (req->type == RAW3215_READ && raw->tty != NULL) {
 			tty = raw->tty;
 			count = 160 - req->residual;
+                        if (MACHINE_IS_P390) {
+                                slen = strnlen(raw->inbuf, RAW3215_INBUF_SIZE);
+                                if (count > slen)
+                                        count = slen;
+                        } else
 			if (count >= TTY_FLIPBUF_SIZE - tty->flip.count)
 				count = TTY_FLIPBUF_SIZE - tty->flip.count - 1;
 			EBCASC(raw->inbuf, count);
-			if (count == 2 &&
-			    strncmp(raw->inbuf, "^c", 2) == 0) {
+			if (count == 2 && (
+			    /* hat is 0xb0 in codepage 037 (US etc.) and thus */
+			    /* converted to 0x5e in ascii ('^') */
+			    strncmp(raw->inbuf, "^c", 2) == 0 ||
+			    /* hat is 0xb0 in several other codepages (German,*/
+			    /* UK, ...) and thus converted to ascii octal 252 */
+			    strncmp(raw->inbuf, "\252c", 2) == 0) ) {
 				/* emulate a control C = break */
 				tty->flip.count++;
 				*tty->flip.flag_buf_ptr++ = TTY_NORMAL;
 				*tty->flip.char_buf_ptr++ = INTR_CHAR(tty);
 				tty_flip_buffer_push(raw->tty);
-			} else if (count == 2 &&
-				   strncmp(raw->inbuf, "^d", 2) == 0) {
+			} else if (count == 2 && (
+				   strncmp(raw->inbuf, "^d", 2) == 0 ||
+				    strncmp(raw->inbuf, "\252d", 2) == 0) ) {
 				/* emulate a control D = end of file */
 				tty->flip.count++;
 				*tty->flip.flag_buf_ptr++ = TTY_NORMAL;
 				*tty->flip.char_buf_ptr++ = EOF_CHAR(tty);
 				tty_flip_buffer_push(raw->tty);
-			} else if (count == 2 &&
-				   strncmp(raw->inbuf, "^z", 2) == 0) {
+			} else if (count == 2 && (
+				   strncmp(raw->inbuf, "^z", 2) == 0 ||
+				    strncmp(raw->inbuf, "\252z", 2) == 0) ) {
 				/* emulate a control Z = suspend */
 				tty->flip.count++;
 				*tty->flip.flag_buf_ptr++ = TTY_NORMAL;
@@ -454,7 +500,8 @@ static void raw3215_irq(int irq, void *int_parm, struct pt_regs *regs)
 				memcpy(tty->flip.char_buf_ptr,
 				       raw->inbuf, count);
 				if (count < 2 ||
-				    strncmp(raw->inbuf+count-2, "^n", 2)) {
+				    (strncmp(raw->inbuf+count-2, "^n", 2) ||
+				    strncmp(raw->inbuf+count-2, "\252n", 2)) ) {
 					/* don't add the auto \n */
 					tty->flip.char_buf_ptr[count] = '\n';
 					memset(tty->flip.flag_buf_ptr,
@@ -468,8 +515,8 @@ static void raw3215_irq(int irq, void *int_parm, struct pt_regs *regs)
 				tty_flip_buffer_push(raw->tty);
 			}
 		} else if (req->type == RAW3215_WRITE) {
-			raw->count -= ((req->end - req->start) &
-				       (RAW3215_BUFFER_SIZE - 1)) + 1;
+			raw->count -= req->len;
+                        raw->written -= req->len;
 		}
 		raw->flags &= ~RAW3215_WORKING;
 		raw3215_free_req(req);
@@ -480,28 +527,26 @@ static void raw3215_irq(int irq, void *int_parm, struct pt_regs *regs)
 			wake_up_interruptible(&raw->empty_wait);
 			raw->empty_wait = NULL;
 		}
-		queue_task(&raw->tqueue, &tq_immediate);
-		mark_bh(IMMEDIATE_BH);
+                raw3215_sched_bh(raw);
 		break;
 	default:
-		if (dstat & 0x04) {
 			/* Strange interrupt, I'll do my best to clean up */
-			if (req != NULL && req->info != NULL &&
-			    req->type == RAW3215_WRITE) {
-				req->info->count -= ((req->end - req->start) &
-					            (RAW3215_BUFFER_SIZE-1))+1;
+                if ((raw = raw3215_find_info(irq)) == NULL)
+                        return;              /* That shouldn't happen ... */
+		if (req != NULL && req->type != RAW3215_FREE) {
+		        if (req->type == RAW3215_WRITE) {
+			        raw->count -= req->len;
+                                raw->written -= req->len;
+                        }
+                        raw->flags &= ~RAW3215_WORKING;
+                        raw3215_free_req(req);
 			}
-		}
-		raw = raw3215_find_info(irq);
-		if (raw != NULL) {
 			raw->message = KERN_WARNING
 				"Spurious interrupt in in raw3215_irq "
 				"(dev %i, dev sts 0x%2x, sch sts 0x%2x)";
 			raw->msg_dstat = dstat;
 			raw->msg_cstat = cstat;
-			queue_task(&raw->tqueue, &tq_immediate);
-			mark_bh(IMMEDIATE_BH);
-		}
+                raw3215_sched_bh(raw);
 	}
 	return;
 }
@@ -513,7 +558,6 @@ static int
 raw3215_write(raw3215_info *raw, const char *str,
 	      int from_user, unsigned int length)
 {
-	raw3215_req *req;
 	unsigned long flags;
 	int ret, c;
 	int count;
@@ -527,14 +571,15 @@ raw3215_write(raw3215_info *raw, const char *str,
 
 		while (RAW3215_BUFFER_SIZE - raw->count < count) {
 			/* there might be a request pending */
+                        raw3215_mk_write_req(raw);
 			raw3215_try_io(raw);
 			if (wait_cons_dev(raw->irq) != 0) {
 				/* that shouldn't happen */
 				raw->count = 0;
+                                raw->written = 0;
 			} 
 		}
 
-		req = raw3215_mk_write_req(raw);
 		/* copy string to output buffer and convert it to EBCDIC */
 		if (from_user) {
 			while (1) {
@@ -575,12 +620,12 @@ raw3215_write(raw3215_info *raw, const char *str,
 				ret += c;
 			}
 		}
-		raw3215_mk_write_ccw(raw, req);
-		raw->queued_write = req;
+                if (!(raw->flags & RAW3215_WORKING)) {
+                        raw3215_mk_write_req(raw);
 		/* start or queue request */
 		raw3215_try_io(raw);
+                }
 		s390irq_spin_unlock_irqrestore(raw->irq, flags);
-
 	}
 
 	return ret;
@@ -591,27 +636,28 @@ raw3215_write(raw3215_info *raw, const char *str,
  */
 static void raw3215_putchar(raw3215_info *raw, unsigned char ch)
 {
-	raw3215_req *req;
 	unsigned long flags;
 
 	s390irq_spin_lock_irqsave(raw->irq, flags);
 	while (RAW3215_BUFFER_SIZE - raw->count < 1) {
 		/* there might be a request pending */
+                raw3215_mk_write_req(raw);
 		raw3215_try_io(raw);
 		if (wait_cons_dev(raw->irq) != 0) {
 			/* that shouldn't happen */
 			raw->count = 0;
+                        raw->written = 0;
 		}
 	}
 
-	req = raw3215_mk_write_req(raw);
 	raw->buffer[raw->head] = (char) _ascebc[(int) ch];
 	raw->head = (raw->head + 1) & (RAW3215_BUFFER_SIZE - 1);
 	raw->count++;
-	raw3215_mk_write_ccw(raw, req);
-	raw->queued_write = req;
+        if (!(raw->flags & RAW3215_WORKING)) {
+                raw3215_mk_write_req(raw);
 	/* start or queue request */
 	raw3215_try_io(raw);
+        }
 	s390irq_spin_unlock_irqrestore(raw->irq, flags);
 }
 
@@ -646,6 +692,7 @@ static int raw3215_startup(raw3215_info *raw)
 		return -1;
 	raw->flags |= RAW3215_ACTIVE;
 	s390irq_spin_lock_irqsave(raw->irq, flags);
+        set_cons_dev(raw->irq);
 	raw3215_try_io(raw);
 	s390irq_spin_unlock_irqrestore(raw->irq, flags);
 
@@ -687,18 +734,20 @@ raw3215_find_dev(int number)
 	int irq;
 	int count;
 
-	irq = 0;
+	irq = get_irq_first();
 	count = 0;
-	while (count <= number && get_dev_info(irq, &dinfo) != -ENODEV) {
-		if (dinfo.sid_data.cu_type == 0x3215)
+        while (count <= number && irq != -ENODEV) {
+                if (get_dev_info(irq, &dinfo) == -ENODEV)
+                        break;
+		if (dinfo.devno == raw3215_condevice ||
+                    dinfo.sid_data.cu_type == 0x3215) {
 			count++;
-		irq++;
-	}
-	if (count <= number)
-		irq = -1;     /* console not found */
-	else
-		irq--;
+                    if (count > number)
 	return irq;
+}
+                irq = get_irq_next(irq);
+        }
+        return -1;            /* console not found */
 }
 
 #ifdef CONFIG_3215_CONSOLE
@@ -710,7 +759,7 @@ int con3215_activate(void)
 {
 	raw3215_info *raw;
 
-        if (!MACHINE_IS_VM)
+        if (!MACHINE_IS_VM && !MACHINE_IS_P390)
                 return 0;
 	raw = raw3215[0];  /* 3215 console is the first one */
 	if (raw->irq == -1) /* now console device found in con3215_init */
@@ -748,20 +797,21 @@ void con3215_unblank(void)
 
 	raw = raw3215[0];  /* console 3215 is the first one */
 	s390irq_spin_lock_irqsave(raw->irq, flags);
-	while (RAW3215_BUFFER_SIZE > raw->count) {
+	while (raw->count > 0) {
 		/* there might be a request pending */
 		raw->flags |= RAW3215_FLUSHING;
 		raw3215_try_io(raw);
 		if (wait_cons_dev(raw->irq) != 0) {
 			/* that shouldn't happen */
 			raw->count = 0;
+                        raw->written = 0;
 		}
 		raw->flags &= ~RAW3215_FLUSHING;
 	}
 	s390irq_spin_unlock_irqrestore(raw->irq, flags);
 }
 
-__initfunc(static int con3215_setup(struct console *co, char *options))
+__initfunc(static int con3215_consetup(struct console *co, char *options))
 {
 	return 0;
 }
@@ -776,7 +826,7 @@ static struct console con3215 = {
 	con3215_device,
 	NULL,
 	con3215_unblank,
-	con3215_setup,
+	con3215_consetup,
 	CON_PRINTBUFFER,
 	0,
 	0,
@@ -918,6 +968,7 @@ static void tty3215_flush_buffer(struct tty_struct *tty)
 	raw = (raw3215_info *) tty->driver_data;
 	raw3215_flush_buffer(raw);
 	wake_up_interruptible(&tty->write_wait);
+        wake_up_interruptible(&tty->poll_wait);
 	if ((tty->flags & (1 << TTY_DO_WRITE_WAKEUP)) &&
 	    tty->ldisc.write_wakeup)
 		(tty->ldisc.write_wakeup)(tty);
@@ -1008,12 +1059,12 @@ __initfunc (long con3215_init(long kmem_start, long kmem_end))
 	raw3215_req *req;
 	int i;
 
-	if (!MACHINE_IS_VM)
+	if (!MACHINE_IS_VM && !MACHINE_IS_P390)
                 return kmem_start;
+        if (MACHINE_IS_VM) {
 	cpcmd("TERM CONMODE 3215", NULL, 0);
 	cpcmd("TERM AUTOCR OFF", NULL, 0);
-	cpcmd("TERM HOLD OFF", NULL, 0);
-	cpcmd("TERM MORE 5 5", NULL, 0);
+        }
 
 	kmem_start = (kmem_start + 7) & -8L;
 
@@ -1043,9 +1094,6 @@ __initfunc (long con3215_init(long kmem_start, long kmem_end))
 
 	if (raw->irq != -1) {
 		register_console(&con3215);
-		s390irq_spin_lock(raw->irq);
-		set_cons_dev(raw->irq);
-		s390irq_spin_unlock(raw->irq);
 	} else {
 		kmem_start = (long) raw;
 		raw3215[0] = NULL;

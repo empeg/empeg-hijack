@@ -24,6 +24,7 @@
 
 #include "ide.h"
 
+#define DEVID_450NX	((ide_pci_devid_t){PCI_VENDOR_ID_INTEL,   PCI_DEVICE_ID_INTEL_82451NX})
 #define DEVID_PIIXa	((ide_pci_devid_t){PCI_VENDOR_ID_INTEL,   PCI_DEVICE_ID_INTEL_82371FB_0})
 #define DEVID_PIIXb	((ide_pci_devid_t){PCI_VENDOR_ID_INTEL,   PCI_DEVICE_ID_INTEL_82371FB_1})
 #define DEVID_PIIX3	((ide_pci_devid_t){PCI_VENDOR_ID_INTEL,   PCI_DEVICE_ID_INTEL_82371SB_1})
@@ -47,17 +48,18 @@
 #define DEVID_UM8886A	((ide_pci_devid_t){PCI_VENDOR_ID_UMC,     PCI_DEVICE_ID_UMC_UM8886A})
 #define DEVID_UM8886BF	((ide_pci_devid_t){PCI_VENDOR_ID_UMC,     PCI_DEVICE_ID_UMC_UM8886BF})
 #define DEVID_HPT343	((ide_pci_devid_t){PCI_VENDOR_ID_TTI,     PCI_DEVICE_ID_TTI_HPT343})
-#define DEVID_AL5229	((ide_pci_devid_t){PCI_VENDOR_ID_AL,	  PCI_DEVICE_ID_AL_M5229})
-#define DEVID_82C693	((ide_pci_devid_t){PCI_VENDOR_ID_CONTAQ,  PCI_DEVICE_ID_CONTAQ_82C693})
+#define DEVID_AL5229  ((ide_pci_devid_t){PCI_VENDOR_ID_AL,      PCI_DEVICE_ID_AL_M5229})
+#define DEVID_82C693  ((ide_pci_devid_t){PCI_VENDOR_ID_CONTAQ,  PCI_DEVICE_ID_CONTAQ_82C693})
+#define DEVID_CS5530	((ide_pci_devid_t){PCI_VENDOR_ID_CYRIX,   PCI_DEVICE_ID_CYRIX_5530_IDE})
 
 #define IDE_IGNORE	((void *)-1)
 
 static void ide_init_al5229(ide_hwif_t *hw)
 {
-	/* hack, hack */
-	hw->hw.irq += hw->channel;
+      /* hack, hack */
+      hw->hw.irq += hw->channel;
 }
-#define INIT_AL5229	&ide_init_al5229
+#define INIT_AL5229   &ide_init_al5229
 
 #ifdef CONFIG_BLK_DEV_TRM290
 extern void ide_init_trm290(ide_hwif_t *);
@@ -112,6 +114,15 @@ extern void ide_init_via82c586(ide_hwif_t *);
 #define	INIT_VIA82C586	NULL
 #endif
 
+#ifdef CONFIG_BLK_DEV_CS5530
+extern void ide_init_cs5530(ide_hwif_t *);
+#define INIT_CS5530     &ide_init_cs5530
+#else
+#define INIT_CS5530     NULL
+#endif
+
+static int autodma_default = 0;
+
 typedef struct ide_pci_enablebit_s {
 	byte	reg;	/* byte pci reg holding the enable-bit */
 	byte	mask;	/* mask to isolate the enable-bit */
@@ -150,9 +161,10 @@ static ide_pci_device_t ide_pci_chipsets[] __initdata = {
 	{DEVID_UM8886A,	"UM8886A",	NULL,		{{0x00,0x00,0x00}, {0x00,0x00,0x00}},	ON_BOARD,	0 },
 	{DEVID_UM8886BF,"UM8886BF",	NULL,		{{0x00,0x00,0x00}, {0x00,0x00,0x00}}, 	ON_BOARD,	0 },
 	{DEVID_HPT343,	"HPT343",	NULL,		{{0x00,0x00,0x00}, {0x00,0x00,0x00}},	NEVER_BOARD,	16 },
-	{DEVID_AL5229,  "AL5229",	INIT_AL5229,	{{0x00,0x00,0x00}, {0x00,0x00,0x00}},	ON_BOARD,	0 },
-	/* can't drive this interface yet */
-	{DEVID_82C693,	"82C693",	IDE_IGNORE,	{{0x00,0x00,0x00}, {0x00,0x00,0x00}},	ON_BOARD,	0 },
+        {DEVID_AL5229,  "AL5229",       INIT_AL5229,    {{0x00,0x00,0x00}, {0x00,0x00,0x00}},   ON_BOARD,       0 },
+        /* can't drive this interface yet */
+        {DEVID_82C693,  "82C693",       IDE_IGNORE,     {{0x00,0x00,0x00}, {0x00,0x00,0x00}},   ON_BOARD,       0 },
+	{DEVID_CS5530,	"CS5530",	INIT_CS5530,	{{0x00,0x00,0x00}, {0x00,0x00,0x00}},	ON_BOARD,	112 },
 	{IDE_PCI_DEVID_NULL, "PCI_IDE",	NULL,		{{0x00,0x00,0x00}, {0x00,0x00,0x00}}, 	ON_BOARD,	0 }};
 
 /*
@@ -248,7 +260,7 @@ __initfunc(static ide_hwif_t *ide_match_hwif (unsigned long io_base, byte bootab
 				return hwif;	/* pick an unused entry */
 		}
 	}
-	for (h = 0; h < 2; ++h) {
+	for (h = 0; h < ((MAX_HWIFS >= 2) ? 2 : MAX_HWIFS); ++h) {
 		hwif = ide_hwifs + h;
 		if (hwif->chipset == ide_unknown)
 			return hwif;	/* pick an unused entry */
@@ -299,14 +311,12 @@ __initfunc(static int ide_setup_pci_baseregs (struct pci_dev *dev, const char *n
  */
 __initfunc(static void ide_setup_pci_device (struct pci_dev *dev, ide_pci_device_t *d))
 {
-	unsigned int port, at_least_one_hwif_enabled = 0, autodma = 0, pciirq = 0;
+	unsigned int port, at_least_one_hwif_enabled = 0, pciirq = 0;
 	unsigned short pcicmd = 0, tried_config = 0;
 	byte tmp = 0;
 	ide_hwif_t *hwif, *mate = NULL;
+	int autodma = autodma_default;
 
-#ifdef CONFIG_IDEDMA_AUTO
-	autodma = 1;
-#endif
 check_if_enabled:
 	if (pci_read_config_word(dev, PCI_COMMAND, &pcicmd)) {
 		printk("%s: error accessing PCI regs\n", d->name);
@@ -404,6 +414,7 @@ check_if_enabled:
 		if (IDE_PCI_DEVID_EQ(d->devid, DEVID_PDC20246) ||
 		    IDE_PCI_DEVID_EQ(d->devid, DEVID_AEC6210) ||
 		    IDE_PCI_DEVID_EQ(d->devid, DEVID_HPT343) ||
+		    IDE_PCI_DEVID_EQ(d->devid, DEVID_CS5530) ||
 		    ((dev->class >> 8) == PCI_CLASS_STORAGE_IDE && (dev->class & 0x80))) {
 			unsigned long dma_base = ide_get_or_set_dma_base(hwif, (!mate && d->extra) ? d->extra : 0, d->name);
 			if (dma_base && !(pcicmd & PCI_COMMAND_MASTER)) {
@@ -444,6 +455,19 @@ __initfunc(void ide_scan_pcibus (void))
 
 	if (!pci_present())
 		return;
+
+#ifdef CONFIG_IDEDMA_AUTO
+	autodma_default = 1;
+	for(dev = pci_devices; dev; dev=dev->next) {
+		devid.vid = dev->vendor;
+		devid.did = dev->device;
+		if (IDE_PCI_DEVID_EQ(devid, DEVID_450NX)) {
+			autodma_default = 0;
+			break;
+		}
+	}
+#endif
+
 	for(dev = pci_devices; dev; dev=dev->next) {
 		devid.vid = dev->vendor;
 		devid.did = dev->device;

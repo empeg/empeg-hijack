@@ -2,7 +2,7 @@
  *  include/asm-s390/uaccess.h
  *
  *  S390 version
- *    Copyright (C) 1999 IBM Deutschland Entwicklung GmbH, IBM Corporation
+ *    Copyright (C) 1999,2000 IBM Deutschland Entwicklung GmbH, IBM Corporation
  *    Author(s): Hartmut Penner (hp@de.ibm.com),
  *               Martin Schwidefsky (schwidefsky@de.ibm.com)
  *
@@ -84,15 +84,14 @@ extern inline int __put_user_asm_4(__u32 x, void *ptr)
 {
         int err;
 
-        __asm__ __volatile__ (  "   iac   1\n"
-				"   sr    %1,%1\n"
+        __asm__ __volatile__ (  "   sr    %1,%1\n"
 				"   la    4,%0\n"
                                 "   sacf  512\n"
                                 "0: st    %2,0(4)\n"
-                                "   sacf  0(1)\n"
+                                "   sacf  0\n"
 				"1:\n"
 				".section .fixup,\"ax\"\n"
-				"2: sacf  0(1)\n"
+				"2: sacf  0\n"
 				"   lhi   %1,%h3\n"
 				"   bras  4,3f\n"
 				"   .long 1b\n"
@@ -105,7 +104,7 @@ extern inline int __put_user_asm_4(__u32 x, void *ptr)
 				".previous"
                                 : "=m" (*((__u32*) ptr)) , "=&d" (err)
                                 : "d" (x), "K" (-EFAULT)
-                                : "1", "4" );
+                                : "4" );
         return err;
 }
 
@@ -113,15 +112,14 @@ extern inline int __put_user_asm_2(__u16 x, void *ptr)
 {
         int err;
 
-        __asm__ __volatile__ (  "   iac   1\n"
-				"   sr    %1,%1\n"
+        __asm__ __volatile__ (  "   sr    %1,%1\n"
 				"   la    4,%0\n"
                                 "   sacf  512\n"
                                 "0: sth   %2,0(4)\n"
-                                "   sacf  0(1)\n"
+                                "   sacf  0\n"
 				"1:\n"
 				".section .fixup,\"ax\"\n"
-				"2: sacf  0(1)\n"
+				"2: sacf  0\n"
 				"   lhi   %1,%h3\n"
 				"   bras  4,3f\n"
 				"   .long 1b\n"
@@ -134,7 +132,7 @@ extern inline int __put_user_asm_2(__u16 x, void *ptr)
 				".previous"
                                 : "=m" (*((__u16*) ptr)) , "=&d" (err)
                                 : "d" (x), "K" (-EFAULT)
-                                : "1", "4" );
+                                : "4" );
         return err;
 }
 
@@ -142,15 +140,14 @@ extern inline int __put_user_asm_1(__u8 x, void *ptr)
 {
         int err;
 
-        __asm__ __volatile__ (  "   iac   1\n"
-				"   sr    %1,%1\n"
+        __asm__ __volatile__ (  "   sr    %1,%1\n"
 				"   la    4,%0\n"
                                 "   sacf  512\n"
                                 "0: stc   %2,0(4)\n"
-                                "   sacf  0(1)\n"
+                                "   sacf  0\n"
 				"1:\n"
 				".section .fixup,\"ax\"\n"
-				"2: sacf  0(1)\n"
+				"2: sacf  0\n"
 				"   lhi   %1,%h3\n"
 				"   bras  4,3f\n"
 				"   .long 1b\n"
@@ -163,7 +160,7 @@ extern inline int __put_user_asm_1(__u8 x, void *ptr)
 				".previous"
                                 : "=m" (*((__u8*) ptr)) , "=&d" (err)
                                 : "d" (x), "K" (-EFAULT)
-                                : "1", "4" );
+                                : "4" );
         return err;
 }
 
@@ -208,15 +205,14 @@ extern int __put_user_bad(void);
 
 #define __get_user_asm_4(x, ptr, err)                                   \
 ({                                                                      \
-        __asm__ __volatile__ (  "   iac   1\n"                          \
-                                "   sr    %1,%1\n"                      \
+        __asm__ __volatile__ (  "   sr    %1,%1\n"                      \
                                 "   la    4,%2\n"                       \
                                 "   sacf  512\n"                        \
                                 "0: l     %0,0(4)\n"                    \
-                                "   sacf  0(1)\n"                       \
+                                "   sacf  0\n"                          \
                                 "1:\n"                                  \
                                 ".section .fixup,\"ax\"\n"              \
-                                "2: sacf  0(1)\n"                       \
+                                "2: sacf  0\n"                          \
                                 "   lhi   %1,%h3\n"                     \
                                 "   bras  4,3f\n"                       \
                                 "   .long 1b\n"                         \
@@ -229,20 +225,19 @@ extern int __put_user_bad(void);
                                 ".previous"                             \
                                 : "=d" (x) , "=&d" (err)                \
                                 : "m" (*(__u32*) ptr), "K" (-EFAULT)    \
-                                : "1", "4" );                           \
+                                : "4" );                                \
 })
 
 #define __get_user_asm_2(x, ptr, err)                                   \
 ({                                                                      \
-        __asm__ __volatile__ (  "   iac   1\n"                          \
-                                "   sr    %1,%1\n"                      \
+        __asm__ __volatile__ (  "   sr    %1,%1\n"                      \
                                 "   la    4,%2\n"                       \
                                 "   sacf  512\n"                        \
                                 "0: lh    %0,0(4)\n"                    \
-                                "   sacf  0(1)\n"                       \
+                                "   sacf  0\n"                          \
                                 "1:\n"                                  \
                                 ".section .fixup,\"ax\"\n"              \
-                                "2: sacf  0(1)\n"                       \
+                                "2: sacf  0\n"                          \
                                 "   lhi   %1,%h3\n"                     \
                                 "   bras  4,3f\n"                       \
                                 "   .long 1b\n"                         \
@@ -255,21 +250,20 @@ extern int __put_user_bad(void);
                                 ".previous"                             \
                                 : "=d" (x) , "=&d" (err)                \
                                 : "m" (*(__u16*) ptr), "K" (-EFAULT)    \
-                                : "1", "4" );                           \
+                                : "4" );                                \
 })
 
 #define __get_user_asm_1(x, ptr, err)                                   \
 ({                                                                      \
-        __asm__ __volatile__ (  "   iac   1\n"                          \
-                                "   sr    %1,%1\n"                      \
+        __asm__ __volatile__ (  "   sr    %1,%1\n"                      \
                                 "   la    4,%2\n"                       \
                                 "   sr    %0,%0\n"                      \
                                 "   sacf  512\n"                        \
                                 "0: ic    %0,0(4)\n"                    \
-                                "   sacf  0(1)\n"                       \
+                                "   sacf  0\n"                          \
                                 "1:\n"                                  \
                                 ".section .fixup,\"ax\"\n"              \
-                                "2: sacf  0(1)\n"                       \
+                                "2: sacf  0\n"                          \
                                 "   lhi   %1,%h3\n"                     \
                                 "   bras  4,3f\n"                       \
                                 "   .long 1b\n"                         \
@@ -282,7 +276,7 @@ extern int __put_user_bad(void);
                                 ".previous"                             \
                                 : "=d" (x) , "=&d" (err)                \
                                 : "m" (*(__u8*) ptr), "K" (-EFAULT)     \
-                                : "1", "4" );                           \
+                                : "4" );                                \
 })
 
 #define __get_user(x, ptr)                                      \
@@ -321,6 +315,20 @@ extern int __put_user_bad(void);
         __gu_err;                                               \
 })
 
+/*
+ * The "xxx_ret" versions return constant specified in third argument, if
+ * something bad happens. These macros can be optimized for the
+ * case of just returning from the function xxx_ret is used.
+ */
+
+#define put_user_ret(x,ptr,ret) ({ if (put_user(x,ptr)) return ret; })
+
+#define get_user_ret(x,ptr,ret) ({ if (get_user(x,ptr)) return ret; })
+
+#define __put_user_ret(x,ptr,ret) ({ if (__put_user(x,ptr)) return ret; })
+
+#define __get_user_ret(x,ptr,ret) ({ if (__get_user(x,ptr)) return ret; })
+
 extern int __get_user_bad(void);
 
 /*
@@ -331,22 +339,32 @@ extern inline unsigned long
 __copy_to_user_asm(void* to, const void* from,  long n)
 {
 
-        __asm__ __volatile__ (  "   iac   1\n"
-                                "   lr    2,%2\n"
+        __asm__ __volatile__ (  "   lr    2,%2\n"
                                 "   lr    4,%1\n"
                                 "   lr    3,%0\n"
                                 "   lr    5,3\n"
                                 "   sacf  512\n"
                                 "0: mvcle 4,2,0\n"
                                 "   jo    0b\n"
-                                "1: sacf  0(1)\n"
-                                "   lr    %0,3\n"
+                                "   sacf  0\n"
+                                "1: lr    %0,3\n"
+                                ".section .fixup,\"ax\"\n"
+                                "2: lhi   5,-4096\n"
+                                "   n     5,0x90\n"
+                                "   sr    5,4\n"
+                                "   mvcle 4,2,0\n"
+                                "   sacf  0\n"
+                                "   basr  4,0\n"
+                                "   l     4,3f-.(4)\n"
+                                "   br    4\n"
+                                "3: .long 1b\n"
+                                ".previous\n"
 				".section __ex_table,\"a\"\n"
 				"   .align 4\n"
-				"   .long  0b,1b\n"
+				"   .long  0b,2b\n"
 				".previous"
                                 : "+&d" (n) : "d" (to), "d" (from)
-                                : "1", "2", "3", "4", "5" );
+                                : "2", "3", "4", "5" );
         return n;
 }
 
@@ -370,25 +388,34 @@ __copy_to_user_asm(void* to, const void* from,  long n)
 extern inline unsigned long
 __copy_from_user_asm(void* to, const void* from,  long n)
 {
-        __asm__ __volatile__ (  "   iac   1\n"
-				"   lr    2,%1\n"
+        __asm__ __volatile__ (  "   lr    2,%1\n"
                                 "   lr    4,%2\n"
                                 "   lr    3,%0\n"
                                 "   lr    5,3\n"
                                 "   sacf  512\n"
                                 "0: mvcle 2,4,0\n"
                                 "   jo    0b\n"
-                                "1: sacf  0(1)\n"
-                                "   lr    %0,3\n"
+                                "   sacf  0\n"
+                                "1: lr    %0,5\n"
+                                ".section .fixup,\"ax\"\n"
+                                "2: lhi   3,-4096\n"
+                                "   n     3,0x90\n"
+                                "   sr    3,4\n"
+                                "   mvcle 2,4,0\n"
+                                "   sacf  0\n"
+                                "   basr  4,0\n"
+                                "   l     4,3f-.(4)\n"
+                                "   br    4\n"
+                                "3: .long 1b\n"
+                                ".previous\n"
 				".section __ex_table,\"a\"\n"
 				"   .align 4\n"
-				"   .long  0b,1b\n"
+				"   .long  0b,2b\n"
 				".previous"
                                 : "+&d" (n) : "d" (to), "d" (from)
-                                : "1", "2", "3", "4", "5" );
+                                : "2", "3", "4", "5" );
         return n;
 }
-
 
 #define __copy_from_user(to, from, n)                           \
 ({                                                              \
@@ -418,39 +445,36 @@ __copy_from_user_asm(void* to, const void* from,  long n)
 static inline long
 strncpy_from_user(char *dst, const char *src, long count)
 {
-        int len;
-        __asm__ __volatile__ (  "   iac   1\n"
-				"   slr   %0,%0\n"
+        long len;
+        __asm__ __volatile__ (  "   slr   %0,%0\n"
 				"   lr    2,%1\n"
                                 "   lr    4,%2\n"
                                 "   slr   3,3\n"
                                 "   sacf  512\n"
                                 "0: ic    3,0(%0,4)\n"
                                 "1: stc   3,0(%0,2)\n"
-                                "   ahi   %0,1\n"
-                                "   cr    %0,%3\n"
-                                "   je    2f\n"
                                 "   ltr   3,3\n"
-                                "   jne   0b\n"
-                                "2: sacf  0(1)\n"
-				"3:\n"
+                                "   jz    2f\n"
+                                "   ahi   %0,1\n"
+                                "   clr   %0,%3\n"
+                                "   jl    0b\n"
+                                "2: sacf  0\n"
 				".section .fixup,\"ax\"\n"
-				"4: sacf  0(1)\n"
-                                "   lhi   %0,%h4\n"
-				"   bras  3,5f\n"
-				"   .long 3b\n"
-				"5: l     3,0(3)\n"
+                                "3: lhi   %0,%h4\n"
+				"   basr  3,0\n"
+                                "   l     3,4f-.(3)\n"
 				"   br    3\n"
+				"4: .long 2b\n"
 				".previous\n"
 				".section __ex_table,\"a\"\n"
 				"   .align 4\n"
-				"   .long  0b,4b\n"
-				"   .long  1b,4b\n"
+				"   .long  0b,3b\n"
+                                "   .long  1b,3b\n"
 				".previous"
                                 : "=&a" (len)
                                 : "a"  (dst), "d" (src), "d" (count),
                                   "K" (-EFAULT)
-                                : "1", "2" ,"3", "4" );
+                                : "2", "3", "4", "memory" );
         return len;
 }
 
@@ -459,10 +483,10 @@ strncpy_from_user(char *dst, const char *src, long count)
  *
  * Return 0 for error
  */
-static inline long strnlen_user(const char * src, long n)
+static inline unsigned long
+strnlen_user(const char * src, unsigned long n)
 {
-	__asm__ __volatile__ ("   iac   1\n"
-                              "   alr   %0,%1\n"
+	__asm__ __volatile__ ("   alr   %0,%1\n"
 			      "   slr   0,0\n"
 			      "   lr    4,%1\n"
 			      "   sacf  512\n"
@@ -470,10 +494,10 @@ static inline long strnlen_user(const char * src, long n)
 			      "   jo    0b\n"
 			      "   slr   %0,%1\n"
 			      "   ahi   %0,1\n"
-			      "   sacf  0(1)\n"
+			      "   sacf  0\n"
                               "1:\n"
                               ".section .fixup,\"ax\"\n"
-                              "2: sacf  0(1)\n"
+                              "2: sacf  0\n"
                               "   slr   %0,%0\n"
                               "   bras  4,3f\n"
                               "   .long 1b\n"
@@ -485,10 +509,10 @@ static inline long strnlen_user(const char * src, long n)
 			      "   .long  0b,2b\n"
 			      ".previous"
 			      : "+&a" (n) : "d" (src)
-			      : "cc", "0", "1", "4" );
+			      : "cc", "0", "4" );
         return n;
 }
-#define strlen_user(str) strnlen_user(str, ~0UL >> 1)
+#define strlen_user(str) strnlen_user(str, ~0UL)
 
 /*
  * Zero Userspace
@@ -497,23 +521,33 @@ static inline long strnlen_user(const char * src, long n)
 static inline unsigned long
 clear_user(void *to, unsigned long n)
 {
-        __asm__ __volatile__ (  "   iac   1\n"
-                                "   sacf  512\n"
+        __asm__ __volatile__ (  "   sacf  512\n"
                                 "   lr    4,%1\n"
                                 "   lr    5,%0\n"
                                 "   sr    2,2\n"
                                 "   sr    3,3\n"
                                 "0: mvcle 4,2,0\n"
                                 "   jo    0b\n"
-                                "1: sacf  0(1)\n"
-                                "   lr    %0,3\n"
+                                "   sacf  0\n"
+                                "1: lr    %0,3\n"
+                                ".section .fixup,\"ax\"\n"
+                                "2: lhi   5,-4096\n"
+                                "   n     5,0x90\n"
+                                "   sr    5,4\n"
+                                "   mvcle 4,2,0\n"
+                                "   sacf  0\n"
+                                "   basr  4,0\n"
+                                "   l     4,3f-.(4)\n"
+                                "   br    4\n"
+                                "3: .long 1b\n"
+                                ".previous\n"
 				".section __ex_table,\"a\"\n"
 				"   .align 4\n"
-				"   .long  0b,1b\n"
+				"   .long  0b,2b\n"
 				".previous"
                                 : "+&a" (n)
                                 : "a"   (to)
-                                : "cc", "1", "2", "3", "4", "5" );
+                                : "cc", "2", "3", "4", "5" );
         return n;
 }
 

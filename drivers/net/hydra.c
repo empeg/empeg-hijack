@@ -3,7 +3,7 @@
 /* also some code & lots of fixes by Timo Rossi (trossi@cc.jyu.fi)          */
 
 /* The code is mostly based on the linux/68k Ariadne driver                 */
-/* copyrighted by Geert Uytterhoeven (Geert.Uytterhoeven@cs.kuleuven.ac.be) */
+/* copyrighted by Geert Uytterhoeven (geert@linux-m68k.org)                 */
 /* and Peter De Schrijver (Peter.DeSchrijver@linux.cc.kuleuven.ac.be)       */
 
 /* This file is subject to the terms and conditions of the GNU General      */
@@ -13,6 +13,10 @@
 /* The Amiganet is a Zorro-II board made by Hydra Systems. It contains a    */
 /* NS8390 NIC (network interface controller) clone, 16 or 64K on-board RAM  */
 /* and 10BASE-2 (thin coax) and AUI connectors.                             */
+
+/* Changes:								    */
+/* Arnaldo Carvalho de Melo <acme@conectiva.com.br> - 08/15/2000	    */
+/* - check resource allocation in hydra_probe				    */
 
 
 #include <linux/module.h>
@@ -183,6 +187,10 @@ __initfunc(int hydra_probe(struct device *dev))
 			init_etherdev(dev, 0);
 	    
 			dev->priv = kmalloc(sizeof(struct hydra_private), GFP_KERNEL);
+
+			if (!dev->priv)
+				return -ENOMEM;
+
 			priv = (struct hydra_private *)dev->priv;
 			memset(priv, 0, sizeof(struct hydra_private));
 	    

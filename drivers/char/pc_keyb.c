@@ -56,6 +56,9 @@ unsigned char pckbd_sysrq_xlate[128] =
 
 static void kbd_write_command_w(int data);
 static void kbd_write_output_w(int data);
+#ifdef CONFIG_PSMOUSE
+static void aux_write_ack(int val);
+#endif
 
 spinlock_t kbd_controller_lock = SPIN_LOCK_UNLOCKED;
 static unsigned char handle_kbd_event(void);
@@ -72,6 +75,9 @@ static volatile unsigned char resend = 0;
  */
 
 static int __init psaux_init(void);
+
+#define AUX_RECONNECT    170
+/* #define CHECK_RECONNECT_SCANCODE 1 */
 
 static struct aux_queue *queue;	/* Mouse data buffer. */
 static int aux_count = 0;
@@ -393,6 +399,18 @@ static inline void handle_mouse_event(unsigned char scancode)
 		}
 		mouse_reply_expected = 0;
 	}
+    else if(scancode == AUX_RECONNECT){
+        queue->head = queue->tail = 0;  /* Flush input queue */
+        /* ping the mouse :) */
+	kb_wait();
+	kbd_write_command(KBD_CCMD_WRITE_MOUSE);
+	kb_wait();
+	kbd_write_output(AUX_ENABLE_DEV);
+	/* we expect an ACK in response. */
+	mouse_reply_expected++;
+	kb_wait();
+        return;
+    }
 
 	add_mouse_randomness(scancode);
 	if (aux_count) {
@@ -426,6 +444,9 @@ static unsigned char handle_kbd_event(void)
 		unsigned char scancode;
 
 		scancode = kbd_read_input();
+#  ifdef CHECK_RECONNECT_SCANCODE
+    printk(KERN_INFO "-=db=-: kbd_read_input() : scancode == %d\n",scancode);
+#  endif
 		if (status & KBD_STAT_MOUSE_OBF) {
 			handle_mouse_event(scancode);
 		} else {

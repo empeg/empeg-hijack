@@ -96,6 +96,8 @@ typedef struct	SHT
      */
     int (* detect)(struct SHT *);
 
+    int (*revoke)(Scsi_Device *);
+
     /* Used with loadable modules to unload the host structures.  Note:
      * there is a default action built into the modules code which may
      * be sufficient for most host adapters.  Thus you may not have to supply
@@ -484,10 +486,10 @@ extern void scsi_unregister_module(int, void *);
 #ifdef CONFIG_SCSI_PLUTO_MODULE
 #define SD_EXTRA_DEVS 40
 #else
-#define SD_EXTRA_DEVS 4
+#define SD_EXTRA_DEVS 21
 #endif
-#define ST_EXTRA_DEVS 2
-#define SR_EXTRA_DEVS 2
+#define ST_EXTRA_DEVS 3
+#define SR_EXTRA_DEVS 8
 #define SG_EXTRA_DEVS (SD_EXTRA_DEVS + SR_EXTRA_DEVS + ST_EXTRA_DEVS)
 
 #endif

@@ -348,7 +348,7 @@ typedef enum {	ide_unknown,	ide_generic,	ide_pci,
 		ide_cmd640,	ide_dtc2278,	ide_ali14xx,
 		ide_qd6580,	ide_umc8672,	ide_ht6560b,
 		ide_pdc4030,	ide_rz1000,	ide_trm290,
-		ide_cmd646,	ide_4drives
+		ide_cmd646,	ide_4drives,	ide_pmac
 	} hwif_chipset_t;
 
 typedef struct ide_pci_devid_s {
@@ -406,6 +406,12 @@ typedef enum {
  */
 typedef ide_startstop_t (ide_handler_t)(ide_drive_t *);
 
+/*
+ * when ide_timer_expiry fires, invoke a handler of this type
+ * to decide what to do.
+ */
+typedef int (ide_expiry_t)(ide_drive_t *);
+
 typedef struct hwgroup_s {
 	ide_handler_t		*handler;/* irq handler, if active */
 	volatile int		busy;	/* BOOL: protects all fields below */
@@ -416,6 +422,7 @@ typedef struct hwgroup_s {
 	struct timer_list	timer;	/* failsafe timer */
 	struct request		wrq;	/* local copy of current write rq */
 	unsigned long		poll_timeout;	/* timeout value during long polls */
+	ide_expiry_t		*expiry; /* queried upon timeouts */
 	} ide_hwgroup_t;
 
 /*
@@ -586,7 +593,7 @@ void atapi_output_bytes (ide_drive_t *drive, void *buffer, unsigned int bytecoun
  * This is used on exit from the driver, to designate the next irq handler
  * and also to start the safety timer.
  */
-void ide_set_handler (ide_drive_t *drive, ide_handler_t *handler, unsigned int timeout);
+void ide_set_handler (ide_drive_t *drive, ide_handler_t *handler, unsigned int timeout, ide_expiry_t *expiry);
 
 /*
  * Error reporting, in human readable form (luxurious, but a memory hog).

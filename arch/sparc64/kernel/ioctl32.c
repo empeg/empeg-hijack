@@ -1,8 +1,10 @@
-/* $Id: ioctl32.c,v 1.62.2.8 1999/11/16 23:59:31 davem Exp $
+/* $Id: ioctl32.c,v 1.62.2.13 2000/07/27 01:50:59 davem Exp $
  * ioctl32.c: Conversion between 32bit and 64bit native ioctls.
  *
  * Copyright (C) 1997  Jakub Jelinek  (jj@sunsite.mff.cuni.cz)
  * Copyright (C) 1998  Eddie C. Dost  (ecd@skynet.be)
+ * Copyright (C) 2000  Vinh Truong (vinh.truong@eng.sun.com)
+ *              --- VT: add commands for envctrl driver in sys32_ioctl()
  *
  * These routines maintain argument size conversion between 32bit and 64bit
  * ioctls.
@@ -37,6 +39,8 @@
 #include <linux/ext2_fs.h>
 #include <linux/videodev.h>
 #include <linux/netdevice.h>
+#include <linux/smb_fs.h>
+#include <linux/blkdev.h>
 
 #include <scsi/scsi.h>
 /* Ugly hack. */
@@ -55,6 +59,7 @@
 #include <asm/envctrl.h>
 #include <asm/audioio.h>
 #include <asm/ethtool.h>
+#include <asm/display7seg.h>
 
 #include <linux/soundcard.h>
 
@@ -1436,11 +1441,21 @@ struct cdrom_read_audio32 {
 	__kernel_caddr_t32	buf;
 };
 
+struct cdrom_generic_command32 {
+	unsigned char		cmd[CDROM_PACKET_SIZE];
+	__kernel_caddr_t32	buffer;
+	unsigned int		buflen;
+	int			stat;
+	__kernel_caddr_t32	sense;
+	__kernel_caddr_t32	reserved[3];
+};
+
 static int cdrom_ioctl_trans(unsigned int fd, unsigned int cmd, unsigned long arg)
 {
 	mm_segment_t old_fs = get_fs();
 	struct cdrom_read cdread;
 	struct cdrom_read_audio cdreadaudio;
+	struct cdrom_generic_command cgc;
 	__kernel_caddr_t32 addr;
 	char *data = 0;
 	void *karg;
@@ -1475,6 +1490,17 @@ static int cdrom_ioctl_trans(unsigned int fd, unsigned int cmd, unsigned long ar
 			return -ENOMEM;
 		cdreadaudio.buf = data;
 		break;
+	case CDROM_SEND_PACKET:
+		karg = &cgc;
+		err = copy_from_user(cgc.cmd, &((struct cdrom_generic_command32 *)arg)->cmd, sizeof(cgc.cmd));
+		err |= __get_user(addr, &((struct cdrom_generic_command32 *)arg)->buffer);
+		err |= __get_user(cgc.buflen, &((struct cdrom_generic_command32 *)arg)->buflen);
+		if (err)
+		return -EFAULT;
+		if ((data = kmalloc(cgc.buflen, GFP_KERNEL)) == NULL)
+			return -ENOMEM;
+		cgc.buffer = data;
+		break;
 	default:
 		do {
 			static int count = 0;
@@ -1500,11 +1526,14 @@ static int cdrom_ioctl_trans(unsigned int fd, unsigned int cmd, unsigned long ar
 	case CDROMREADAUDIO:
 		err = copy_to_user((char *)A(addr), data, cdreadaudio.nframes * 2352);
 		break;
+	case CDROM_SEND_PACKET:
+		err = copy_to_user((char *)A(addr), data, cgc.buflen);
 	default:
 		break;
 	}
-out:	if (data) kfree(data);
-	return err;
+out:	if (data)
+		kfree(data);
+	return err ? -EFAULT : 0;
 }
 
 struct loop_info32 {
@@ -1690,6 +1719,24 @@ static int do_unimap_ioctl(struct file *file, int cmd, struct unimapdesc32 *user
 		return con_get_unimap(fg_console, tmp.entry_ct, &(user_ud->entry_ct), (struct unipair *)A(tmp.entries));
 	}
 	return 0;
+}
+
+static int do_smb_getmountuid(unsigned int fd, unsigned int cmd, unsigned long arg)
+{
+	mm_segment_t old_fs = get_fs();
+	__kernel_uid_t kuid;
+	int err;
+
+	cmd = SMB_IOC_GETMOUNTUID;
+
+	set_fs(KERNEL_DS);
+	err = sys_ioctl(fd, cmd, (unsigned long)&kuid);
+	set_fs(old_fs);
+
+	if (err >= 0)
+		err = put_user(kuid, (__kernel_uid_t32 *)arg);
+
+	return err;
 }
 
 asmlinkage int sys32_ioctl(unsigned int fd, unsigned int cmd, unsigned long arg)
@@ -1878,6 +1925,11 @@ asmlinkage int sys32_ioctl(unsigned int fd, unsigned int cmd, unsigned long arg)
 		error = do_video_ioctl(fd, cmd, arg);
 		goto out;
 
+	/* One SMB ioctl needs translations. */
+	case _IOR('u', 1, __kernel_uid_t32): /* SMB_IOC_GETMOUNTUID */
+		error = do_smb_getmountuid(fd, cmd, arg);
+		goto out;
+
 	/* List here exlicitly which ioctl's are known to have
 	 * compatable types passed or none at all...
 	 */
@@ -1972,6 +2024,8 @@ asmlinkage int sys32_ioctl(unsigned int fd, unsigned int cmd, unsigned long arg)
 	case HDIO_SET_NICE:
 	case BLKROSET:
 	case BLKROGET:
+	case BLKELVGET:
+	case BLKELVSET:
 
 	/* 0x02 -- Floppy ioctls */
 	case FDMSGON:
@@ -2114,11 +2168,22 @@ asmlinkage int sys32_ioctl(unsigned int fd, unsigned int cmd, unsigned long arg)
 	case _IOR('v' , BASE_VIDIOCPRIVATE+6, int):
 	case _IOR('v' , BASE_VIDIOCPRIVATE+7, int):
 
-	/* Little p (/dev/rtc, /dev/envctrl, etc.) */
+	/* Little p (/dev/rtc, /dev/envctrl, /dev/d7s, etc.) */
 	case RTCGET:
 	case RTCSET:
-	case I2CIOCSADR:
-	case I2CIOCGADR:
+	case ENVCTRL_RD_WARNING_TEMPERATURE:
+	case ENVCTRL_RD_SHUTDOWN_TEMPERATURE:
+	case ENVCTRL_RD_CPU_TEMPERATURE:
+	case ENVCTRL_RD_FAN_STATUS:
+	case ENVCTRL_RD_VOLTAGE_STATUS:
+	case ENVCTRL_RD_SCSI_TEMPERATURE:
+	case ENVCTRL_RD_ETHERNET_TEMPERATURE:
+	case ENVCTRL_RD_MTHRBD_TEMPERATURE:
+	case ENVCTRL_RD_CPU_VOLTAGE:
+	case D7SIOCWR:
+	/* case D7SIOCRD: Same value as ENVCTRL_RD_VOLTAGE_STATUS */
+	case D7SIOCTM:
+
 
 	/* Little m */
 	case MTIOCTOP:
@@ -2173,6 +2238,25 @@ asmlinkage int sys32_ioctl(unsigned int fd, unsigned int cmd, unsigned long arg)
 	case SG_EMULATED_HOST:
 	case SG_SET_TRANSFORM:
 	case SG_GET_TRANSFORM:
+	case SG_SET_RESERVED_SIZE:
+	case SG_GET_RESERVED_SIZE:
+	case SG_GET_SCSI_ID:
+	case SG_SET_FORCE_LOW_DMA:
+	case SG_GET_LOW_DMA:
+	case SG_SET_FORCE_PACK_ID:
+	case SG_GET_PACK_ID:
+	case SG_GET_NUM_WAITING:
+	case SG_SET_DEBUG:
+	case SG_GET_SG_TABLESIZE:
+	case SG_GET_MERGE_FD:
+	case SG_SET_MERGE_FD:
+	case SG_GET_COMMAND_Q:
+	case SG_SET_COMMAND_Q:
+	case SG_GET_UNDERRUN_FLAG:
+	case SG_SET_UNDERRUN_FLAG:
+	case SG_GET_VERSION_NUM:
+	case SG_NEXT_CMD_LEN:
+	case SG_SCSI_RESET:
 
 	/* PPP stuff */
 	case PPPIOCGFLAGS:
@@ -2224,6 +2308,12 @@ asmlinkage int sys32_ioctl(unsigned int fd, unsigned int cmd, unsigned long arg)
 	case CDROM_LOCKDOOR:
 	case CDROM_DEBUG:
 	case CDROM_GET_CAPABILITY:
+	case DVD_READ_STRUCT:
+	case DVD_WRITE_STRUCT:
+	case DVD_AUTH:
+	case CDROM_SEND_PACKET:
+	case CDROM_NEXT_WRITABLE:
+	case CDROM_LAST_WRITTEN:
 	
 	/* Big L */
 	case LOOP_SET_FD:
@@ -2393,6 +2483,9 @@ asmlinkage int sys32_ioctl(unsigned int fd, unsigned int cmd, unsigned long arg)
 	/* Raw devices */
 	case _IO(0xac, 0): /* RAW_SETBIND */
 	case _IO(0xac, 1): /* RAW_GETBIND */
+
+	/* SMB ioctls which do not need any translations */
+	case SMB_IOC_NEWCONN:
 
 		error = sys_ioctl (fd, cmd, arg);
 		goto out;

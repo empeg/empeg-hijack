@@ -385,6 +385,8 @@ out:
 static int do_try_to_free_pages(unsigned int gfp_mask)
 {
 	int priority;
+	int ret = 0;
+	int swapcount;
 	int count = SWAP_CLUSTER_MAX;
 
 	lock_kernel();
@@ -395,6 +397,7 @@ static int do_try_to_free_pages(unsigned int gfp_mask)
 	priority = 6;
 	do {
 		while (shrink_mmap(priority, gfp_mask)) {
+			ret = 1;
 			if (!--count)
 				goto done;
 		}
@@ -402,15 +405,18 @@ static int do_try_to_free_pages(unsigned int gfp_mask)
 		/* Try to get rid of some shared memory pages.. */
 		if (gfp_mask & __GFP_IO) {
 			while (shm_swap(priority, gfp_mask)) {
+				ret = 1;
 				if (!--count)
 					goto done;
 			}
 		}
 
 		/* Then, try to page stuff out.. */
+		swapcount = count;
 		while (swap_out(priority, gfp_mask)) {
-			if (!--count)
-				goto done;
+			ret = 1;
+			if (!--swapcount)
+				break;
 		}
 
 		shrink_dcache_memory(priority, gfp_mask);
@@ -418,7 +424,11 @@ static int do_try_to_free_pages(unsigned int gfp_mask)
 done:
 	unlock_kernel();
 
-	return priority >= 0;
+	if (!ret)
+		printk("VM: do_try_to_free_pages failed for %s...\n",
+				current->comm);
+	/* Return success if we freed a page. */
+	return ret;
 }
 
 /*
@@ -442,7 +452,7 @@ void __init kswapd_setup(void)
        printk ("Starting kswapd v%.*s\n", i, s);
 }
 
-static struct wait_queue * kswapd_wait = NULL;
+struct wait_queue * kswapd_wait;
 
 /*
  * The background pageout daemon, started as a kernel thread
@@ -490,7 +500,8 @@ int kswapd(void *unused)
 		 * the processes needing more memory will wake us
 		 * up on a more timely basis.
 		 */
-		interruptible_sleep_on_timeout(&kswapd_wait, HZ);
+		interruptible_sleep_on(&kswapd_wait);
+
 		while (nr_free_pages < freepages.high)
 		{
 			if (do_try_to_free_pages(GFP_KSWAPD))
@@ -506,25 +517,13 @@ int kswapd(void *unused)
 }
 
 /*
- * Called by non-kswapd processes when they want more
- * memory.
- *
- * In a perfect world, this should just wake up kswapd
- * and return. We don't actually want to swap stuff out
- * from user processes, because the locking issues are
- * nasty to the extreme (file write locks, and MM locking)
- *
- * One option might be to let kswapd do all the page-out
- * and VM page table scanning that needs locking, and this
- * process thread could do just the mmap shrink stage that
- * can be done by just dropping cached pages without having
- * any deadlock issues.
+ * Called by non-kswapd processes when kswapd really cannot
+ * keep up with the demand for free memory.
  */
 int try_to_free_pages(unsigned int gfp_mask)
 {
 	int retval = 1;
 
-	wake_up_interruptible(&kswapd_wait);
 	if (gfp_mask & __GFP_WAIT)
 		retval = do_try_to_free_pages(gfp_mask);
 	return retval;

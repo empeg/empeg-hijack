@@ -151,7 +151,7 @@ int
 remount_drives (int writeable)
 {
 	int	did_something = 0, len, flags;
-	char	buf[256], *b, *message, *match, mount_opts[] = "nocheck";
+	char	buf[400], *b, *message, *match, mount_opts[] = "nocheck";
 
 	if (writeable) {
 		flags = (MS_NODIRATIME | MS_NOATIME);

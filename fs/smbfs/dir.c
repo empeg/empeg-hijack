@@ -4,18 +4,19 @@
  *  Copyright (C) 1995, 1996 by Paal-Kr. Engstad and Volker Lendecke
  *  Copyright (C) 1997 by Volker Lendecke
  *
+ * Please add a note about your changes to smbfs in the ChangeLog file.
  */
 
 #include <linux/sched.h>
 #include <linux/errno.h>
 #include <linux/kernel.h>
+#include <linux/ctype.h>
 
 #include <linux/smb_fs.h>
 #include <linux/smbno.h>
 
-#define SMBFS_PARANOIA 1
-/* #define SMBFS_DEBUG_VERBOSE 1 */
-/* #define pr_debug printk */
+#include "smb_debug.h"
+
 #define SMBFS_MAX_AGE 5*HZ
 
 static ssize_t smb_dir_read(struct file *, char *, size_t, loff_t *);
@@ -80,13 +81,26 @@ smb_readdir(struct file *filp, void *dirent, filldir_t filldir)
 {
 	struct dentry *dentry = filp->f_dentry;
 	struct inode *dir = dentry->d_inode;
-	struct cache_head *cachep;
+	struct cache_head *cachep = NULL;
 	int result;
 
-#ifdef SMBFS_DEBUG_VERBOSE
-printk("smb_readdir: reading %s/%s, f_pos=%d\n",
-dentry->d_parent->d_name.name, dentry->d_name.name, (int) filp->f_pos);
-#endif
+	VERBOSE("reading %s/%s, f_pos=%d\n", DENTRY_PATH(dentry),
+		(int) filp->f_pos);
+
+	result = 0;
+	switch ((unsigned int) filp->f_pos)
+	{
+	case 0:
+		if (filldir(dirent, ".", 1, 0, dir->i_ino) < 0)
+			goto out;
+		filp->f_pos = 1;
+	case 1:
+		if (filldir(dirent, "..", 2, 1,
+				dentry->d_parent->d_inode->i_ino) < 0)
+			goto out;
+		filp->f_pos = 2;
+	}
+
 	/*
 	 * Make sure our inode is up-to-date.
 	 */
@@ -102,27 +116,20 @@ dentry->d_parent->d_name.name, dentry->d_name.name, (int) filp->f_pos);
 		goto out;
 	/*
 	 * Make sure the cache is up-to-date.
+	 *
+	 * To detect changes on the server we refill on each "new" access.
+	 *
+	 * Directory mtime would be nice to use for finding changes,
+	 * unfortunately some servers (NT4) doesn't update on local changes.
 	 */
-	if (!cachep->valid)
+	if (!cachep->valid || filp->f_pos == 2)
 	{
 		result = smb_refill_dircache(cachep, dentry);
 		if (result)
-			goto out_free;
+			goto out;
 	}
 
 	result = 0;
-	switch ((unsigned int) filp->f_pos)
-	{
-	case 0:
-		if (filldir(dirent, ".", 1, 0, dir->i_ino) < 0)
-			goto out_free;
-		filp->f_pos = 1;
-	case 1:
-		if (filldir(dirent, "..", 2, 1,
-				dentry->d_parent->d_inode->i_ino) < 0)
-			goto out_free;
-		filp->f_pos = 2;
-	}
 
 	while (1)
 	{
@@ -152,9 +159,10 @@ dentry->d_parent->d_name.name, dentry->d_name.name, (int) filp->f_pos);
 	/*
 	 * Release the dircache.
 	 */
-out_free:
-	smb_free_dircache(cachep);
 out:
+	if (cachep) {
+		smb_free_dircache(cachep);
+	}
 	return result;
 }
 
@@ -168,21 +176,9 @@ smb_dir_open(struct inode *dir, struct file *file)
 	struct dentry *dentry = file->f_dentry;
 	struct smb_sb_info *server = server_from_dentry(dentry);
 	int error = 0;
-#ifdef SMBFS_DEBUG_VERBOSE
-printk("smb_dir_open: (%s/%s)\n", dentry->d_parent->d_name.name, 
-file->f_dentry->d_name.name);
-#endif
-	/*
-	 * Directory timestamps in the core protocol aren't updated
-	 * when a file is added, so we give them a very short TTL.
-	 */
-	if (server->opt.protocol < SMB_PROTOCOL_LANMAN2)
-	{
-		unsigned long age = jiffies - dir->u.smbfs_i.oldmtime;
-		if (age > 2*HZ)
-			smb_invalid_dir_cache(dir);
-	}
 
+	VERBOSE("(%s/%s)\n", dentry->d_parent->d_name.name, 
+		file->f_dentry->d_name.name);
 	if (server->conn_pid)
 		error = smb_revalidate_inode(dentry);
 	return error;
@@ -221,36 +217,23 @@ smb_lookup_validate(struct dentry * dentry, int flags)
 	 */
 	valid = (age <= SMBFS_MAX_AGE);
 #ifdef SMBFS_DEBUG_VERBOSE
-if (!valid)
-printk("smb_lookup_validate: %s/%s not valid, age=%lu\n", 
-dentry->d_parent->d_name.name, dentry->d_name.name, age);
+	if (!valid)
+		VERBOSE("%s/%s not valid, age=%lu\n", DENTRY_PATH(dentry), age);
 #endif
 
-	if (inode)
-	{
-		if (is_bad_inode(inode))
-		{
-#ifdef SMBFS_PARANOIA
-printk("smb_lookup_validate: %s/%s has dud inode\n", 
-dentry->d_parent->d_name.name, dentry->d_name.name);
-#endif
+	if (inode) {
+		if (is_bad_inode(inode)) {
+			PARANOIA("%s/%s has dud inode\n", DENTRY_PATH(dentry));
 			valid = 0;
 		} else if (!valid)
 			valid = (smb_revalidate_inode(dentry) == 0);
-	} else
-	{
-	/*
-	 * What should we do for negative dentries?
-	 */
+	} else {
+		/*
+		 * What should we do for negative dentries?
+		 */
 	}
 	return valid;
 }
-
-/*
- * XXX: It would be better to use the tolower from linux/ctype.h,
- * but _ctype is needed and it is not exported.
- */
-#define tolower(c) (((c) >= 'A' && (c) <= 'Z') ? (c)-('A'-'a') : (c))
 
 static int 
 smb_hash_dentry(struct dentry *dir, struct qstr *this)
@@ -290,20 +273,15 @@ out:
 static void
 smb_delete_dentry(struct dentry * dentry)
 {
-	if (dentry->d_inode)
-	{
-		if (is_bad_inode(dentry->d_inode))
-		{
-#ifdef SMBFS_PARANOIA
-printk("smb_delete_dentry: bad inode, unhashing %s/%s\n", 
-dentry->d_parent->d_name.name, dentry->d_name.name);
-#endif
+	if (dentry->d_inode) {
+		if (is_bad_inode(dentry->d_inode)) {
+			PARANOIA("bad inode, unhashing %s/%s\n", 
+				 DENTRY_PATH(dentry));
 			d_drop(dentry);
 		}
 		smb_close_dentry(dentry);
-	} else
-	{
-	/* N.B. Unhash negative dentries? */
+	} else {
+		/* N.B. Unhash negative dentries? */
 	}
 }
 
@@ -337,9 +315,9 @@ smb_lookup(struct inode *dir, struct dentry *dentry)
 
 	error = smb_proc_getattr(dentry, &finfo);
 #ifdef SMBFS_PARANOIA
-if (error && error != -ENOENT)
-printk("smb_lookup: find %s/%s failed, error=%d\n",
-dentry->d_parent->d_name.name, dentry->d_name.name, error);
+	if (error && error != -ENOENT)
+		PARANOIA("find %s/%s failed, error=%d\n",
+			 DENTRY_PATH(dentry), error);
 #endif
 
 	inode = NULL;
@@ -374,10 +352,7 @@ smb_instantiate(struct dentry *dentry, __u16 fileid, int have_id)
 	int error;
 	struct smb_fattr fattr;
 
-#ifdef SMBFS_DEBUG_VERBOSE
-printk("smb_instantiate: file %s/%s, fileid=%u\n",
-dentry->d_parent->d_name.name, dentry->d_name.name, fileid);
-#endif
+	VERBOSE("file %s/%s, fileid=%u\n", DENTRY_PATH(dentry), fileid);
 	error = smb_proc_getattr(dentry, &fattr);
 	if (error)
 		goto out_close;
@@ -403,10 +378,8 @@ out_no_inode:
 out_close:
 	if (have_id)
 	{
-#ifdef SMBFS_PARANOIA
-printk("smb_instantiate: %s/%s failed, error=%d, closing %u\n",
-dentry->d_parent->d_name.name, dentry->d_name.name, error, fileid);
-#endif
+		PARANOIA("%s/%s failed, error=%d, closing %u\n",
+			 DENTRY_PATH(dentry), error, fileid);
 		smb_close_fileid(dentry, fileid);
 	}
 	goto out;
@@ -419,22 +392,14 @@ smb_create(struct inode *dir, struct dentry *dentry, int mode)
 	__u16 fileid;
 	int error;
 
-#ifdef SMBFS_DEBUG_VERBOSE
-printk("smb_create: creating %s/%s, mode=%d\n",
-dentry->d_parent->d_name.name, dentry->d_name.name, mode);
-#endif
+	VERBOSE("creating %s/%s, mode=%d\n", DENTRY_PATH(dentry), mode);
 
-	smb_invalid_dir_cache(dir);
 	error = smb_proc_create(dentry, 0, CURRENT_TIME, &fileid);
-	if (!error)
-	{
+	if (!error) {
 		error = smb_instantiate(dentry, fileid, 1);
-	} else
-	{
-#ifdef SMBFS_PARANOIA
-printk("smb_create: %s/%s failed, error=%d\n",
-dentry->d_parent->d_name.name, dentry->d_name.name, error);
-#endif
+	} else {
+		PARANOIA("%s/%s failed, error=%d\n",
+			 DENTRY_PATH(dentry), error);
 	}
 	return error;
 }
@@ -445,7 +410,6 @@ smb_mkdir(struct inode *dir, struct dentry *dentry, int mode)
 {
 	int error;
 
-	smb_invalid_dir_cache(dir);
 	error = smb_proc_mkdir(dentry);
 	if (!error)
 	{
@@ -472,7 +436,6 @@ smb_rmdir(struct inode *dir, struct dentry *dentry)
 	if (!list_empty(&dentry->d_hash))
 		goto out;
 
-	smb_invalid_dir_cache(dir);
 	error = smb_proc_rmdir(dentry);
 
 out:
@@ -489,7 +452,6 @@ smb_unlink(struct inode *dir, struct dentry *dentry)
 	 */
 	smb_close(dentry->d_inode);
 
-	smb_invalid_dir_cache(dir);
 	error = smb_proc_unlink(dentry);
 	if (!error)
 	{
@@ -517,18 +479,14 @@ smb_rename(struct inode *old_dir, struct dentry *old_dentry,
 		error = smb_proc_unlink(new_dentry);
 		if (error)
 		{
-#ifdef SMBFS_DEBUG_VERBOSE
-printk("smb_rename: unlink %s/%s, error=%d\n",
-new_dentry->d_parent->d_name.name, new_dentry->d_name.name, error);
-#endif
+			VERBOSE("unlink %s/%s, error=%d\n",
+				DENTRY_PATH(new_dentry), error);
 			goto out;
 		}
 		/* FIXME */
 		d_delete(new_dentry);
 	}
 
-	smb_invalid_dir_cache(old_dir);
-	smb_invalid_dir_cache(new_dir);
 	error = smb_proc_mv(old_dentry, new_dentry);
 	if (!error)
 	{

@@ -80,6 +80,7 @@ typedef struct {
 	tsunami_64	mpr2;
 	tsunami_64	mpr3;
 	tsunami_64	mctl;
+	tsunami_64	__pad1;
 	tsunami_64	ttr;
 	tsunami_64	tdr;
 	tsunami_64	dim2;
@@ -320,7 +321,7 @@ __EXTERN_INLINE void * tsunami_bus_to_virt(unsigned long address)
 /*
  * I/O functions:
  *
- * TSUNAMI, the 21??? PCI/memory support chipset for the EV6 (21264)
+ * TSUNAMI, the 21272 PCI/memory support chipset for the EV6 (21264)
  * can only use linear accesses to get at PCI memory and I/O spaces.
  */
 

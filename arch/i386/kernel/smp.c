@@ -42,6 +42,10 @@
 #include <asm/mtrr.h>
 #include <asm/msr.h>
 
+#if defined(CONFIG_KDB)
+#include <linux/kdb.h>
+#endif
+
 #include "irq.h"
 
 #define JIFFIE_TIMEOUT 100
@@ -104,6 +108,9 @@ int smp_found_config=0;					/* Have we found an SMP box 				*/
 
 unsigned long cpu_present_map = 0;			/* Bitmask of physically existing CPUs 				*/
 unsigned long cpu_online_map = 0;			/* Bitmask of currently online CPUs 				*/
+#if defined(__SMP__)
+unsigned long smp_kdb_wait = 0;				/* Bitmask of waiters */
+#endif	/* CONFIG_SMP */
 int smp_num_cpus = 1;					/* Total count of live CPUs 				*/
 int smp_threads_ready=0;				/* Set when the idlers are all forked 			*/
 volatile int cpu_number_map[NR_CPUS];			/* which CPU maps to which logical number		*/
@@ -601,7 +608,7 @@ void __init init_intel_smp (void)
 		address<<=4;
 		smp_scan_config(address, 0x1000);
 		if (smp_found_config)
-			printk(KERN_WARNING "WARNING: MP table in the EBDA can be UNSAFE, contact linux-smp@vger.rutgers.edu if you experience SMP problems!\n");
+			printk(KERN_WARNING "WARNING: MP table in the EBDA can be UNSAFE, contact linux-smp@vger.kernel.org if you experience SMP problems!\n");
 	}
 }
 
@@ -795,6 +802,208 @@ unsigned long __init init_smp_mappings(unsigned long memory_start)
 	return memory_start;
 }
 
+#ifdef CONFIG_X86_TSC
+/*
+ * TSC synchronization.
+ *
+ * We first check wether all CPUs have their TSC's synchronized,
+ * then we print a warning if not, and always resync.
+ */
+
+static atomic_t tsc_start_flag = ATOMIC_INIT(0);
+static atomic_t tsc_count_start = ATOMIC_INIT(0);
+static atomic_t tsc_count_stop = ATOMIC_INIT(0);
+static unsigned long long tsc_values[NR_CPUS] = { 0, };
+
+#define NR_LOOPS 5
+
+extern unsigned long fast_gettimeoffset_quotient;
+
+/*
+ * accurate 64-bit division, expanded to 32-bit divisions. Not terribly
+ * optimized but we need it at boot time only anyway.
+ *
+ * result == a / b
+ *        == (a1 + a2*(2^32)) / b
+ *        == a1/b + a2*(2^32/b)
+ *        == a1/b + a2*((2^32-1)/b) + a2/b + (a2*((2^32-1) % b))/b
+ *                    ^---- (this multiplication can overflow)
+ */
+
+unsigned long long div64 (unsigned long long a, unsigned long long b)
+{
+	unsigned int a1, a2, b0;
+	unsigned long long res;
+
+	if (b > 0x00000000ffffffffULL)
+		return 0;
+	if (!b)
+		panic("huh?\n");
+
+	b0 = (unsigned int) b;
+	a1 = ((unsigned int*)&a)[0];
+	a2 = ((unsigned int*)&a)[1];
+
+	res = a1/b0 +
+		(unsigned long long)a2 * (unsigned long long)(0xffffffff/b0) +
+		a2 / b0 +
+		(a2 * (0xffffffff % b0)) / b0;
+
+        return res;
+}
+
+
+static void __init synchronize_tsc_bp (void)
+{
+	int i;
+	unsigned long long t0;
+	unsigned long long sum, avg;
+	long long delta;
+	unsigned long one_usec;
+	int buggy = 0;
+
+	printk("checking TSC synchronization across CPUs: ");
+
+	one_usec = ((1<<30)/fast_gettimeoffset_quotient)*(1<<2);
+	
+	atomic_set(&tsc_start_flag, 1);
+	wmb();
+
+	/*
+	 * We loop a few times to get a primed instruction cache,
+	 * then the last pass is more or less synchronized and
+	 * the BP and APs set their cycle counters to zero all at
+	 * once. This reduces the chance of having random offsets
+	 * between the processors, and guarantees that the maximum
+	 * delay between the cycle counters is never bigger than
+	 * the latency of information-passing (cachelines) between
+	 * two CPUs.
+	 */
+	for (i = 0; i < NR_LOOPS; i++) {
+		/*
+		 * all APs synchronize but they loop on '== num_cpus'
+		 */
+		while (atomic_read(&tsc_count_start) != smp_num_cpus-1) mb();
+		atomic_set(&tsc_count_stop, 0);
+		wmb();
+		/*
+		 * this lets the APs save their current TSC:
+		 */
+		atomic_inc(&tsc_count_start);
+
+		rdtscll(tsc_values[smp_processor_id()]);
+		/*
+		 * We clear the TSC in the last loop:
+		 */
+		if (i == NR_LOOPS-1)
+			CLEAR_TSC;
+
+		/*
+		 * Wait for all APs to leave the synchronization point:
+		 */
+		while (atomic_read(&tsc_count_stop) != smp_num_cpus-1) mb();
+		atomic_set(&tsc_count_start, 0);
+		wmb();
+		atomic_inc(&tsc_count_stop);
+	}
+
+	sum = 0;
+	for (i = 0; i < NR_CPUS; i++) {
+		if (!(cpu_online_map & (1 << i)))
+			continue;
+
+		t0 = tsc_values[i];
+		sum += t0;
+	}
+	avg = div64(sum, smp_num_cpus);
+
+	sum = 0;
+	for (i = 0; i < NR_CPUS; i++) {
+		if (!(cpu_online_map & (1 << i)))
+			continue;
+
+		delta = tsc_values[i] - avg;
+		if (delta < 0)
+			delta = -delta;
+		/*
+		 * We report bigger than 2 microseconds clock differences.
+		 */
+		if (delta > 2*one_usec) {
+			long realdelta;
+			if (!buggy) {
+				buggy = 1;
+				printk("\n");
+			}
+			realdelta = div64(delta, one_usec);
+			if (tsc_values[i] < avg)
+				realdelta = -realdelta;
+		
+			printk("BIOS BUG: CPU#%d improperly initialized, has %ld usecs TSC skew! FIXED.\n",
+				i, realdelta);
+		}
+				
+		sum += delta;
+	}
+	if (!buggy)
+		printk("passed.\n");
+
+#if 0
+	printk("CPU%d read locks\n", smp_processor_id());
+	read_lock_irq(&tasklist_lock);
+
+	printk("CPU%d delays 2 secs\n", smp_processor_id());
+	mdelay(1000);
+
+	printk("CPU%d does IRQ0 ...\n", smp_processor_id());
+	asm volatile ("int $0x51");
+
+	printk("CPU%d back from IRQ0 ???\n", smp_processor_id());
+	read_unlock(&tasklist_lock);
+#endif
+}
+
+static void __init synchronize_tsc_ap (void)
+{
+	int i;
+
+	/*
+	 * smp_num_cpus is not necessarily known at the time
+	 * this gets called, so we first wait for the BP to
+	 * finish SMP initialization:
+	 */
+	while (!atomic_read(&tsc_start_flag)) mb();
+
+	for (i = 0; i < NR_LOOPS; i++) {
+		atomic_inc(&tsc_count_start);
+		while (atomic_read(&tsc_count_start) != smp_num_cpus) mb();
+
+		rdtscll(tsc_values[smp_processor_id()]);
+		if (i == NR_LOOPS-1)
+			CLEAR_TSC;
+
+		atomic_inc(&tsc_count_stop);
+		while (atomic_read(&tsc_count_stop) != smp_num_cpus) mb();
+	}
+
+#if 0
+	printk("CPU%d clis\n", smp_processor_id());
+	cli();
+
+	printk("CPU%d delays 4 secs\n", smp_processor_id());
+	mdelay(4000);
+
+	printk("CPU%d does write_lock ...\n", smp_processor_id());
+	write_lock_irq(&tasklist_lock);
+
+	printk("CPU%d back from write lock???\n", smp_processor_id());
+	write_unlock_irq(&tasklist_lock);
+	sti();
+#endif
+}
+#undef NR_LOOPS
+
+#endif
+
 extern void calibrate_delay(void);
 
 void __init smp_callin(void)
@@ -880,6 +1089,13 @@ void __init smp_callin(void)
 	 *	Allow the master to continue.
 	 */
 	set_bit(cpuid, (unsigned long *)&cpu_callin_map[0]);
+
+#ifdef CONFIG_X86_TSC
+	/*
+	 *	Synchronize the TSC with the BP
+	 */
+ 	synchronize_tsc_ap ();
+#endif
 }
 
 int cpucount = 0;
@@ -1149,7 +1365,7 @@ static void __init do_boot_cpu(int i)
 }
 
 cycles_t cacheflush_time;
-extern unsigned long cpu_hz;
+extern unsigned long cpu_khz;
 
 static void smp_tune_scheduling (void)
 {
@@ -1165,7 +1381,7 @@ static void smp_tune_scheduling (void)
 	 *  the cache size)
 	 */
 
-	if (!cpu_hz) {
+	if (!cpu_khz) {
 		/*
 		 * this basically disables processor-affinity
 		 * scheduling on SMP without a TSC.
@@ -1177,12 +1393,12 @@ static void smp_tune_scheduling (void)
 		if (cachesize == -1)
 			cachesize = 8; /* Pentiums */
 
-		cacheflush_time = cpu_hz/1024*cachesize/5000;
+		cacheflush_time = cpu_khz/1024*cachesize/5;
 	}
 
 	printk("per-CPU timeslice cutoff: %ld.%02ld usecs.\n",
-		(long)cacheflush_time/(cpu_hz/1000000),
-		((long)cacheflush_time*100/(cpu_hz/1000000)) % 100);
+		(long)cacheflush_time/(cpu_khz/1000),
+		((long)cacheflush_time*100/(cpu_khz/1000)) % 100);
 }
 
 unsigned int prof_multiplier[NR_CPUS];
@@ -1401,7 +1617,9 @@ void __init smp_boot_cpus(void)
 		printk(KERN_WARNING "WARNING: SMP operation may be unreliable with B stepping processors.\n");
 	SMP_PRINTK(("Boot done.\n"));
 
+	ack_APIC_irq();
 	cache_APIC_registers();
+	ack_APIC_irq();
 #ifndef CONFIG_VISWS
 	/*
 	 * Here we can be sure that there is an IO-APIC in the system. Let's
@@ -1412,8 +1630,15 @@ void __init smp_boot_cpus(void)
 #endif
 
 smp_done:
-}
 
+#ifdef CONFIG_X86_TSC
+	/*
+	 * Synchronize the TSC with the AP
+	 */
+	if (cpucount)
+	 	synchronize_tsc_bp();
+#endif
+}
 
 /*
  * the following functions deal with sending IPIs between CPUs.
@@ -1628,15 +1853,20 @@ void smp_flush_tlb(void)
 
 		/*
 		 * Spin waiting for completion
+		 *
+		 * It turns out Intel seem to have been tuning their chips
+		 * a little. The PIII-500+ seem to execute this little bit
+		 * way faster than their older silicon. We now add on a factor
+		 * guessed from the TSC calibration.
 		 */
 
-		stuck = 50000000;
+		stuck = 50000000 + cpu_data[cpu].loops_per_sec/2;
 		while (smp_invalidate_needed) {
 			/*
 			 * Take care of "crossing" invalidates
 			 */
 			if (test_bit(cpu, &smp_invalidate_needed))
-			clear_bit(cpu, &smp_invalidate_needed);
+				clear_bit(cpu, &smp_invalidate_needed);
 			--stuck;
 			if (!stuck) {
 				printk("stuck on TLB IPI wait (CPU#%d)\n",cpu);
@@ -1754,6 +1984,21 @@ int smp_call_function (void (*func) (void *info), void *info, int retry,
 	smp_call_function_data = NULL;
 	return 0;
 }
+
+
+#if defined(CONFIG_KDB)
+void smp_kdb_stop(int all)
+{
+	if (all)  {
+		smp_kdb_wait = 0xffffffff;
+		clear_bit(smp_processor_id(), &smp_kdb_wait);
+		send_IPI_allbutself(KDB_VECTOR);
+	} else {
+		set_bit(smp_processor_id(), &smp_kdb_wait);
+		send_IPI_self(KDB_VECTOR);
+	}
+}
+#endif
 
 /*
  * Local timer interrupt handler. It does both profiling and
@@ -1890,6 +2135,51 @@ asmlinkage void smp_stop_cpu_interrupt(void)
 {
 	stop_this_cpu();
 }
+
+#if defined(CONFIG_KDB)
+asmlinkage void smp_kdb_interrupt(int a)
+{
+	/*
+	 * The stub function which calls this routine pushes
+	 * the register context on the stack prior to calling
+	 * this routine.  No arguments are pushed on the stack,
+	 * so taking the address of a non-existant first argument
+	 * will obtain the address of the preserved register context
+	 *
+	 * This is a gross hack, but it works and doesn't require
+	 * changes to BUILD_SMP_INTERRUPT.
+	 */
+	struct pt_regs *regs = &a;
+	extern unsigned long smp_kdb_wait;
+	extern int kdb_new_cpu;
+	ack_APIC_irq();
+
+	/*
+	 * Wait for kdb to set us free.
+	 */
+#if 0
+	printk("stopping cpu %d for kdb\n", smp_processor_id());
+#endif
+
+	while (test_bit(smp_processor_id(), &smp_kdb_wait))
+		;
+#if 0
+	printk("restarting cpu %d for kdb\n", smp_processor_id());
+#endif
+
+	/*
+	 * If we are the new CPU, call the kernel debugger here.
+	 */
+	if (kdb_new_cpu == smp_processor_id()) {
+		kdb(KDB_REASON_SWITCH, 0, regs);
+	}
+
+	/*
+	 * Re-establish any global breakpoint state
+	 */
+	kdb_global(smp_processor_id());
+}
+#endif	/* CONFIG_KDB */
 
 asmlinkage void smp_call_function_interrupt(void)
 {

@@ -161,6 +161,19 @@ ret_from_fork:
 	GET_CURRENT(%ebx)
 	jmp	ret_from_sys_call
 
+#if defined(CONFIG_KDB)
+ENTRY(kdb_call)
+	pushl %eax		# save orig EAX
+	SAVE_ALL		
+	pushl %esp		# struct pt_regs
+	pushl $0		# error_code
+	pushl $7		# KDB_REASON_INT
+	call  kdb
+	addl  $12,%esp		# remove args
+	RESTORE_ALL
+
+#endif
+
 /*
  * Return to user mode is not as complex as all this looks,
  * but we want the default path for a system call return to
@@ -216,9 +229,11 @@ tracesys:
 	movl $-ENOSYS,EAX(%esp)
 	call SYMBOL_NAME(syscall_trace)
 	movl ORIG_EAX(%esp),%eax
+        cmpl $(NR_syscalls),%eax 
+        jae 1f 
 	call *SYMBOL_NAME(sys_call_table)(,%eax,4)
 	movl %eax,EAX(%esp)		# save the return value
-	call SYMBOL_NAME(syscall_trace)
+1:	call SYMBOL_NAME(syscall_trace)
 	jmp ret_from_sys_call
 badsys:
 	movl $-ENOSYS,EAX(%esp)
@@ -362,6 +377,11 @@ ENTRY(alignment_check)
 
 ENTRY(page_fault)
 	pushl $ SYMBOL_NAME(do_page_fault)
+	jmp error_code
+
+ENTRY(machine_check)
+	pushl $0
+	pushl $ SYMBOL_NAME(mcheck_fault)
 	jmp error_code
 
 ENTRY(spurious_interrupt_bug)

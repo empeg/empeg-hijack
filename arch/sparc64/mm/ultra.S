@@ -1,4 +1,4 @@
-/* $Id: ultra.S,v 1.32.2.1 1999/10/24 17:29:34 davem Exp $
+/* $Id: ultra.S,v 1.32.2.4 2000/05/05 18:50:48 davem Exp $
  * ultra.S: Don't expand these all over the place...
  *
  * Copyright (C) 1997 David S. Miller (davem@caip.rutgers.edu)
@@ -35,9 +35,9 @@ __flush_tlb_mm: /* %o0=(ctx & 0x3ff), %o1=SECONDARY_CONTEXT */
 __flush_tlb_range: /* %o0=(ctx&0x3ff), %o1=start&PAGE_MASK, %o2=SECONDARY_CONTEXT,
 		    * %o3=end&PAGE_MASK, %o4=PAGE_SIZE, %o5=(end - start)
 		    */
-#define TLB_MAGIC	206 /* Students, do you know how I calculated this?  -DaveM */
+#define TLB_MAGIC	207 /* Students, do you know how I calculated this?  -DaveM */
 /*IC3*/	cmp		%o5, %o4
-	be,pt		%xcc, __flush_tlb_page
+	bleu,pt		%xcc, __flush_tlb_page
 	 srlx		%o5, 13, %g5
 	cmp		%g5, TLB_MAGIC
 	bgeu,pn		%icc, __flush_tlb_range_constant_time
@@ -58,6 +58,12 @@ __flush_tlb_range_constant_time: /* %o0=ctx, %o1=start, %o3=end */
 	wrpr		%g1, PSTATE_IE, %pstate
 	mov		TLB_TAG_ACCESS, %g3
 	mov		(62 << 3), %g2
+
+	/* Spitfire Errata #32 workaround. */
+	mov		0x8, %o4
+	stxa		%g0, [%o4] ASI_DMMU
+	flush		%g6
+
 1:	ldxa		[%g2] ASI_ITLB_TAG_READ, %o4
 	and		%o4, 0x3ff, %o5
 	cmp		%o5, %o0
@@ -83,12 +89,27 @@ __flush_tlb_range_constant_time: /* %o0=ctx, %o1=start, %o3=end */
 	 wrpr		%g1, 0x0, %pstate
 4:	stxa		%g0, [%g3] ASI_IMMU
 	stxa		%g0, [%g2] ASI_ITLB_DATA_ACCESS
+	flush		%g6
+
+	/* Spitfire Errata #32 workaround. */
+	mov		0x8, %o4
+	stxa		%g0, [%o4] ASI_DMMU
+	flush		%g6
+
 	ba,pt		%xcc, 2b
-	 flush		%g6
+	 nop
+
 5:	stxa		%g0, [%g3] ASI_DMMU
 /*IC9*/	stxa		%g0, [%g2] ASI_DTLB_DATA_ACCESS
+	flush		%g6
+
+	/* Spitfire Errata #32 workaround. */
+	mov		0x8, %o4
+	stxa		%g0, [%o4] ASI_DMMU
+	flush		%g6
+
 	ba,pt		%xcc, 3b
-	 flush		%g6
+	 nop
 
 	.align		32
 __flush_tlb_mm_slow:
@@ -166,6 +187,29 @@ iflush1:stxa		%g0, [%o1] ASI_IC_TAG
 iflush2:stxa		%g0, [%o1 + %o2] ASI_IC_TAG
 	ba,pt		%xcc, 3b
 	 flush		%g6
+
+	.align		64
+	.globl		flush_dcache_page
+flush_dcache_page:
+	sub		%o0, %g4, %o0
+	clr		%o1
+	srlx		%o0, 11, %o0
+	sethi		%hi(1 << 14), %o2
+1:	ldxa		[%o1] ASI_DCACHE_TAG, %o3
+	andn		%o3, 0x3, %o3
+	cmp		%o0, %o3
+	bne,pt		%xcc, 2f
+	 nop
+	stxa		%g0, [%o1] ASI_DCACHE_TAG
+2:	add		%o1, (1 << 5), %o1
+	cmp		%o1, %o2
+	bne,pt		%xcc, 1b
+	 nop
+	/* The I-cache does not snoop local stores so we
+	 * better flush that too.
+	 */
+	ba,pt		%xcc, flush_icache_page
+	 sllx		%o0, 11, %o0
 
 #ifdef __SMP__
 	/* These are all called by the slaves of a cross call, at
@@ -292,28 +336,51 @@ xcall_receive_signal:
 	 clr		%l6
 99:	retry
 
+	.data
+
+errata32_hwbug:
+	.xword	0
+
+	.text
+
 	/* These two are not performance critical... */
 	.globl		xcall_flush_tlb_all
 xcall_flush_tlb_all:
+
+	/* Spitfire Errata #32 workaround. */
+	sethi		%hi(errata32_hwbug), %g4
+	stx		%g0, [%g4 + %lo(errata32_hwbug)]
+
 	clr		%g2
 	clr		%g3
 1:	ldxa		[%g3] ASI_DTLB_DATA_ACCESS, %g4
 	and		%g4, _PAGE_L, %g5
 	brnz,pn		%g5, 2f
 	 mov		TLB_TAG_ACCESS, %g7
+
 	stxa		%g0, [%g7] ASI_DMMU
 	membar		#Sync
-
 	stxa		%g0, [%g3] ASI_DTLB_DATA_ACCESS
 	membar		#Sync
+
+	/* Spitfire Errata #32 workaround. */
+	sethi		%hi(errata32_hwbug), %g4
+	stx		%g0, [%g4 + %lo(errata32_hwbug)]
+
 2:	ldxa		[%g3] ASI_ITLB_DATA_ACCESS, %g4
 	and		%g4, _PAGE_L, %g5
 	brnz,pn		%g5, 2f
 	 mov		TLB_TAG_ACCESS, %g7
+
 	stxa		%g0, [%g7] ASI_IMMU
 	membar		#Sync
-
 	stxa		%g0, [%g3] ASI_ITLB_DATA_ACCESS
+	membar		#Sync
+
+	/* Spitfire Errata #32 workaround. */
+	sethi		%hi(errata32_hwbug), %g4
+	stx		%g0, [%g4 + %lo(errata32_hwbug)]
+
 2:	add		%g2, 1, %g2
 	cmp		%g2, 63
 	ble,pt		%icc, 1b

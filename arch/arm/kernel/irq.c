@@ -479,23 +479,25 @@ out:
 	return irq_found;
 }
 
-void __init init_IRQ(void)
+unsigned long __init init_IRQ(unsigned long memory)
 {
 	extern void init_dma(void);
 	int irq;
 
 	for (irq = 0; irq < NR_IRQS; irq++) {
-		irq_desc[irq].probe_ok = 0;
-		irq_desc[irq].valid    = 0;
-		irq_desc[irq].noautoenable = 0;
+                irq_desc[irq].probe_ok = 0;
+                irq_desc[irq].valid    = 0;
+                irq_desc[irq].noautoenable = 0;
 		irq_desc[irq].mask_ack = dummy_mask_unmask_irq;
 		irq_desc[irq].mask     = dummy_mask_unmask_irq;
 		irq_desc[irq].unmask   = dummy_mask_unmask_irq;
+
 	}
 
 	irq_init_irq();
-#if defined(CONFIG_ARCH_ACORN) || defined(CONFIG_SA1100_EMPEG)
+#ifdef CONFIG_ARCH_ACORN || defined(CONFIG_SA1100_EMPEG)
 	init_FIQ();
 #endif
 	init_dma();
+	return memory;
 }

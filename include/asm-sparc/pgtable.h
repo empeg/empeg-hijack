@@ -1,4 +1,4 @@
-/* $Id: pgtable.h,v 1.78.2.1 1999/08/07 10:52:48 davem Exp $ */
+/* $Id: pgtable.h,v 1.78.2.2 2000/02/27 04:44:44 davem Exp $ */
 #ifndef _SPARC_PGTABLE_H
 #define _SPARC_PGTABLE_H
 
@@ -461,6 +461,7 @@ BTFIXUPDEF_CALL(void, flush_cache_page, struct vm_area_struct *, unsigned long)
 #define flush_cache_range(mm,start,end) BTFIXUP_CALL(flush_cache_range)(mm,start,end)
 #define flush_cache_page(vma,addr) BTFIXUP_CALL(flush_cache_page)(vma,addr)
 #define flush_icache_range(start, end)		do { } while (0)
+#define flush_dcache_page(page)			do { } while (0)
 
 BTFIXUPDEF_CALL(void, flush_tlb_all, void)
 BTFIXUPDEF_CALL(void, flush_tlb_mm, struct mm_struct *)

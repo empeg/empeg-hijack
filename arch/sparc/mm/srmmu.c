@@ -1,4 +1,4 @@
-/* $Id: srmmu.c,v 1.187.2.7 1999/11/16 06:29:44 davem Exp $
+/* $Id: srmmu.c,v 1.187.2.9 2000/03/05 17:39:18 davem Exp $
  * srmmu.c:  SRMMU specific routines for memory management.
  *
  * Copyright (C) 1995 David S. Miller  (davem@caip.rutgers.edu)
@@ -1662,7 +1662,8 @@ __initfunc(static unsigned long map_spbank(unsigned long vbase, int sp_entry))
 	srmmu_map[srmmu_bank].vbase = vbase;
 	srmmu_map[srmmu_bank].pbase = sp_banks[sp_entry].base_addr;
 	srmmu_map[srmmu_bank].size = sp_banks[sp_entry].num_bytes;
-	srmmu_bank++;
+	if (srmmu_map[srmmu_bank].size)
+		srmmu_bank++;
 	map_spbank_last_pa = pstart - SRMMU_PGDIR_SIZE;
 	return vstart;
 }
@@ -2423,7 +2424,15 @@ __initfunc(static void init_swift(void))
 	BTFIXUPSET_CALL(set_pte, srmmu_set_pte_nocache_swift, BTFIXUPCALL_NORM);
 	BTFIXUPSET_CALL(init_new_context, swift_init_new_context, BTFIXUPCALL_NORM);
 
+#if 1
+	/* If granular flushes are ever cured and reenabled in
+	 * swift.S, revert this setting back to non-global iommu
+	 * cache flushes. -DaveM
+	 */
+	flush_page_for_dma_global = 1;
+#else
 	flush_page_for_dma_global = 0;
+#endif
 
 	/* Are you now convinced that the Swift is one of the
 	 * biggest VLSI abortions of all time?  Bravo Fujitsu!

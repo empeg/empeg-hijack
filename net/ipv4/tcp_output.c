@@ -5,7 +5,7 @@
  *
  *		Implementation of the Transmission Control Protocol(TCP).
  *
- * Version:	$Id: tcp_output.c,v 1.108.2.1 1999/05/14 23:07:36 davem Exp $
+ * Version:	$Id: tcp_output.c,v 1.108.2.6 2000/02/07 20:20:11 davem Exp $
  *
  * Authors:	Ross Biro, <bir7@leland.Stanford.Edu>
  *		Fred N. van Kempen, <waltje@uWalt.NL.Mugnet.ORG>
@@ -61,6 +61,31 @@ static __inline__ void update_send_head(struct sock *sk)
 	tp->send_head = tp->send_head->next;
 	if (tp->send_head == (struct sk_buff *) &sk->write_queue)
 		tp->send_head = NULL;
+}
+
+static __inline__ u32 tcp_acceptable_seq(struct sock *sk)
+{
+	struct tcp_opt *tp = &sk->tp_pinfo.af_tcp;
+	struct sk_buff *skb;
+	u32 snd_nxt;
+
+	if (!before(tp->snd_una+tp->snd_wnd, tp->snd_nxt))
+		return tp->snd_nxt;
+
+	/* Umm... No better choice. The case is marginal, no hurry. */
+	skb = skb_peek(&sk->write_queue);
+
+	snd_nxt = tp->snd_una;
+	while((skb != NULL) &&
+	      (skb != tp->send_head) &&
+	      (skb != (struct sk_buff *)&sk->write_queue)) {
+		if (after(TCP_SKB_CB(skb)->end_seq, tp->snd_una+tp->snd_wnd))
+			break;
+		snd_nxt = TCP_SKB_CB(skb)->end_seq;
+		skb = skb->next;
+	}
+
+	return snd_nxt;
 }
 
 /* This routine actually transmits TCP packets queued in by
@@ -165,7 +190,7 @@ void tcp_send_skb(struct sock *sk, struct sk_buff *skb, int force_queue)
 	tp->write_seq += (TCP_SKB_CB(skb)->end_seq - TCP_SKB_CB(skb)->seq);
 	__skb_queue_tail(&sk->write_queue, skb);
 
-	if (!force_queue && tp->send_head == NULL && tcp_snd_test(sk, skb)) {
+	if (!force_queue && tp->send_head == NULL && tcp_snd_test(sk, skb, 1)) {
 		/* Send it out now. */
 		TCP_SKB_CB(skb)->when = tcp_time_stamp;
 		tp->snd_nxt = TCP_SKB_CB(skb)->end_seq;
@@ -341,7 +366,8 @@ void tcp_write_xmit(struct sock *sk)
 		 * b) not exceeding our congestion window.
 		 * c) not retransmitting [Nagle]
 		 */
-		while((skb = tp->send_head) && tcp_snd_test(sk, skb)) {
+		while((skb = tp->send_head) &&
+		      tcp_snd_test(sk, skb, tcp_skb_is_last(sk, skb))) {
 			if (skb->len > mss_now) {
 				if (tcp_fragment(sk, skb, mss_now))
 					break;
@@ -595,6 +621,7 @@ int tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb)
 	   (skb->len < (cur_mss >> 1)) &&
 	   (skb->next != tp->send_head) &&
 	   (skb->next != (struct sk_buff *)&sk->write_queue) &&
+	   (skb->next != tp->retrans_head) &&
 	   (sysctl_tcp_retrans_collapse != 0))
 		tcp_retrans_try_collapse(sk, skb, cur_mss);
 
@@ -752,12 +779,16 @@ void tcp_send_fin(struct sock *sk)
 		}
 	} else {
 		/* Socket is locked, keep trying until memory is available. */
-		do {
+		for (;;) {
 			skb = sock_wmalloc(sk,
 					   (MAX_HEADER +
 					    sk->prot->max_header),
 					   1, GFP_KERNEL);
-		} while (skb == NULL);
+			if (skb)
+				break;
+			current->policy |= SCHED_YIELD;
+			schedule();
+		}
 
 		/* Reserve space for headers and prepare control bits. */
 		skb_reserve(skb, MAX_HEADER + sk->prot->max_header);
@@ -796,7 +827,7 @@ void tcp_send_active_reset(struct sock *sk)
 	TCP_SKB_CB(skb)->urg_ptr = 0;
 
 	/* Send it off. */
-	TCP_SKB_CB(skb)->seq = tp->write_seq;
+	TCP_SKB_CB(skb)->seq = tcp_acceptable_seq(sk);
 	TCP_SKB_CB(skb)->end_seq = TCP_SKB_CB(skb)->seq;
 	TCP_SKB_CB(skb)->when = tcp_time_stamp;
 	tcp_transmit_skb(sk, skb);
@@ -1004,7 +1035,7 @@ void tcp_send_delayed_ack(struct tcp_opt *tp, int max_timeout)
 	unsigned long timeout;
 
 	/* Stay within the limit we were given */
-	timeout = tp->ato;
+	timeout = (tp->ato << 1) >> 1;
 	if (timeout > max_timeout)
 		timeout = max_timeout;
 	timeout += jiffies;
@@ -1040,10 +1071,14 @@ void tcp_send_ack(struct sock *sk)
 			 *
 			 * This is the one possible way that we can delay an
 			 * ACK and have tp->ato indicate that we are in
-			 * quick ack mode, so clear it.
+			 * quick ack mode, so clear it.  It is also the only
+			 * possible way for ato to be zero, when ACK'ing a
+			 * SYNACK because we've taken no ATO measurement yet.
 			 */
-			if(tcp_in_quickack_mode(tp))
+			if (tcp_in_quickack_mode(tp))
 				tcp_exit_quickack_mode(tp);
+			if (!tp->ato)
+				tp->ato = tp->rto;
 			tcp_send_delayed_ack(tp, HZ/2);
 			return;
 		}
@@ -1056,7 +1091,7 @@ void tcp_send_ack(struct sock *sk)
 		TCP_SKB_CB(buff)->urg_ptr = 0;
 
 		/* Send it off, this clears delayed acks for us. */
-		TCP_SKB_CB(buff)->seq = TCP_SKB_CB(buff)->end_seq = tp->snd_nxt;
+		TCP_SKB_CB(buff)->seq = TCP_SKB_CB(buff)->end_seq = tcp_acceptable_seq(sk);
 		TCP_SKB_CB(buff)->when = tcp_time_stamp;
 		tcp_transmit_skb(sk, buff);
 	}
@@ -1081,15 +1116,15 @@ void tcp_write_wakeup(struct sock *sk)
 		      TCPF_LAST_ACK|TCPF_CLOSING))
 			return;
 
-		if (before(tp->snd_nxt, tp->snd_una + tp->snd_wnd) &&
-		    ((skb = tp->send_head) != NULL)) {
+		if ((skb = tp->send_head) != NULL &&
+		    before(TCP_SKB_CB(skb)->seq, tp->snd_una+tp->snd_wnd)) {
 			unsigned long win_size;
 
 			/* We are probing the opening of a window
 			 * but the window size is != 0
 			 * must have been a result SWS avoidance ( sender )
 			 */
-			win_size = tp->snd_wnd - (tp->snd_nxt - tp->snd_una);
+			win_size = tp->snd_una+tp->snd_wnd - TCP_SKB_CB(skb)->seq;
 			if (win_size < TCP_SKB_CB(skb)->end_seq - TCP_SKB_CB(skb)->seq) {
 				if (tcp_fragment(sk, skb, win_size))
 					return; /* Let a retransmit get it. */
@@ -1119,7 +1154,7 @@ void tcp_write_wakeup(struct sock *sk)
 			 * end to send an ack.  Don't queue or clone SKB, just
 			 * send it.
 			 */
-			TCP_SKB_CB(skb)->seq = tp->snd_nxt - 1;
+			TCP_SKB_CB(skb)->seq = tp->snd_una - 1;
 			TCP_SKB_CB(skb)->end_seq = TCP_SKB_CB(skb)->seq;
 			TCP_SKB_CB(skb)->when = tcp_time_stamp;
 			tcp_transmit_skb(sk, skb);

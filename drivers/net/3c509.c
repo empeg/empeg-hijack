@@ -251,6 +251,7 @@ int el3_probe(struct device *dev)
 				if (el3_debug > 2) {
 					printk("3c529: irq %d  ioaddr 0x%x  ifport %d\n", irq, ioaddr, if_port);
 				}
+				EL3WINDOW(0);
 				for (i = 0; i < 3; i++) {
 					phys_addr[i] = htons(read_eeprom(ioaddr, i));
 				}
@@ -374,6 +375,7 @@ int el3_probe(struct device *dev)
 	
 	((struct el3_private *)dev->priv)->mca_slot = mca_slot;
 	((struct el3_private *)dev->priv)->next_dev = el3_root_dev;
+	((struct el3_private *)dev->priv)->lock = (spinlock_t) SPIN_LOCK_UNLOCKED;
 	el3_root_dev = dev;
 
 	if (el3_debug > 0)
@@ -433,9 +435,6 @@ el3_open(struct device *dev)
 	outw(TxReset, ioaddr + EL3_CMD);
 	outw(RxReset, ioaddr + EL3_CMD);
 	outw(SetStatusEnb | 0x00, ioaddr + EL3_CMD);
-
-	/* Set the spinlock before grabbing IRQ! */
-	((struct el3_private *)dev->priv)->lock = (spinlock_t) SPIN_LOCK_UNLOCKED;
 
 	if (request_irq(dev->irq, &el3_interrupt, 0, dev->name, dev)) {
 		return -EAGAIN;
@@ -577,7 +576,7 @@ el3_start_xmit(struct sk_buff *skb, struct device *dev)
 		outw(0x00, ioaddr + TX_FIFO);
 		/* ... and the packet rounded to a doubleword. */
 #ifdef  __powerpc__
-		outsl_unswapped(ioaddr + TX_FIFO, skb->data, (skb->len + 3) >> 2);
+		outsl_ns(ioaddr + TX_FIFO, skb->data, (skb->len + 3) >> 2);
 #else
 		outsl(ioaddr + TX_FIFO, skb->data, (skb->len + 3) >> 2);
 #endif
@@ -797,7 +796,7 @@ el3_rx(struct device *dev)
 
 				/* 'skb->data' points to the start of sk_buff data area. */
 #ifdef  __powerpc__
-				insl_unswapped(ioaddr+RX_FIFO, skb_put(skb,pkt_len),
+				insl_ns(ioaddr+RX_FIFO, skb_put(skb,pkt_len),
 							   (pkt_len + 3) >> 2);
 #else
 				insl(ioaddr + RX_FIFO, skb_put(skb,pkt_len),

@@ -112,8 +112,16 @@ static inline void do_identify (ide_drive_t *drive, byte cmd)
 				}
 				type = ide_cdrom;	/* Early cdrom models used zero */
 			case ide_cdrom:
-				printk ("CDROM");
 				drive->removable = 1;
+#ifdef CONFIG_PPC
+				/* kludge for Apple PowerBook internal zip */
+				if (!strstr(id->model, "CD-ROM") && strstr(id->model, "ZIP")) {
+					printk ("FLOPPY");
+					type = ide_floppy;
+					break;
+				}
+#endif
+				printk ("CDROM");
 				break;
 			case ide_tape:
 				printk ("TAPE");
@@ -199,6 +207,10 @@ static int try_to_identify (ide_drive_t *drive, byte cmd)
 		delay_50ms();
 		hd_status = IDE_STATUS_REG;
 	}
+
+	/* set features register for atapi identify command */
+	if((cmd == WIN_PIDENTIFY))
+	        OUT_BYTE(0,IDE_FEATURE_REG); /* disable dma & overlap mode */
 
 #if CONFIG_BLK_DEV_PDC4030
 	if (IS_PDC4030_DRIVE) {
@@ -304,6 +316,7 @@ static int do_probe (ide_drive_t *drive, byte cmd)
 		drive->name, drive->present, drive->media,
 		(cmd == WIN_IDENTIFY) ? "ATA" : "ATAPI");
 #endif
+	delay_50ms();	/* needed for some systems (e.g. crw9624 as drive0 with disk as slave) */
 	SELECT_DRIVE(hwif,drive);
 	delay_50ms();
 
@@ -975,7 +988,12 @@ int init_module (void)
 	
 	for (index = 0; index < MAX_HWIFS; ++index)
 		ide_unregister(index);
-	return ideprobe_init();
+	ideprobe_init();
+#ifdef CONFIG_PROC_FS
+	proc_ide_destroy();	/* Avoid multiple entry in /proc */
+	proc_ide_create();
+#endif
+	return 0;
 }
 
 void cleanup_module (void)

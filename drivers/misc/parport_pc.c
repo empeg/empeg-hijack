@@ -839,11 +839,6 @@ static int probe_one_port(unsigned long int base,
 		 * Put the ECP detected port in the more PS2 like mode.
 		 */
 		parport_pc_write_econtrol(p, 0x34);
-	parport_pc_write_control(p, 0x8);
-	parport_pc_write_data(p, 0);
-	udelay (50);
-	parport_pc_write_control(p, 0xc);
-	udelay (50);
 
 	if (parport_probe_hook)
 		(*parport_probe_hook)(p);
@@ -907,6 +902,12 @@ static int parport_pc_init_pci (int irq, int dma)
 		  { { 0, -1 }, } },
 		{ PCI_VENDOR_ID_LAVA, PCI_DEVICE_ID_LAVA_DUAL_PAR_B, 1,
 		  { { 0, -1 }, } },
+		{ PCI_VENDOR_ID_AFAVLAB, PCI_DEVICE_ID_AFAVLAB_TK9902, 1,
+		  { { 0, 1 }, } },
+		{ PCI_VENDOR_ID_TIMEDIA, PCI_DEVICE_ID_TIMEDIA_1889, 1,
+		  { { 2, -1 }, } },
+		{ PCI_VENDOR_ID_TIMEDIA, PCI_DEVICE_ID_TIMEDIA_4008A, 1,
+		  { { 0, 1 }, } },
 		{ 0, }
 	};
 

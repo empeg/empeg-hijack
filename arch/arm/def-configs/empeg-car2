@@ -84,6 +84,7 @@ CONFIG_BLK_DEV_IDEDISK=y
 # CONFIG_BLK_DEV_NBD is not set
 # CONFIG_BLK_DEV_MD is not set
 CONFIG_BLK_DEV_RAM=y
+CONFIG_BLK_DEV_RAM_SIZE=0
 CONFIG_BLK_DEV_INITRD=y
 # CONFIG_BLK_DEV_XD is not set
 CONFIG_PARIDE_PARPORT=y
@@ -191,7 +192,7 @@ CONFIG_INET=y
 # CONFIG_HAMRADIO is not set
 
 #
-# IrDA subsystem support
+# IrDA (infrared) support
 #
 CONFIG_IRDA=y
 
@@ -200,7 +201,7 @@ CONFIG_IRDA=y
 #
 # CONFIG_IRLAN is not set
 CONFIG_IRCOMM=y
-# CONFIG_IRLPT is not set
+# CONFIG_IRDA_ULTRA is not set
 # CONFIG_IRDA_OPTIONS is not set
 # CONFIG_IRDA_COMPRESSION is not set
 
@@ -219,7 +220,6 @@ CONFIG_IRTTY_SIR=y
 #
 # CONFIG_NSC_FIR is not set
 # CONFIG_WINBOND_FIR is not set
-# CONFIG_SHARP_FIR is not set
 # CONFIG_TOSHIBA_FIR is not set
 # CONFIG_SMC_IRCC_FIR is not set
 
@@ -238,6 +238,7 @@ CONFIG_NETDEVICES=y
 #
 # CONFIG_ARCNET is not set
 # CONFIG_DUMMY is not set
+# CONFIG_BONDING is not set
 # CONFIG_EQUALIZER is not set
 # CONFIG_NET_SB1000 is not set
 
@@ -264,6 +265,7 @@ CONFIG_SMC9194_TIFON=y
 # Ethernet (1000 Mbit)
 #
 # CONFIG_ACENIC is not set
+# CONFIG_HAMACHI is not set
 # CONFIG_YELLOWFIN is not set
 # CONFIG_SK98LIN is not set
 # CONFIG_FDDI is not set
@@ -283,7 +285,9 @@ CONFIG_SMC9194_TIFON=y
 #
 # Wan interfaces
 #
+# CONFIG_LANMEDIA is not set
 # CONFIG_COMX is not set
+# CONFIG_HDLC is not set
 # CONFIG_DLCI is not set
 # CONFIG_SBNI is not set
 
@@ -313,6 +317,7 @@ CONFIG_PROC_FS=y
 # CONFIG_QNX4FS_FS is not set
 # CONFIG_ROMFS_FS is not set
 CONFIG_EXT2_FS=y
+# CONFIG_EXT3_FS is not set
 # CONFIG_SYSV_FS is not set
 # CONFIG_UFS_FS is not set
 # CONFIG_REISERFS_FS is not set

@@ -50,7 +50,7 @@ extern __inline__ int reset_timer (void)
 	   been passed by the time the OSMR was written to.
 	   hugo@empeg.com
         */
-	save_flags_clif(flags);       // was save_flags_cli()  --M.Lord
+        save_flags_clif(flags);       // was save_flags_cli()  --M.Lord
 	last_os_timer_match=OSMR0;
 
         /* Clear match on timer 0 */
@@ -68,7 +68,7 @@ extern __inline__ int reset_timer (void)
 		break;
 #endif
 
-	while (((next_os_timer_match >= (safetime = OSCR+safeperiod)) && (next_os_timer_match - safetime > 0x80000000))
+        while (((next_os_timer_match >= (safetime = OSCR+safeperiod)) && (next_os_timer_match - safetime > 0x80000000))
 	       || ((next_os_timer_match < safetime) && (safetime - next_os_timer_match < 0x80000000))) {
 		/* Too close to next interrupt, back off one. Reset last_os_timer_match to
 		   the timer value which we would have set if it wasn't too close as we've

@@ -266,7 +266,11 @@ static void mace_reset(struct device *dev)
     /* done changing address */
     out_8(&mb->iac, 0);
 
+#ifndef CONFIG_MACE_AAUI_PORT
     out_8(&mb->plscc, PORTSEL_GPSI + ENPLSIO);
+#else
+    out_8(&mb->plscc, PORTSEL_AUI + ENPLSIO);
+#endif /* CONFIG_MACE_AAUI_PORT */
 }
 
 static void __mace_set_address(struct device *dev, void *addr)
@@ -922,9 +926,9 @@ void cleanup_module(void)
     struct mace_data *mp = (struct mace_data *) mace_devs->priv;
     unregister_netdev(mace_devs);
 
-    free_irq(mace_devs->irq, mace_interrupt);
-    free_irq(mp->tx_dma_intr, mace_txdma_intr);
-    free_irq(mp->rx_dma_intr, mace_rxdma_intr);
+    free_irq(mace_devs->irq, mace_devs);
+    free_irq(mp->tx_dma_intr, mace_devs);
+    free_irq(mp->rx_dma_intr, mace_devs);
 
     kfree(mace_devs);
     mace_devs = NULL;

@@ -125,7 +125,7 @@
  * SLAB_SELFTEST	- 1 to perform a few tests, mainly for development.
  */
 #define		SLAB_MGMT_CHECKS	1
-#define		SLAB_DEBUG_SUPPORT	0
+#define		SLAB_DEBUG_SUPPORT	1
 #define		SLAB_STATS		0
 #define		SLAB_SELFTEST		0
 
@@ -471,7 +471,7 @@ void __init kmem_cache_sizes_init(void)
 			 * allow tighter packing of the smaller caches. */
 			if (!(sizes->cs_cachep =
 			      kmem_cache_create(*names++, sizes->cs_size,
-						0, SLAB_HWCACHE_ALIGN, NULL, NULL)))
+						0, SLAB_HWCACHE_ALIGN|SLAB_POISON, NULL, NULL)))
 				goto panic_time;
 			if (!found) {
 				/* Inc off-slab bufctl limit until the ceiling is hit. */

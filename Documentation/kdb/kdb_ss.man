@@ -1,0 +1,71 @@
+.TH SS 1 "29 March 1999"
+.SH NAME
+ss, ssb \- Single Step 
+.SH SYNOPSIS
+ss [<count>]
+.LP
+ssb 
+.SH DESCRIPTION
+The
+.B ss
+command is used to execute a single instruction and return
+to the kernel debugger.
+.P
+Both the instruction that was single-stepped and the next
+instruction to execute are printed. 
+.P
+The \fBssb\fP command will execute instructions from the
+current value of the instruction pointer.  Each instruction
+will be printed as it is executed; execution will stop at
+any instruction which would cause the flow of control to
+change (e.g. branch, call, interrupt instruction, return, etc.)
+.SH LIMITATIONS
+None.
+.SH ENVIRONMENT
+None.
+.SH SMP CONSIDERATIONS
+Other processors will be released from the kernel debugger
+when the instruction is traced, and will be brought back to
+a barrier in the kernel debugger when the traced instruction
+completes.
+.SH EXAMPLES
+.nf
+.na
+.ft CW
+kdb> bp gendisk_head datar 4
+Data Access Breakpoint #0 at 0xc024ddf4 (gendisk_head) in dr0 is enabled on cpu 0
+for 4 bytes
+kdb> go
+...
+[root@host /root]# cat /proc/partitions
+Entering kdb on processor 0 due to Debug Exception @ 0xc01845e3
+Read/Write breakpoint #0 at 0xc024ddf4
+[0]kdb> ssb
+sd_finish+0x7b:  movzbl 0xc02565d4,%edx
+sd_finish+0x82:  leal   0xf(%edx),%eax
+sd_finish+0x85:  sarl   $0x4,%eax
+sd_finish+0x88:  movl   0xc0256654,%ecx
+sd_finish+0x8e:  leal   (%eax,%eax,4),%edx
+sd_finish+0x91:  leal   (%eax,%edx,2),%edx
+sd_finish+0x94:  movl   0xc0251108,%eax
+sd_finish+0x99:  movl   %eax,0xffffffc(%ecx,%edx,4)
+sd_finish+0x9d:  movl   %ecx,0xc0251108
+sd_finish+0xa3:  xorl   %ebx,%ebx
+sd_finish+0xa5:  cmpb   $0x0,0xc02565d4
+[0]kdb> go
+[root@host /root]# 
+
+[0]kdb> ss
+sys_read:   pushl  %ebp
+SS trap at 0xc01274c1
+sys_read+0x1:   movl   %esp,%ebp
+[0]kdb> ss
+sys_read+0x1:   movl   %esp,%ebp
+SS trap at 0xc01274c3
+sys_read+0x3:   subl   $0xc,%esp
+[0]kdb> ss
+sys_read+0x3:   subl   $0xc,%esp
+SS trap at 0xc01274c6
+sys_read+0x6:   pushl  %edi
+[0]kdb>
+

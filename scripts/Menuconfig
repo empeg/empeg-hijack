@@ -68,6 +68,12 @@
 #
 # 24 January 1999, Michael Elizabeth Chastain, <mec@shout.net>
 # - Improve the exit message (Jeff Ronne).
+#
+# 06 July 1999, Andrzej M. Krzysztofowicz, <ankry@mif.pg.gda.pl>
+# - Support for multiple conditions in dep_tristate().
+# - Implemented new functions: define_tristate(), define_int(), define_hex(),
+#   define_string(), dep_bool().
+# 
 
 
 #
@@ -132,6 +138,22 @@ function define_bool () {
 	eval $1=$2
 }
 
+function define_tristate () {
+	eval $1=$2
+}
+
+function define_hex () {
+	eval $1=$2
+}
+
+function define_int () {
+	eval $1=$2
+}
+
+function define_string () {
+	eval $1="$2"
+}
+
 #
 # Create a boolean (Yes/No) function for our current menu
 # which calls our local bool function.
@@ -188,13 +210,72 @@ function tristate () {
 #       else in the kernel.
 #
 function dep_tristate () {
-	if [ "$3" = "y" ]; then
-	    tristate "$1" "$2"
-	else if [ "$3" = "m" ]; then
-	    mod_bool "$1" "$2"
+	ques="$1"
+	var="$2"
+	dep=y
+	shift 2
+	while [ $# -gt 0 ]; do
+		if   [ "$1" = y ]; then
+			shift
+		elif [ "$1" = m ]; then
+			dep=m
+			shift
+		else
+			dep=n
+			shift $#
+		fi
+	done
+	if [ "$dep" = y ]; then
+	    tristate "$ques" "$var"
+	elif [ "$dep" = m ]; then
+	    mod_bool "$ques" "$var"
 	else 
-	    define_bool "$2" n
-	fi; fi
+	    define_tristate "$var" n
+	fi
+}
+
+#
+#   Same as above, but now only Y and N are allowed as dependency
+#   (i.e. third and next arguments).
+#
+function dep_bool () {
+	ques="$1"
+	var="$2"
+	dep=y
+	shift 2
+	while [ $# -gt 0 ]; do
+		if [ "$1" = y ]; then
+			shift
+		else
+			dep=n
+			shift $#
+		fi
+	done
+	if [ "$dep" = y ]; then
+	    bool "$ques" "$var"
+	else 
+	    define_bool "$var" n
+	fi
+}
+
+function dep_mbool () {
+	ques="$1"
+	var="$2"
+	dep=y
+	shift 2
+	while [ $# -gt 0 ]; do
+		if [ "$1" = y -o "$1" = m ]; then
+			shift
+		else
+			dep=n
+			shift $#
+		fi
+	done
+	if [ "$dep" = y ]; then
+	    bool "$ques" "$var"
+	else 
+	    define_bool "$var" n
+	fi
 }
 
 #
@@ -344,7 +425,7 @@ function menu_name () {
 			--menu '$menu_instructions' \
 			$ROWS $COLS $((ROWS-10)) \
 			'$default' " >MCmenu
-	>MCradiolists
+	echo "#!/bin/sh" >MCradiolists
 }
 
 #
@@ -632,11 +713,11 @@ function parser(ifile,menu) {
 			++menu_no
 
 			printf("submenu %s MCmenu%s\n", $0, menu_no) >>menu
-
-			printf( "function MCmenu%s () {\n"\
+			printf( "#!/bin/sh\n"\
+				"function MCmenu%s () {\n"\
 				"default=$1\n"\
 				"menu_name %s\n",\
-				 menu_no, $0) >"MCmenu"menu_no
+				 menu_no, $0) >>"MCmenu"menu_no
 
 			parser(ifile, "MCmenu"menu_no)
 		}
@@ -691,7 +772,8 @@ function parser(ifile,menu) {
 function parse_config_files () {
 	rm -f MCmenu*
 
-	echo "function MCmenu0 () {" >MCmenu0
+	echo "#!/bin/sh" > MCmenu0
+	echo "function MCmenu0 () {" >>MCmenu0
 	echo 'default=$1' >>MCmenu0
 	echo "menu_name 'Main Menu'" >>MCmenu0
 
@@ -752,7 +834,7 @@ EOM
 			cat <<EOM
 
 Please report this to the maintainer <mec@shout.net>.  You may also
-send a problem report to <linux-kernel@vger.rutgers.edu>.
+send a problem report to <linux-kernel@vger.kernel.org>.
 
 Please indicate the kernel version you are trying to configure and
 which menu you were trying to enter when this error occurred.
@@ -815,7 +897,7 @@ the /usr/src/linux/scripts/lxdialog directory and issuing the
 
 If you have verified that your ncurses install is correct, you may email
 the maintainer <mec@shout.net> or post a message to
-<linux-kernel@vger.rutgers.edu> for additional assistance. 
+<linux-kernel@vger.kernel.org> for additional assistance. 
 
 EOM
 			cleanup
@@ -988,13 +1070,51 @@ save_configuration () {
 
 	function tristate () {
 		set_x_info "$2" "n"
-		eval define_bool "$2" "$x"
+		eval define_tristate "$2" "$x"
 	}
 
 	function dep_tristate () {
 		set_x_info "$2" "n"
-		if [ "$3" = "m" -a "$x" = "y" ]; then x="m"; fi
-		define_bool "$2" "$x"
+		var="$2"
+		shift 2
+		while [ $# -gt 0 ]; do
+			if   [ "$1" = y ]; then
+				shift
+			elif [ "$1" = m -a "$x" != n ]; then
+				x=m; shift
+			else 
+				x=n; shift $#
+			fi
+		done
+		define_tristate "$var" "$x"
+	}
+
+	function dep_bool () {
+		set_x_info "$2" "n"
+		var="$2"
+		shift 2
+		while [ $# -gt 0 ]; do
+			if   [ "$1" = y ]; then
+				shift
+			else 
+				x=n; shift $#
+			fi
+		done
+		define_bool "$var" "$x"
+	}
+
+	function dep_mbool () {
+		set_x_info "$2" "n"
+		var="$2"
+		shift 2
+		while [ $# -gt 0 ]; do
+			if   [ "$1" = y -o "$1" = m ]; then
+				shift
+			else 
+				x=n; shift $#
+			fi
+		done
+		define_bool "$var" "$x"
 	}
 
 	function int () {
@@ -1015,7 +1135,29 @@ save_configuration () {
 		echo "#define $2 \"$x\""	>>$CONFIG_H
 	}
 
+	function define_hex () {
+		eval $1="$2"
+               	echo "$1=$2"			>>$CONFIG
+		echo "#define $1 0x${2##*[x,X]}"	>>$CONFIG_H
+	}
+
+	function define_int () {
+		eval $1="$2"
+		echo "$1=$2" 			>>$CONFIG
+		echo "#define $1 ($2)"		>>$CONFIG_H
+	}
+
+	function define_string () {
+		eval $1="$2"
+		echo "$1=\"$2\""		>>$CONFIG
+		echo "#define $1 \"$2\""	>>$CONFIG_H
+	}
+
 	function define_bool () {
+		define_tristate "$1" "$2"
+	}
+
+	function define_tristate () {
 		eval $1="$2"
 
    		case "$2" in
@@ -1220,7 +1362,7 @@ Use the <TAB> key to move from the input field to the buttons below it."
 
 DIALOG="./scripts/lxdialog/lxdialog"
 
-kernel_version="${VERSION}.${PATCHLEVEL}.${SUBLEVEL}"
+kernel_version="${VERSION}.${PATCHLEVEL}.${SUBLEVEL}${EXTRAVERSION}"
 
 backtitle="Linux Kernel v$kernel_version Configuration"
 

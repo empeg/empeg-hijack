@@ -47,11 +47,21 @@
 #endif
 
 #ifdef CONFIG_DASD
-#include "../drivers/s390/block/dasd.h"
+#include <asm/dasd.h>
+#endif
+
+#ifdef CONFIG_BLK_DEV_XPRAM
+#include "../drivers/s390/block/xpram.h"
 #endif
 
 #ifdef CONFIG_MAC
 extern void nubus_init(void);
+#endif
+
+extern int irda_device_init(void);
+
+#if defined(CONFIG_KDB)
+#include <linux/kdb.h>
 #endif
 
 /*
@@ -63,6 +73,8 @@ extern void nubus_init(void);
 #if __GNUC__ < 2 || (__GNUC__ == 2 && __GNUC_MINOR__ < 6)
 #error sorry, your GCC is too old. It builds incorrect kernels.
 #endif
+
+char * root_mount_data = NULL;
 
 extern char _stext, _etext;
 extern char *linux_banner;
@@ -76,8 +88,7 @@ extern int kswapd(void *);
 extern int kpiod(void *);
 extern void kswapd_setup(void);
 extern int kftpd_daemon(void *);
-
-extern void init_IRQ(void);
+extern unsigned long init_IRQ( unsigned long);
 extern void init_modules(void);
 extern long console_init(long, long);
 extern void sock_init(void);
@@ -109,6 +120,9 @@ extern void msmouse_setup(char *str, int *ints);
 extern void console_setup(char *str, int *ints);
 #ifdef CONFIG_PRINTER
 extern void lp_setup(char *str, int *ints);
+#endif
+#ifdef CONFIG_VIDEO_CPIA_PP
+extern void cpia_pp_setup(char *str, int *ints);
 #endif
 #ifdef CONFIG_JOY_AMIGA
 extern void js_am_setup(char *str, int *ints);
@@ -150,6 +164,9 @@ extern void arcrimi_setup(char *str, int *ints);
 #ifdef CONFIG_CTC  
 extern void ctc_setup(char *str, int *ints);
 #endif
+#ifdef CONFIG_IUCV
+extern void iucv_setup(char *str, int *ints);
+#endif
 #ifdef CONFIG_ARCNET_COM90xxIO
 extern void com90io_setup(char *str, int *ints);
 #endif
@@ -181,11 +198,21 @@ extern void pg_setup(char *str, int *ints);
 #ifdef CONFIG_PARIDE_PCD
 extern void pcd_setup(char *str, int *ints);
 #endif
+#ifdef CONFIG_3215
+extern void con3215_setup(char *str, int *ints);
+#endif
 #ifdef CONFIG_MDISK
 extern void mdisk_setup(char *str, int *ints);
 #endif
 #ifdef CONFIG_DASD
 extern void dasd_setup(char *str, int *ints);
+#endif
+#ifdef CONFIG_BLK_DEV_XPRAM
+extern void xpram_setup(char *str, int *ints);
+#endif
+#ifdef CONFIG_ARCH_S390
+extern void vmhalt_setup(char *str, int *ints);
+extern void vmpoff_setup(char *str, int *ints);
 #endif
 extern void floppy_setup(char *str, int *ints);
 extern void st_setup(char *str, int *ints);
@@ -307,6 +334,10 @@ extern void pcxx_setup(char *str, int *ints);
 #ifdef CONFIG_RISCOM8
 extern void riscom8_setup(char *str, int *ints);
 #endif
+
+extern void n2_setup(char *str, int *ints);
+extern void c101_setup(char *str, int *ints);
+
 #ifdef CONFIG_SPECIALIX
 extern void specialix_setup(char *str, int *ints);
 #endif
@@ -485,6 +516,24 @@ static struct dev_name_struct {
 	{ "rd/c0d14p",0x3070 },
 	{ "rd/c0d15p",0x3078 },
 #endif
+#if defined(CONFIG_BLK_CPQ_DA) || defined(CONFIG_BLK_CPQ_DA_MODULE)
+	{ "ida/c0d0p",0x4800 },
+	{ "ida/c0d1p",0x4810 },
+	{ "ida/c0d2p",0x4820 },
+	{ "ida/c0d3p",0x4830 },
+	{ "ida/c0d4p",0x4840 },
+	{ "ida/c0d5p",0x4850 },
+	{ "ida/c0d6p",0x4860 },
+	{ "ida/c0d7p",0x4870 },
+	{ "ida/c0d8p",0x4880 },
+	{ "ida/c0d9p",0x4890 },
+	{ "ida/c0d10p",0x48A0 },
+	{ "ida/c0d11p",0x48B0 },
+	{ "ida/c0d12p",0x48C0 },
+	{ "ida/c0d13p",0x48D0 },
+	{ "ida/c0d14p",0x48E0 },
+	{ "ida/c0d15p",0x48F0 },
+#endif
 #ifdef CONFIG_ATARI_ACSI
 	{ "ada",     0x1c00 },
 	{ "adb",     0x1c10 },
@@ -550,24 +599,76 @@ static struct dev_name_struct {
 	{ "ddv", DDV_MAJOR << 8},
 #endif
 #ifdef CONFIG_MDISK
-        { "mnd0", (MDISK_MAJOR << MINORBITS)},
-        { "mnd1", (MDISK_MAJOR << MINORBITS) + 1},
-        { "mnd2", (MDISK_MAJOR << MINORBITS) + 2},
-        { "mnd3", (MDISK_MAJOR << MINORBITS) + 3},
-        { "mnd4", (MDISK_MAJOR << MINORBITS) + 4},
-        { "mnd5", (MDISK_MAJOR << MINORBITS) + 5},
-        { "mnd6", (MDISK_MAJOR << MINORBITS) + 6},
-        { "mnd7", (MDISK_MAJOR << MINORBITS) + 7},
+        { "mnda", (MDISK_MAJOR << MINORBITS)},
+        { "mndb", (MDISK_MAJOR << MINORBITS) + 1},
+        { "mndc", (MDISK_MAJOR << MINORBITS) + 2},
+        { "mndd", (MDISK_MAJOR << MINORBITS) + 3},
+        { "mnde", (MDISK_MAJOR << MINORBITS) + 4},
+        { "mndf", (MDISK_MAJOR << MINORBITS) + 5},
+        { "mndg", (MDISK_MAJOR << MINORBITS) + 6},
+        { "mndh", (MDISK_MAJOR << MINORBITS) + 7},
 #endif
 #ifdef CONFIG_DASD
-       { "dasd0", (DASD_MAJOR << MINORBITS) },
-       { "dasd1", (DASD_MAJOR << MINORBITS) + (1 << 2) },
-       { "dasd2", (DASD_MAJOR << MINORBITS) + (2 << 2) },
-       { "dasd3", (DASD_MAJOR << MINORBITS) + (3 << 2) },
-       { "dasd4", (DASD_MAJOR << MINORBITS) + (4 << 2) },
-       { "dasd5", (DASD_MAJOR << MINORBITS) + (5 << 2) },
-       { "dasd6", (DASD_MAJOR << MINORBITS) + (6 << 2) },
-       { "dasd7", (DASD_MAJOR << MINORBITS) + (7 << 2) },
+       { "dasda", (DASD_MAJOR << MINORBITS) },
+       { "dasdb", (DASD_MAJOR << MINORBITS) + (1 << 2) },
+       { "dasdc", (DASD_MAJOR << MINORBITS) + (2 << 2) },
+       { "dasdd", (DASD_MAJOR << MINORBITS) + (3 << 2) },
+       { "dasde", (DASD_MAJOR << MINORBITS) + (4 << 2) },
+       { "dasdf", (DASD_MAJOR << MINORBITS) + (5 << 2) },
+       { "dasdg", (DASD_MAJOR << MINORBITS) + (6 << 2) },
+       { "dasdh", (DASD_MAJOR << MINORBITS) + (7 << 2) },
+       { "dasdi", (DASD_MAJOR << MINORBITS) + (8 << 2) },
+       { "dasdj", (DASD_MAJOR << MINORBITS) + (9 << 2) },
+       { "dasdk", (DASD_MAJOR << MINORBITS) + (11 << 2) },
+       { "dasdl", (DASD_MAJOR << MINORBITS) + (12 << 2) },
+       { "dasdm", (DASD_MAJOR << MINORBITS) + (13 << 2) },
+       { "dasdn", (DASD_MAJOR << MINORBITS) + (14 << 2) },
+       { "dasdo", (DASD_MAJOR << MINORBITS) + (15 << 2) },
+       { "dasdp", (DASD_MAJOR << MINORBITS) + (16 << 2) },
+       { "dasdq", (DASD_MAJOR << MINORBITS) + (17 << 2) },
+       { "dasdr", (DASD_MAJOR << MINORBITS) + (18 << 2) },
+       { "dasds", (DASD_MAJOR << MINORBITS) + (19 << 2) },
+       { "dasdt", (DASD_MAJOR << MINORBITS) + (20 << 2) },
+       { "dasdu", (DASD_MAJOR << MINORBITS) + (21 << 2) },
+       { "dasdv", (DASD_MAJOR << MINORBITS) + (22 << 2) },
+       { "dasdw", (DASD_MAJOR << MINORBITS) + (23 << 2) },
+       { "dasdx", (DASD_MAJOR << MINORBITS) + (24 << 2) },
+       { "dasdy", (DASD_MAJOR << MINORBITS) + (25 << 2) },
+       { "dasdz", (DASD_MAJOR << MINORBITS) + (26 << 2) },
+#endif
+#ifdef CONFIG_BLK_DEV_XPRAM
+       { "xpram0", (XPRAM_MAJOR << MINORBITS) },
+       { "xpram1", (XPRAM_MAJOR << MINORBITS) + 1 },
+       { "xpram2", (XPRAM_MAJOR << MINORBITS) + 2 },
+       { "xpram3", (XPRAM_MAJOR << MINORBITS) + 3 },
+       { "xpram4", (XPRAM_MAJOR << MINORBITS) + 4 },
+       { "xpram5", (XPRAM_MAJOR << MINORBITS) + 5 },
+       { "xpram6", (XPRAM_MAJOR << MINORBITS) + 6 },
+       { "xpram7", (XPRAM_MAJOR << MINORBITS) + 7 },
+       { "xpram8", (XPRAM_MAJOR << MINORBITS) + 8 },
+       { "xpram9", (XPRAM_MAJOR << MINORBITS) + 9 },
+       { "xpram10", (XPRAM_MAJOR << MINORBITS) + 10 },
+       { "xpram11", (XPRAM_MAJOR << MINORBITS) + 11 },
+       { "xpram12", (XPRAM_MAJOR << MINORBITS) + 12 },
+       { "xpram13", (XPRAM_MAJOR << MINORBITS) + 13 },
+       { "xpram14", (XPRAM_MAJOR << MINORBITS) + 14 },
+       { "xpram15", (XPRAM_MAJOR << MINORBITS) + 15 },
+       { "xpram16", (XPRAM_MAJOR << MINORBITS) + 16 },
+       { "xpram17", (XPRAM_MAJOR << MINORBITS) + 17 },
+       { "xpram18", (XPRAM_MAJOR << MINORBITS) + 18 },
+       { "xpram19", (XPRAM_MAJOR << MINORBITS) + 19 },
+       { "xpram20", (XPRAM_MAJOR << MINORBITS) + 20 },
+       { "xpram21", (XPRAM_MAJOR << MINORBITS) + 21 },
+       { "xpram22", (XPRAM_MAJOR << MINORBITS) + 22 },
+       { "xpram23", (XPRAM_MAJOR << MINORBITS) + 23 },
+       { "xpram24", (XPRAM_MAJOR << MINORBITS) + 24 },
+       { "xpram25", (XPRAM_MAJOR << MINORBITS) + 25 },
+       { "xpram26", (XPRAM_MAJOR << MINORBITS) + 26 },
+       { "xpram27", (XPRAM_MAJOR << MINORBITS) + 27 },
+       { "xpram28", (XPRAM_MAJOR << MINORBITS) + 28 },
+       { "xpram29", (XPRAM_MAJOR << MINORBITS) + 29 },
+       { "xpram30", (XPRAM_MAJOR << MINORBITS) + 30 },
+       { "xpram31", (XPRAM_MAJOR << MINORBITS) + 31 },
 #endif
 	{ NULL, 0 }
 };
@@ -594,6 +695,14 @@ kdev_t __init name_to_kdev_t(char *line)
 static void __init root_dev_setup(char *line, int *num)
 {
 	ROOT_DEV = name_to_kdev_t(line);
+}
+
+static void root_data_setup(char *line, int *num)
+{
+	static char buffer[128];
+
+	strcpy(buffer, line);
+	root_mount_data = buffer;
 }
 
 /*
@@ -623,6 +732,7 @@ static struct kernel_param cooked_params[] __initdata = {
 	{ "noapic", ioapic_setup },
 	{ "pirq=", ioapic_pirq_setup },
 #endif
+
 #endif
 #ifdef CONFIG_BLK_DEV_RAM
 	{ "ramdisk_start=", ramdisk_start_setup },
@@ -633,10 +743,13 @@ static struct kernel_param cooked_params[] __initdata = {
 #ifdef CONFIG_BLK_DEV_INITRD
 	{ "noinitrd", no_initrd },
 #endif
+#endif
 
 #ifdef CONFIG_CTC
         { "ctc=", ctc_setup } ,
 #endif
+#ifdef CONFIG_IUCV
+        { "iucv=", iucv_setup } ,
 #endif
 
 #ifdef CONFIG_FB
@@ -683,6 +796,9 @@ static struct kernel_param cooked_params[] __initdata = {
 #endif
 #ifdef CONFIG_PRINTER
         { "lp=", lp_setup },
+#endif
+#ifdef CONFIG_VIDEO_CPIA_PP
+        { "cpia_pp=", cpia_pp_setup },
 #endif
 #ifdef CONFIG_JOY_AMIGA
 	{ "js_am=", js_am_setup },
@@ -954,6 +1070,7 @@ static struct kernel_param cooked_params[] __initdata = {
 
 static struct kernel_param raw_params[] __initdata = {
 	{ "root=", root_dev_setup },
+	{ "rootflags=", root_data_setup },
 #ifdef CONFIG_ROOT_NFS
 	{ "nfsroot=", nfs_root_setup },
 	{ "nfsaddrs=", ip_auto_config_setup },
@@ -982,11 +1099,27 @@ static struct kernel_param raw_params[] __initdata = {
 #ifdef CONFIG_APM
 	{ "apm=", apm_setup },
 #endif
+#ifdef CONFIG_N2
+	{ "n2=", n2_setup },
+#endif
+#ifdef CONFIG_C101
+	{ "c101=", c101_setup },
+#endif
+#ifdef CONFIG_3215
+	{ "condev=", con3215_setup },
+#endif
 #ifdef CONFIG_MDISK
         { "mdisk=", mdisk_setup },
 #endif
 #ifdef CONFIG_DASD
         { "dasd=", dasd_setup },
+#endif
+#ifdef CONFIG_BLK_DEV_XPRAM
+        { "xpram_parts=", xpram_setup },
+#endif
+#ifdef CONFIG_ARCH_S390
+        { "vmhalt=", vmhalt_setup },
+        { "vmpoff=", vmpoff_setup },
 #endif
 	{ 0, 0 }
 };
@@ -1111,6 +1244,7 @@ void __init calibrate_delay(void)
 static void __init parse_options(char *line)
 {
 	char *next;
+        char *quote;
 	int args, envs;
 
 	if (!*line)
@@ -1119,8 +1253,25 @@ static void __init parse_options(char *line)
 	envs = 1;	/* TERM is set to 'linux' by default */
 	next = line;
 	while ((line = next) != NULL) {
-		if ((next = strchr(line,' ')) != NULL)
-			*next++ = 0;
+		/* On S/390 we want to be able to pass an options that
+                 * contains blanks. For example vmhalt="IPL CMS". 
+                 * To allow that I added code that prevents blanks in
+                 * quotes to be recognized as delimiter. -- Martin
+                 */
+                quote = strchr(line,'"');
+                next = strchr(line, ' ');
+                while (next != NULL && quote != NULL && quote < next) {
+                        /* we found a left quote before the next blank
+                         * now we have to find the matching right quote
+                         */
+                        next = strchr(quote+1, '"');
+                        if (next != NULL) {
+                                quote = strchr(next+1, '"');
+                                next = strchr(next+1, ' ');
+                        }
+                }
+                if (next != NULL)
+                        *next++ = 0;
 		/*
 		 * check for kernel options first..
 		 */
@@ -1136,6 +1287,12 @@ static void __init parse_options(char *line)
 			console_loglevel = 10;
 			continue;
 		}
+#if defined(CONFIG_KDB)
+		if (!strcmp(line,"kdb")) {
+			kdb_flags = KDB_FLAG_EARLYKDB;
+			continue;
+		}
+#endif	/* CONFIG_KDB */
 		if (!strncmp(line,"init=",5)) {
 			line += 5;
 			execute_command = line;
@@ -1237,7 +1394,7 @@ asmlinkage void __init start_kernel(void)
 	}
 #endif
 	trap_init();
-	init_IRQ();
+        memory_start = init_IRQ( memory_start );
 	sched_init();
 	time_init();
 	parse_options(command_line);
@@ -1271,6 +1428,13 @@ asmlinkage void __init start_kernel(void)
 	}
 #endif
 	mem_init(memory_start,memory_end);
+#if defined(CONFIG_KDB)
+	{
+		extern void kdb_init(void);
+
+		kdb_init();
+	}
+#endif
 	kmem_cache_sizes_init();
 #ifdef CONFIG_3215_CONSOLE
         con3215_activate();
@@ -1284,6 +1448,9 @@ asmlinkage void __init start_kernel(void)
 	vma_init();
 	buffer_init(memory_end-memory_start);
  	page_cache_init(memory_end-memory_start);
+#ifdef CONFIG_ARCH_S390
+	ccwcache_init();
+#endif
 	signals_init();
 	inode_init();
 	file_table_init();
@@ -1296,6 +1463,10 @@ asmlinkage void __init start_kernel(void)
 	check_bugs();
 	printk("POSIX conformance testing by UNIFIX\n");
 
+#if defined(CONFIG_KDB)
+	if (kdb_flags & KDB_FLAG_EARLYKDB)
+		KDB_ENTER();
+#endif
 	/* 
 	 *	We count on the initial thread going ok 
 	 *	Like idlers init is an unlocked kernel thread, which will
@@ -1442,6 +1613,10 @@ static void __init do_basic_setup(void)
 	/* .. filesystems .. */
 	filesystem_setup();
 
+#ifdef CONFIG_IRDA
+	irda_device_init(); /* Must be done after protocol initialization */
+#endif
+
 	/* Mount the root filesystem.. */
 	mount_root();
 
@@ -1485,6 +1660,10 @@ static int init(void * unused)
 	(void) dup(0);
 	(void) dup(0);
 	
+#if defined(CONFIG_KDB)
+	if (kdb_flags & KDB_FLAG_EARLYKDB)
+		KDB_ENTER();
+#endif
 	/*
 	 * We try each of these until one succeeds.
 	 *

@@ -18,6 +18,7 @@
 extern int parport_init(void);
 extern int chr_dev_init(void);
 extern int blk_dev_init(void);
+extern int i2o_init(void);
 #ifdef CONFIG_BLK_DEV_DAC960
 extern void DAC960_Initialize(void);
 #endif
@@ -35,6 +36,9 @@ __initfunc(void device_init(void))
 	chr_dev_init();
 	blk_dev_init();
 	sti();
+#ifdef CONFIG_I2O
+	i2o_init();
+#endif
 #ifdef CONFIG_BLK_DEV_DAC960
 	DAC960_Initialize();
 #endif

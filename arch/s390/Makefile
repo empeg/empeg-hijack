@@ -1,5 +1,5 @@
 
-# i386/Makefile
+# s390/Makefile
 #
 # This file is included by the global makefile so that you can add your own
 # architecture-specific flags and dependencies. Remember to do have actions
@@ -52,11 +52,15 @@ drivers/s390: dummy
 
 MAKEBOOT = $(MAKE) -C arch/$(ARCH)/boot
 
+MAKESILO = $(MAKE) -C arch/$(ARCH)/tools/silo
+
+MAKEDASDFMT = $(MAKE) -C arch/$(ARCH)/tools/dasdfmt
+
 silo:
-	@$(MAKEBOOT) silo
+	@$(MAKESILO) silo
 
 dasdfmt:
-	@$(MAKEBOOT) dasdfmt
+	@$(MAKEDASDFMT) dasdfmt
 
 image: vmlinux 
 	@$(MAKEBOOT) image

@@ -1,4 +1,4 @@
-/* $Id: isdn_tty.h,v 1.17 1999/09/21 19:00:35 armin Exp $
+/* $Id: isdn_tty.h,v 1.19 2000/02/16 14:59:33 paul Exp $
 
  * header for Linux ISDN subsystem, tty related functions (linklevel).
  *
@@ -20,6 +20,14 @@
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
  * $Log: isdn_tty.h,v $
+ * Revision 1.19  2000/02/16 14:59:33  paul
+ * translated ISDN_MODEM_ANZREG to ISDN_MODEM_NUMREG for english speakers;
+ * used defines for result codes;
+ * fixed RING ... RUNG problem (no empty lines in between).
+ *
+ * Revision 1.18  2000/01/20 19:55:33  keil
+ * Add FAX Class 1 support
+ *
  * Revision 1.17  1999/09/21 19:00:35  armin
  * Extended FCON message with added CPN
  * can now be activated with Bit 1 of Reg 23.
@@ -107,7 +115,7 @@
  * Definition of some special Registers of AT-Emulator
  */
 #define REG_RINGATA   0
-#define REG_RINGCNT   1
+#define REG_RINGCNT   1  /* ring counter register */
 #define REG_ESC       2
 #define REG_CR        3
 #define REG_LF        4
@@ -115,10 +123,10 @@
 
 #define REG_WAITC     7
 
-#define REG_RESP     12
-#define BIT_RESP      1
-#define REG_RESPNUM  12
-#define BIT_RESPNUM   2
+#define REG_RESP     12  /* show response messages register */
+#define BIT_RESP      1  /* show response messages bit      */
+#define REG_RESPNUM  12  /* show numeric responses register */
+#define BIT_RESPNUM   2  /* show numeric responses bit      */
 #define REG_ECHO     12
 #define BIT_ECHO      4
 #define REG_DCD      12
@@ -141,8 +149,8 @@
 #define BIT_RESPXT    8
 #define REG_CIDONCE  13
 #define BIT_CIDONCE  16
-#define REG_RUNG     13
-#define BIT_RUNG     64
+#define REG_RUNG     13  /* show RUNG message register      */
+#define BIT_RUNG     64  /* show RUNG message bit           */
 #define REG_DISPLAY  13
 #define BIT_DISPLAY 128
 
@@ -160,6 +168,28 @@
 #define BIT_CPN       1
 #define BIT_CPNFCON   2
 
+/* defines for result codes */
+#define RESULT_OK		0
+#define RESULT_CONNECT		1
+#define RESULT_RING		2
+#define RESULT_NO_CARRIER	3
+#define RESULT_ERROR		4
+#define RESULT_CONNECT64000	5
+#define RESULT_NO_DIALTONE	6
+#define RESULT_BUSY		7
+#define RESULT_NO_ANSWER	8
+#define RESULT_RINGING		9
+#define RESULT_NO_MSN_EAZ	10
+#define RESULT_VCON		11
+#define RESULT_RUNG		12
+
+#define TTY_IS_FCLASS1(info) \
+	((info->emu.mdmreg[REG_L2PROT] == ISDN_PROTO_L2_FAX) && \
+	 (info->emu.mdmreg[REG_L3PROT] == ISDN_PROTO_L3_FCLASS1))
+#define TTY_IS_FCLASS2(info) \
+	((info->emu.mdmreg[REG_L2PROT] == ISDN_PROTO_L2_FAX) && \
+	 (info->emu.mdmreg[REG_L3PROT] == ISDN_PROTO_L3_FCLASS2))
+
 extern void isdn_tty_modem_escape(void);
 extern void isdn_tty_modem_ring(void);
 extern void isdn_tty_carrier_timeout(void);
@@ -175,6 +205,6 @@ extern void isdn_tty_at_cout(char *, modem_info *);
 extern void isdn_tty_modem_hup(modem_info *, int);
 #ifdef CONFIG_ISDN_TTY_FAX
 extern int isdn_tty_cmd_PLUSF_FAX(char **, modem_info *);
-extern int isdn_tty_fax_command(modem_info *);
+extern int isdn_tty_fax_command(modem_info *, isdn_ctrl *);
 extern void isdn_tty_fax_bitorder(modem_info *, struct sk_buff *);
 #endif

@@ -65,33 +65,23 @@ asmlinkage void do_page_fault(struct pt_regs *regs, unsigned long error_code)
 
         address = S390_lowcore.trans_exc_code&0x7ffff000;
 
-        if (atomic_read(&S390_lowcore.local_irq_count))
-                die("page fault from irq handler",regs,error_code);
-
         tsk = current;
         mm = tsk->mm;
+
+        if (atomic_read(&S390_lowcore.local_irq_count))
+                die("page fault from irq handler",regs,error_code);
 
         down(&mm->mmap_sem);
 
         vma = find_vma(mm, address);
-        if (!vma) {
-	        printk("no vma for address %lX\n",address);
+        if (!vma)
                 goto bad_area;
-        }
         if (vma->vm_start <= address) 
                 goto good_area;
-        if (!(vma->vm_flags & VM_GROWSDOWN)) {
-                printk("VM_GROWSDOWN not set, but address %lX \n",address);
-                printk("not in vma %p (start %lX end %lX)\n",vma,
-                       vma->vm_start,vma->vm_end);
+        if (!(vma->vm_flags & VM_GROWSDOWN))
                 goto bad_area;
-        }
-        if (expand_stack(vma, address)) {
-                printk("expand of vma failed address %lX\n",address);
-                printk("vma %p (start %lX end %lX)\n",vma,
-                       vma->vm_start,vma->vm_end);
+        if (expand_stack(vma, address))
                 goto bad_area;
-        }
 /*
  * Ok, we have a good vm_area for this memory access, so
  * we can handle it..
@@ -104,19 +94,27 @@ good_area:
                         break;
                 case 0x10:                                   /* not present*/
                 case 0x11:                                   /* not present*/
-                        if (!(vma->vm_flags & (VM_READ | VM_EXEC | VM_WRITE))) {
-                                printk("flags %X of vma for address %lX wrong \n",
-                                       vma->vm_flags,address);
-                                printk("vma %p (start %lX end %lX)\n",vma,
-                                       vma->vm_start,vma->vm_end);
+                        if (!(vma->vm_flags & (VM_READ | VM_EXEC | VM_WRITE)))
                                 goto bad_area;
-                        }
                         break;
                 default:
                        printk("code should be 4, 10 or 11 (%lX) \n",error_code&0xFF);  
                        goto bad_area;
         }
-        handle_mm_fault(tsk, vma, address, write);
+
+	/*
+	 * If for any reason at all we couldn't handle the fault,
+	 * make sure we exit gracefully rather than endlessly redo
+	 * the fault.
+	 */
+survive:
+	{
+	  int fault = handle_mm_fault(tsk, vma, address, write);
+	  if (!fault)
+		  goto do_sigbus;
+	  if (fault < 0)
+		  goto out_of_memory;
+	}
 
         up(&mm->mmap_sem);
         return;
@@ -141,8 +139,8 @@ bad_area:
                 return;
 	}
 
+ no_context:
         /* Are we prepared to handle this kernel fault?  */
-
         if ((fixup = search_exception_table(regs->psw.addr)) != 0) {
                 regs->psw.addr = fixup;
                 return;
@@ -163,41 +161,43 @@ bad_area:
  * need to define, which information is useful here
  */
 
-        lock_kernel();
         die("Oops", regs, error_code);
         do_exit(SIGKILL);
-        unlock_kernel();
-}
+
 
 /*
+ * We ran out of memory, or some other thing happened to us that made
+ * us unable to handle the page fault gracefully.
+ */
+out_of_memory:
+	if (tsk->pid == 1)
                 {
-		  char c;
-                  int i,j;
-		  char *addr;
-		  addr = ((char*) psw_addr)-0x20;
-		  for (i=0;i<16;i++) {
-		    if (i == 2)
-		      printk("\n");
-		    printk ("%08X:    ",(unsigned long) addr);
-		    for (j=0;j<4;j++) {
-		      printk("%08X ",*(unsigned long*)addr);
-		      addr += 4;
+		tsk->policy |= SCHED_YIELD;
+		schedule();
+		goto survive;
 		    }
-		    addr -=0x10;
-		    printk(" | ");
-		    for (j=0;j<16;j++) {
-		      printk("%c",(c=*addr++) < 0x20 ? '.' : c );
-		    }
-
-		    printk("\n");
-		  }
-                  printk("\n");
+	up(&mm->mmap_sem);
+	if (psw_mask & PSW_PROBLEM_STATE)
+	{
+		printk("VM: killing process %s\n", tsk->comm);
+		do_exit(SIGKILL);
                 }
+	goto no_context;
 
-*/
+do_sigbus:
+	up(&mm->mmap_sem);
 
+	/*
+	 * Send a sigbus, regardless of whether we were in kernel
+	 * or user mode.
+	 */
+        tsk->tss.prot_addr = address;
+        tsk->tss.error_code = error_code;
+        tsk->tss.trap_no = 14;
+	force_sig(SIGBUS, tsk);
 
-
-
-
+	/* Kernel mode? Handle exceptions or die */
+	if (!(psw_mask & PSW_PROBLEM_STATE))
+		goto no_context;
+}
 

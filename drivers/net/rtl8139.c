@@ -1136,6 +1136,15 @@ static void rtl8129_interrupt(int irq, void *dev_instance, struct pt_regs *regs)
 
 			if (status & (PCSTimeout)) tp->stats.rx_length_errors++;
 			if (status & (RxUnderrun|RxFIFOOver)) tp->stats.rx_fifo_errors++;
+
+			if (status & RxFIFOOver) {
+				tp->cur_rx = 0;
+				outb(CmdTxEnb, ioaddr + ChipCmd);
+				outb(CmdRxEnb | CmdTxEnb, ioaddr + ChipCmd);
+				outl((RX_FIFO_THRESH << 13) | (RX_BUF_LEN_IDX << 11) |
+				 (RX_DMA_BURST<<8), ioaddr + RxConfig);
+			}
+
 			if (status & RxOverflow) {
 				tp->stats.rx_over_errors++;
 				tp->cur_rx = inw(ioaddr + RxBufAddr) % RX_BUF_LEN;
@@ -1256,8 +1265,8 @@ static int rtl8129_rx(struct device *dev)
 			} else {
 #if 1  /* USE_IP_COPYSUM */
 				eth_copy_and_sum(skb, &rx_ring[ring_offset + 4],
-								 rx_size, 0);
-				skb_put(skb, rx_size);
+						 rx_size - 4, 0);
+				skb_put(skb, rx_size - 4);
 #else
 				memcpy(skb_put(skb, rx_size), &rx_ring[ring_offset + 4],
 					   rx_size);

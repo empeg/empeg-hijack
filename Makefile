@@ -1,9 +1,8 @@
 VERSION = 2
 PATCHLEVEL = 2
-SUBLEVEL = 14
-EXTRAVERSION = -rmk5-np17-empeg51-hijack-v299
+SUBLEVEL = 17
+EXTRAVERSION = -rmk5-np17-empeg51-hijack-v300
 
-#ARCH := $(shell uname -m | sed -e s/i.86/i386/ -e s/sun4u/sparc64/ -e s/arm.*/arm/ -e s/sa110/arm/)
 ARCH := arm
 
 .EXPORT_ALL_VARIABLES:
@@ -30,6 +29,7 @@ NM	=$(CROSS_COMPILE)nm
 STRIP	=$(CROSS_COMPILE)strip
 OBJCOPY	=$(CROSS_COMPILE)objcopy
 OBJDUMP	=$(CROSS_COMPILE)objdump
+AWK	=awk
 MAKE	=make
 GENKSYMS=/sbin/genksyms
 
@@ -88,7 +88,11 @@ SVGA_MODE=	-DSVGA_MODE=NORMAL_VGA
 # standard CFLAGS
 #
 
+ifdef CONFIG_KDB_FRAMEPTR
+CFLAGS = -Wall -Wstrict-prototypes -O2 
+else
 CFLAGS = -Wall -Wstrict-prototypes -O2 -fomit-frame-pointer
+endif
 
 # use '-fno-strict-aliasing', but only if the compiler can take it
 CFLAGS += $(shell if $(CC) -fno-strict-aliasing -S -o /dev/null -xc /dev/null >/dev/null 2>&1; then echo "-fno-strict-aliasing"; fi)
@@ -203,6 +207,10 @@ ifeq ($(CONFIG_IRDA),y)
 DRIVERS := $(DRIVERS) drivers/net/irda/irda_drivers.a
 endif
 
+ifeq ($(CONFIG_I2O),y)
+DRIVERS := $(DRIVERS) drivers/i2o/i2o.a
+endif
+
 ifeq ($(CONFIG_PHONE),y)
 DRIVERS := $(DRIVERS) drivers/telephony/telephony.a
 endif
@@ -220,6 +228,38 @@ Version: dummy
 boot: vmlinux
 	@$(MAKE) -C arch/$(ARCH)/boot
 
+ifeq ($(CONFIG_KDB),y)
+vmlinux: $(CONFIGURATION) init/main.o init/version.o linuxsubdirs
+	echo "c0000000 t firstaddr\n" > System.map 
+	rm -f map map.out
+	$(AWK) -f scripts/genkdbsym.awk System.map > dummy_sym.c 
+	$(CC) -c -o dummy_sym.o dummy_sym.c 
+	$(LD) $(LINKFLAGS) $(HEAD) -Map map init/main.o init/version.o \
+		--start-group \
+		$(CORE_FILES) \
+		$(FILESYSTEMS) \
+		$(NETWORKS) \
+		$(DRIVERS) \
+		$(LIBS) \
+		dummy_sym.o \
+		--end-group \
+		-o vmlinux
+	$(NM) vmlinux | grep -v '\(compiled\)\|\(\.o$$\)\|\( [aU] \)\|\(\.\.ng$$\)\|\(LASH[RL]DI\)' | sort > System.map 
+	cp System.map System.map.sv 
+	$(AWK) -f scripts/genkdbsym.awk System.map > ksym.c 
+	$(CC) -c -o ksym.o ksym.c > ksym.o 
+	$(LD) $(LINKFLAGS) $(HEAD) -Map map.out init/main.o init/version.o \
+		--start-group \
+		$(CORE_FILES) \
+		$(FILESYSTEMS) \
+		$(NETWORKS) \
+		$(DRIVERS) \
+		$(LIBS) \
+		ksym.o \
+		--end-group \
+		-o vmlinux
+	$(NM) vmlinux | grep -v '\(compiled\)\|\(\.o$$\)\|\( [aU] \)\|\(\.\.ng$$\)\|\(LASH[RL]DI\)' | sort > System.map 
+else
 vmlinux: $(CONFIGURATION) init/main.o init/version.o linuxsubdirs
 	$(LD) $(LINKFLAGS) $(HEAD) init/main.o init/version.o \
 		--start-group \
@@ -231,6 +271,7 @@ vmlinux: $(CONFIGURATION) init/main.o init/version.o linuxsubdirs
 		--end-group \
 		-o vmlinux
 	$(NM) vmlinux | grep -v '\(compiled\)\|\(\.o$$\)\|\( [aU] \)\|\(\.\.ng$$\)\|\(LASH[RL]DI\)' | sort > System.map
+endif
 
 symlinks:
 	rm -f include/asm
@@ -279,8 +320,8 @@ include/linux/compile.h: $(CONFIGURATION) include/linux/version.h newversion
 	@echo -n \#define UTS_VERSION \"\#`cat .version` > .ver
 	@if [ -n "$(CONFIG_SMP)" ] ; then echo -n " SMP" >> .ver; fi
 	@if [ -f .name ]; then  echo -n \-`cat .name` >> .ver; fi
-	@echo ' '`date`'"' >> .ver
-	@echo \#define LINUX_COMPILE_TIME \"`date +%T`\" >> .ver
+	@echo ' '`LANG=C date`'"' >> .ver
+	@echo \#define LINUX_COMPILE_TIME \"`LANG=C date +%T`\" >> .ver
 	@echo \#define LINUX_COMPILE_BY \"`whoami`\" >> .ver
 	@echo \#define LINUX_COMPILE_HOST \"`hostname`\" >> .ver
 	@if [ -x /bin/dnsdomainname ]; then \
@@ -314,7 +355,7 @@ ifdef CONFIG_MODVERSIONS
 MODFLAGS += -DMODVERSIONS -include $(HPATH)/linux/modversions.h
 endif
 
-modules: $(patsubst %, _mod_%, $(SUBDIRS))
+modules: include/config/MARKER $(patsubst %, _mod_%, $(SUBDIRS))  
 
 $(patsubst %, _mod_%, $(SUBDIRS)) : include/linux/version.h
 	$(MAKE) -C $(patsubst _mod_%, %, $@) CFLAGS="$(CFLAGS) $(MODFLAGS)" MAKING_MODULES=1 modules
@@ -322,13 +363,15 @@ $(patsubst %, _mod_%, $(SUBDIRS)) : include/linux/version.h
 modules_install:
 	@( \
 	MODLIB=$(INSTALL_MOD_PATH)/lib/modules/$(KERNELRELEASE); \
+	mkdir -p $$MODLIB; \
+	rm -f $$MODLIB/build; \
+	ln -s `pwd` $$MODLIB/build; \
 	cd modules; \
 	MODULES=""; \
 	inst_mod() { These="`cat $$1`"; MODULES="$$MODULES $$These"; \
 		mkdir -p $$MODLIB/$$2; cp $$These $$MODLIB/$$2; \
 		echo Installing modules under $$MODLIB/$$2; \
 	}; \
-	mkdir -p $$MODLIB; \
 	\
 	if [ -f BLOCK_MODULES      ]; then inst_mod BLOCK_MODULES block;     fi; \
 	if [ -f NET_MODULES        ]; then inst_mod NET_MODULES   net;       fi; \
@@ -371,6 +414,8 @@ clean:	archclean
 		-o -regex '.*ksymoops/.*' \) -print`
 	rm -f core `find . -type f -name 'core' -print`
 	rm -f core `find . -name '.*.flags' -print`
+	rm -f map map.out
+	rm -f ksym.[ch] dummy_sym.c System.map.sv
 	rm -f vmlinux System.map
 	rm -f .tmp*
 	rm -f drivers/char/consolemap_deftbl.c drivers/video/promcon_tbl.c

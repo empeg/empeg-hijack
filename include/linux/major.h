@@ -67,6 +67,8 @@
 #define CM206_CDROM_MAJOR 32
 #define IDE2_MAJOR	33
 #define IDE3_MAJOR	34
+#define XPRAM_MAJOR     35      /* expanded storage on S/390 = "slow ram" */
+                                /* proposed by Peter                      */
 #define NETLINK_MAJOR	36
 #define PS2ESDI_MAJOR	36
 #define IDETAPE_MAJOR	37
@@ -101,6 +103,8 @@
 #define COMPAQ_SMART2_MAJOR5	77
 #define COMPAQ_SMART2_MAJOR6	78
 #define COMPAQ_SMART2_MAJOR7	79
+
+#define I2O_MAJOR		80	/* 80->87 */
 
 #define SPECIALIX_NORMAL_MAJOR 75
 #define SPECIALIX_CALLOUT_MAJOR 76

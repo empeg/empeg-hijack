@@ -413,18 +413,15 @@ __rpc_execute(struct rpc_task *task)
 		}
 
 		/*
-		 * No handler for next step means exit.
-		 */
-		if (!task->tk_action)
-			break;
-
-		/*
 		 * Perform the next FSM step.
 		 * tk_action may be NULL when the task has been killed
 		 * by someone else.
 		 */
-		if (RPC_IS_RUNNING(task) && task->tk_action)
+		if (RPC_IS_RUNNING(task)) {
+			if (!task->tk_action)
+				break;
 			task->tk_action(task);
+		}
 
 		/*
 		 * Check whether task is sleeping.
@@ -448,16 +445,16 @@ __rpc_execute(struct rpc_task *task)
 			if (current->pid == rpciod_pid)
 				printk(KERN_ERR "RPC: rpciod waiting on sync task!\n");
 
-			sti();
 			__wait_event(task->tk_wait, RPC_IS_RUNNING(task));
-			cli();
 
 			/*
 			 * When the task received a signal, remove from
 			 * any queues etc, and make runnable again.
 			 */
-			if (signalled())
+			if (signalled()) { 
+				cli(); 
 				__rpc_wake_up(task);
+			}
 
 			dprintk("RPC: %4d sync task resuming\n",
 							task->tk_pid);

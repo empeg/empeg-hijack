@@ -13,6 +13,8 @@
 
 #define DQUOT_USR_ENABLED	0x01		/* User diskquotas enabled */
 #define DQUOT_GRP_ENABLED	0x02		/* Group diskquotas enabled */
+#define DQUOT_WRITETHROUGH	0x04		/* Write dquot updates to the
+						   quota file immediately */
 
 struct quota_mount_options
 {

@@ -1,0 +1,67 @@
+.TH BT 1 "15 March 1999"
+.SH NAME
+bt \- Stack Traceback command
+.SH SYNOPSIS
+bt [ <stack-frame-address> ]
+.LP
+btp <pid>
+.SH DESCRIPTION
+The
+.B bt 
+command is used to print a stack traceback.  It uses the 
+current registers (see \fBrd\fP command) to determine
+the starting context and attempts to provide a complete
+stack traceback for the active thread.   If \fIstack-frame-address\fP
+is supplied, it is assumed to point to the start of a valid
+stack frame and the stack will be traced back from that 
+point (e.g. on i386 architecture, \fIstack-frame-address\fP 
+should be the stack address of a saved \fB%eip\fP value from a \fBcall\fP
+instruction).
+.P
+A kernel configuration option \fBCONFIG_KDB_FRAMEPTR\fP should
+be enabled so that the compiler will utilize the frame pointer
+register properly to maintain a stack which can be correctly 
+analyzed. 
+.P
+The \fBbt\fP command will attempt to analyze the stack without
+frame pointers if the \fBCONFIG_KDB_FRAMEPTR\fP option is not
+enabled, but the analysis is difficult and may not produce
+accurate nor complete results. 
+.P
+The \fBbtp\fP command will analyze the stack for the given
+process identification (see the \fBps\fP command).
+.SH LIMITATIONS
+If the kernel is compiled without frame pointers, stack tracebacks
+may be incomplete.  The \fBmds %esp\fP command may be useful in
+attemping to determine the actual stack traceback manually.
+.P
+The \fBbt\fP command may print more arguments for a function
+than that function accepts;  this happens when the C compiler 
+doesn't immediately pop the arguments off the stack upon return
+from a called function.  When this is this case, these extra 
+stack words will be considered additional arguments by the \fBbt\fP
+command.
+.SH ENVIRONMENT
+The \fBBTARGS\fP environment variable governs the maximum number
+of arguments that are printed for any single function.
+.SH SMP CONSIDERATIONS
+None.
+.SH EXAMPLES
+.nf
+.na
+.ft CW
+[root@host /root]# cat /proc/partitions
+Entering kdb on processor 0 due to Debug Exception @ 0xc01845e3
+Read/Write breakpoint #1 at 0xc024ddf4
+kdb> bt
+    EBP     Caller        Function(args)
+0xc74f5f44 0xc0146166  get_partition_list(0xc74d8000)
+0xc74f5f8c 0xc01463f3  get_root_array(0xc74d8000, 0x13, 0xc74f5f88, 0xf3, 0xc00)
+0xc74f5fbc 0xc0126138  array_read(0xc76cd80, 0x804aef8, 0xc00, 0xc76cdf94)
+0xbffffcd4 0xc0108b30  sys_read(0x3, 0x804aef8, 0x1000, 0x1000, 0x804aef8)
+kdb> bp
+Instruction Breakpoint #0 at 0xc0111ab8 (schedule) in dr0 is disabled on cpu 0
+Data Access Breakpoint #1 at 0xc024ddf4 (gendisk_head) in dr1 is enabled on cpu 0
+for 4 bytes
+kdb> go
+[root@host /root]# 

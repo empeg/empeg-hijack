@@ -5,8 +5,8 @@ struct nls_unicode {
 
 struct nls_table {
 	char *charset;
-	unsigned char **page_uni2charset;
-	struct nls_unicode *charset2uni;
+	void (*uni2char) (unsigned char ch, unsigned char cl, unsigned char *out, int boundlen, int *outlen);
+	void (*char2uni) (unsigned char *rawstring, int *offset, unsigned char *uni1, unsigned char *uni2);
 
 	void (*inc_use_count) (void);
 	void (*dec_use_count) (void);
@@ -36,6 +36,7 @@ extern int init_nls_iso8859_6(void);
 extern int init_nls_iso8859_7(void);
 extern int init_nls_iso8859_8(void);
 extern int init_nls_iso8859_9(void);
+extern int init_nls_iso8859_14(void);
 extern int init_nls_iso8859_15(void);
 extern int init_nls_cp437(void);
 extern int init_nls_cp737(void);
@@ -53,4 +54,9 @@ extern int init_nls_cp865(void);
 extern int init_nls_cp866(void);
 extern int init_nls_cp869(void);
 extern int init_nls_cp874(void);
+extern int init_nls_euc_jp(void);
+extern int init_nls_cp932(void);
+extern int init_nls_cp936(void);
+extern int init_nls_cp949(void);
+extern int init_nls_cp950(void);
 extern int init_nls_koi8_r(void);

@@ -26,6 +26,10 @@
 #include <asm/processor.h>
 #endif
 
+#if defined(CONFIG_KDB)
+#include <linux/kdb.h>
+#endif
+
 #include <asm/system.h>
 #include <asm/uaccess.h>
 #include <asm/io.h>
@@ -45,6 +49,9 @@
 #include "irq.h"
 
 asmlinkage int system_call(void);
+#if defined(CONFIG_KDB)
+asmlinkage int kdb_call(void);
+#endif
 asmlinkage void lcall7(void);
 
 struct desc_struct default_ldt = { 0, 0 };
@@ -109,6 +116,7 @@ asmlinkage void coprocessor_error(void);
 asmlinkage void reserved(void);
 asmlinkage void alignment_check(void);
 asmlinkage void spurious_interrupt_bug(void);
+asmlinkage void machine_check(void);
 
 int kstack_depth_to_print = 24;
 
@@ -162,33 +170,41 @@ static void show_registers(struct pt_regs *regs)
 			printk("%08lx ", *stack++);
 		}
 		printk("\nCall Trace: ");
-		stack = (unsigned long *) esp;
-		i = 1;
-		module_start = PAGE_OFFSET + (max_mapnr << PAGE_SHIFT);
-		module_start = ((module_start + VMALLOC_OFFSET) & ~(VMALLOC_OFFSET-1));
-		module_end = module_start + MODULE_RANGE;
-		while (((long) stack & 4095) != 0) {
-			addr = *stack++;
-			/*
-			 * If the address is either in the text segment of the
-			 * kernel, or in the region which contains vmalloc'ed
-			 * memory, it *may* be the address of a calling
-			 * routine; if so, print it so that someone tracing
-			 * down the cause of the crash will be able to figure
-			 * out the call path that was taken.
-			 */
-			if (((addr >= (unsigned long) &_stext) &&
-			     (addr <= (unsigned long) &_etext)) ||
-			    ((addr >= module_start) && (addr <= module_end))) {
-				if (i && ((i % 8) == 0))
-					printk("\n       ");
-				printk("[<%08lx>] ", addr);
-				i++;
+		if (!esp || (esp & 3))
+			printk("Bad ESP value.");
+		else {
+			stack = (unsigned long *) esp;
+			i = 1;
+			module_start = PAGE_OFFSET + (max_mapnr << PAGE_SHIFT);
+			module_start = ((module_start + VMALLOC_OFFSET) & ~(VMALLOC_OFFSET-1));
+			module_end = module_start + MODULE_RANGE;
+			while (((long) stack & 4095) != 0) {
+				addr = *stack++;
+				/*
+				 * If the address is either in the text segment of the
+				 * kernel, or in the region which contains vmalloc'ed
+				 * memory, it *may* be the address of a calling
+				 * routine; if so, print it so that someone tracing
+				 * down the cause of the crash will be able to figure
+				 * out the call path that was taken.
+				 */
+				if (((addr >= (unsigned long) &_stext) &&
+				     (addr <= (unsigned long) &_etext)) ||
+				    ((addr >= module_start) && (addr <= module_end))) {
+					if (i && ((i % 8) == 0))
+						printk("\n       ");
+					printk("[<%08lx>] ", addr);
+					i++;
+				}
 			}
 		}
 		printk("\nCode: ");
-		for(i=0;i<20;i++)
+		if (!regs->eip || regs->eip==-1)
+			printk("Bad EIP value.");
+		else {
+			for(i=0;i<20;i++)
 			printk("%02x ", ((unsigned char *)regs->eip)[i]);
+		}
 	}
 	printk("\n");
 }	
@@ -199,6 +215,9 @@ void die(const char * str, struct pt_regs * regs, long err)
 {
 	console_verbose();
 	spin_lock_irq(&die_lock);
+#if defined(CONFIG_KDB)
+	kdb(KDB_REASON_PANIC, err, regs);
+#endif
 	printk("%s: %04lx\n", str, err & 0xffff);
 	show_registers(regs);
 	spin_unlock_irq(&die_lock);
@@ -359,6 +378,9 @@ asmlinkage void do_debug(struct pt_regs * regs, long error_code)
 
 	__asm__ __volatile__("movl %%db6,%0" : "=r" (condition));
 
+	/* Ensure the debug status register is visible to ptrace (or the process itself) */
+	tsk->tss.debugreg[6] = condition;
+
 	/* Mask out spurious TF errors due to lazy TF clearing */
 	if (condition & DR_STEP) {
 		/*
@@ -397,9 +419,15 @@ debug_vm86:
 	return;
 
 clear_dr7:
+
+#if defined(CONFIG_KDB)
+	kdb(KDB_REASON_DEBUG, error_code, regs);
+#else
+
 	__asm__("movl %0,%%db7"
 		: /* no output */
 		: "r" (0));
+#endif	/* CONFIG_KDB */
 	return;
 
 clear_TF:
@@ -691,7 +719,15 @@ void __init trap_init(void)
 	set_trap_gate(15,&spurious_interrupt_bug);
 	set_trap_gate(16,&coprocessor_error);
 	set_trap_gate(17,&alignment_check);
+	set_trap_gate(18,&machine_check);
 	set_system_gate(SYSCALL_VECTOR,&system_call);
+#if defined(CONFIG_KDB)
+	/*
+	 * A trap gate, used by the kernel to enter the
+	 * debugger preserving all registers.
+	 */
+	set_trap_gate(KDBENTER_VECTOR,&kdb_call);
+#endif
 
 	/* set up GDT task & ldt entries */
 	set_tss_desc(0, &init_task.tss);

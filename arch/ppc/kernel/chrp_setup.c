@@ -48,7 +48,7 @@
 #include <asm/adb.h>
 #include <asm/hydra.h>
 
-#include "time.h"
+#include <asm/time.h>
 #include "local_irq.h"
 #include "i8259.h"
 #include "open_pic.h"
@@ -488,6 +488,7 @@ __initfunc(void
 		ppc_md.kbd_init_hw       = pckbd_init_hw;
 #ifdef CONFIG_MAGIC_SYSRQ
 		ppc_md.kbd_sysrq_xlate	 = pckbd_sysrq_xlate;
+		ppc_md.SYSRQ_KEY	 = 0x54;
 #endif		
 	}
 	else
@@ -500,6 +501,7 @@ __initfunc(void
 		ppc_md.kbd_init_hw       = mackbd_init_hw;
 #ifdef CONFIG_MAGIC_SYSRQ
 		ppc_md.kbd_sysrq_xlate	 = mackbd_sysrq_xlate;
+		ppc_md.SYSRQ_KEY	 = 0x69;
 #endif		
 	}
 #else
@@ -511,6 +513,7 @@ __initfunc(void
 	ppc_md.kbd_init_hw       = pckbd_init_hw;
 #ifdef CONFIG_MAGIC_SYSRQ
 	ppc_md.kbd_sysrq_xlate	 = pckbd_sysrq_xlate;
+	ppc_md.SYSRQ_KEY	 = 0x54;
 #endif
 #endif
 #endif
@@ -681,4 +684,9 @@ void chrp_progress(char *s)
 	call_rtas( "display-character", 1, 1, NULL, '\r' );
 	while ( *s )
 		call_rtas( "display-character", 1, 1, NULL, *s++ );
+}
+
+void chrp_indicator(int x)
+{
+	call_rtas("set-indicator", 3, 1, NULL, 6, 0, x);
 }

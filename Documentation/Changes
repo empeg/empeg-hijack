@@ -264,11 +264,11 @@ features like IPv6.
 
    As of 2.1.102, the IP firewalling code has been replaced; ipfwadm
 will no longer work.  You need to obtain "ipchains," available from
-http://www.rustcorp.com/linux/ipchains/ , and use that instead of
+http://netfilter.filewatcher.org/ipchains/ , and use that instead of
 ipfwadm.
 
    To use masq forwarding you will need to obtain "ipmasqadm,"
-available from http://juanjox.linuxhq.com/ .
+available from http://juanjox.kernelnotes.org/ .
 
    DHCP clients for 2.0 do not work with the new networking code in the
 2.2 kernel.  You will need to upgrade your dhcpcd / dhcpclient.
@@ -523,14 +523,14 @@ Binutils
 ========
 
 The 2.9.1.0.25 release:
-ftp://ftp.varesearch.com/pub/support/hjl/binutils/2.9.1/binutils-2.9.1.0.25.tar.gz
+ftp://ftp.valinux.com/pub/support/hjl/binutils/2.9.1/binutils-2.9.1.0.25.tar.gz
 Installation notes:
-ftp://ftp.varesearch.com/pub/support/hjl/binutils/2.9.1/release.binutils-2.9.1.0.25
+ftp://ftp.valinux.com/pub/support/hjl/binutils/2.9.1/release.binutils-2.9.1.0.25
 
 The 2.9.5.0.16 release:
-ftp://ftp.varesearch.com/pub/support/hjl/binutils/binutils-2.9.5.0.16.tar.bz2
+ftp://ftp.valinux.com/pub/support/hjl/binutils/binutils-2.9.5.0.16.tar.bz2
 Installation notes:
-ftp://ftp.varesearch.com/pub/support/hjl/binutils/release.binutils-2.9.5.0.16
+ftp://ftp.valinux.com/pub/support/hjl/binutils/release.binutils-2.9.5.0.16
 
 Bin86
 =====
@@ -543,11 +543,11 @@ Gnu C
 =====
 
 The egcs-1.1.2 release:
-ftp://ftp.varesearch.com/pub/support/hjl/gcc/egcs-1.1.2/egcs-1.1.2-glibc.x86.tar.bz2
-ftp://ftp.varesearch.com/pub/support/hjl/gcc/egcs-1.1.2/egcs-1.1.2-libc5.x86.tar.bz2
-ftp://ftp.varesearch.com/pub/support/hjl/gcc/egcs-1.1.2/egcs-1.1.2-alpha.x86.tar.bz2
+ftp://ftp.valinux.com/pub/support/hjl/gcc/egcs-1.1.2/egcs-1.1.2-glibc.x86.tar.bz2
+ftp://ftp.valinux.com/pub/support/hjl/gcc/egcs-1.1.2/egcs-1.1.2-libc5.x86.tar.bz2
+ftp://ftp.valinux.com/pub/support/hjl/gcc/egcs-1.1.2/egcs-1.1.2-alpha.x86.tar.bz2
 Installation notes:
-ftp://ftp.varesearch.com/pub/support/hjl/gcc/egcs-1.1.2/release.egcs-1.1.2
+ftp://ftp.valinux.com/pub/support/hjl/gcc/egcs-1.1.2/release.egcs-1.1.2
 
 Gnu C 2.7.2.3 source:
 ftp://ftp.gnu.org/gnu/gcc/gcc-2.7.2.3.tar.gz
@@ -718,14 +718,15 @@ IP Chains
 =========
 
 The 1.3.9 release:
-ftp://ftp.rustcorp.com/ipchains/ipchains-1.3.9.tar.gz
-ftp://ftp.rustcorp.com/ipchains/ipchains-1.3.9.tar.bz2
+http://netfilter.filewatcher.org/ipchains/ipchains-1.3.9.tar.bz2
+http://www.samba.org/netfilter/ipchains/ipchains-1.3.9.tar.bz2
+http://netfilter.kernelnotes.org/ipchains/ipchains-1.3.9.tar.bz2
 
 IP Masq Adm
 ===========
 
 The 0.4.2 release:
-http://juanjox.linuxhq.com/ipmasqadm-0.4.2.tar.gz
+http://juanjox.kernelnotes.org/ipmasqadm-0.4.2.tar.gz
 
 DHCP clients
 ============
@@ -752,7 +753,7 @@ Fbset
 =====
 
 The 2.1 release:
-http://www.cs.kuleuven.ac.be/~geert/bin/fbset-2.1.tar.gz
+http://home.tvd.be/cr26864/Linux/fbdev/
 
 PCI utils
 =========

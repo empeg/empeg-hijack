@@ -1,0 +1,102 @@
+In the middle of doing:
+
+namei.c: got as far as mknod + create
+
+Next:
+
+ext3_new_inode()
+
+* jfs/commit.c:	Free up b_committed_data if appropriate
+
+Longer term:
+
+
+* fs/buffer.c: on IO completion, remove BJ_Data buffers from their
+		transaction list.  Need to think about the locking
+		implications of this one!
+
+		Perhaps use a call into the journaling code to scan
+		the current transactions from bdflushd?
+
+* All:		Think about error recovery a bit more.
+
+* ext3/super.c:	Set up superblock journaling flags on mount/dismount
+		
+		Think about how to mount a journaled filesystem readonly!
+
+* fs/journal.c:	Cache the entire bmap data for the journal for performance
+
+* fs/journal.c: Redundant copies of the journal superblock.
+
+* All:		When deleting metadata, we need a special transaction
+		record to obsolete older copies of that data in the
+		log.  This is necessary to avoid recovering that old
+		data if we subsequently reallocate the block for data.
+		Only required for non-journaled data.
+
+* ext3/balloc.c:Think about preallocation.  Disable it for now, but we
+		may be able to deal with it by recording preallocation
+		in separate bitmap buffers outside of recovery.  That 
+		pins buffers in cache, tho: an undo mechanism would be
+		the most general-purpose solution.
+
+* All: 		Ensure that we preserve lock ranking.  Journal lock is of
+		higher rank than the buffer lock.  (Done, I think;
+		still need to audit it.)
+
+* fs/transaction.c:
+		Make sure commit does the right things if we don't do a
+		journal_dirty_* on a bh after getting write access.
+
+* ext3/ialloc.c, balloc.c:
+		What happens if we drop the superblock locks here?
+		Getting write access on the bitmap buffers may block.
+		Ugh.  Return -EGAIN and restart the transaction??
+
+* All:		Test out readonly mode (especially wrt. null handles!)
+
+* ext3/fsync.c:	Add transactions.  ext3_sync_inode doesn't complete the 
+		transaction on its own.
+
+* fs.h:		Remove BH_Temp?
+ 
+* ext3/super.c:	Add remount of JFS_SYNC, maybe?
+
+Done:
+
+* fs/buffer.c:	Add infrastructure for journaled sync().  Hmm.
+
+* ext3/fsync.c:	Add transactions.  ext3_sync_inode doesn't complete the 
+		transaction on its own.
+
+* fs/journal.c:	Get the endianness right!
+
+* ext3/inode.c:	Prevent ext3_write_inode from flushing a buffer which is
+		on a journal list.  Journal the update if necessary.
+
+* ext3/super.c:	Make ext3_put_super do something sane.
+
+* ext3/namei.c:	Whoops, fixed ext3_mknod: it was doing an
+		ext3_mark_iloc_dirty on the wrong inode.  Directory
+		corrupter!
+
+* jfs/checkpoint.c:
+		Fixed a stupid bug in the management of the checkpoint
+		buffer wait queue.  Checkpoint has a chance of being
+		reliable now.
+
+* ext3/super.c:	Don't load the journal if the _HAS_JOURNAL feature is
+		clear, even if there is a journal inum in the
+		superblock.  If the user has used debugfs or e2fsck to
+		restore the fs to ext2, we want to be absolutely sure
+		we don't replay the journal by accident!
+
+* ext3/super.c: Lots of fixes in the setting/processing of the
+		NEEDS_RECOVERY flag.
+
+* ext3/super.c: Release the journal on umount even on a readonly filesystem.
+
+* fs/buffer.c:	Be a little more cautious about bforget()ing
+		checkpointed buffers, in case other software (such as
+		background soft raid resync) is trying to access the
+		buffer cache behind our backs. 

@@ -203,8 +203,8 @@ unsigned long do_mmap(struct file * file, unsigned long addr, unsigned long len,
 		return -EINVAL;
 
 	/* Too many mappings? */
-	if (mm->map_count > MAX_MAP_COUNT) {
-		printk("too many mappings\n");
+        if (mm->map_count > MAX_MAP_COUNT) {
+                printk("too many mappings\n");
 		return -ENOMEM;
 	}
 
@@ -212,8 +212,10 @@ unsigned long do_mmap(struct file * file, unsigned long addr, unsigned long len,
 	if (mm->def_flags & VM_LOCKED) {
 		unsigned long locked = mm->locked_vm << PAGE_SHIFT;
 		locked += len;
+		if (locked < len)
+			return -EAGAIN;
 		if ((current->rlim[RLIMIT_MEMLOCK].rlim_cur < RLIM_INFINITY) &&
-		    (locked > current->rlim[RLIMIT_MEMLOCK].rlim_cur)) {
+		   (locked > current->rlim[RLIMIT_MEMLOCK].rlim_cur)) {
 			printk("mlock rlimit reached\n");
 			return -EAGAIN;
 		}
@@ -312,9 +314,11 @@ unsigned long do_mmap(struct file * file, unsigned long addr, unsigned long len,
 	}
 
 	/* Check against address space limit. */
+	if ((mm->total_vm << PAGE_SHIFT) + len < len)
+		goto free_vma;
 	if ((current->rlim[RLIMIT_AS].rlim_cur < RLIM_INFINITY) &&
 	    ((mm->total_vm << PAGE_SHIFT) + len
-	     > current->rlim[RLIMIT_AS].rlim_cur)) {
+	    > current->rlim[RLIMIT_AS].rlim_cur)) {
 		printk("address space rlimit reached\n");
 		goto free_vma;
 	}

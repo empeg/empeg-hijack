@@ -3,7 +3,8 @@
  *   S/390 common I/O routines
  *
  *  S390 version
- *    Copyright (C) 1999 IBM Deutschland Entwicklung GmbH, IBM Corporation
+ *    Copyright (C) 1999, 2000 IBM Deutschland Entwicklung GmbH,
+ *                             IBM Corporation
  *    Author(s): Ingo Adlung (adlung@de.ibm.com)
  */
 
@@ -26,35 +27,61 @@
 #include <asm/smp.h>
 #include <asm/pgtable.h>
 #include <asm/delay.h>
+#include <asm/processor.h>
 #include <asm/lowcore.h>
-
-#include "irq.h"
-#include "s390io.h"
+#include <asm/s390io.h>
+#include <asm/s390dyn.h>
+#include <asm/s390mach.h>
 
 #undef CONFIG_DEBUG_IO    
+#define CONFIG_DEBUG_CRW
 
 #define REIPL_DEVID_MAGIC 0x87654321
 
-struct irqaction  init_IRQ_action;
+struct s390_irqaction  init_IRQ_action;
 unsigned int      highest_subchannel;
-senseid_t         senseid[NR_IRQS];
-schib_t           schiblock[NR_IRQS];
-ioinfo_t          ioinfo[NR_IRQS];
-spinlock_t        sync_isc;                 // synchronous irq processing lock
-psw_t             io_sync_wait;             // wait PSW for sync IO, prot. by sync_isc
-psw_t             io_new_psw;               // save I/O new PSW, prot. by sync_isc
-int               cons_dev          = -1;   // identify console device
-int               init_IRQ_complete = 0;
+ioinfo_t         *ioinfo_head = NULL;
+ioinfo_t         *ioinfo_tail = NULL;
+ioinfo_t         *ioinfo[__MAX_SUBCHANNELS] = {
+	[0 ... (__MAX_SUBCHANNELS-1)] = INVALID_STORAGE_AREA
+};
 
-extern struct hw_interrupt_type no_irq_type;
+static spinlock_t sync_isc = SPIN_LOCK_UNLOCKED;
+                                          // synchronous irq processing lock
+static psw_t      io_sync_wait;           // wait PSW for sync IO, prot. by sync_isc
+static int        cons_dev          = -1; // identify console device
+static int        init_IRQ_complete = 0;
+static schib_t    init_schib;
+static irb_t      init_irb;
+static __u64      irq_IPL_TOD;
+
+/*
+ * Dummy controller type for unused interrupts
+ */
+int  do_none(unsigned int irq, int cpu, struct pt_regs * regs) { return 0;}
+int  enable_none(unsigned int irq) { return(-ENODEV); }
+int  disable_none(unsigned int irq) { return(-ENODEV); }
+
+struct hw_interrupt_type no_irq_type = {
+	"none",
+	do_none,
+	enable_none,
+	disable_none
+};
 
 static void init_IRQ_handler( int irq, void *dev_id, struct pt_regs *regs);
-static int  s390_setup_irq(unsigned int irq, struct irqaction * new);
+static int  s390_setup_irq(unsigned int irq, struct s390_irqaction * new);
 static void s390_process_subchannels( void);
-static void s390_device_recognition( void);
-static int  s390_validate_subchannel( int irq);
-static int  s390_SenseID( int irq, senseid_t *sid);
-static int  s390_process_IRQ( unsigned int irq, unsigned int intparm);
+static void s390_device_recognition_all( void);
+static void s390_device_recognition_irq( int irq);
+static int  s390_validate_subchannel( int irq, int enable);
+static int  s390_SenseID( int irq, senseid_t *sid, __u8 lpm);
+static int  s390_SetPGID( int irq, __u8 lpm, pgid_t *pgid);
+static int  s390_SensePGID( int irq, __u8 lpm, pgid_t *pgid);
+static int  s390_process_IRQ( unsigned int irq );
+static int  disable_subchannel( unsigned int irq);
+
+int  s390_DevicePathVerification( int irq, __u8 domask );
 
 extern int do_none(unsigned int irq, int cpu, struct pt_regs * regs);
 extern int enable_none(unsigned int irq);
@@ -63,19 +90,27 @@ extern void tod_wait(unsigned long usecs);
 
 asmlinkage void do_IRQ( struct pt_regs regs,
                         unsigned int   irq,
-                        unsigned int   intparm );
+                        __u32          s390_intparm );
+
+//
+// fix me ! must be removed with 2.3.x and follow-up releases
+//
+static void * alloc_bootmem( unsigned long size);
+static int    free_bootmem( unsigned long buffer, unsigned long size);
+static unsigned long memory_start = 0;
 
 void s390_displayhex(char *str,void *ptr,s32 cnt);
 
 void s390_displayhex(char *str,void *ptr,s32 cnt)
 {
 	s32	cnt1,cnt2,maxcnt2;
-	u32	*currptr=(u32 *)ptr;
+	u32	*currptr=(__u32 *)ptr;
 
 	printk("\n%s\n",str);
+
 	for(cnt1=0;cnt1<cnt;cnt1+=16)
 	{
-		printk("%08X ",(u32)currptr);
+		printk("%08X ",(__u32)currptr);
 		maxcnt2=cnt-cnt1;
 		if(maxcnt2>16)
 			maxcnt2=16;
@@ -85,19 +120,21 @@ void s390_displayhex(char *str,void *ptr,s32 cnt)
 	}
 }
 
-int s390_request_irq( unsigned int   irq,
-                      void           (*handler)(int, void *, struct pt_regs *),
+
+int s390_request_irq_special( int                      irq,
+                              io_handler_func_t        io_handler,
+                              not_oper_handler_func_t  not_oper_handler,
                       unsigned long  irqflags,
                       const char    *devname,
                       void          *dev_id)
 {
 	int               retval;
-	struct irqaction *action;
+	struct s390_irqaction *action;
 
-	if (irq >= NR_IRQS)
+	if (irq >= __MAX_SUBCHANNELS)
 		return -EINVAL;
 
-	if ( !handler || !dev_id )
+	if ( !io_handler || !dev_id )
 		return -EINVAL;
 
    /*
@@ -107,8 +144,9 @@ int s390_request_irq( unsigned int   irq,
     */
    if ( init_IRQ_complete )
    {
-	   action = (struct irqaction *)
-		         kmalloc(sizeof(struct irqaction), GFP_KERNEL);
+		action = (struct s390_irqaction *)
+		            kmalloc( sizeof(struct s390_irqaction),
+		                     GFP_KERNEL);
    }
    else
    {
@@ -122,32 +160,69 @@ int s390_request_irq( unsigned int   irq,
 
    } /* endif */
 
-	action->handler = handler;
+	action->handler = io_handler;
 	action->flags   = irqflags;
-	action->mask    = 0;
 	action->name    = devname;
-	action->next    = NULL;
 	action->dev_id  = dev_id;
 
 	retval = s390_setup_irq(irq, action);
 
-	if ( retval && init_IRQ_complete )
+	if ( init_IRQ_complete )
+	{
+		if ( !retval )
+		{
+			s390_DevicePathVerification( irq, 0 );
+		}
+		else
 	{
 		kfree(action);
 
 	} /* endif */
 
+	} /* endif */
+
+	if ( retval == 0 )
+	{
+		ioinfo[irq]->ui.flags.newreq = 1;
+		ioinfo[irq]->nopfunc         = not_oper_handler;  	
+	}
+
 	return retval;
+}
+
+
+int s390_request_irq( unsigned int   irq,
+                      void           (*handler)(int, void *, struct pt_regs *),
+                      unsigned long  irqflags,
+                      const char    *devname,
+                      void          *dev_id)
+{
+	int ret;
+
+	ret = s390_request_irq_special( irq,
+                                   (io_handler_func_t)handler,
+                                   NULL,
+                                   irqflags,
+                                   devname,
+                                   dev_id);
+
+	if ( ret == 0 )
+	{
+		ioinfo[irq]->ui.flags.newreq = 0;
+
+	} /* endif */
+
+	return( ret);
 }
 
 void s390_free_irq(unsigned int irq, void *dev_id)
 {
-	unsigned int flags;
+	unsigned long flags;
 	int          ret;
 
 	unsigned int count = 0;
 
-	if ( irq >= NR_IRQS )
+	if ( irq >= __MAX_SUBCHANNELS || ioinfo[irq] == INVALID_STORAGE_AREA )
 	{
 		return;
 
@@ -167,37 +242,96 @@ void s390_free_irq(unsigned int irq, void *dev_id)
 	 * disable the device and reset all IRQ info if
 	 *  the IRQ is actually owned by the handler ...
 	 */
-	if ( irq_desc[irq].action )
+	if ( ioinfo[irq]->irq_desc.action )
 	{
-		if ( irq_desc[irq].action->dev_id == dev_id ||
-		     dev_id == REIPL_DEVID_MAGIC )
+		if (    (dev_id == ioinfo[irq]->irq_desc.action->dev_id  )
+		     || (dev_id == (devstat_t *)REIPL_DEVID_MAGIC) )
 		{
-			ioinfo[irq].ui.flags.unready = 1; /* start deregister */
+			/* start deregister */
+			ioinfo[irq]->ui.flags.unready = 1;
 
 			do
          {
-				ret = irq_desc[irq].handler->disable(irq);
+				ret = disable_subchannel( irq);
 
 				count++;
 
-				if ( count == 3 )
+				if ( ret == -EBUSY )
 				{
-					panic( "free_irq() - device busy, retry count exceeded\n");
+					int iret;
+
+					/*
+					 * kill it !
+					 * ... we first try sync and eventually
+					 *  try terminating the current I/O by
+					 *  an async request, twice halt, then
+					 *  clear.
+					 */
+					if ( count < 2 )
+					{              	
+						iret = halt_IO( irq,
+						                0xC8C1D3E3,
+						                DOIO_WAIT_FOR_INTERRUPT );
+   	
+						if ( iret == -EBUSY )
+						{
+							halt_IO( irq, 0xC8C1D3E3, 0);
+							s390irq_spin_unlock_irqrestore( irq, flags);
+							tod_wait( 200000 ); /* 200 ms */
+							s390irq_spin_lock_irqsave( irq, flags);
+
+						} /* endif */
+					}
+					else
+					{
+						iret = clear_IO( irq,
+						                 0x40C3D3D9,
+						                 DOIO_WAIT_FOR_INTERRUPT );
+   	
+						if ( iret == -EBUSY )
+						{
+							clear_IO( irq, 0xC8C1D3E3, 0);
+							s390irq_spin_unlock_irqrestore( irq, flags);
+							tod_wait( 1000000 ); /* 1000 ms */
+							s390irq_spin_lock_irqsave( irq, flags);
+
+						} /* endif */
+
+					} /* endif */
+
+					if ( count == 2 )
+               {
+						/* give it a very last try ... */
+						disable_subchannel( irq);
+
+						if ( ioinfo[irq]->ui.flags.busy )
+				{
+					printk( KERN_CRIT"free_irq(%04X) "
+					       "- device %04X busy, retry "
+					       "count exceeded\n",
+					       irq,
+					       ioinfo[irq]->devstat.devno);
+
+				} /* endif */
+
+						break; /* sigh, let's give up ... */
+
+					} /* endif */
 
 				} /* endif */
 
 			} while ( ret == -EBUSY );
 
 			if ( init_IRQ_complete )
-            kfree( irq_desc[irq].action );
+				kfree( ioinfo[irq]->irq_desc.action );
 
-			irq_desc[irq].action           = NULL;
-			ioinfo[irq].ui.flags.ready     = 0;
+			ioinfo[irq]->irq_desc.action  = NULL;
+			ioinfo[irq]->ui.flags.ready   = 0;
+			ioinfo[irq]->irq_desc.handler->enable  = enable_none;
+			ioinfo[irq]->irq_desc.handler->disable = disable_none;
+			ioinfo[irq]->ui.flags.unready = 0; /* deregister ended */
 
-			irq_desc[irq].handler->enable  = &enable_none;
-			irq_desc[irq].handler->disable = &disable_none;
-
-			ioinfo[irq].ui.flags.unready   = 0; /* deregister ended */
+			ioinfo[irq]->nopfunc = NULL;
 
 			s390irq_spin_unlock_irqrestore( irq, flags);
 		}
@@ -205,7 +339,8 @@ void s390_free_irq(unsigned int irq, void *dev_id)
 		{
 			s390irq_spin_unlock_irqrestore( irq, flags);
 
-			printk("free_irq() : error, dev_id does not match !");
+			printk( "free_irq(%04X) : error, "
+			        "dev_id does not match !", irq);
 
 		} /* endif */
 
@@ -214,7 +349,8 @@ void s390_free_irq(unsigned int irq, void *dev_id)
 	{
 		s390irq_spin_unlock_irqrestore( irq, flags);
 
-		printk("free_irq() : error, no action block ... !");
+		printk( "free_irq(%04X) : error, "
+		        "no action block ... !\n", irq);
 
 	} /* endif */
 
@@ -228,14 +364,17 @@ int disable_irq(unsigned int irq)
 	unsigned long flags;
 	int           ret;
 
+	if ( ioinfo[irq] == INVALID_STORAGE_AREA )
+		return( -ENODEV);
+
 	s390irq_spin_lock_irqsave(irq, flags);
 
 	/*
 	 * At this point we may actually have a pending interrupt being active
 	 * on another CPU. So don't touch the IRQ_INPROGRESS bit..
 	 */
-	irq_desc[irq].status |= IRQ_DISABLED;
-	ret = irq_desc[irq].handler->disable(irq);
+	ioinfo[irq]->irq_desc.status |= IRQ_DISABLED;
+	ret = ioinfo[irq]->irq_desc.handler->disable(irq);
 	s390irq_spin_unlock_irqrestore(irq, flags);
 
 	synchronize_irq();
@@ -248,10 +387,13 @@ int enable_irq(unsigned int irq)
 	unsigned long flags;
 	int           ret;
 
+	if ( ioinfo[irq] == INVALID_STORAGE_AREA )
+		return( -ENODEV);
+
 	s390irq_spin_lock_irqsave(irq, flags);
 
-	irq_desc[irq].status = 0;
-	ret                  = irq_desc[irq].handler->enable(irq);
+	ioinfo[irq]->irq_desc.status = 0;
+	ret = ioinfo[irq]->irq_desc.handler->enable(irq);
 
 	s390irq_spin_unlock_irqrestore(irq, flags);
 
@@ -273,18 +415,21 @@ static int enable_subchannel( unsigned int irq)
 
    } /* endif */
 
+	if ( ioinfo[irq] == INVALID_STORAGE_AREA )
+		return( -ENODEV);
+
 	/*
 	 * If a previous disable request is pending we reset it. However, this
 	 *  status implies that the device may (still) be not-operational.
 	 */
-	if (  ioinfo[irq].ui.flags.d_disable )
+	if (  ioinfo[irq]->ui.flags.d_disable )
 	{
-		ioinfo[irq].ui.flags.d_disable = 0;
+		ioinfo[irq]->ui.flags.d_disable = 0;
 		ret                            = 0;
 	}
 	else
 	{
-		ccode = stsch(irq, &(ioinfo[irq].schib) );
+		ccode = stsch(irq, &(ioinfo[irq]->schib) );
 
       if ( ccode )
       {
@@ -292,11 +437,21 @@ static int enable_subchannel( unsigned int irq)
       }
       else
       {
-   		ioinfo[irq].schib.pmcw.ena = 1;
+			ioinfo[irq]->schib.pmcw.ena = 1;
+
+			if ( irq == cons_dev )
+			{
+				ioinfo[irq]->schib.pmcw.isc = 7;
+			}
+			else	
+			{
+			ioinfo[irq]->schib.pmcw.isc = 3;
+
+			} /* endif */
 
          do
          {
-            ccode = msch( irq, &(ioinfo[irq].schib) );
+				ccode = msch( irq, &(ioinfo[irq]->schib) );
 
    		   switch (ccode) {
             case 0:
@@ -305,30 +460,42 @@ static int enable_subchannel( unsigned int irq)
 
             case 1:
 	   			/*
-		   		 * very bad, requires interrupt alike processing, where
-			   	 *  "rbh" is a dummy parameter for interface compatibility
-				    *  only. Bottom-half handling cannot be required as
-   				 *  this must be an unsolicited interrupt (!busy).
+					 * very bad, requires interrupt alike
+					 *  processing, where "rbh" is a dummy
+					 *  parameter for interface compatibility
+					 *  only. Bottom-half handling cannot be
+					 *  required as this must be an
+					 *  unsolicited interrupt (!busy).
 	   			 */
 
-		   	   ioinfo[irq].ui.flags.s_pend = 1;
+					ioinfo[irq]->ui.flags.s_pend = 1;
+					s390_process_IRQ( irq );
+					ioinfo[irq]->ui.flags.s_pend = 0;
 
-		   		s390_process_IRQ( irq, 0 );
-
-		   	   ioinfo[irq].ui.flags.s_pend = 0;
-
-			   	ret = -EIO;    /* might be overwritten on ... */
-                              /* ... re-driving the msch()   */
+					ret = -EIO;    /* might be overwritten */
+					               /* ... on re-driving    */
+					               /* ... the msch() */
                retry--;
                break;
 
+				case 2:
+					tod_wait(100);	/* allow for recovery */
+					ret = -EBUSY;
+					retry--;
+					break;
+
             case 3:
-		   	   ioinfo[irq].ui.flags.oper = 0;
+					ioinfo[irq]->ui.flags.oper = 0;
                ret = -ENODEV;
                break;
 
             default:
-               panic( "enable_subchannel() : ccode 2 on msch() received !\n");
+					printk( KERN_CRIT"enable_subchannel(%04X) "
+					        " : ccode 2 on msch() for device "
+					        "%04X received !\n",
+					        irq,
+					        ioinfo[irq]->devstat.devno);
+
                ret = -ENODEV; // never reached
             }
 
@@ -355,7 +522,11 @@ static int disable_subchannel( unsigned int irq)
 	{
 		ret = -ENODEV;
 	}
-	else if ( ioinfo[irq].ui.flags.busy )
+	if ( ioinfo[irq] == INVALID_STORAGE_AREA )
+	{
+		return( -ENODEV);
+   }
+	else if ( ioinfo[irq]->ui.flags.busy )
 	{
 		/*
 		 * the disable function must not be called while there are
@@ -370,22 +541,22 @@ static int disable_subchannel( unsigned int irq)
 		 *  disabling when the next interrupt occurs - unless the
 		 *  irq is re-requested prior to the interrupt to occur.
 		 */
-		cc = stsch(irq, &(ioinfo[irq].schib) );
+		cc = stsch(irq, &(ioinfo[irq]->schib) );
 
 		if ( cc == 3 )
 		{
-			ioinfo[irq].ui.flags.oper      = 0;
-			ioinfo[irq].ui.flags.d_disable = 1;
+			ioinfo[irq]->ui.flags.oper      = 0;
+			ioinfo[irq]->ui.flags.d_disable = 1;
 
 			ret = 0;
 		}
 		else // cc == 0
 		{
-			ioinfo[irq].schib.pmcw.ena = 0;
+			ioinfo[irq]->schib.pmcw.ena = 0;
 
          do
          {
-   			cc = msch( irq, &(ioinfo[irq].schib) );
+				cc = msch( irq, &(ioinfo[irq]->schib) );
 
 	   		switch (cc) {
 		   	case 0 :
@@ -394,19 +565,20 @@ static int disable_subchannel( unsigned int irq)
 
    			case 1 :
 	   			/*
-		   		 * very bad, requires interrupt alike processing, where
-			   	 *  "rbh" is a dummy parameter for interface compatibility
-				    *  only. Bottom-half handling cannot be required as
-   				 *  this must be an unsolicited interrupt (!busy).
-	   			 */
-		   	   ioinfo[irq].ui.flags.s_pend = 1;
+					 * very bad, requires interrupt alike
+  					 *  processing, where "rbh" is a dummy
+					 *  parm for interface compatibility
+					 *  only. Bottom-half handling cannot
+					 *  be required as this must be an
+					 *  unsolicited interrupt (!busy).
+					 */
+					ioinfo[irq]->ui.flags.s_pend = 1;
+					s390_process_IRQ( irq );
+					ioinfo[irq]->ui.flags.s_pend = 0;
 
-		   		s390_process_IRQ( irq, 0 );
-
-		   	   ioinfo[irq].ui.flags.s_pend = 0;
-
-			   	ret = -EBUSY;  /* might be overwritten on ... */
-                              /* ... re-driving the msch()   */
+					ret = -EIO; /* might be overwritten  */
+					               /* ... on re-driving the */
+					               /* ... msch() call       */
                retry--;
 				   break;
 
@@ -414,22 +586,28 @@ static int disable_subchannel( unsigned int irq)
 	   			/*
 		   		 * *** must not occur !                                    ***
 			   	 * ***                                                     ***
-				    * *** indicates our internal interrupt accounting is out  ***
+					 * *** indicates our internal        ***
+					 * *** interrupt accounting is out   ***
    				 * ***  of sync ===> panic()                               ***
 	   			 */
-		   		panic( "disable_subchannel() : unexpected busy condition !\n");
-               ret = -ENODEV; // never reached
+					printk( KERN_CRIT"disable_subchannel(%04X) "
+					        "- unexpected busy condition for "
+							  "device %04X received !\n",
+					        irq,
+					        ioinfo[irq]->devstat.devno);
+					ret = -EBUSY;
 				   break;
 
    			case 3 :
 	   			/*
-		   		 * should hardly occur but not impossible ...
+					 * should hardly occur ?!
 			   	 */
-   				ioinfo[irq].ui.flags.oper      = 0;
-	   			ioinfo[irq].ui.flags.d_disable = 1;
+					ioinfo[irq]->ui.flags.oper      = 0;
+					ioinfo[irq]->ui.flags.d_disable = 1;
 
-		   		ret = 0; /* if the device has gone we don't ... */
-                        /* ... need to disable it anymore !    */
+					ret = 0; /* if the device has gone we */
+					         /* ... don't need to disable */
+					         /* ... it anymore !    */
 			   	break;
 
    			default :
@@ -448,28 +626,32 @@ static int disable_subchannel( unsigned int irq)
 }
 
 
-
-int s390_setup_irq(unsigned int irq, struct irqaction * new)
+int s390_setup_irq( unsigned int irq, struct s390_irqaction * new)
 {
 	unsigned long      flags;
 	int                rc = 0;
+
+	if ( ioinfo[irq] == INVALID_STORAGE_AREA )
+	{
+		return( -ENODEV);
+   }
 
 	/*
 	 * The following block of code has to be executed atomically
 	 */
 	s390irq_spin_lock_irqsave( irq, flags);
 
-	if ( irq_desc[irq].action == NULL )
+	if ( ioinfo[irq]->irq_desc.action == NULL )
 	{
-      irq_desc[irq].action           = new;
-		irq_desc[irq].status           = 0;
-		irq_desc[irq].handler->enable  = &enable_subchannel;
-		irq_desc[irq].handler->disable = &disable_subchannel;
-		irq_desc[irq].handler->handle  = &handle_IRQ_event;
+		ioinfo[irq]->irq_desc.action           = new;
+		ioinfo[irq]->irq_desc.status           = 0;
+		ioinfo[irq]->irq_desc.handler->enable  = enable_subchannel;
+		ioinfo[irq]->irq_desc.handler->disable = disable_subchannel;
+		ioinfo[irq]->irq_desc.handler->handle  = handle_IRQ_event;
 
-		ioinfo[irq].ui.flags.ready     = 1;
+		ioinfo[irq]->ui.flags.ready            = 1;
 
-		irq_desc[irq].handler->enable(irq);
+		ioinfo[irq]->irq_desc.handler->enable(irq);
 	}
 	else
 	{
@@ -486,24 +668,49 @@ int s390_setup_irq(unsigned int irq, struct irqaction * new)
 	return( rc);
 }
 
+/*
+ * we need boot memory during init processing but don't have
+ *  kmalloc() available yet. Linux 2.3 introduced alloc_bootmem()
+ *  we kind of emulate for the time being.
+ */
+static void * alloc_bootmem( unsigned long size)
+{
+   void * ret = (void *)memory_start;
 
-void s390_init_IRQ( void )
+   memory_start += size;
+
+   return( ret );
+}
+
+int free_bootmem( unsigned long buffer, unsigned long size)
+{
+   int ret = 0;
+
+	/*
+	 *	We don't have buffer management, thus a free
+	 *  must follow the matching alloc.
+	 */	
+	if ( buffer == (memory_start - size) )
+   	memory_start -= size;
+	else
+		ret = -EINVAL;
+
+   return( ret );
+}
+
+unsigned long s390_init_IRQ( unsigned long memstart)
 {
 	unsigned long flags;     /* PSW flags */
 	long          cr6 __attribute__ ((aligned (8)));
-	int           irq;       /* counter for I/O subchannels */
 
-	for (irq=0; irq<NR_IRQS; irq++)
-	{
-		irq_desc[irq].status = 0;
-		irq_desc[irq].handler = &no_irq_type;
-
-	} /* endfor */
+        memory_start = memstart;
 
 	// Hopefully bh_count's will get set when we copy the prefix lowcore
 	// structure to other CPI's ( DJB )
 	atomic_set(&S390_lowcore.local_bh_count,0);
 	atomic_set(&S390_lowcore.local_irq_count,0);
+
+	asm volatile ("STCK %0" : "=m" (irq_IPL_TOD));
 
 	/*
 	 * As we don't know about the calling environment
@@ -531,11 +738,13 @@ void s390_init_IRQ( void )
 	cr6 = 0x10000000;
 	asm volatile ("LCTL 6,6,%0":: "m" (cr6):"memory");
 
-   s390_device_recognition();
+	s390_device_recognition_all();
 
    init_IRQ_complete = 1;
 
 	__restore_flags(flags);
+
+        return( memory_start );
 }
 
 
@@ -549,9 +758,9 @@ void  init_IRQ_handler( int irq, void *dev_id, struct pt_regs *regs)
 
 
 int s390_start_IO( int            irq,      /* IRQ */
-                   ccw1_t        *cpa,      /* logical channel program addr */
-                   unsigned long  intparm,  /* interruption parameter */
-                   unsigned char  lpm,      /* logical path mask */
+                   ccw1_t        *cpa,      /* logical channel prog addr */
+                   unsigned long  user_intparm,  /* interruption parameter */
+                   __u8           lpm,      /* logical path mask */
                    unsigned long  flag)     /* flags */
 {
 	int            ccode;
@@ -563,37 +772,35 @@ int s390_start_IO( int            irq,      /* IRQ */
 	/*
 	 * The flag usage is mutal exclusive ...
 	 */
-	if (    (flag & DOIO_RETURN_CHAN_END)
+	if (    (flag & DOIO_EARLY_NOTIFICATION)
 	     && (flag & DOIO_REPORT_ALL     ) )
 	{
 		return( -EINVAL );
 
 	} /* endif */
 
-	memset( &(ioinfo[irq].orb), '\0', sizeof( orb_t) );
-
 	/*
 	 * setup ORB
 	 */
-	ioinfo[irq].orb.intparm = intparm;
-	ioinfo[irq].orb.fmt     = 1;
+  	ioinfo[irq]->orb.intparm = (__u32)&ioinfo[irq]->u_intparm;
+	ioinfo[irq]->orb.fmt     = 1;
 
-	ioinfo[irq].orb.pfch = !(flag & DOIO_DENY_PREFETCH);
-	ioinfo[irq].orb.spnd =  (flag & DOIO_ALLOW_SUSPEND);
-	ioinfo[irq].orb.ssic =  (    (flag & DOIO_ALLOW_SUSPEND )
+	ioinfo[irq]->orb.pfch = !(flag & DOIO_DENY_PREFETCH);
+	ioinfo[irq]->orb.spnd =  (flag & DOIO_ALLOW_SUSPEND ? TRUE : FALSE);
+	ioinfo[irq]->orb.ssic =  (    (flag & DOIO_ALLOW_SUSPEND )
 	                          && (flag & DOIO_SUPPRESS_INTER) );
 
 	if ( flag & DOIO_VALID_LPM )
 	{
-		ioinfo[irq].orb.lpm = lpm;
+		ioinfo[irq]->orb.lpm = lpm;
 	}
 	else
 	{
-		ioinfo[irq].orb.lpm = ioinfo[irq].schib.pmcw.pam;
+		ioinfo[irq]->orb.lpm = ioinfo[irq]->opm;
 
 	} /* endif */
 
-	ioinfo[irq].orb.cpa = (ccw1_t *)virt_to_phys( cpa);
+	ioinfo[irq]->orb.cpa = (ccw1_t *)virt_to_phys( cpa);
 
 	/*
 	 * If sync processing was requested we lock the sync ISC, modify the
@@ -605,7 +812,7 @@ int s390_start_IO( int            irq,      /* IRQ */
 		//
 		// check whether we run recursively (sense processing)
 		//
-		if ( !ioinfo[irq].ui.flags.syncio )
+		if ( !ioinfo[irq]->ui.flags.syncio )
 		{
 			spin_lock_irqsave( &sync_isc, psw_flags);
  	
@@ -614,14 +821,12 @@ int s390_start_IO( int            irq,      /* IRQ */
 			if ( ret )
 			{
 				spin_unlock_irqrestore( &sync_isc, psw_flags);
- 		
-				// sigh, there should be a single exit point only ...
 				return( ret);
 			}
 			else
 			{
-				sync_isc_locked             = 1; // local setting
-				ioinfo[irq].ui.flags.syncio = 1; // global setting
+				sync_isc_locked              = 1; // local
+				ioinfo[irq]->ui.flags.syncio = 1; // global
 
 			} /* endif */  	
  	
@@ -629,65 +834,67 @@ int s390_start_IO( int            irq,      /* IRQ */
 
 	} /* endif */
 
+	if ( flag & DOIO_DONT_CALL_INTHDLR )
+	{
+		ioinfo[irq]->ui.flags.repnone = 1;
+
+   } /* endif */
+
 	/*
 	 * Issue "Start subchannel" and process condition code
 	 */
-	ccode = ssch( irq, &(ioinfo[irq].orb) );
+	ccode = ssch( irq, &(ioinfo[irq]->orb) );
 
 	switch ( ccode ) {
 	case 0:
 
-      if ( !ioinfo[irq].ui.flags.w4sense )
+		if ( !ioinfo[irq]->ui.flags.w4sense )
       {
 			/*
-			 * initialize the device driver specific devstat irb area
+			 * init the device driver specific devstat irb area
 			 *
-			 * Note : don´t clear saved irb information in case of sense !
+			 * Note : don´t clear saved irb info in case of sense !
 			 */
-			memset( &((devstat_t *) irq_desc[irq].action->dev_id)->ii.irb,
+			memset( &((devstat_t *)ioinfo[irq]->irq_desc.action->dev_id)->ii.irb,
 				'\0', sizeof( irb_t) );
 		} /* endif */
+
+		memset( &ioinfo[irq]->devstat.ii.irb,
+		        '\0',
+		        sizeof( irb_t) );
 
 		/*
 		 * initialize device status information
 		 */
-		ioinfo[irq].ui.flags.busy   = 1;
-		ioinfo[irq].ui.flags.doio   = 1;
+		ioinfo[irq]->ui.flags.busy   = 1;
+		ioinfo[irq]->ui.flags.doio   = 1;
 
-		ioinfo[irq].devstat.intparm = intparm;
-		ioinfo[irq].devstat.cstat   = 0;
-		ioinfo[irq].devstat.dstat   = 0;
-		ioinfo[irq].devstat.lpum    = 0;
-		ioinfo[irq].devstat.flag    = DEVSTAT_START_FUNCTION;
-		ioinfo[irq].devstat.scnt    = 0;
+		ioinfo[irq]->u_intparm       = user_intparm;
+		ioinfo[irq]->devstat.cstat   = 0;
+		ioinfo[irq]->devstat.dstat   = 0;
+		ioinfo[irq]->devstat.lpum    = 0;
+		ioinfo[irq]->devstat.flag    = DEVSTAT_START_FUNCTION;
+		ioinfo[irq]->devstat.scnt    = 0;
 
-		ioinfo[irq].ui.flags.fast   = 0;
-		ioinfo[irq].ui.flags.repall = 0;
+		ioinfo[irq]->ui.flags.fast   = 0;
+		ioinfo[irq]->ui.flags.repall = 0;
 
 		/*
 		 * Check for either early (FAST) notification requests
 		 *  or if we are to return all interrupt info.
 		 * Default is to call IRQ handler at secondary status only
 		 */
-		if ( flag & DOIO_RETURN_CHAN_END )
+		if ( flag & DOIO_EARLY_NOTIFICATION )
 		{
-			ioinfo[irq].ui.flags.fast = 1;
+			ioinfo[irq]->ui.flags.fast = 1;
 		}
 		else if ( flag & DOIO_REPORT_ALL )
 		{
-			ioinfo[irq].ui.flags.repall = 1;
+			ioinfo[irq]->ui.flags.repall = 1;
 
 		} /* endif */
 
-		if ( flag & DOIO_VALID_LPM )
-		{
-			ioinfo[irq].lpm = lpm;         /* specific path */
-		}
-		else
-		{
-			ioinfo[irq].lpm = 0xff;        /* any path */
-
-		} /* endif */
+		ioinfo[irq]->ulpm = ioinfo[irq]->orb.lpm;
 
 		/*
 		 * If synchronous I/O processing is requested, we have
@@ -699,20 +906,23 @@ int s390_start_IO( int            irq,      /* IRQ */
 		 */
 		if ( flag & DOIO_WAIT_FOR_INTERRUPT )
 		{
-			int              io_sub;
-			int              io_parm;
+			int              io_sub = -1;
          psw_t            io_new_psw;
          int              ccode;
+			uint64_t         time_start;    	
+			uint64_t         time_curr;    	
 
 			int              ready = 0;
          struct _lowcore *lc    = NULL;
+			int              do_retry = 1;
 
          /*
-          * We shouldn't perform a TPI loop, waiting for an interrupt
-          *  to occur, but should load a WAIT PSW instead. Otherwise
-          *  we may keep the channel subsystem busy, not able to present
-          *  the interrupt. When our sync. interrupt arrived we reset
-          *  the I/O old PSW to its original value.
+			 * We shouldn't perform a TPI loop, waiting for an
+			 *  interrupt to occur, but should load a WAIT PSW
+			 *  instead. Otherwise we may keep the channel subsystem
+			 *  busy, not able to present the interrupt. When our
+			 *  sync. interrupt arrived we reset the I/O old PSW to
+			 *  its original value.
           */
          memcpy( &io_new_psw, &lc->io_new_psw, sizeof(psw_t));
 
@@ -746,27 +956,66 @@ int s390_start_IO( int            irq,      /* IRQ */
 					break;
 			} /* endswitch */
 
-	      io_sync_wait.addr = (unsigned long) &&io_wakeup | 0x80000000L;
+			io_sync_wait.addr = FIX_PSW(&&io_wakeup);
 
 			/*
 			 * Martin didn't like modifying the new PSW, now we take
 			 *  a fast exit in do_IRQ() instead
 			 */
-			*(int *)__LC_SYNC_IO_WORD  = 1;
+			*(__u32 *)__LC_SYNC_IO_WORD  = 1;
+
+			asm volatile ("STCK %0" : "=m" (time_start));
+
+			time_start = time_start >> 32;
 
 			do
 			{
+				if ( flag & DOIO_TIMEOUT )
+				{
+					tpi_info_t tpi_info;
 
+			do
+			{
+						if ( tpi(&tpi_info) == 1 )
+						{
+							io_sub = tpi_info.irq;
+							break;
+						}
+						else
+						{
+							tod_wait(100); /* usecs */
+							asm volatile ("STCK %0" : "=m" (time_curr));
+
+							if ( ((time_curr >> 32) - time_start ) >= 3 )
+								do_retry = 0;          							
+
+						} /* endif */
+
+					} while ( do_retry );
+				}
+				else
+				{
       		asm volatile ( "lpsw %0" : : "m" (io_sync_wait) );
+
 io_wakeup:
-				io_parm = *(int *)__LC_IO_INT_PARM;
-				io_sub  = (int)*(short *)__LC_SUBCHANNEL_NR;
+				io_sub  = (__u32)*(__u16 *)__LC_SUBCHANNEL_NR;
 
-				ready = s390_process_IRQ( io_sub, io_parm);
+				} /* endif */
 
-			} while ( !((io_sub == irq) && (ready == 1)) );
+ 				if ( do_retry )
+				ready = s390_process_IRQ( io_sub );
 
-			*(int *)__LC_SYNC_IO_WORD = 0;
+				/*
+				 * surrender when retry count's exceeded ...
+				 */
+			} while ( !(     ( io_sub == irq )
+			              && ( ready  == 1   ))
+			            && do_retry             );
+
+			*(__u32 *)__LC_SYNC_IO_WORD = 0;
+
+			if ( !do_retry )
+				ret = -ETIMEDOUT;
 
 		} /* endif */
 
@@ -774,35 +1023,37 @@ io_wakeup:
 
 	case 1 :            /* status pending */
 
-		ioinfo[irq].devstat.flag |= DEVSTAT_STATUS_PENDING;
+		ioinfo[irq]->devstat.flag =   DEVSTAT_START_FUNCTION
+		                            | DEVSTAT_STATUS_PENDING;
 
 		/*
 		 * initialize the device driver specific devstat irb area
 		 */
-		memset( &((devstat_t *) irq_desc[irq].action->dev_id)->ii.irb,
+		memset( &((devstat_t *) ioinfo[irq]->irq_desc.action->dev_id)->ii.irb,
 		        '\0', sizeof( irb_t) );
 
       /*
        * Let the common interrupt handler process the pending status.
        *  However, we must avoid calling the user action handler, as
-       *  it won't be prepared to handle a pending status during do_IO()
-       *  processing inline. This also implies that process_IRQ must
-       *  terminate synchronously - especially if device sensing is
-       *  required.
-       */
-      ioinfo[irq].ui.flags.s_pend   = 1;
-		ioinfo[irq].ui.flags.busy     = 1;
-		ioinfo[irq].ui.flags.doio     = 1;
+		 *  it won't be prepared to handle a pending status during
+		 *  do_IO() processing inline. This also implies that process_IRQ
+		 *  must terminate synchronously - especially if device sensing
+		 *  is required.
+		 */
+		ioinfo[irq]->ui.flags.s_pend   = 1;
+		ioinfo[irq]->ui.flags.busy     = 1;
+		ioinfo[irq]->ui.flags.doio     = 1;
 
-	   s390_process_IRQ( irq, intparm );
+		s390_process_IRQ( irq );
 
-      ioinfo[irq].ui.flags.s_pend   = 0;
-		ioinfo[irq].ui.flags.busy     = 0;
-		ioinfo[irq].ui.flags.doio     = 0;
-		ioinfo[irq].ui.flags.repall   = 0;
-		ioinfo[irq].ui.flags.w4final  = 0;
+		ioinfo[irq]->ui.flags.s_pend   = 0;
+		ioinfo[irq]->ui.flags.busy     = 0;
+		ioinfo[irq]->ui.flags.doio     = 0;
 
-		ioinfo[irq].devstat.flag     |= DEVSTAT_FINAL_STATUS;
+		ioinfo[irq]->ui.flags.repall   = 0;
+		ioinfo[irq]->ui.flags.w4final  = 0;
+
+		ioinfo[irq]->devstat.flag     |= DEVSTAT_FINAL_STATUS;
 
 		/*
 		 * In multipath mode a condition code 3 implies the last path
@@ -811,57 +1062,77 @@ io_wakeup:
 		 *  results in return code EIO as well as 3 with another path
 		 *  than the one used (i.e. path available mask is non-zero).
 		 */
-		if ( ioinfo[irq].devstat.ii.irb.scsw.cc == 3 )
+		if ( ioinfo[irq]->devstat.ii.irb.scsw.cc == 3 )
 		{
-			ret                        = -ENODEV;
-			ioinfo[irq].devstat.flag  |= DEVSTAT_NOT_OPER;
-			ioinfo[irq].ui.flags.oper  = 0;
+			if ( flag & DOIO_VALID_LPM )
+			{
+				ioinfo[irq]->opm &= ~(ioinfo[irq]->devstat.ii.irb.esw.esw1.lpum);
+			}
+			else
+			{
+				ioinfo[irq]->opm = 0;
 
-#if CONFIG_DEBUG_IO
+			} /* endif */
+	
+			if ( ioinfo[irq]->opm == 0 ) 	
+			{
+			ret                        = -ENODEV;
+			ioinfo[irq]->ui.flags.oper  = 0;
+         }
+			else
+			{
+				ret = -EIO;
+
+         } /* endif */
+
+			ioinfo[irq]->devstat.flag  |= DEVSTAT_NOT_OPER;
+
+#ifdef CONFIG_DEBUG_IO
       	{
 	      char buffer[80];
 
-		   stsch(irq, &(ioinfo[irq].schib) );
+			stsch(irq, &(ioinfo[irq]->schib) );
 
    	   sprintf( buffer, "s390_start_IO(%04X) - irb for "
 			         "device %04X, after status pending\n",
 			         irq,
-			         ioinfo[irq].devstat.devno );
+			         ioinfo[irq]->devstat.devno );
 
 			s390_displayhex( buffer,
-			                 &(ioinfo[irq].devstat.ii.irb) ,
+			                 &(ioinfo[irq]->devstat.ii.irb) ,
 			                 sizeof(irb_t));
 
    	   sprintf( buffer, "s390_start_IO(%04X) - schib for "
 			         "device %04X, after status pending\n",
 			         irq,
-			         ioinfo[irq].devstat.devno );
+			         ioinfo[irq]->devstat.devno );
 
 			s390_displayhex( buffer,
-			                 &(ioinfo[irq].schib) ,
+			                 &(ioinfo[irq]->schib) ,
 			                 sizeof(schib_t));
 
 
-			if (ioinfo[irq].devstat.flag  & DEVSTAT_FLAG_SENSE_AVAIL)
+			if (ioinfo[irq]->devstat.flag & DEVSTAT_FLAG_SENSE_AVAIL)
          {
-	   	   sprintf( buffer, "s390_start_IO(%04X) - sense data for "
+				sprintf( buffer, "s390_start_IO(%04X) - sense "
+				         "data for "
 				         "device %04X, after status pending\n",
 				         irq,
-				         ioinfo[irq].devstat.devno );
+				         ioinfo[irq]->devstat.devno );
 
 				s390_displayhex( buffer,
-     ((devstat_t *)(irq_desc[irq].action->dev_id))->ii.sense.data,
-     ((devstat_t *)(irq_desc[irq].action->dev_id))->rescnt);
+		((devstat_t *)(ioinfo[irq]->irq_desc.action->dev_id))->ii.sense.data,
+		((devstat_t *)(ioinfo[irq]->irq_desc.action->dev_id))->rescnt);
 
-         }
+			} /* endif */
       	}
 #endif
 		}
 		else
 		{
 			ret                        = -EIO;
-			ioinfo[irq].devstat.flag  &= ~DEVSTAT_NOT_OPER;
-			ioinfo[irq].ui.flags.oper  = 1;
+			ioinfo[irq]->devstat.flag  &= ~DEVSTAT_NOT_OPER;
+			ioinfo[irq]->ui.flags.oper  = 1;
 
 		} /* endif */
 
@@ -872,31 +1143,44 @@ io_wakeup:
 		ret = -EBUSY;
 		break;
 
-	default:            /* device not operational */
+	default:            /* device/path not operational */
 
-		ret                          = -ENODEV;
-		ioinfo[irq].ui.flags.oper    = 0;
+		if ( flag & DOIO_VALID_LPM )
+		{
+			ioinfo[irq]->opm &= ~lpm;
+		}
+		else
+		{
+			ioinfo[irq]->opm = 0;
 
-		ioinfo[irq].devstat.flag    |= DEVSTAT_NOT_OPER;
-		ioinfo[irq].devstat.intparm  = intparm;
+		} /* endif */
 
-		memcpy( irq_desc[irq].action->dev_id,
-			&(ioinfo[irq].devstat),
+		if ( ioinfo[irq]->opm == 0 ) 	
+		{
+			ioinfo[irq]->ui.flags.oper  = 0;
+		ioinfo[irq]->devstat.flag    |= DEVSTAT_NOT_OPER;
+
+		} /* endif */
+
+		ret = -ENODEV;
+
+		memcpy( ioinfo[irq]->irq_desc.action->dev_id,
+			&(ioinfo[irq]->devstat),
 			sizeof( devstat_t) );
 
-#if CONFIG_DEBUG_IO
+#ifdef CONFIG_DEBUG_IO
       	{
 	      char buffer[80];
 
-		   stsch(irq, &(ioinfo[irq].schib) );
+   			stsch(irq, &(ioinfo[irq]->schib) );
 
    	   sprintf( buffer, "s390_start_IO(%04X) - schib for "
 			         "device %04X, after 'not oper' status\n",
 			         irq,
-			         ioinfo[irq].devstat.devno );
+			         ioinfo[irq]->devstat.devno );
 
 			s390_displayhex( buffer,
-			                 &(ioinfo[irq].schib),
+			                 &(ioinfo[irq]->schib),
 			                 sizeof(schib_t));
       	}
 #endif
@@ -904,15 +1188,39 @@ io_wakeup:
 
 	} /* endswitch */
 
-	if (    ( flag & DOIO_WAIT_FOR_INTERRUPT )   	
-	     && ( sync_isc_locked                ) )
+	if ( sync_isc_locked )
 	{
-		disable_cpu_sync_isc( irq );
+		int iret;
+		int retry = 5;
+		int halt  = 0;	
+
+		do
+		{
+			iret = disable_cpu_sync_isc( irq );
+			retry--;
+
+			/* try stopping it ... */
+			if ( (iret == -EBUSY) && !halt )
+			{
+				halt_IO( irq, 0x00004711, 0 );
+				halt = 1;
+
+			} /* endif */
+
+			tod_wait( 100);
+
+		} while ( retry && (iret == -EBUSY ) );
+
+		sync_isc_locked             = 0;    // local setting
+		ioinfo[irq]->ui.flags.syncio = 0;    // global setting
 
 		spin_unlock_irqrestore( &sync_isc, psw_flags);
 
-		sync_isc_locked             = 0;    // local setting
-	   ioinfo[irq].ui.flags.syncio = 0;    // global setting
+	} /* endif */
+
+	if ( flag & DOIO_DONT_CALL_INTHDLR )
+	{
+		ioinfo[irq]->ui.flags.repnone = 0;
 
 	} /* endif */
 
@@ -921,8 +1229,8 @@ io_wakeup:
 
 int do_IO( int            irq,          /* IRQ */
            ccw1_t        *cpa,          /* channel program address */
-           unsigned long  intparm,      /* interruption parameter */
-           unsigned char  lpm,          /* logical path mask */
+           unsigned long  user_intparm, /* interruption parameter */
+           __u8           lpm,          /* logical path mask */
            unsigned long  flag)         /* flags : see above */
 {
 	int ret = 0;
@@ -933,8 +1241,13 @@ int do_IO( int            irq,          /* IRQ */
 
 	} /* endif */
 
-	/* handler registered ?    */
-	if ( !ioinfo[irq].ui.flags.ready )
+	if ( ioinfo[irq] == INVALID_STORAGE_AREA )
+	{
+		return( -ENODEV);
+   }
+
+	/* handler registered ? or free_irq() in process already ? */
+	if ( !ioinfo[irq]->ui.flags.ready || ioinfo[irq]->ui.flags.unready )
 	{
 		return( -ENODEV );
 
@@ -944,27 +1257,28 @@ int do_IO( int            irq,          /* IRQ */
 	 * Note: We ignore the device operational status - if not operational,
 	 *        the SSCH will lead to an -ENODEV condition ...
 	 */
-	if ( !ioinfo[irq].ui.flags.busy )         /* last I/O completed ? */
+	if ( !ioinfo[irq]->ui.flags.busy )         /* last I/O completed ? */
 	{
-		ret = s390_start_IO( irq, cpa, intparm, lpm, flag);
+		ret = s390_start_IO( irq, cpa, user_intparm, lpm, flag);
 	}
-	else if ( ioinfo[irq].ui.flags.fast )
+	else if ( ioinfo[irq]->ui.flags.fast )
 	{
 		/*
-		 * If primary status was received and ending status is missing, the
-		 *  device driver won't be notified on the ending status if early
-		 *  (fast) interrupt notification was requested. Therefore we have
-		 *  to queue the next incoming request. If halt_IO() is issued while
-		 *  there is a request queued, a HSCH needs to be issued and the queued
-		 *  request must be deleted but its intparm must be returned (see
-		 *  halt_IO() processing)
+		 * If primary status was received and ending status is missing,
+		 *  the device driver won't be notified on the ending status
+		 *  if early (fast) interrupt notification was requested.
+		 *  Therefore we have to queue the next incoming request. If
+		 *  halt_IO() is issued while there is a request queued, a HSCH
+		 *  needs to be issued and the queued request must be deleted
+		 *  but its intparm must be returned (see halt_IO() processing)
 		 */
-		if ( ioinfo[irq].ui.flags.w4final && !ioinfo[irq].ui.flags.doio_q )
+		if (     ioinfo[irq]->ui.flags.w4final
+           && !ioinfo[irq]->ui.flags.doio_q )
 		{
-			ioinfo[irq].qflag    = flag;
-			ioinfo[irq].qcpa     = cpa;
-			ioinfo[irq].qintparm = intparm;
-			ioinfo[irq].qlpm     = lpm;
+			ioinfo[irq]->qflag    = flag;
+			ioinfo[irq]->qcpa     = cpa;
+			ioinfo[irq]->qintparm = user_intparm;
+			ioinfo[irq]->qlpm     = lpm;
 		}
 		else
 		{
@@ -995,10 +1309,15 @@ int resume_IO( int irq)
 
 	} /* endif */
 
+	if ( ioinfo[irq] == INVALID_STORAGE_AREA )
+	{
+		return( -ENODEV);
+   }
+
 	/*
 	 * We allow for 'resume' requests only for active I/O operations
 	 */
-	if ( ioinfo[irq].ui.flags.busy )
+	if ( ioinfo[irq]->ui.flags.busy )
 	{
 		int ccode;
 
@@ -1009,8 +1328,7 @@ int resume_IO( int irq)
 				break;
 
 			case 1 :
-		   	s390_process_IRQ( irq,
-				                  ioinfo[irq].devstat.intparm );
+		  	s390_process_IRQ( irq );
 				ret = -EBUSY;
 				break;
 
@@ -1023,8 +1341,8 @@ int resume_IO( int irq)
 				 * useless to wait for request completion
 				 *  as device is no longer operational !
 				 */
-				ioinfo[irq].ui.flags.oper = 0;
-				ioinfo[irq].ui.flags.busy = 0;
+			ioinfo[irq]->ui.flags.oper = 0;
+			ioinfo[irq]->ui.flags.busy = 0;
 				ret                       = -ENODEV;
 				break;
 
@@ -1047,8 +1365,8 @@ int resume_IO( int irq)
  *       interrupt with the halt_IO() request.
  */
 int halt_IO( int          irq,
-             int          intparm,
-             unsigned int flag)  /* possible DOIO_WAIT_FOR_INTERRUPT */
+             unsigned long user_intparm,
+             unsigned long flag)  /* possible DOIO_WAIT_FOR_INTERRUPT */
 {
 	int            ret;
 	int            ccode;
@@ -1060,10 +1378,16 @@ int halt_IO( int          irq,
 	{
 		ret = -ENODEV;
 	}
+
+	if ( ioinfo[irq] == INVALID_STORAGE_AREA )
+	{
+		return( -ENODEV);
+   }
+
 	/*
 	 * we only allow for halt_IO if the device has an I/O handler associated
 	 */
-	else if ( !ioinfo[irq].ui.flags.ready )
+	else if ( !ioinfo[irq]->ui.flags.ready )
 	{
 		ret = -ENODEV;
 	}
@@ -1071,30 +1395,32 @@ int halt_IO( int          irq,
 	 * we ignore the halt_io() request if ending_status was received but
 	 *  a SENSE operation is waiting for completion.
 	 */
-	else if ( ioinfo[irq].ui.flags.w4sense )
+	else if ( ioinfo[irq]->ui.flags.w4sense )
 	{
 		ret = 0;
 	}
 	/*
 	 * We don't allow for halt_io with a sync do_IO() requests pending.
 	 */
-	else if ( ioinfo[irq].ui.flags.syncio )
+	else if (    ioinfo[irq]->ui.flags.syncio
+	          && (flag & DOIO_WAIT_FOR_INTERRUPT))
 	{
 		ret = -EBUSY;
 	}
 	else
 	{
 		/*
-		 * If sync processing was requested we lock the sync ISC, modify the
-		 *  device to present interrupts for this ISC only and switch the
-		 *  CPU to handle this ISC + the console ISC exclusively.
+		 * If sync processing was requested we lock the sync ISC,
+		 *  modify the device to present interrupts for this ISC only
+		 *  and switch the CPU to handle this ISC + the console ISC
+		 *  exclusively.
 		 */
 		if ( flag & DOIO_WAIT_FOR_INTERRUPT )
 		{
 			//
 			// check whether we run recursively (sense processing)
 			//
-			if ( !ioinfo[irq].ui.flags.syncio )
+			if ( !ioinfo[irq]->ui.flags.syncio )
 			{
 				spin_lock_irqsave( &sync_isc, psw_flags);
   	
@@ -1102,15 +1428,14 @@ int halt_IO( int          irq,
 
 				if ( ret )
 				{
-					spin_unlock_irqrestore( &sync_isc, psw_flags);
-  		
-					// sigh, there should be a single exit point only ...
+					spin_unlock_irqrestore( &sync_isc,
+					                        psw_flags);
 					return( ret);
 				}
 				else
 				{
-					sync_isc_locked             = 1; // local setting
-					ioinfo[irq].ui.flags.syncio = 1; // global setting
+					sync_isc_locked              = 1; // local
+					ioinfo[irq]->ui.flags.syncio = 1; // global
 
 				} /* endif */  	
   	
@@ -1126,22 +1451,22 @@ int halt_IO( int          irq,
 		switch ( ccode ) {
 		case 0:
 
-			ioinfo[irq].ui.flags.haltio = 1;
+			ioinfo[irq]->ui.flags.haltio = 1;
 
-			if ( !ioinfo[irq].ui.flags.doio )
+			if ( !ioinfo[irq]->ui.flags.doio )
 			{
-				ioinfo[irq].ui.flags.busy   = 1;
-				ioinfo[irq].devstat.intparm = intparm;
-				ioinfo[irq].devstat.cstat   = 0;
-				ioinfo[irq].devstat.dstat   = 0;
-				ioinfo[irq].devstat.lpum    = 0;
-				ioinfo[irq].devstat.flag    = DEVSTAT_HALT_FUNCTION;
-				ioinfo[irq].devstat.scnt    = 0;
+				ioinfo[irq]->ui.flags.busy   = 1;
+				ioinfo[irq]->u_intparm       = user_intparm;
+				ioinfo[irq]->devstat.cstat   = 0;
+				ioinfo[irq]->devstat.dstat   = 0;
+				ioinfo[irq]->devstat.lpum    = 0;
+				ioinfo[irq]->devstat.flag    = DEVSTAT_HALT_FUNCTION;
+				ioinfo[irq]->devstat.scnt    = 0;
 
 			}
 			else
 			{
-				ioinfo[irq].devstat.flag   |= DEVSTAT_HALT_FUNCTION;
+				ioinfo[irq]->devstat.flag   |= DEVSTAT_HALT_FUNCTION;
 
 			} /* endif */
 
@@ -1156,7 +1481,7 @@ int halt_IO( int          irq,
 			if ( flag & DOIO_WAIT_FOR_INTERRUPT )
 			{
 				int              io_sub;
-				int              io_parm;
+				__u32            io_parm;
   		      psw_t            io_new_psw;
             int              ccode;
   	
@@ -1164,13 +1489,17 @@ int halt_IO( int          irq,
 	         struct _lowcore *lc    = NULL;
 
 	         /*
-	          * We shouldn't perform a TPI loop, waiting for an interrupt
-	          *  to occur, but should load a WAIT PSW instead. Otherwise
-	          *  we may keep the channel subsystem busy, not able to present
-	          *  the interrupt. When our sync. interrupt arrived we reset
-	          *  the I/O old PSW to its original value.
-	          */
-	         memcpy( &io_new_psw, &lc->io_new_psw, sizeof(psw_t));
+				 * We shouldn't perform a TPI loop, waiting for
+				 *  an interrupt to occur, but should load a
+				 *  WAIT PSW instead. Otherwise we may keep the
+				 *  channel subsystem busy, not able to present
+				 *  the interrupt. When our sync. interrupt
+				 *  arrived we reset the I/O old PSW to its
+				 *  original value.
+				 */
+				memcpy( &io_new_psw,
+				        &lc->io_new_psw,
+				        sizeof(psw_t));
 
 				ccode = iac();
 
@@ -1202,27 +1531,27 @@ int halt_IO( int          irq,
 						break;
 				} /* endswitch */
 
-		      io_sync_wait.addr = (unsigned long) &&hio_wakeup | 0x80000000L;
+				io_sync_wait.addr = FIX_PSW(&&hio_wakeup);
 
 				/*
 				 * Martin didn't like modifying the new PSW, now we take
 				 *  a fast exit in do_IRQ() instead
 				 */
-				*(int *)__LC_SYNC_IO_WORD  = 1;
+				*(__u32 *)__LC_SYNC_IO_WORD  = 1;
 
 				do
 				{
 
 	      		asm volatile ( "lpsw %0" : : "m" (io_sync_wait) );
 hio_wakeup:
-				   io_parm = *(int *)__LC_IO_INT_PARM;
-				   io_sub  = (int)*(__u16 *)__LC_SUBCHANNEL_NR;
+				   io_parm = *(__u32 *)__LC_IO_INT_PARM;
+				   io_sub  = (__u32)*(__u16 *)__LC_SUBCHANNEL_NR;
 
-				   ready = s390_process_IRQ( io_sub, io_parm);
+				   ready = s390_process_IRQ( io_sub );
 
 				} while ( !((io_sub == irq) && (ready == 1)) );
 
-				*(int *)__LC_SYNC_IO_WORD = 0;
+				*(__u32 *)__LC_SYNC_IO_WORD = 0;
 
 			} /* endif */
 
@@ -1231,54 +1560,55 @@ hio_wakeup:
 
 		case 1 :            /* status pending */
 	
-			ioinfo[irq].devstat.flag |= DEVSTAT_STATUS_PENDING;
+			ioinfo[irq]->devstat.flag |= DEVSTAT_STATUS_PENDING;
 
 			/*
 			 * initialize the device driver specific devstat irb area
 			 */
-			memset( &((devstat_t *) irq_desc[irq].action->dev_id)->ii.irb,
+			memset( &((devstat_t *) ioinfo[irq]->irq_desc.action->dev_id)->ii.irb,
 			        '\0', sizeof( irb_t) );
 
 	      /*
-   	    * Let the common interrupt handler process the pending status.
-	       *  However, we must avoid calling the user action handler, as
-	       *  it won't be prepared to handle a pending status during do_IO()
-	       *  processing inline. This also implies that s390_process_IRQ must
-	       *  terminate synchronously - especially if device sensing is
-	       *  required.
-	       */
-	      ioinfo[irq].ui.flags.s_pend   = 1;
-			ioinfo[irq].ui.flags.busy     = 1;
-			ioinfo[irq].ui.flags.doio     = 1;
+			 * Let the common interrupt handler process the pending
+			 *  status. However, we must avoid calling the user
+			 *  action handler, as it won't be prepared to handle
+                        *  a pending status during do_IO() processing inline.
+			 *  This also implies that s390_process_IRQ must
+			 *  terminate synchronously - especially if device
+			 *  sensing is required.
+			 */
+			ioinfo[irq]->ui.flags.s_pend   = 1;
+			ioinfo[irq]->ui.flags.busy     = 1;
+			ioinfo[irq]->ui.flags.doio     = 1;
 
-		   s390_process_IRQ( irq, intparm );
+			s390_process_IRQ( irq );
+			
+			ioinfo[irq]->ui.flags.s_pend   = 0;
+			ioinfo[irq]->ui.flags.busy     = 0;
+			ioinfo[irq]->ui.flags.doio     = 0;
+			ioinfo[irq]->ui.flags.repall   = 0;
+			ioinfo[irq]->ui.flags.w4final  = 0;
 
-	      ioinfo[irq].ui.flags.s_pend   = 0;
-			ioinfo[irq].ui.flags.busy     = 0;
-			ioinfo[irq].ui.flags.doio     = 0;
-			ioinfo[irq].ui.flags.repall   = 0;
-			ioinfo[irq].ui.flags.w4final  = 0;
-
-			ioinfo[irq].devstat.flag     |= DEVSTAT_FINAL_STATUS;
+			ioinfo[irq]->devstat.flag     |= DEVSTAT_FINAL_STATUS;
 
 			/*
-			 * In multipath mode a condition code 3 implies the last path
-			 *  has gone, except we have previously restricted the I/O to
-			 *  a particular path. A condition code 1 (0 won't occur)
-			 *  results in return code EIO as well as 3 with another path
-			 *  than the one used (i.e. path available mask is non-zero).
+			 * In multipath mode a condition code 3 implies the last
+			 *  path has gone, except we have previously restricted
+			 *  the I/O to a particular path. A condition code 1
+			 *  (0 won't occur) results in return code EIO as well
+			 *  as 3 with another path than the one used (i.e. path available mask is non-zero).
 			 */
-			if ( ioinfo[irq].devstat.ii.irb.scsw.cc == 3 )
+			if ( ioinfo[irq]->devstat.ii.irb.scsw.cc == 3 )
 			{
 				ret                        = -ENODEV;
-				ioinfo[irq].devstat.flag  |= DEVSTAT_NOT_OPER;
-				ioinfo[irq].ui.flags.oper  = 0;
+				ioinfo[irq]->devstat.flag  |= DEVSTAT_NOT_OPER;
+				ioinfo[irq]->ui.flags.oper  = 0;
 			}
 			else
 			{
 				ret                        = -EIO;
-				ioinfo[irq].devstat.flag  &= ~DEVSTAT_NOT_OPER;
-				ioinfo[irq].ui.flags.oper  = 1;
+				ioinfo[irq]->devstat.flag  &= ~DEVSTAT_NOT_OPER;
+				ioinfo[irq]->ui.flags.oper  = 1;
 
 			} /* endif */
 
@@ -1296,13 +1626,12 @@ hio_wakeup:
 
 		} /* endswitch */
 
-		if (    ( flag & DOIO_WAIT_FOR_INTERRUPT )
-	   	  && ( sync_isc_locked                ) )
+		if ( sync_isc_locked )
 		{
-			sync_isc_locked             = 0;    // local setting
-		   ioinfo[irq].ui.flags.syncio = 0;    // global setting
-  	
 			disable_cpu_sync_isc( irq );
+  	
+			sync_isc_locked             = 0;    // local setting
+		   ioinfo[irq]->ui.flags.syncio = 0;    // global setting
   	
 			spin_unlock_irqrestore( &sync_isc, psw_flags);
   	
@@ -1313,36 +1642,331 @@ hio_wakeup:
 	return( ret );
 }
 
-
 /*
+ * Note: The "intparm" parameter is not used by the clear_IO() function
+ *       itself, as no ORB is built for the CSCH instruction. However,
+ *       it allows the device interrupt handler to associate the upcoming
+ *       interrupt with the clear_IO() request.
+ */
+int clear_IO( int           irq,
+              unsigned long user_intparm,
+              unsigned long flag)  /* possible DOIO_WAIT_FOR_INTERRUPT */
+{
+	int            ret;
+	int			ccode;
+	unsigned long  psw_flags;
+
+	int            sync_isc_locked = 0;
+
+	if ( irq > highest_subchannel || irq < 0 )
+	{
+		ret = -ENODEV;
+	}
+
+	if ( ioinfo[irq] == INVALID_STORAGE_AREA )
+	{
+		return( -ENODEV);
+	}
+
+	/*
+	 * we only allow for halt_IO if the device has an I/O handler associated
+	 */
+	else if ( !ioinfo[irq]->ui.flags.ready )
+	{
+		ret = -ENODEV;
+	}
+		/*
+	 * we ignore the halt_io() request if ending_status was received but
+	 *  a SENSE operation is waiting for completion.
+		 */
+	else if ( ioinfo[irq]->ui.flags.w4sense )
+	{
+		ret = 0;
+	}
+		/*
+	 * We don't allow for halt_io with a sync do_IO() requests pending.
+	 *  Concurrent I/O is possible in SMP environments only, but the
+	 *  sync. I/O request can be gated to one CPU at a time only.
+		 */
+	else if ( ioinfo[irq]->ui.flags.syncio )
+      {
+		ret = -EBUSY;
+}
+	else
+	{
+/*
+		 * If sync processing was requested we lock the sync ISC,
+		 *  modify the device to present interrupts for this ISC only
+		 *  and switch the CPU to handle this ISC + the console ISC
+		 *  exclusively.
+ */
+		if ( flag & DOIO_WAIT_FOR_INTERRUPT )
+{
+			//
+			// check whether we run recursively (sense processing)
+			//
+			if ( !ioinfo[irq]->ui.flags.syncio )
+			{
+				spin_lock_irqsave( &sync_isc, psw_flags);
+
+				ret = enable_cpu_sync_isc( irq);
+
+				if ( ret )
+	{
+					spin_unlock_irqrestore( &sync_isc,
+					                        psw_flags);
+					return( ret);
+				}
+				else
+		{
+					sync_isc_locked              = 1; // local
+					ioinfo[irq]->ui.flags.syncio = 1; // global
+
+				} /* endif */  	
+
+		} /* endif */
+
+	} /* endif */
+
+	/*
+		 * Issue "Halt subchannel" and process condition code
+	 */
+		ccode = csch( irq );
+
+		switch ( ccode ) {
+		case 0:
+
+			ioinfo[irq]->ui.flags.haltio = 1;
+
+			if ( !ioinfo[irq]->ui.flags.doio )
+	{
+				ioinfo[irq]->ui.flags.busy   = 1;
+				ioinfo[irq]->u_intparm       = user_intparm;
+				ioinfo[irq]->devstat.cstat   = 0;
+				ioinfo[irq]->devstat.dstat   = 0;
+				ioinfo[irq]->devstat.lpum    = 0;
+				ioinfo[irq]->devstat.flag    = DEVSTAT_CLEAR_FUNCTION;
+				ioinfo[irq]->devstat.scnt    = 0;
+
+	}
+	else
+	{
+				ioinfo[irq]->devstat.flag   |= DEVSTAT_CLEAR_FUNCTION;
+
+	} /* endif */
+
+			/*
+			 * If synchronous I/O processing is requested, we have
+			 *  to wait for the corresponding interrupt to occur by
+			 *  polling the interrupt condition. However, as multiple
+			 *  interrupts may be outstanding, we must not just wait
+			 *  for the first interrupt, but must poll until ours
+			 *  pops up.
+			 */
+			if ( flag & DOIO_WAIT_FOR_INTERRUPT )
+	{
+				int              io_sub;
+				__u32            io_parm;
+				psw_t            io_new_psw;
+				int              ccode;
+
+				int              ready = 0;
+				struct _lowcore *lc    = NULL;
+
+	/*
+				 * We shouldn't perform a TPI loop, waiting for
+				 *  an interrupt to occur, but should load a
+				 *  WAIT PSW instead. Otherwise we may keep the
+				 *  channel subsystem busy, not able to present
+				 *  the interrupt. When our sync. interrupt
+				 *  arrived we reset the I/O old PSW to its
+				 *  original value.
+	 */
+				memcpy( &io_new_psw,
+				        &lc->io_new_psw,
+				        sizeof(psw_t));
+
+				ccode = iac();
+
+				switch (ccode) {
+				case 0:  		// primary-space
+					io_sync_wait.mask =   _IO_PSW_MASK
+					                    | _PSW_PRIM_SPACE_MODE
+					                    | _PSW_IO_WAIT;
+					break;
+				case 1:			// secondary-space
+					io_sync_wait.mask =   _IO_PSW_MASK
+					                    | _PSW_SEC_SPACE_MODE
+					                    | _PSW_IO_WAIT;
+					break;
+				case 2:			// access-register
+					io_sync_wait.mask =   _IO_PSW_MASK
+					                    | _PSW_ACC_REG_MODE
+					                    | _PSW_IO_WAIT;
+					break;
+				case 3:			// home-space	
+					io_sync_wait.mask =   _IO_PSW_MASK
+					                    | _PSW_HOME_SPACE_MODE
+					                    | _PSW_IO_WAIT;
+					break;
+				default:
+					panic( "halt_IO() : unexpected "
+					       "address-space-control %d\n",
+					       ccode);
+					break;
+				} /* endswitch */
+
+				io_sync_wait.addr = FIX_PSW(&&cio_wakeup);
+
+	/*
+				 * Martin didn't like modifying the new PSW, now we take
+				 *  a fast exit in do_IRQ() instead
+	 */
+				*(__u32 *)__LC_SYNC_IO_WORD  = 1;
+
+				do
+	{
+
+	      		asm volatile ( "lpsw %0" : : "m" (io_sync_wait) );
+cio_wakeup:
+				   io_parm = *(__u32 *)__LC_IO_INT_PARM;
+				   io_sub  = (__u32)*(__u16 *)__LC_SUBCHANNEL_NR;
+
+				   ready = s390_process_IRQ( io_sub );
+
+				} while ( !((io_sub == irq) && (ready == 1)) );
+
+				*(__u32 *)__LC_SYNC_IO_WORD = 0;
+
+	} /* endif */
+
+			ret = 0;
+			break;
+                  	
+		case 1 :            /* status pending */
+
+			ioinfo[irq]->devstat.flag |= DEVSTAT_STATUS_PENDING;
+
+			/*
+			 * initialize the device driver specific devstat irb area
+			 */
+			memset( &((devstat_t *) ioinfo[irq]->irq_desc.action->dev_id)->ii.irb,
+			        '\0', sizeof( irb_t) );
+
+			/*
+			 * Let the common interrupt handler process the pending
+			 *  status. However, we must avoid calling the user
+			 *  action handler, as it won't be prepared to handle
+                        *  a pending status during do_IO() processing inline.
+			 *  This also implies that s390_process_IRQ must
+			 *  terminate synchronously - especially if device
+			 *  sensing is required.
+			 */
+			ioinfo[irq]->ui.flags.s_pend   = 1;
+			ioinfo[irq]->ui.flags.busy     = 1;
+			ioinfo[irq]->ui.flags.doio     = 1;
+
+			s390_process_IRQ( irq );
+			
+			ioinfo[irq]->ui.flags.s_pend   = 0;
+			ioinfo[irq]->ui.flags.busy     = 0;
+			ioinfo[irq]->ui.flags.doio     = 0;
+			ioinfo[irq]->ui.flags.repall   = 0;
+			ioinfo[irq]->ui.flags.w4final  = 0;
+
+			ioinfo[irq]->devstat.flag     |= DEVSTAT_FINAL_STATUS;
+
+			/*
+			 * In multipath mode a condition code 3 implies the last
+			 *  path has gone, except we have previously restricted
+			 *  the I/O to a particular path. A condition code 1
+			 *  (0 won't occur) results in return code EIO as well
+			 *  as 3 with another path than the one used (i.e. path available mask is non-zero).
+			 */
+			if ( ioinfo[irq]->devstat.ii.irb.scsw.cc == 3 )
+			{
+				ret                         = -ENODEV;
+				ioinfo[irq]->devstat.flag  |= DEVSTAT_NOT_OPER;
+				ioinfo[irq]->ui.flags.oper  = 0;
+	}
+	else
+	{
+				ret                         = -EIO;
+				ioinfo[irq]->devstat.flag  &= ~DEVSTAT_NOT_OPER;
+				ioinfo[irq]->ui.flags.oper  = 1;
+
+	} /* endif */
+
+			break;
+
+		case 2 :            /* busy */
+
+			ret = -EBUSY;
+			break;
+
+		default:            /* device not operational */
+
+			ret = -ENODEV;
+			break;
+
+		} /* endswitch */
+
+		if ( sync_isc_locked )
+		{
+			disable_cpu_sync_isc( irq );
+   	
+			sync_isc_locked              = 0;    // local setting
+			ioinfo[irq]->ui.flags.syncio = 0;    // global setting
+  	
+			spin_unlock_irqrestore( &sync_isc, psw_flags);
+
+		} /* endif */
+			
+	} /* endif */
+
+	return( ret );
+}
+
+
+		/*
  * do_IRQ() handles all normal I/O device IRQ's (the special
  *          SMP cross-CPU interrupts have their own specific
  *          handlers).
- *
+		 *
  * Returns: 0 - no ending status received, no further action taken
  *          1 - interrupt handler was called with ending status
- */
+		 */
 asmlinkage void do_IRQ( struct pt_regs regs,
                         unsigned int   irq,
-                        unsigned int   intparm )
-{
+                        __u32          s390_intparm )
+		{
 #ifdef CONFIG_FAST_IRQ
 	int			ccode;
 	tpi_info_t 	tpi_info;
 	int			new_irq;
 #endif
 	int			use_irq     = irq;
-	long			use_intparm = intparm;
 
-	/*
+	//
+	// fix me !!!
+	//
+	// We need to schedule device recognition, the interrupt stays
+	//  pending. We need to dynamically allocate an ioinfo structure.
+	//
+	if ( ioinfo[irq] == INVALID_STORAGE_AREA )
+	{
+		return;	/* this keeps the device boxed ... */
+	}
+
+		/*
 	 * take fast exit if CPU is in sync. I/O state
-	 *
+		 *
 	 * Note: we have to turn off the WAIT bit and re-disable
 	 *       interrupts prior to return as this was the initial
 	 *       entry condition to synchronous I/O.
-	 */
- 	if (    *(int *)__LC_SYNC_IO_WORD )
-	{
+		 */
+ 	if (    *(__u32 *)__LC_SYNC_IO_WORD )
+		{
 		regs.psw.mask &= ~(_PSW_WAIT_MASK_BIT | _PSW_IO_MASK_BIT);
 
       return;
@@ -1355,44 +1979,43 @@ asmlinkage void do_IRQ( struct pt_regs regs,
 	do {
 #endif /*  CONFIG_FAST_IRQ */
 
-		s390_process_IRQ( use_irq, use_intparm);
+		s390_process_IRQ( use_irq );
 
 #ifdef CONFIG_FAST_IRQ
 
-		/*
+			   /*
 		 * more interrupts pending ?
-		 */
+			    */
 		ccode = tpi( &tpi_info );
 
 		if ( ! ccode )
 			break;  	// no, leave ...
 
 		new_irq     = tpi_info.irq;
-		use_intparm = tpi_info.intparm;
 
-		/*
+			   /*
 		 * if the interrupt is for a different irq we
 		 *  release the current irq lock and obtain
 		 *  a new one ...
-		 */
+			    */
 		if ( new_irq != use_irq )
-      {
+			   {
 			s390irq_spin_unlock(use_irq);
          use_irq = new_irq;
 			s390irq_spin_lock(use_irq);
 
-      } /* endif */
+			   } /* endif */
 
 	} while ( 1 );
 
 #endif /*  CONFIG_FAST_IRQ */
 
 	s390irq_spin_unlock(use_irq);
-
+			
 	return;
-}
+			}
 
-/*
+				/*
  * s390_process_IRQ() handles status pending situations and interrupts
  *
  * Called by : do_IRQ()             - for "real" interrupts
@@ -1402,49 +2025,66 @@ asmlinkage void do_IRQ( struct pt_regs regs,
  *
  * Returns: 0 - no ending status received, no further action taken
  *          1 - interrupt handler was called with ending status
- */
-int s390_process_IRQ( unsigned int   irq,
-                      unsigned int   intparm)
+				 */
+int s390_process_IRQ( unsigned int irq )
 {
-	int               ccode;      /* condition code from tsch() operation */
-	int               irb_cc;     /* condition code from irb */
-	int               sdevstat;   /* effective struct devstat size to copy */
-	unsigned int      fctl;       /* function control */
-	unsigned int      stctl;      /* status   control */
-	unsigned int      actl;       /* activity control */
-	struct irqaction *action;
-	struct pt_regs    regs;       /* for interface compatibility only */
+	int                    ccode;      /* cond code from tsch() operation */
+	int                    irb_cc;     /* cond code from irb */
+	int                    sdevstat;   /* struct devstat size to copy */
+	unsigned int           fctl;       /* function control */
+	unsigned int           stctl;      /* status   control */
+	unsigned int           actl;       /* activity control */
+	struct s390_irqaction *action;
+	struct pt_regs         regs;       /* for interface compatibility only */
 
 	int               issense         = 0;
 	int               ending_status   = 0;
 	int               allow4handler   = 1;
+	int               chnchk          = 0;
+#if 0
 	int               cpu             = smp_processor_id();
 
 	kstat.irqs[cpu][irq]++;
+#endif
 
-	action = irq_desc[irq].action;
+	if ( ioinfo[irq] == INVALID_STORAGE_AREA )
+	{
+		/* we can't properly process the interrupt ... */
+		tsch( irq, &init_irb );
+		return( 1 );
+	}
+	else
+	{
+		action = ioinfo[irq]->irq_desc.action;
 
-	/*
+		} /* endif */
+
+#ifdef CONFIG_DEBUG_IO
+      /*
 	 * It might be possible that a device was not-oper. at the time
 	 *  of free_irq() processing. This means the handler is no longer
 	 *  available when the device possibly becomes ready again. In
 	 *  this case we perform delayed disable_subchannel() processing.
-	 */
+		 */
 	if ( action == NULL )
-	{
-		if ( !ioinfo[irq].ui.flags.d_disable )
 		{
-			panic( "do_IRQ() : error, no irq_action available !\n");
+		if ( !ioinfo[irq]->ui.flags.d_disable )
+		{
+			printk( KERN_CRIT"s390_process_IRQ(%04X) "
+			        "- no interrupt handler registered "
+					  "for device %04X !\n",
+			        irq,
+			        ioinfo[irq]->devstat.devno);
 
 		} /* endif */
-
 	} /* endif */
+#endif
 
-	/*
+      /*
 	 * retrieve the i/o interrupt information (irb),
 	 *  update the device specific status information
 	 *  and possibly call the interrupt handler.
-	 *
+       *
 	 * Note 1: At this time we don't process the resulting
 	 *         condition code (ccode) from tsch(), although
 	 *         we probably should.
@@ -1457,131 +2097,144 @@ int s390_process_IRQ( unsigned int   irq,
 	 *         parameter relates to it. If a halt function was
 	 *         issued for an idle device, the intparm must not
 	 *         be taken from lowcore, but from the devstat area.
-	 */
-	ccode = tsch( irq, &(ioinfo[irq].devstat.ii.irb) );
+       */
+	ccode = tsch( irq, &(ioinfo[irq]->devstat.ii.irb) );
 
 	//
-	// We must only accumulate the status if initiated by do_IO() or halt_IO()
+	// We must only accumulate the status if the device is busy already
 	//
-	if ( ioinfo[irq].ui.flags.busy )
-	{
-		ioinfo[irq].devstat.dstat   |= ioinfo[irq].devstat.ii.irb.scsw.dstat;
-		ioinfo[irq].devstat.cstat   |= ioinfo[irq].devstat.ii.irb.scsw.cstat;
-	}
-	else
-	{
-		ioinfo[irq].devstat.dstat    = ioinfo[irq].devstat.ii.irb.scsw.dstat;
-		ioinfo[irq].devstat.cstat    = ioinfo[irq].devstat.ii.irb.scsw.cstat;
+	if ( ioinfo[irq]->ui.flags.busy )
+				{
+		ioinfo[irq]->devstat.dstat |= ioinfo[irq]->devstat.ii.irb.scsw.dstat;
+		ioinfo[irq]->devstat.cstat |= ioinfo[irq]->devstat.ii.irb.scsw.cstat;
+			}
+			else
+			{
+		ioinfo[irq]->devstat.dstat  = ioinfo[irq]->devstat.ii.irb.scsw.dstat;
+		ioinfo[irq]->devstat.cstat  = ioinfo[irq]->devstat.ii.irb.scsw.cstat;
 
-		ioinfo[irq].devstat.flag     = 0;   // reset status flags
+		ioinfo[irq]->devstat.flag   = 0;   // reset status flags
+
+      } /* endif */
+
+	ioinfo[irq]->devstat.lpum = ioinfo[irq]->devstat.ii.irb.esw.esw1.lpum;
+
+	if ( ioinfo[irq]->ui.flags.busy)
+	{
+		ioinfo[irq]->devstat.intparm  = ioinfo[irq]->u_intparm;
 
 	} /* endif */
 
-	ioinfo[irq].devstat.lpum     = ioinfo[irq].devstat.ii.irb.esw.esw1.lpum;
-
-	if ( ioinfo[irq].ui.flags.doio)
-	{
-		ioinfo[irq].devstat.intparm  = intparm;
-
-	} /* endif */
-
-	/*
+		/*
 	 * reset device-busy bit if no longer set in irb
-	 */
-	if (   (ioinfo[irq].devstat.dstat & DEV_STAT_BUSY                   )
-	    && ((ioinfo[irq].devstat.ii.irb.scsw.dstat & DEV_STAT_BUSY) == 0))
-	{
-		ioinfo[irq].devstat.dstat &= ~DEV_STAT_BUSY;
+		 */
+	if (   (ioinfo[irq]->devstat.dstat & DEV_STAT_BUSY                   )
+	    && ((ioinfo[irq]->devstat.ii.irb.scsw.dstat & DEV_STAT_BUSY) == 0))
+		{
+		ioinfo[irq]->devstat.dstat &= ~DEV_STAT_BUSY;
 
 	} /* endif */
 
-	/*
+			/*
 	 * Save residual count and CCW information in case primary and
 	 *  secondary status are presented with different interrupts.
-	 */
-	if ( ioinfo[irq].devstat.ii.irb.scsw.stctl & SCSW_STCTL_PRIM_STATUS )
-	{
-		ioinfo[irq].devstat.rescnt = ioinfo[irq].devstat.ii.irb.scsw.count;
+			 */
+	if ( ioinfo[irq]->devstat.ii.irb.scsw.stctl
+	           & (   SCSW_STCTL_PRIM_STATUS | SCSW_STCTL_INTER_STATUS ) )
+			{
+		ioinfo[irq]->devstat.rescnt = ioinfo[irq]->devstat.ii.irb.scsw.count;
+		ioinfo[irq]->devstat.cpa    = ioinfo[irq]->devstat.ii.irb.scsw.cpa;
 
-#if CONFIG_DEBUG_IO
+#ifdef CONFIG_DEBUG_IO
       if ( irq != cons_dev )
          printk( "s390_process_IRQ( %04X ) : "
                  "residual count from irb after tsch() %d\n",
-                 irq, ioinfo[irq].devstat.rescnt );
+                 irq, ioinfo[irq]->devstat.rescnt );
 #endif
-	} /* endif */
-
-	if ( ioinfo[irq].devstat.ii.irb.scsw.cpa != 0 )
-	{
-		ioinfo[irq].devstat.cpa = ioinfo[irq].devstat.ii.irb.scsw.cpa;
 
 	} /* endif */
 
-	irb_cc = ioinfo[irq].devstat.ii.irb.scsw.cc;
+	irb_cc = ioinfo[irq]->devstat.ii.irb.scsw.cc;
 
-	//
+				//
 	// check for any kind of channel or interface control check but don't
 	//  issue the message for the console device
-	//
-	if (    (ioinfo[irq].devstat.ii.irb.scsw.cstat
+				//
+	if (    (ioinfo[irq]->devstat.ii.irb.scsw.cstat
 	            & (  SCHN_STAT_CHN_DATA_CHK
 	               | SCHN_STAT_CHN_CTRL_CHK
 	               | SCHN_STAT_INTF_CTRL_CHK )       )
 	     && (irq != cons_dev                         ) )
-	{
+				{
 		printk( "Channel-Check or Interface-Control-Check "
 		        "received\n"
-		        " ... device %X on subchannel %X, dev_stat "
-		        ": %X sch_stat : %X\n",
-		        ioinfo[irq].devstat.devno,
+		        " ... device %04X on subchannel %04X, dev_stat "
+		        ": %02X sch_stat : %02X\n",
+		        ioinfo[irq]->devstat.devno,
 		        irq,
-		        ioinfo[irq].devstat.dstat,
-		        ioinfo[irq].devstat.cstat);
+		        ioinfo[irq]->devstat.dstat,
+		        ioinfo[irq]->devstat.cstat);
+
+		chnchk = 1;
 
 	} /* endif */
 
-	issense = ioinfo[irq].devstat.ii.irb.esw.esw0.erw.cons;
+	issense = ioinfo[irq]->devstat.ii.irb.esw.esw0.erw.cons;
 
 	if ( issense )
 	{
-		ioinfo[irq].devstat.scnt  =
-		             ioinfo[irq].devstat.ii.irb.esw.esw0.erw.scnt;
-		ioinfo[irq].devstat.flag |=
+		ioinfo[irq]->devstat.scnt  =
+		             ioinfo[irq]->devstat.ii.irb.esw.esw0.erw.scnt;
+		ioinfo[irq]->devstat.flag |=
 		             DEVSTAT_FLAG_SENSE_AVAIL;
-                  	
+
 		sdevstat = sizeof( devstat_t);
 
-#if CONFIG_DEBUG_IO
+#ifdef CONFIG_DEBUG_IO
       if ( irq != cons_dev )
          printk( "s390_process_IRQ( %04X ) : "
                  "concurrent sense bytes avail %d\n",
-                 irq, ioinfo[irq].devstat.scnt );
+                 irq, ioinfo[irq]->devstat.scnt );
 #endif
-	}
-	else
-	{
+			}
+			else
+			{
 		/* don't copy the sense data area ! */
 		sdevstat = sizeof( devstat_t) - SENSE_MAX_COUNT;
 
-	} /* endif */
+			} /* endif */
 
 	switch ( irb_cc ) {
 	case 1:      /* status pending */
 
-		ioinfo[irq].devstat.flag |= DEVSTAT_STATUS_PENDING;
+		ioinfo[irq]->devstat.flag |= DEVSTAT_STATUS_PENDING;
 
 	case 0:      /* normal i/o interruption */
 
-		fctl  = ioinfo[irq].devstat.ii.irb.scsw.fctl;
-		stctl = ioinfo[irq].devstat.ii.irb.scsw.stctl;
-		actl  = ioinfo[irq].devstat.ii.irb.scsw.actl;
+		fctl  = ioinfo[irq]->devstat.ii.irb.scsw.fctl;
+		stctl = ioinfo[irq]->devstat.ii.irb.scsw.stctl;
+		actl  = ioinfo[irq]->devstat.ii.irb.scsw.actl;
 
+		if ( chnchk && (ioinfo[irq]->senseid.cu_type == 0x3088))
+		{
+			char buffer[80];
+   	
+			sprintf( buffer, "s390_process_IRQ(%04X) - irb for "
+			         "device %04X after channel check\n",
+			         irq,
+			         ioinfo[irq]->devstat.devno );
+
+			s390_displayhex( buffer,
+			                 &(ioinfo[irq]->devstat.ii.irb) ,
+			                 sizeof(irb_t));
+		} /* endif */
 			
-		ioinfo[irq].stctl |= stctl;
+		ioinfo[irq]->stctl |= stctl;
 
 		ending_status =    ( stctl & SCSW_STCTL_SEC_STATUS                          )
 			|| ( stctl == (SCSW_STCTL_ALERT_STATUS | SCSW_STCTL_STATUS_PEND)         )
-		   || ( (fctl == SCSW_FCTL_HALT_FUNC)  && (stctl == SCSW_STCTL_STATUS_PEND) );
+		   || ( (fctl == SCSW_FCTL_HALT_FUNC)  && (stctl == SCSW_STCTL_STATUS_PEND) )
+		   || ( (fctl == SCSW_FCTL_CLEAR_FUNC) && (stctl == SCSW_STCTL_STATUS_PEND) );
 
 		/*
 		 * Check for unsolicited interrupts - for debug purposes only
@@ -1594,103 +2247,110 @@ int s390_process_IRQ( unsigned int   irq,
 		 *       unsolicited interrupt applies to the console device
 		 *       itself !
 		 */
-#if CONFIG_DEBUG_IO
+#ifdef CONFIG_DEBUG_IO
 		if (     ( irq != cons_dev                 )
 			 && !( stctl & SCSW_STCTL_ALERT_STATUS )
-			 &&  ( ioinfo[irq].ui.flags.busy == 0  ) )
+			 &&  ( ioinfo[irq]->ui.flags.busy == 0  ) )
 		{
 	      char buffer[80];
 
 			printk( "Unsolicited interrupt received for device %04X on subchannel %04X\n"
 				" ... device status : %02X subchannel status : %02X\n",
-				ioinfo[irq].devstat.devno,
+				ioinfo[irq]->devstat.devno,
 				irq,
-				ioinfo[irq].devstat.dstat,
-				ioinfo[irq].devstat.cstat);
+				ioinfo[irq]->devstat.dstat,
+				ioinfo[irq]->devstat.cstat);
 
    	   sprintf( buffer, "s390_process_IRQ(%04X) - irb for "
 			         "device %04X, ending_status %d\n",
 			         irq,
-			         ioinfo[irq].devstat.devno,
+			         ioinfo[irq]->devstat.devno,
 		   	      ending_status);
 
 			s390_displayhex( buffer,
-			                 &(ioinfo[irq].devstat.ii.irb) ,
+			                 &(ioinfo[irq]->devstat.ii.irb) ,
 			                 sizeof(irb_t));
 
 		} /* endif */
+
 #endif
+		/*
+		 * take fast exit if no handler is available
+		 */
+		if ( !action )
+			return( ending_status );     		
+
 		/*
 		 * Check whether we must issue a SENSE CCW ourselves if there is no
 		 *  concurrent sense facility installed for the subchannel.
 		 *
-		 * Note: We should check for ioinfo[irq].ui.flags.consns but VM
+		 * Note: We should check for ioinfo[irq]->ui.flags.consns but VM
 		 *       violates the ESA/390 architecture and doesn't present an
 		 *       operand exception for virtual devices without concurrent
 		 *       sense facility available/supported when enabling the
        *       concurrent sense facility.
 		 */
-		if (    (    ( ioinfo[irq].devstat.ii.irb.scsw.dstat & DEV_STAT_UNIT_CHECK )
+		if (    (    ( ioinfo[irq]->devstat.ii.irb.scsw.dstat & DEV_STAT_UNIT_CHECK )
 			       && ( !issense                                                    ) )
-           || ( ioinfo[irq].ui.flags.delsense && ending_status                     ) )
+           || ( ioinfo[irq]->ui.flags.delsense && ending_status                     ) )
 		{
 			int            ret_io;
-			ccw1_t        *s_ccw  = &ioinfo[irq].senseccw;
+			ccw1_t        *s_ccw  = &ioinfo[irq]->senseccw;
 			unsigned long  s_flag = 0;
 
-         if (ending_status)
+         if ( ending_status )
          {
-			   /*
-			    * We copy the current status information into the device driver
-			    *  status area. Then we can use the local devstat area for device
-			    *  sensing. When finally calling the IRQ handler we must not overlay
-			    *  the original device status but copy the sense data only.
-			    */
-			   memcpy( irq_desc[irq].action->dev_id,
-				        &(ioinfo[irq].devstat),
+				/*
+				 * We copy the current status information into the device driver
+				 *  status area. Then we can use the local devstat area for device
+				 *  sensing. When finally calling the IRQ handler we must not overlay
+				 *  the original device status but copy the sense data only.
+				 */
+				memcpy( action->dev_id,
+				        &(ioinfo[irq]->devstat),
 				        sizeof( devstat_t) );
 
-			   s_ccw->cmd_code = CCW_CMD_BASIC_SENSE;
-			   s_ccw->cda      = (char *)virt_to_phys( ioinfo[irq].devstat.ii.sense.data);
-			   s_ccw->count    = SENSE_MAX_COUNT;
-			   s_ccw->flags    = CCW_FLAG_SLI;
+				s_ccw->cmd_code = CCW_CMD_BASIC_SENSE;
+				s_ccw->cda      = (char *)virt_to_phys( ioinfo[irq]->sense_data);
+				s_ccw->count    = SENSE_MAX_COUNT;
+				s_ccw->flags    = CCW_FLAG_SLI;
 
-			   /*
-			    * If free_irq() or a sync do_IO/s390_start_IO() is in
-			    *  process we have to sense synchronously
-			    */
-			   if ( ioinfo[irq].ui.flags.unready || ioinfo[irq].ui.flags.syncio )
-			   {
-				   s_flag = DOIO_WAIT_FOR_INTERRUPT;
+				/*
+				 * If free_irq() or a sync do_IO/s390_start_IO() is in
+				 *  process we have to sense synchronously
+				 */
+				if ( ioinfo[irq]->ui.flags.unready || ioinfo[irq]->ui.flags.syncio )
+				{
+					s_flag = DOIO_WAIT_FOR_INTERRUPT;
 
-			   } /* endif */
+				} /* endif */
 
-			   /*
-			    * Reset status info
-			    *
-			    * It does not matter whether this is a sync. or async.
-			    *  SENSE request, but we have to assure we don't call
-			    *  the irq handler now, but keep the irq in busy state.
+				/*
+				 * Reset status info
+				 *
+				 * It does not matter whether this is a sync. or async.
+				 *  SENSE request, but we have to assure we don't call
+				 *  the irq handler now, but keep the irq in busy state.
 				 *  In sync. mode s390_process_IRQ() is called recursively,
-			    *  while in async. mode we re-enter do_IRQ() with the
-			    *  next interrupt.
-             *
-             * Note : this may be a delayed sense request !
-			    */
-			   allow4handler                 = 0;
+				 *  while in async. mode we re-enter do_IRQ() with the
+				 *  next interrupt.
+				 *
+				 * Note : this may be a delayed sense request !
+				 */
+				allow4handler                  = 0;
 
-			   ioinfo[irq].ui.flags.fast     = 0;
-			   ioinfo[irq].ui.flags.repall   = 0;
-			   ioinfo[irq].ui.flags.w4final  = 0;
-			   ioinfo[irq].ui.flags.delsense = 0;
+				ioinfo[irq]->ui.flags.fast     = 0;
+				ioinfo[irq]->ui.flags.repall   = 0;
+				ioinfo[irq]->ui.flags.w4final  = 0;
+				ioinfo[irq]->ui.flags.delsense = 0;
 
-			   ioinfo[irq].devstat.cstat     = 0;
-			   ioinfo[irq].devstat.dstat     = 0;
-			   ioinfo[irq].devstat.rescnt    = SENSE_MAX_COUNT;
+				ioinfo[irq]->devstat.cstat     = 0;
+				ioinfo[irq]->devstat.dstat     = 0;
+				ioinfo[irq]->devstat.rescnt    = SENSE_MAX_COUNT;
 
-			   ioinfo[irq].ui.flags.w4sense = 1;
+				ioinfo[irq]->ui.flags.w4sense  = 1;
 			
-			   ret_io = s390_start_IO( irq,
+				ret_io = s390_start_IO( irq,
 				                        s_ccw,
 				                        0xE2C5D5E2,  // = SENSe
 				                        0,           // n/a
@@ -1705,21 +2365,21 @@ int s390_process_IRQ( unsigned int   irq,
 				 *  intermediate status to the device interrupt
 				 *  handler.
 				 */
-				ioinfo[irq].ui.flags.fast     = 0;
-				ioinfo[irq].ui.flags.repall   = 0;
+				ioinfo[irq]->ui.flags.fast     = 0;
+				ioinfo[irq]->ui.flags.repall   = 0;
 
-				ioinfo[irq].ui.flags.delsense = 1;
-				allow4handler                 = 0;
+				ioinfo[irq]->ui.flags.delsense = 1;
+				allow4handler                  = 0;
 
 			} /* endif */
 
 		} /* endif */
 
-      /*
-       * we allow for the device action handler if .
-       *  - we received ending status
+		/*
+		 * we allow for the device action handler if .
+		 *  - we received ending status
 		 *  - the action handler requested to see all interrupts
-		 *  - we received a PCI
+		 *  - we received an intermediate status
 		 *  - fast notification was requested (primary status)
 		 *  - unsollicited interrupts
 		 *
@@ -1727,21 +2387,22 @@ int s390_process_IRQ( unsigned int   irq,
 		if ( allow4handler )
 		{
 			allow4handler =    ending_status
-	  		   || ( ioinfo[irq].ui.flags.repall                                      )
-		      || ( ioinfo[irq].devstat.ii.irb.scsw.cstat & SCHN_STAT_PCI            )
-	  			|| ( (ioinfo[irq].ui.flags.fast ) && (stctl & SCSW_STCTL_PRIM_STATUS) )
-	  			|| ( ioinfo[irq].ui.flags.oper == 0                                   );
-		}
+			   || ( ioinfo[irq]->ui.flags.repall                                      )
+			   || ( stctl & SCSW_STCTL_INTER_STATUS                                   )
+				|| ( (ioinfo[irq]->ui.flags.fast ) && (stctl & SCSW_STCTL_PRIM_STATUS) )
+				|| ( ioinfo[irq]->ui.flags.oper == 0                                   );
 
-      /*
-       * We used to copy the device status information right before
-       *  calling the device action handler. However, in status
-       *  pending situations during do_IO() or halt_IO(), as well as
-       *  enable_subchannel/disable_subchannel processing we must
-       *  synchronously return the status information and must not
-       *  call the device action handler.
-       *
-       */
+		} /* endif */
+
+		/*
+		 * We used to copy the device status information right before
+		 *  calling the device action handler. However, in status
+		 *  pending situations during do_IO() or halt_IO(), as well as
+		 *  enable_subchannel/disable_subchannel processing we must
+		 *  synchronously return the status information and must not
+		 *  call the device action handler.
+		 *
+		 */
 		if ( allow4handler )
 		{
 			/*
@@ -1749,49 +2410,75 @@ int s390_process_IRQ( unsigned int   irq,
 			 *  bytes only as the original status information was
 			 *  saved prior to sense already.
 			 */
-			if ( ioinfo[irq].ui.flags.w4sense )
+			if ( ioinfo[irq]->ui.flags.w4sense )
 			{
-				int sense_count = SENSE_MAX_COUNT-ioinfo[irq].devstat.rescnt;
+				int sense_count = SENSE_MAX_COUNT-ioinfo[irq]->devstat.rescnt;
 
-#if CONFIG_DEBUG_IO
+#ifdef CONFIG_DEBUG_IO
       if ( irq != cons_dev )
          printk( "s390_process_IRQ( %04X ) : "
                  "BASIC SENSE bytes avail %d\n",
                  irq, sense_count );
 #endif
-				ioinfo[irq].ui.flags.w4sense           = 0;
+				ioinfo[irq]->ui.flags.w4sense          = 0;
 				((devstat_t *)(action->dev_id))->flag |= DEVSTAT_FLAG_SENSE_AVAIL;
 				((devstat_t *)(action->dev_id))->scnt  = sense_count;
 
-				if (sense_count >= 0)
+				if ( sense_count >= 0 )
+				{
 					memcpy( ((devstat_t *)(action->dev_id))->ii.sense.data,
-						&(ioinfo[irq].devstat.ii.sense.data), sense_count);
-            else
-#if 0
+					        &(ioinfo[irq]->sense_data),
+					        sense_count);
+				}
+				else
+				{
+#if 1
 					panic( "s390_process_IRQ(%04x) encountered "
 					       "negative sense count\n",
 					       irq);
 #else
-					printk( "s390_process_IRQ(%04x) encountered "
+					printk( KERN_CRIT"s390_process_IRQ(%04x) encountered "
 					        "negative sense count\n",
 					        irq);
 #endif
+				} /* endif */
 			}
 			else
 			{
-				memcpy( action->dev_id, &(ioinfo[irq].devstat), sdevstat );
+				memcpy( action->dev_id, &(ioinfo[irq]->devstat), sdevstat );
 
 			}  /* endif */
 
       } /* endif */
 
-      /*
-       * for status pending situations other than deferred interrupt
+		/*
+		 * for status pending situations other than deferred interrupt
 		 *  conditions detected by s390_process_IRQ() itself we must not
-		 *  call the handler.
-       */
-		if ( ioinfo[irq].ui.flags.s_pend )
+		 *  call the handler. This will synchronously be reported back
+		 *  to the caller instead, e.g. when detected during do_IO().
+		 */
+		if (    ioinfo[irq]->ui.flags.s_pend
+		     || ioinfo[irq]->ui.flags.unready
+		     || ioinfo[irq]->ui.flags.repnone )
+		{		
+			if ( ending_status )
+			{
+
+				ioinfo[irq]->ui.flags.busy     = 0;
+				ioinfo[irq]->ui.flags.doio     = 0;
+				ioinfo[irq]->ui.flags.haltio   = 0;
+				ioinfo[irq]->ui.flags.fast     = 0;
+				ioinfo[irq]->ui.flags.repall   = 0;
+				ioinfo[irq]->ui.flags.w4final  = 0;
+
+				ioinfo[irq]->devstat.flag     |= DEVSTAT_FINAL_STATUS;
+				action->dev_id->flag          |= DEVSTAT_FINAL_STATUS;
+
+			} /* endif */
+
 			allow4handler = 0;
+
+		} /* endif */
 
 		/*
 		 * Call device action handler if applicable
@@ -1803,43 +2490,43 @@ int s390_process_IRQ( unsigned int   irq,
 			 *  We only reset the busy condition when we are sure that no further
 			 *   interrupt is pending for the current I/O request (ending_status).
 			 */
-			if ( ending_status || !ioinfo[irq].ui.flags.oper )
+			if ( ending_status || !ioinfo[irq]->ui.flags.oper )
 			{
-				ioinfo[irq].ui.flags.oper     = 1;  /* dev IS oper */
+				ioinfo[irq]->ui.flags.oper     = 1;  /* dev IS oper */
 
-				ioinfo[irq].ui.flags.busy     = 0;
-				ioinfo[irq].ui.flags.doio     = 0;
-				ioinfo[irq].ui.flags.haltio   = 0;
-				ioinfo[irq].ui.flags.fast     = 0;
-				ioinfo[irq].ui.flags.repall   = 0;
-				ioinfo[irq].ui.flags.w4final  = 0;
+				ioinfo[irq]->ui.flags.busy     = 0;
+				ioinfo[irq]->ui.flags.doio     = 0;
+				ioinfo[irq]->ui.flags.haltio   = 0;
+				ioinfo[irq]->ui.flags.fast     = 0;
+				ioinfo[irq]->ui.flags.repall   = 0;
+				ioinfo[irq]->ui.flags.w4final  = 0;
 
-				ioinfo[irq].devstat.flag              |= DEVSTAT_FINAL_STATUS;
+				ioinfo[irq]->devstat.flag             |= DEVSTAT_FINAL_STATUS;
 				((devstat_t *)(action->dev_id))->flag |= DEVSTAT_FINAL_STATUS;
 
-				action->handler( irq, action->dev_id, &regs);
+				action->handler( irq, action->dev_id, &regs );
 
 				//
 				// reset intparm after final status or we will badly present unsolicited
 				//  interrupts with a intparm value possibly no longer valid.
 				//
-				ioinfo[irq].devstat.intparm   = 0;
+				ioinfo[irq]->devstat.intparm   = 0;
 
 				//
 				// Was there anything queued ? Start the pending channel program
 				//  if there is one.
 				//
-				if ( ioinfo[irq].ui.flags.doio_q )
+				if ( ioinfo[irq]->ui.flags.doio_q )
 				{
 					int ret;
 
 					ret = s390_start_IO( irq,
-							               ioinfo[irq].qcpa,
-							               ioinfo[irq].qintparm,
-							               ioinfo[irq].qlpm,
-							               ioinfo[irq].qflag);
+							               ioinfo[irq]->qcpa,
+							               ioinfo[irq]->qintparm,
+							               ioinfo[irq]->qlpm,
+							               ioinfo[irq]->qflag);
 
-					ioinfo[irq].ui.flags.doio_q = 0;
+					ioinfo[irq]->ui.flags.doio_q = 0;
 
 					/*
 					 * If s390_start_IO() failed call the device's interrupt
@@ -1849,7 +2536,7 @@ int s390_process_IRQ( unsigned int   irq,
 					 */
 					if ( ret )
 					{
-						action->handler( irq, action->dev_id, &regs);
+						action->handler( irq, action->dev_id, &regs );
 
 					} /* endif */
 
@@ -1858,8 +2545,26 @@ int s390_process_IRQ( unsigned int   irq,
 			}
 			else
 			{
-				ioinfo[irq].ui.flags.w4final = 1;
-				action->handler( irq, action->dev_id, &regs);
+				ioinfo[irq]->ui.flags.w4final = 1;
+
+				/*
+				 * Eventually reset subchannel PCI status and
+				 *  set the PCI or SUSPENDED flag in the user
+				 *  device status block if appropriate.
+				 */
+				if ( ioinfo[irq]->devstat.cstat & SCHN_STAT_PCI )
+				{
+					((devstat_t *)(action->dev_id))->flag |= DEVSTAT_PCI;
+					ioinfo[irq]->devstat.cstat &= ~SCHN_STAT_PCI;
+				}
+
+				if ( actl & SCSW_ACTL_SUSPENDED )
+				{
+					((devstat_t *)(action->dev_id))->flag |= DEVSTAT_SUSPENDED;
+
+				} /* endif */
+
+				action->handler( irq, action->dev_id, &regs );
 
 			} /* endif */
 
@@ -1867,18 +2572,36 @@ int s390_process_IRQ( unsigned int   irq,
 
 		break;
 
-	case 3:      /* device not operational */
+	case 3:      /* device/path not operational */
 
-		ioinfo[irq].ui.flags.oper    = 0;
+		ioinfo[irq]->ui.flags.busy    = 0;
+		ioinfo[irq]->ui.flags.doio    = 0;
+		ioinfo[irq]->ui.flags.haltio  = 0;
 
-		ioinfo[irq].ui.flags.busy    = 0;
-		ioinfo[irq].ui.flags.doio    = 0;
-		ioinfo[irq].ui.flags.haltio  = 0;
+		ioinfo[irq]->devstat.cstat    = 0;
+		ioinfo[irq]->devstat.dstat    = 0;
 
-		ioinfo[irq].devstat.cstat    = 0;
-		ioinfo[irq].devstat.dstat    = 0;
-		ioinfo[irq].devstat.flag    |= DEVSTAT_NOT_OPER;
-		ioinfo[irq].devstat.flag    |= DEVSTAT_FINAL_STATUS;
+		if ( ioinfo[irq]->ulpm != ioinfo[irq]->opm )
+		{
+			/*
+			 * either it was the only path or it was restricted ...
+			 */
+			ioinfo[irq]->opm &= ~(ioinfo[irq]->devstat.ii.irb.esw.esw1.lpum);
+		}
+		else
+		{
+			ioinfo[irq]->opm = 0;
+
+		} /* endif */
+	
+		if ( ioinfo[irq]->opm == 0 ) 	
+		{
+			ioinfo[irq]->ui.flags.oper  = 0;
+
+		} /* endif */
+
+		ioinfo[irq]->devstat.flag |= DEVSTAT_NOT_OPER;
+		ioinfo[irq]->devstat.flag |= DEVSTAT_FINAL_STATUS;
 
 		/*
 		 * When we find a device "not oper" we save the status
@@ -1891,7 +2614,8 @@ int s390_process_IRQ( unsigned int   irq,
 		 *       interrupts on "not oper" conditions.
 		 */
 
-		if ( ioinfo[irq].ui.flags.fast && ioinfo[irq].ui.flags.w4final )
+		if (    ( ioinfo[irq]->ui.flags.fast    )
+		     && ( ioinfo[irq]->ui.flags.w4final ) )
 		{
 			/*
 			 * If a new request was queued already, we have
@@ -1899,24 +2623,33 @@ int s390_process_IRQ( unsigned int   irq,
 			 *  queued request by switching the "intparm" value
 			 *  and notify the interrupt handler.
 			 */
-			if ( ioinfo[irq].ui.flags.doio_q )
+			if ( ioinfo[irq]->ui.flags.doio_q )
 			{
-				ioinfo[irq].devstat.intparm   = ioinfo[irq].qintparm;
+				ioinfo[irq]->devstat.intparm = ioinfo[irq]->qintparm;
 
 			} /* endif */
 
 		} /* endif */
 
-		ioinfo[irq].ui.flags.fast    = 0;
-		ioinfo[irq].ui.flags.repall  = 0;
-		ioinfo[irq].ui.flags.w4final = 0;
+		ioinfo[irq]->ui.flags.fast    = 0;
+		ioinfo[irq]->ui.flags.repall  = 0;
+		ioinfo[irq]->ui.flags.w4final = 0;
 
-		memcpy( action->dev_id, &(ioinfo[irq].devstat), sdevstat );
+		/*
+		 * take fast exit if no handler is available
+		 */
+		if ( !action )
+			return( ending_status );     		
 
-		ioinfo[irq].devstat.intparm  = 0;
+		memcpy( action->dev_id, &(ioinfo[irq]->devstat), sdevstat );
 
-		if ( !ioinfo[irq].ui.flags.s_pend )
-		   action->handler( irq, action->dev_id, &regs);
+		ioinfo[irq]->devstat.intparm  = 0;
+
+		if ( !ioinfo[irq]->ui.flags.s_pend )
+		{
+			action->handler( irq, action->dev_id, &regs );
+
+		} /* endif */
 
 		ending_status    = 1;
 
@@ -1958,24 +2691,28 @@ int set_cons_dev( int irq )
 	{
 		rc = -ENODEV;
 	}
+	else if ( ioinfo[irq] == INVALID_STORAGE_AREA )
+	{
+		return( -ENODEV);
+   }
 	else
 	{
 		/*
 		 * modify the indicated console device to operate
 		 *  on special console interrupt sublass 7
 		 */
-		ccode = stsch( irq, &(ioinfo[irq].schib) );
+		ccode = stsch( irq, &(ioinfo[irq]->schib) );
 
 		if (ccode)
 		{
-			rc                        = -ENODEV;
-			ioinfo[irq].devstat.flag |= DEVSTAT_NOT_OPER;
+			rc                         = -ENODEV;
+			ioinfo[irq]->devstat.flag |= DEVSTAT_NOT_OPER;
 		}
 		else
 		{
-			ioinfo[irq].schib.pmcw.isc = 7;
+			ioinfo[irq]->schib.pmcw.isc = 7;
 
-			ccode = msch( irq, &(ioinfo[irq].schib) );
+			ccode = msch( irq, &(ioinfo[irq]->schib) );
 
 			if (ccode)
 			{
@@ -2015,25 +2752,29 @@ int reset_cons_dev( int irq)
 	{
 		rc = -ENODEV;
 	}
+	else if ( ioinfo[irq] == INVALID_STORAGE_AREA )
+	{
+		return( -ENODEV);
+   }
 	else
 	{
 		/*
 		 * reset the indicated console device to operate
 		 *  on default console interrupt sublass 3
 		 */
-		ccode = stsch( irq, &(ioinfo[irq].schib) );
+		ccode = stsch( irq, &(ioinfo[irq]->schib) );
 
 		if (ccode)
 		{
-			rc                        = -ENODEV;
-			ioinfo[irq].devstat.flag |= DEVSTAT_NOT_OPER;
+			rc                         = -ENODEV;
+			ioinfo[irq]->devstat.flag |= DEVSTAT_NOT_OPER;
 		}
 		else
 		{
 
-			ioinfo[irq].schib.pmcw.isc = 3;
+			ioinfo[irq]->schib.pmcw.isc = 3;
 
-			ccode = msch( irq, &(ioinfo[irq].schib) );
+			ccode = msch( irq, &(ioinfo[irq]->schib) );
 
 			if (ccode)
 			{
@@ -2071,7 +2812,7 @@ int wait_cons_dev( int irq )
 		 * before entering the spinlock we may already have
 		 *  processed the interrupt on a different CPU ...
 		 */
-		if ( ioinfo[irq].ui.flags.busy == 1 )
+		if ( ioinfo[irq]->ui.flags.busy == 1 )
 		{
 			long cr6 __attribute__ ((aligned (8)));
 
@@ -2086,15 +2827,14 @@ int wait_cons_dev( int irq )
 			do {
 				tpi_info_t tpi_info;
 				if (tpi(&tpi_info) == 1) {
-					s390_process_IRQ(tpi_info.irq,
-					    	         tpi_info.intparm);
+					s390_process_IRQ( tpi_info.irq );
 				} else {
 					s390irq_spin_unlock(irq);
 					tod_wait(100);
 					s390irq_spin_lock(irq);
 				}
 				eieio();
-			} while (ioinfo[irq].ui.flags.busy == 1);
+			} while (ioinfo[irq]->ui.flags.busy == 1);
 
 			/*
 			 * restore previous isc value
@@ -2125,17 +2865,17 @@ int enable_cpu_sync_isc( int irq )
 	int             count = 0;
 	int             rc    = 0;
 
-	if ( irq <= highest_subchannel )
+	if ( irq <= highest_subchannel && ioinfo[irq] != INVALID_STORAGE_AREA )
 	{
-		ccode = stsch( irq, &(ioinfo[irq].schib) );
+		ccode = stsch( irq, &(ioinfo[irq]->schib) );
 
 		if ( !ccode )
 		{
-			ioinfo[irq].schib.pmcw.isc = 5;
+			ioinfo[irq]->schib.pmcw.isc = 5;
 
 			do
 			{
-				ccode = msch( irq, &(ioinfo[irq].schib) );
+				ccode = msch( irq, &(ioinfo[irq]->schib) );
 
 				if (ccode == 0 )
 				{
@@ -2162,11 +2902,11 @@ int enable_cpu_sync_isc( int irq )
 					//
 					// process pending status
 					//
-			      ioinfo[irq].ui.flags.s_pend = 1;
+					ioinfo[irq]->ui.flags.s_pend = 1;
 
-					s390_process_IRQ( irq, 0 );
+					s390_process_IRQ( irq );
 
-			      ioinfo[irq].ui.flags.s_pend = 0;
+					ioinfo[irq]->ui.flags.s_pend = 0;
 
 					count++;
 
@@ -2197,35 +2937,47 @@ int enable_cpu_sync_isc( int irq )
 
 int disable_cpu_sync_isc( int irq)
 {
-	int     rc = 0;
+	int     rc    = 0;
+	int     retry = 5;
 	int     ccode;
 	long    cr6 __attribute__ ((aligned (8)));
 
-	if ( irq <= highest_subchannel )
+	if ( irq <= highest_subchannel && ioinfo[irq] != INVALID_STORAGE_AREA )
 	{
-		ccode = stsch( irq, &(ioinfo[irq].schib) );
+		ccode = stsch( irq, &(ioinfo[irq]->schib) );
 
-		ioinfo[irq].schib.pmcw.isc = 3;
+		ioinfo[irq]->schib.pmcw.isc = 3;
 
-		ccode = msch( irq, &(ioinfo[irq].schib) );
+		do {
 
-		if (ccode)
-		{
-			rc = -EIO;
-		}
-		else
-		{
+			ccode = msch( irq, &(ioinfo[irq]->schib) );
 
-			/*
-			 * enable interrupt subclass in CPU
-			 */
-			asm volatile ("STCTL 6,6,%0": "=m" (cr6));
-			cr6 &= 0xFBFFFFFF;             // disable sync isc 5
-			cr6 |= 0x10000000;             // enable standard isc 3
-			asm volatile ("LCTL 6,6,%0":: "m" (cr6):"memory");
+			switch ( ccode ) {
+			case 0:
+				/*
+				 * disable interrupt subclass in CPU
+				 */
+				asm volatile ("STCTL 6,6,%0": "=m" (cr6));
+				cr6 &= 0xFBFFFFFF; // disable sync isc 5
+				cr6 |= 0x10000000; // enable standard isc 3
+				asm volatile ("LCTL 6,6,%0":: "m" (cr6):"memory");
+				break;
+			case 1:
+				ioinfo[irq]->ui.flags.s_pend = 1;
+				s390_process_IRQ( irq );
+				ioinfo[irq]->ui.flags.s_pend = 0;
+				retry--;
+				rc = -EIO;
+				break;
+			case 2:
+				rc = -EBUSY;
+				break;
+			default:
+				rc = -ENODEV;
+				break;
+			} /* endswitch */
 
-		} /* endif */
-
+		} while ( retry && (ccode ==1) );
 	}
 	else
 	{
@@ -2236,8 +2988,15 @@ int disable_cpu_sync_isc( int irq)
 	return( rc);
 }
 
-void VM_virtual_device_info( int        devno,   /* device number                 */
-                             senseid_t *ps )     /* pointer to sense ID data area */
+//
+// Input :
+//   devno - device number
+//   ps    - pointer to sense ID data area
+//
+// Output : none
+//
+void VM_virtual_device_info( unsigned int  devno,
+                             senseid_t    *ps )
 {
 	diag210_t  diag_data;
 	int        ccode;
@@ -2269,7 +3028,7 @@ void VM_virtual_device_info( int        devno,   /* device number               
 
 		break;
 
-	case 40:
+	case 0x40:
 
 		switch (diag_data.vrdcvtyp) {
 		case 0xC0:
@@ -2463,7 +3222,26 @@ void VM_virtual_device_info( int        devno,   /* device number               
 
 			error = 1;
 
+		break;
+
+		} /* endswitch */
+
+		break;
+
+	case 02: /* special device class ... */
+
+		switch (diag_data.vrdcvtyp) {
+		case 0x20: /* OSA */
+
+			ps->cu_type   = 0x3088;
+			ps->cu_model  = 0x60;
+
 			break;
+
+		default:
+
+			error = 1;
+      	break;
 
 		} /* endswitch */
 
@@ -2517,286 +3295,512 @@ void VM_virtual_device_info( int        devno,   /* device number               
  */
 int read_dev_chars( int irq, void **buffer, int length )
 {
-  unsigned int  flags;
-  ccw1_t       *rdc_ccw;
-  devstat_t     devstat;
-  char         *rdc_buf;
-  int           devflag;
+	unsigned int  flags;
+	ccw1_t       *rdc_ccw;
+	devstat_t     devstat;
+	char         *rdc_buf;
+	int           devflag;
 
-  int           ret      = 0;
-  int           emulated = 0;
-  int           retry    = 5;
+	int           ret      = 0;
+	int           emulated = 0;
+	int           retry    = 5;
 
-  if ( !buffer || !length )
-  {
-    return( -EINVAL );
+	if ( !buffer || !length )
+	{
+		return( -EINVAL );
 
-  } /* endif */
+	} /* endif */
 
-  if ( (irq > highest_subchannel) || (irq < 0 ) )
-  {
-    return( -ENODEV );
+	if ( (irq > highest_subchannel) || (irq < 0 ) )
+	{
+	return( -ENODEV );
 
-  } /* endif */
+	}
+	else if ( ioinfo[irq] == INVALID_STORAGE_AREA )
+	{
+		return( -ENODEV);
+   }
 
-  if ( ioinfo[irq].ui.flags.oper == 0 )
-  {
-    return( -ENODEV );
+	if ( ioinfo[irq]->ui.flags.oper == 0 )
+		{
+		return( -ENODEV );
 
-  } /* endif */
+	} /* endif */
 
-	/*
+				/*
 	 * Before playing around with irq locks we should assure
 	 *   running disabled on (just) our CPU. Sync. I/O requests
     *   also require to run disabled.
 	 *
 	 * Note : as no global lock is required, we must not use
 	 *        cli(), but __cli() instead.  	
-	 */
-  __save_flags(flags);
-  __cli();
+				 */
+	__save_flags(flags);
+	__cli();
 
-  rdc_ccw = &ioinfo[irq].senseccw;
+	rdc_ccw = &ioinfo[irq]->senseccw;
 
-  if ( !ioinfo[irq].ui.flags.ready )
-  {
-    ret = request_irq( irq, init_IRQ_handler, 0, "RDC", &devstat );
+	if ( !ioinfo[irq]->ui.flags.ready )
+	{
+		ret = request_irq( irq,
+		                   init_IRQ_handler,
+		                   0, "RDC", &devstat );
 
-    if ( !ret )
-    {
-      emulated = 1;
+		if ( !ret )
+		{
+			emulated = 1;
 
-    } /* endif */
+		} /* endif */
 
-  } /* endif */
+	} /* endif */
 
-  if ( !ret )
-  {
-    if ( ! *buffer )
-    {
-      rdc_buf  = kmalloc( length, GFP_KERNEL);
-    }
-    else
-    {
-      rdc_buf = *buffer;
+	if ( !ret )
+	{
+		if ( ! *buffer )
+	{
+			rdc_buf  = kmalloc( length, GFP_KERNEL);
+   }
+	else
+	{
+			rdc_buf = *buffer;
 
-    } /* endif */
+		} /* endif */
 
-    if ( !rdc_buf )
-    {
-       ret = -ENOMEM;
-    }
-    else
-    {
-      do
-      {
-         rdc_ccw->cmd_code = CCW_CMD_RDC;
-         rdc_ccw->cda      = (char *)virt_to_phys( rdc_buf );
-         rdc_ccw->count    = length;
-         rdc_ccw->flags    = CCW_FLAG_SLI;
+		if ( !rdc_buf )
+		{
+			ret = -ENOMEM;
+		}
+		else
+		{
+			do
+			{
+				rdc_ccw->cmd_code = CCW_CMD_RDC;
+				rdc_ccw->cda      = (char *)virt_to_phys( rdc_buf );
+				rdc_ccw->count    = length;
+				rdc_ccw->flags    = CCW_FLAG_SLI;
 
-         ret = s390_start_IO( irq,
-                              rdc_ccw,
-		                        0x00524443, // RDC
-		                        0,          // n/a
-		                        DOIO_WAIT_FOR_INTERRUPT );
-         retry--;
-         devflag = ((devstat_t *)(irq_desc[irq].action->dev_id))->flag;
+				memset( (devstat_t *)(ioinfo[irq]->irq_desc.action->dev_id),
+				        '\0',
+				        sizeof( devstat_t));
 
-      } while (    ( retry                                     )
-	             && ( ret || (devflag & DEVSTAT_STATUS_PENDING) ) );
+				ret = s390_start_IO( irq,
+				                     rdc_ccw,
+				                     0x00524443, // RDC
+				                     0,          // n/a
+				                     DOIO_WAIT_FOR_INTERRUPT
+				                      | DOIO_DONT_CALL_INTHDLR );
+				retry--;
+				devflag = ((devstat_t *)(ioinfo[irq]->irq_desc.action->dev_id))->flag;
 
-    } /* endif */
+			} while (    ( retry                                     )
+			          && ( ret || (devflag & DEVSTAT_STATUS_PENDING) ) );
 
-    if ( !retry )
-    {
-      ret = -EBUSY;
+		} /* endif */
 
-    } /* endif */
+		if ( !retry )
+			{
+			ret = -EBUSY;
 
-    __restore_flags(flags);
+		} /* endif */
 
-    /*
-     * on success we update the user input parms
-     */
-    if ( !ret )
-    {
-      *buffer = rdc_buf;
+		__restore_flags(flags);
 
-    } /* endif */
+				/*
+		 * on success we update the user input parms
+				 */
+		if ( !ret )
+		{
+			*buffer = rdc_buf;
 
-    if ( emulated )
-    {
-      free_irq( irq, &devstat);
+			} /* endif */
 
-    } /* endif */
+		if ( emulated )
+		{
+			free_irq( irq, &devstat);
 
-  } /* endif */
+		} /* endif */
 
-  return( ret );
+	} /* endif */
+
+	return( ret );
 }
 
-/*
+		/*
  *  Read Configuration data
- */
-int read_conf_data( int irq, void **buffer, int *length )
-{
-   int          found   = 0;
-   int          ciw_cnt = 0;
-   unsigned int flags;
+		 */
+int read_conf_data( int irq, void **buffer, int *length, __u8 lpm )
+		{
+	unsigned long flags;
+	int           ciw_cnt;
 
-   int          ret = 0;
+	int           found  = 0; // RCD CIW found
+	int           ret    = 0; // return code
 
-   if ( (irq > highest_subchannel) || (irq < 0 ) )
-   {
-      return( -ENODEV );
+	if ( (irq > highest_subchannel) || (irq < 0 ) )
+	{
+		return( -ENODEV );
+				}
+	else if ( ioinfo[irq] == INVALID_STORAGE_AREA )
+	{
+		return( -ENODEV);
+	}
+	else if ( !buffer || !length )
+	{
+		return( -EINVAL);
+	}
+	else if ( ioinfo[irq]->ui.flags.oper == 0 )
+	{
+		return( -ENODEV );
+	}
+	else if ( ioinfo[irq]->ui.flags.esid == 0 )
+	{
+		return( -EOPNOTSUPP );
 
    } /* endif */
 
-   if ( ioinfo[irq].ui.flags.oper == 0 )
-   {
-      return( -ENODEV );
+			/*
+	 * scan for RCD command in extended SenseID data
+			 */
 
-   } /* endif */
+	for ( ciw_cnt = 0; (found == 0) && (ciw_cnt < 62); ciw_cnt++ )
+	{
+		if ( ioinfo[irq]->senseid.ciw[ciw_cnt].ct == CIW_TYPE_RCD )
+		{
+			/*
+			 * paranoia check ...
+			 */
+			if ( ioinfo[irq]->senseid.ciw[ciw_cnt].cmd != 0 )
+			{
+				found = 1;
 
-   /*
-    * scan for RCD command in extended SenseID data
-    */
-   for ( ; (found == 0) && (ciw_cnt < 62); ciw_cnt++ )
-   {
-      if ( senseid[irq].ciw[ciw_cnt].ct == CIW_TYPE_RCD )
-      {
-         found = 1;
+	} /* endif */
+
       	break;
       } /* endif */
 
    } /* endfor */
 
-   if ( found )
-   {
-       ccw1_t    *rcd_ccw = &ioinfo[irq].senseccw;
-       devstat_t  devstat;
-       char      *rcd_buf;
-       int        devflag;
+	if ( found )
+{
+		devstat_t  devstat;  /* inline device status area */
+		devstat_t *pdevstat;
+		int        ioflags;
 
-       int        emulated = 0;
-       int        retry    = 5;
+		ccw1_t    *rcd_ccw  = &ioinfo[irq]->senseccw;
+		char      *rcd_buf  = NULL;
+		int        emulated = 0; /* no i/O handler installed */
+		int        retry    = 5; /* retry count */
 
-   	 __save_flags(flags);
-	    __cli();
+		__save_flags(flags);
+		__cli();
 
-       if ( !ioinfo[irq].ui.flags.ready )
-       {
-          ret = request_irq( irq, init_IRQ_handler, 0, "RCD", &devstat );
+		if ( !ioinfo[irq]->ui.flags.ready )
+		{
+			pdevstat = &devstat;
+			ret      = request_irq( irq,
+			                        init_IRQ_handler,
+			                        0, "RCD", pdevstat );
 
-          if ( !ret )
-          {
-             emulated = 1;
+			if ( !ret )
+			{
+				emulated = 1;
 
-          } /* endif */
+			} /* endif */
+				}
+		else
+				{
+			pdevstat = ioinfo[irq]->irq_desc.action->dev_id;
 
-       } /* endif */
+		} /* endif */
 
-       if ( !ret )
-       {
-          rcd_buf  = kmalloc( senseid[irq].ciw[ciw_cnt].count, GFP_KERNEL);
+		if ( !ret )
+		{
+			if ( init_IRQ_complete )
+			{
+				rcd_buf = kmalloc( ioinfo[irq]->senseid.ciw[ciw_cnt].count,
+				                   GFP_KERNEL);
+				}
+			else
+				{
+				rcd_buf = alloc_bootmem( ioinfo[irq]->senseid.ciw[ciw_cnt].count);
 
-          do
-          {
-     		    rcd_ccw->cmd_code = senseid[irq].ciw[ciw_cnt].cmd;
-	   	    rcd_ccw->cda      = (char *)virt_to_phys( rcd_buf );
-             rcd_ccw->count    = senseid[irq].ciw[ciw_cnt].count;
-		       rcd_ccw->flags    = CCW_FLAG_SLI;
+   		} /* endif */
 
-             ret = s390_start_IO( irq,
-                                  rcd_ccw,
-                                  0x00524344,  // == RCD
-                                  0,           // n/a
-                                  DOIO_WAIT_FOR_INTERRUPT );
+			if ( rcd_buf == NULL )
+			{
+				ret = -ENOMEM;	
 
-             retry--;
+				} /* endif */
 
-             devflag = ((devstat_t *)(irq_desc[irq].action->dev_id))->flag;
+			if ( !ret )
+			{
+				memset( rcd_buf,
+				        '\0',
+				        ioinfo[irq]->senseid.ciw[ciw_cnt].count);
 
-          } while (    ( retry                                     )
-                    && ( ret || (devflag & DEVSTAT_STATUS_PENDING) ) );
+				do
+			{
+					rcd_ccw->cmd_code = ioinfo[irq]->senseid.ciw[ciw_cnt].cmd;
+					rcd_ccw->cda      = (char *)virt_to_phys( rcd_buf );
+					rcd_ccw->count    = ioinfo[irq]->senseid.ciw[ciw_cnt].count;
+					rcd_ccw->flags    = CCW_FLAG_SLI;
 
-          if ( !retry )
-             ret = -EBUSY;
+					memset( pdevstat, '\0', sizeof( devstat_t));
 
-          __restore_flags(flags);
+					if ( lpm )
+					{
+						ioflags = DOIO_WAIT_FOR_INTERRUPT
+						          | DOIO_VALID_LPM    					
+						          | DOIO_DONT_CALL_INTHDLR;
+		}
+		else
+		{
+						ioflags =   DOIO_WAIT_FOR_INTERRUPT
+						          | DOIO_DONT_CALL_INTHDLR;
 
-       } /* endif */
+		} /* endif */
 
-       /*
-        * on success we update the user input parms
-        */
-       if ( !ret )
-       {
-          *length = senseid[irq].ciw[ciw_cnt].count;
-          *buffer = rcd_buf;
+					ret = s390_start_IO( irq,
+					                     rcd_ccw,
+					                     0x00524344,  // == RCD
+					                     lpm,
+					                     ioflags );
 
-       } /* endif */
+	            switch ( ret ) {
+   	         case 0    :
+      	      case -EIO :
 
-       if ( emulated )
-          free_irq( irq, &devstat);
-   }
-   else
-   {
-      ret = -EINVAL;
+	               if ( !(pdevstat->flag & (   DEVSTAT_STATUS_PENDING
+   	                                      | DEVSTAT_NOT_OPER
+      	                                   | DEVSTAT_FLAG_SENSE_AVAIL ) ) )
+	               {
+   	               retry = 0;  // we got it ...
+	}
+	else
+	{
+               	   retry--;    // try again ...
 
-   } /* endif */
+	} /* endif */
 
-   return( ret );
+   	            break;
+
+	            default :   // -EBUSY, -ENODEV, ???
+   	            retry = 0;
+
+      	      } /* endswitch */
+
+				} while ( retry );
+
+			} /* endif */
+
+			__restore_flags( flags );
+
+		} /* endif */
+
+		/*
+		 * on success we update the user input parms
+		 */
+		if ( ret == 0 )
+		{
+			*length = ioinfo[irq]->senseid.ciw[ciw_cnt].count;
+			*buffer = rcd_buf;
+		}
+		else
+		{
+			if ( rcd_buf != NULL )
+			{
+				if ( init_IRQ_complete )
+				{
+					kfree( rcd_buf );
+		}
+		else
+		{
+					free_bootmem( (unsigned long)rcd_buf,
+					              ioinfo[irq]->senseid.ciw[ciw_cnt].count);
+
+   			} /* endif */
+
+			} /* endif */
+
+			*buffer = NULL;
+			*length = 0;
+
+		} /* endif */
+
+		if ( emulated )
+			free_irq( irq, pdevstat);
+	}
+	else
+	{
+		ret = -EOPNOTSUPP;
+
+	} /* endif */
+
+	return( ret );
 
 }
 
-
-int get_dev_info( int irq, dev_info_t *pdi)
+int get_dev_info( int irq, dev_info_t * pdi)
 {
-   return( get_dev_info_by_irq( irq, pdi) );
+	return( get_dev_info_by_irq( irq, pdi));
+}
+
+
+static int __inline__ get_next_available_irq( ioinfo_t *pi)
+{
+	int ret_val;
+
+	while ( TRUE )
+	{
+		if ( pi->ui.flags.oper )
+		{
+			ret_val = pi->irq;
+			break;
+		}
+		else
+		{
+			pi = pi->next;
+
+			//
+			// leave at end of list unconditionally
+			//
+			if ( pi == NULL )
+			{
+				ret_val = -ENODEV;
+			break;
+			}
+
+		} /* endif */
+
+	} /* endwhile */
+
+	return ret_val;
+}
+
+
+int get_irq_first( void )
+{
+   int ret_irq;
+
+	if ( ioinfo_head )
+	{
+		if ( ioinfo_head->ui.flags.oper )
+		{
+			ret_irq = ioinfo_head->irq;
+		}
+		else if ( ioinfo_head->next )
+		{
+			ret_irq = get_next_available_irq( ioinfo_head->next );
+
+		}
+		else
+		{
+			ret_irq = -ENODEV;
+
+		} /* endif */
+	}
+	else
+	{
+		ret_irq = -ENODEV;
+
+	} /* endif */
+
+	return ret_irq;
+}
+
+int get_irq_next( int irq )
+{
+	int ret_irq;	
+
+	if ( ioinfo[irq] != INVALID_STORAGE_AREA )
+	{
+		if ( ioinfo[irq]->next )
+		{
+			if ( ioinfo[irq]->next->ui.flags.oper )
+			{
+				ret_irq = ioinfo[irq]->next->irq;
+			}
+			else
+			{
+				ret_irq = get_next_available_irq( ioinfo[irq]->next );
+
+			} /* endif */
+		}
+		else
+		{
+			ret_irq = -ENODEV;     	
+
+		} /* endif */
+	}
+	else
+	{
+		ret_irq = -EINVAL;
+
+	} /* endif */
+
+	return ret_irq;
 }
 
 int get_dev_info_by_irq( int irq, dev_info_t *pdi)
 {
 
-	if ( irq > highest_subchannel )
+	if ( irq > highest_subchannel || irq < 0 )
 	{
 		return -ENODEV;
 	}
 	else if ( pdi == NULL )
 	{
-      return -EINVAL;
+		return -EINVAL;
+	}
+	else if ( ioinfo[irq] == INVALID_STORAGE_AREA )
+	{
+		return( -ENODEV);
 	}
 	else
 	{
-	   pdi->devno = ioinfo[irq].schib.pmcw.dev;
-      pdi->irq   = irq;
+		pdi->devno = ioinfo[irq]->schib.pmcw.dev;
+		pdi->irq   = irq;
 
-      if ( ioinfo[irq].ui.flags.oper )
-      {
-		   pdi->status = 0;
-	   	memcpy( &(pdi->sid_data), &senseid[irq], sizeof( senseid_t));
-      }
-      else
-      {
-		   pdi->status = DEVSTAT_NOT_OPER;
-	   	memcpy( &(pdi->sid_data), '\0', sizeof( senseid_t));
-         pdi->sid_data.cu_type = 0xFFFF;
+		if (     ioinfo[irq]->ui.flags.oper
+           && !ioinfo[irq]->ui.flags.unknown )
+		{
+			pdi->status = 0;
+			memcpy( &(pdi->sid_data),
+			        &ioinfo[irq]->senseid,
+			        sizeof( senseid_t));
+		}
+		else if ( ioinfo[irq]->ui.flags.unknown )
+		{
+			pdi->status = DEVSTAT_UNKNOWN_DEV;
+			memset( &(pdi->sid_data),
+			        '\0',
+			        sizeof( senseid_t));
+			pdi->sid_data.cu_type = 0xFFFF;
 
-      } /* endif */
+		}
+		else
+		{
+			pdi->status = DEVSTAT_NOT_OPER;
+			memset( &(pdi->sid_data),
+			        '\0',
+			        sizeof( senseid_t));
+			pdi->sid_data.cu_type = 0xFFFF;
 
-		return 0;
+		} /* endif */
+
+		if ( ioinfo[irq]->ui.flags.ready )
+			pdi->status |= DEVSTAT_DEVICE_OWNED;
 
 	} /* endif */
 
+	return 0;
 }
 
 
 int get_dev_info_by_devno( unsigned int devno, dev_info_t *pdi)
 {
-   int i;
-   int rc = -ENODEV;
+	int i;
+	int rc = -ENODEV;
 
 	if ( devno > 0x0000ffff )
 	{
@@ -2804,41 +3808,61 @@ int get_dev_info_by_devno( unsigned int devno, dev_info_t *pdi)
 	}
 	else if ( pdi == NULL )
 	{
-      return -EINVAL;
+		return -EINVAL;
 	}
 	else
 	{
 
-      for ( i=0; i <= highest_subchannel; i++ )
-      {
+		for ( i=0; i <= highest_subchannel; i++ )
+		{
 
-         if ( ioinfo[i].schib.pmcw.dev == devno )
-         {
-            if ( ioinfo[i].ui.flags.oper )
-            {
-		         pdi->status = 0;
-               pdi->irq    = i;
-		         pdi->devno  = devno;
-	   	      memcpy( &(pdi->sid_data),
-                       &senseid[i],
+			if (    ioinfo[i] != INVALID_STORAGE_AREA
+			     && ioinfo[i]->schib.pmcw.dev == devno )
+			{
+
+					pdi->irq    = i;
+					pdi->devno  = devno;
+
+				if (    ioinfo[i]->ui.flags.oper
+                 && !ioinfo[i]->ui.flags.unknown )
+				{
+					pdi->status = 0;
+
+					memcpy( &(pdi->sid_data),
+					        &ioinfo[i]->senseid,
+					        sizeof( senseid_t));
+				}
+				else if ( ioinfo[i]->ui.flags.unknown )
+				{
+					pdi->status = DEVSTAT_UNKNOWN_DEV;
+
+					memset( &(pdi->sid_data),
+                       '\0',
                        sizeof( senseid_t));
-            }
-            else
-            {
-		         pdi->status = DEVSTAT_NOT_OPER;
-               pdi->irq    = i;
-               pdi->devno  = devno;
-	   	      memcpy( &(pdi->sid_data), '\0', sizeof( senseid_t));
-               pdi->sid_data.cu_type = 0xFFFF;
 
-            } /* endif */
+					pdi->sid_data.cu_type = 0xFFFF;
+				}
+				else
+				{
+					pdi->status = DEVSTAT_NOT_OPER;
 
-            rc = 0; /* found */
-            break;
+					memset( &(pdi->sid_data),
+                       '\0',
+                       sizeof( senseid_t));
 
-         } /* endif */
+					pdi->sid_data.cu_type = 0xFFFF;
 
-      } /* endfor */
+				} /* endif */
+
+				if ( ioinfo[i]->ui.flags.ready )
+					pdi->status |= DEVSTAT_DEVICE_OWNED;
+
+				rc = 0; /* found */
+			break;
+
+			} /* endif */
+
+		} /* endfor */
 
 		return( rc);
 
@@ -2848,71 +3872,174 @@ int get_dev_info_by_devno( unsigned int devno, dev_info_t *pdi)
 
 int get_irq_by_devno( unsigned int devno )
 {
-   int i;
-   int rc = -1;
+	int i;
+	int rc = -1;
 
 	if ( devno <= 0x0000ffff )
 	{
-      for ( i=0; i <= highest_subchannel; i++ )
-      {
-         if ( devno == ioinfo[i].schib.pmcw.dev )
-         {
-            rc = i;
-            break;
+		for ( i=0; i <= highest_subchannel; i++ )
+		{
+			if (    (ioinfo[i] != INVALID_STORAGE_AREA )
+			     && (ioinfo[i]->schib.pmcw.dev == devno)
+			     && (ioinfo[i]->schib.pmcw.dnv == 1    ) )
+			{
+				rc = i;
+				break;
 
-         } /* endif */
+			} /* endif */
 
-      } /* endfor */
+		} /* endfor */
 
 	} /* endif */
 
-   return( rc);
-
+	return( rc);
 }
 
 unsigned int get_devno_by_irq( int irq )
 {
 
-	if ( irq > highest_subchannel )
+	if (    ( irq > highest_subchannel            )
+	     || ( irq < 0                             )
+	     || ( ioinfo[irq] == INVALID_STORAGE_AREA ) )
 	{
 		return -1;
 
 	} /* endif */
 
-   /*
-    * we don't need to check for the device be operational
-    *  as the initial STSCH will always present the device
-    *  number defined by the IOCDS regardless of the device
-    *  existing or not.
-    */
-   return( ioinfo[irq].schib.pmcw.dev );
+	/*
+	 * we don't need to check for the device be operational
+	 *  as the initial STSCH will always present the device
+	 *  number defined by the IOCDS regardless of the device
+	 *  existing or not. However, there could be subchannels
+	 *  defined who's device number isn't valid ...
+	 */
+	if ( ioinfo[irq]->schib.pmcw.dnv )
+		return( ioinfo[irq]->schib.pmcw.dev );
+	else
+		return -1;
+}
+
+/*
+ * s390_device_recognition_irq
+ *
+ * Used for individual device recognition. Issues the device
+ *  independant SenseID command to obtain info the device type.
+ *
+ */
+void s390_device_recognition_irq( int irq )
+{
+	int           ret;
+	unsigned long psw_flags;
+
+	/*
+	 * We issue the SenseID command on I/O subchannels we think are
+	 *  operational only.
+	 */
+	if (    ( ioinfo[irq] != INVALID_STORAGE_AREA )	
+	     && ( ioinfo[irq]->schib.pmcw.st == 0     )
+	     && ( ioinfo[irq]->ui.flags.oper == 1     ) )
+	{
+		int       irq_ret;
+		devstat_t devstat;
+
+	   irq_ret = request_irq( irq,
+		                       init_IRQ_handler,
+		                       0,
+		                       "INIT",
+		                       &devstat);
+
+		if ( !irq_ret )
+		{
+			/*
+			 * avoid sync processing (STSCH/MSCH) for every
+			 *  single I/O during boot (IPL) processing.
+			 */
+			spin_lock_irqsave( &sync_isc, psw_flags);
+
+			ret = enable_cpu_sync_isc( irq);
+
+			if ( ret )
+			{
+				spin_unlock_irqrestore( &sync_isc, psw_flags);
+			}
+			else
+			{
+				ioinfo[irq]->ui.flags.syncio = 1; // global
+				ioinfo[irq]->ui.flags.unknown = 0;
+
+				memset( &ioinfo[irq]->senseid, '\0', sizeof( senseid_t));
+
+				s390_SenseID( irq, &ioinfo[irq]->senseid, 0xff );
+#if 0	/* FIXME */
+				/*
+				 * We initially check the configuration data for
+				 *  those devices with more than a single path
+				 */
+				if ( ioinfo[irq]->schib.pmcw.pim != 0x80 )
+				{
+					char     *prcd;
+					int       lrcd;
+
+					ret = read_conf_data( irq, (void **)&prcd, &lrcd, 0 );
+
+					if ( !ret )	// on success only ...
+					{
+#ifdef CONFIG_DEBUG_IO
+						char buffer[80];
+
+						sprintf( buffer,
+						         "RCD for device(%04X)/"
+						         "subchannel(%04X) returns :\n",
+						         ioinfo[irq]->schib.pmcw.dev,
+						         irq );
+
+						s390_displayhex( buffer, prcd, lrcd );
+#endif      				
+						if ( init_IRQ_complete )
+						{
+							kfree( prcd );
+						}
+						else
+						{
+							free_bootmem( (unsigned long)prcd, lrcd );
+
+ 			  			} /* endif */
+
+	   			} /* endif */
+
+     	      } /* endif */
+#endif
+				s390_DevicePathVerification( irq, 0 );
+
+				disable_cpu_sync_isc( irq );
+
+				ioinfo[irq]->ui.flags.syncio = 0; // global
+
+				spin_unlock_irqrestore( &sync_isc, psw_flags);
+
+			} /* endif */  	
+
+			free_irq( irq, &devstat );
+
+		} /* endif */
+
+	} /* endif */
 
 }
 
 /*
- * s390_device_recognition
+ * s390_device_recognition_all
  *
- * Used for system wide device recognition. Issues the device
- *  independant SenseID command to obtain info the device type.
+ * Used for system wide device recognition.
  *
  */
-void s390_device_recognition( void)
+void s390_device_recognition_all( void)
 {
-
 	int irq = 0; /* let's start with subchannel 0 ... */
 
 	do
 	{
-      /*
-       * We issue the SenseID command on I/O subchannels we think are
-       *  operational only.
-       */
-      if ( 	  ( schiblock[irq].pmcw.st == 0    )
-           && ( ioinfo[irq].ui.flags.oper == 1 ) )
-      {
-         s390_SenseID( irq, &senseid[irq] );
-
-      } /* endif */
+		s390_device_recognition_irq( irq );
 
 		irq ++;
 
@@ -2929,17 +4056,16 @@ void s390_device_recognition( void)
  */
 void s390_process_subchannels( void)
 {
-   int   isValid;
-
+	int   ret;
 	int   irq = 0;   /* Evaluate all subchannels starting with 0 ... */
 
 	do
 	{
-		isValid = s390_validate_subchannel( irq);
+		ret = s390_validate_subchannel( irq, 0);
 
-      irq++;
+		irq++;
 
-	} while ( isValid && irq < NR_IRQS );
+  	} while ( (ret != -ENXIO) && (irq < __MAX_SUBCHANNELS) );
 
 	highest_subchannel = --irq;
 
@@ -2953,181 +4079,313 @@ void s390_process_subchannels( void)
  * Process the subchannel for the requested irq. Returns 1 for valid
  *  subchannels, otherwise 0.
  */
-int s390_validate_subchannel( int irq )
+int s390_validate_subchannel( int irq, int enable )
 {
 
-   int   retry;     /* retry count for status pending conditions */
-	int   ccode;     /* condition code for stsch() only */
-	int   ccode2;    /* condition code for other I/O routines */
+	int      retry;     /* retry count for status pending conditions */
+	int      ccode;     /* condition code for stsch() only */
+	int      ccode2;    /* condition code for other I/O routines */
+	schib_t *p_schib;
+	int      ret;
 
 	/*
 	 * The first subchannel that is not-operational (ccode==3)
 	 *  indicates that there aren't any more devices available.
 	 */
-	ccode = stsch( irq, &schiblock[irq]);
+	if (    ( init_IRQ_complete                   )
+	     && ( ioinfo[irq] != INVALID_STORAGE_AREA ) )
+	{
+		p_schib = &ioinfo[irq]->schib;
+	}
+	else
+	{
+		p_schib = &init_schib;
 
-   if ( ccode == 0)
-   {
-   	/*
-	    * ... just being curious we check for non I/O subchannels
+	} /* endif */
+
+	/*
+	 * If we knew the device before we assume the worst case ... 	
+	 */
+	if ( ioinfo[irq] != INVALID_STORAGE_AREA )
+	{
+		ioinfo[irq]->ui.flags.oper = 0;
+		ioinfo[irq]->ui.flags.dval = 0;
+
+	} /* endif */
+
+	ccode = stsch( irq, p_schib);
+
+	if ( !ccode )
+	{
+		/*
+		 * ... just being curious we check for non I/O subchannels
 		 */
-		if ( schiblock[irq].pmcw.st )
+		if ( p_schib->pmcw.st )
 		{
 			printk( "Subchannel %04X reports "
 			        "non-I/O subchannel type %04X\n",
 			        irq,
-			        schiblock[irq].pmcw.st);
+			        p_schib->pmcw.st);
 
-			ioinfo[irq].ui.flags.oper = 0;
+			if ( ioinfo[irq] != INVALID_STORAGE_AREA )
+				ioinfo[irq]->ui.flags.oper = 0;
 
 		} /* endif */
 
-		if ( !schiblock[irq].pmcw.dnv )
+		if ( p_schib->pmcw.dnv )
 		{
-			/*
-			 * don't process invalid device numbers ...
-			 */
-			ioinfo[irq].ui.flags.oper = 0;
-		}
-		else
-		{
-			printk( "Detected device %04X on subchannel %04X"
-			        " - PIM = %02X, PAM = %02X, POM = %02X\n",
-			        schiblock[irq].pmcw.dev,
-			        irq,
-			        schiblock[irq].pmcw.pim,
-			        schiblock[irq].pmcw.pam,
-			        schiblock[irq].pmcw.pom);
+			if ( ioinfo[irq] == INVALID_STORAGE_AREA )
+			{	
 
-			/*
-			 * We now have to initially ...
-			 *  ... set "interruption sublass"
-			 *  ... enable "concurrent sense"
-			 *  ... enable "multipath mode" if more than
-			 *        one CHPID is available
-			 *
-			 * Note : we don't enable the device here, this is temporarily
-			 *        done during device sensing below.
-			 */
-			schiblock[irq].pmcw.isc    = 3;     /* could be smth. else ... */
-			schiblock[irq].pmcw.csense = 1;     /* concurrent sense */
-			schiblock[irq].pmcw.ena    = 0;     /* force disable it */
+				if ( !init_IRQ_complete )
+				{
+					ioinfo[irq] =
+					   (ioinfo_t *)alloc_bootmem( sizeof(ioinfo_t));
+				}
+				else
+				{
+					ioinfo[irq] =
+					   (ioinfo_t *)kmalloc( sizeof(ioinfo_t),
+				                           GFP_KERNEL );
 
-			if (    ( schiblock[irq].pmcw.pim != 0    )
-			     && ( schiblock[irq].pmcw.pim != 0x80 ) )
-			{
-				schiblock[irq].pmcw.mp     = 1;     /* multipath mode */
+				} /* endif */
+
+				memset( ioinfo[irq], '\0', sizeof( ioinfo_t));
+				memcpy( &ioinfo[irq]->schib,
+			           &init_schib,
+			           sizeof( schib_t));
+				ioinfo[irq]->irq_desc.status  = IRQ_DISABLED;
+				ioinfo[irq]->irq_desc.handler = &no_irq_type;
+
+				/*
+				 * We have to insert the new ioinfo element
+				 *  into the linked list, either at its head,
+				 *  its tail or insert it.
+				 */
+				if ( ioinfo_head == NULL )  /* first element */
+				{
+					ioinfo_head = ioinfo[irq];
+					ioinfo_tail = ioinfo[irq];
+				}
+				else if ( irq < ioinfo_head->irq ) /* new head */
+				{
+					ioinfo[irq]->next = ioinfo_head;
+					ioinfo_head->prev = ioinfo[irq];
+					ioinfo_head       = ioinfo[irq];
+				}
+				else if ( irq > ioinfo_tail->irq ) /* new tail */
+				{
+					ioinfo_tail->next = ioinfo[irq];
+					ioinfo[irq]->prev = ioinfo_tail;
+					ioinfo_tail       = ioinfo[irq];
+				}
+				else /* insert element */
+				{
+					ioinfo_t *pi = ioinfo_head;
+
+					do
+					{
+						if ( irq < pi->next->irq )
+						{
+							ioinfo[irq]->next = pi->next;
+							ioinfo[irq]->prev = pi;
+							pi->next->prev    = ioinfo[irq];
+							pi->next          = ioinfo[irq];
+			break;
+
+						} /* endif */
+
+						pi = pi->next;
+
+					} while ( 1 );
+
+				} /* endif */
 
 			} /* endif */
 
-			/*
+			// initialize some values ...	
+			ioinfo[irq]->ui.flags.pgid_supp = 1;
+
+			ioinfo[irq]->opm =   ioinfo[irq]->schib.pmcw.pim
+			                   & ioinfo[irq]->schib.pmcw.pam
+			                   & ioinfo[irq]->schib.pmcw.pom;
+
+			printk( "Detected device %04X on subchannel %04X"
+			        " - PIM = %02X, PAM = %02X, POM = %02X\n",
+			        ioinfo[irq]->schib.pmcw.dev,
+			        irq,
+			        ioinfo[irq]->schib.pmcw.pim,
+			        ioinfo[irq]->schib.pmcw.pam,
+			        ioinfo[irq]->schib.pmcw.pom);
+
+/*
 			 * initialize ioinfo structure
-		    */
-			ioinfo[irq].irq             = irq;
-			ioinfo[irq].ui.flags.busy   = 0;
-			ioinfo[irq].ui.flags.ready  = 0;
-			ioinfo[irq].ui.flags.oper   = 1;
-			ioinfo[irq].devstat.intparm = irq;
-			ioinfo[irq].devstat.devno   = schiblock[irq].pmcw.dev;
+			 */
+			ioinfo[irq]->irq             = irq;
+			ioinfo[irq]->nopfunc         = NULL;
+			ioinfo[irq]->ui.flags.busy   = 0;
+			ioinfo[irq]->ui.flags.ready  = 0;
+			ioinfo[irq]->ui.flags.dval   = 1;
+			ioinfo[irq]->devstat.intparm = 0;
+			ioinfo[irq]->devstat.devno   = ioinfo[irq]->schib.pmcw.dev;
+			ioinfo[irq]->devno           = ioinfo[irq]->schib.pmcw.dev;
 
-			memcpy( &(ioinfo[irq].schib), &(schiblock[irq]), sizeof( schib_t));
+			/*
+			 * We should have at least one CHPID ...
+ */
+			if ( ioinfo[irq]->opm )
+{
+				/*
+				 * We now have to initially ...
+				 *  ... set "interruption sublass"
+				 *  ... enable "concurrent sense"
+				 *  ... enable "multipath mode" if more than one
+				 *        CHPID is available. This is done regardless
+				 *        whether multiple paths are available for us.
+				 *
+				 * Note : we don't enable the device here, this is temporarily
+				 *        done during device sensing below.
+				 */
+				ioinfo[irq]->schib.pmcw.isc     = 3; /* could be smth. else */
+				ioinfo[irq]->schib.pmcw.csense  = 1; /* concurrent sense */
+				ioinfo[irq]->schib.pmcw.ena     = enable;
+				ioinfo[irq]->schib.pmcw.intparm =
+				                     ioinfo[irq]->schib.pmcw.dev;
 
-         retry = 5;
+				if (    ( ioinfo[irq]->opm != 0x80 )
+				     && ( ioinfo[irq]->opm != 0x40 )
+				     && ( ioinfo[irq]->opm != 0x20 )
+				     && ( ioinfo[irq]->opm != 0x10 )
+				     && ( ioinfo[irq]->opm != 0x08 )
+				     && ( ioinfo[irq]->opm != 0x04 )
+				     && ( ioinfo[irq]->opm != 0x02 )
+				     && ( ioinfo[irq]->opm != 0x01 ) )
+  {
+					ioinfo[irq]->schib.pmcw.mp = 1; /* multipath mode */
 
-         do
-			{
-			   ccode2 = msch_err( irq, &schiblock[irq]);
+  } /* endif */
 
-            switch (ccode2) {
-            case 0:  // successful completion
-			      //
-				   // concurrent sense facility available ...
-				   //
-				   ioinfo[irq].ui.flags.consns = 1;
-               break;
+				retry = 5;
 
-            case 1:  // status pending
-               //
-               // How can we have a pending status as device is
-               //  disabled for interrupts ? Anyway, clear it ...
-               //
-		         tsch( irq, &(ioinfo[irq].devstat.ii.irb) );
-               retry--;
-               break;
+				do
+	{
+					ccode2 = msch_err( irq, &ioinfo[irq]->schib);
 
-            case 2:  // busy
-               retry--;
-               break;
+					switch (ccode2) {
+					case 0:  // successful completion
+						//
+						// concurrent sense facility available ...
+						//
+						ioinfo[irq]->ui.flags.oper   = 1;
+						ioinfo[irq]->ui.flags.consns = 1;
+						ret                          = 0;
+						break;
 
-            case 3:  // not operational
-				   ioinfo[irq].ui.flags.oper = 0;
-               retry                     = 0;
-               break;
+					case 1:  // status pending
+						//
+						// How can we have a pending status as
+						//  device is disabled for interrupts ?
+						//  Anyway, process it ...
+						//
+						ioinfo[irq]->ui.flags.s_pend = 1;
+						s390_process_IRQ( irq);
+						ioinfo[irq]->ui.flags.s_pend = 0;
+						retry--;
+						ret = -EIO;
+						break;
 
-            default:
+					case 2:  // busy
+	/*
+						 * we mark it not-oper as we can't
+						 *  properly operate it !
+	 */
+						ioinfo[irq]->ui.flags.oper = 0;
+						tod_wait( 100);	/* allow for recovery */
+						retry--;
+						ret = -EBUSY;
+						break;
+
+					case 3:  // not operational
+						ioinfo[irq]->ui.flags.oper = 0;
+						retry                      = 0;
+						ret = -ENODEV;
+						break;
+
+					default:
 #define PGMCHK_OPERAND_EXC      0x15
 
-				   if ( (ccode2 & PGMCHK_OPERAND_EXC) == PGMCHK_OPERAND_EXC )
-				   {
-						/*
-						 * re-issue the modify subchannel without trying to
-						 *  enable the concurrent sense facility
-						 */
-						schiblock[irq].pmcw.csense = 0;
+						if ( (ccode2 & PGMCHK_OPERAND_EXC) == PGMCHK_OPERAND_EXC )
+    {
+							/*
+							 * re-issue the modify subchannel without trying to
+							 *  enable the concurrent sense facility
+							 */
+							ioinfo[irq]->schib.pmcw.csense = 0;
 
-						memcpy( &(ioinfo[irq].schib),
-						        &(schiblock[irq]),
-						        sizeof( schib_t));
+							ccode2 = msch_err( irq, &ioinfo[irq]->schib);
 
-						ccode2 = msch_err( irq, &schiblock[irq]);
+							if ( ccode2 != 0 )
+    {
+								printk( " ... msch() (2) failed with CC = %X\n",
+								        ccode2 );
+								ioinfo[irq]->ui.flags.oper = 0;
+								ret                        = -EIO;
+    }
+    else
+    {
+								ioinfo[irq]->ui.flags.oper   = 1;
+								ioinfo[irq]->ui.flags.consns = 0;
+								ret                          = 0;
 
-						if ( ccode2 != 0 )
-						{
-						   printk( " ... modify subchannel (2) failed with CC = %X\n",
-						           ccode2 );
-						   ioinfo[irq].ui.flags.oper = 0;
-						}
-						else
-						{
-						   ioinfo[irq].ui.flags.consns = 0;
+    } /* endif */
+    }
+    else
+    {
+							printk( " ... msch() (1) failed with CC = %X\n",
+							        ccode2);
+							ioinfo[irq]->ui.flags.oper = 0;
+							ret                        = -EIO;
 
-						} /* endif */
-					}
-					else
-					{
-						printk( " ... modify subchannel (1) failed with CC = %X\n",
-						        ccode2);
-						ioinfo[irq].ui.flags.oper = 0;
+    } /* endif */
 
-					} /* endif */
+						retry  = 0;
+						break;
 
-					retry  = 0;
-					break;
+					} /* endswitch */
 
-				} /* endswitch */
+				} while ( ccode2 && retry );
 
-			} while ( ccode2 && retry );
+				if ( (ccode2 != 0) && (ccode2 != 3) && (!retry) )
+    {
+					printk( " ... msch() retry count for "
+					        "subchannel %04X exceeded, CC = %d\n",
+					        irq,
+					        ccode2);
 
-         if ( (ccode2 < 3) && (!retry) )
-         {
-			   printk( " ... msch() retry count for "
-                    "subchannel %04X exceeded, CC = %d\n",
-                    irq,
-                    ccode2);
+    } /* endif */
+			}
+			else
+			{
+				/* no path available ... */
+				ioinfo[irq]->ui.flags.oper = 0;
+				ret                        = -ENODEV;    	
 
-         } /* endif */
+			} /* endif */
+		}
+		else
+    {
+			ret = -ENODEV;
 
-      } /* endif */
+    } /* endif */
+	}
+	else
+	{
+		
+		ret = -ENXIO;
 
-   } /* endif */
+  } /* endif */
 
-   /*
-	 * indicate whether the subchannel is valid
-    */
-   if ( ccode == 3)
-      return(0);
-   else
-      return(1);
+  return( ret );
 }
 
 /*
@@ -3143,10 +4401,753 @@ int s390_validate_subchannel( int irq )
  *  s390_SenseID() related device interrupts - interruption
  *  parameter used is 0x00E2C9C4 ( SID ).
  */
-int s390_SenseID( int irq, senseid_t *sid )
+int s390_SenseID( int irq, senseid_t *sid, __u8 lpm )
 {
-	ccw1_t     sense_ccw;   /* ccw area for SenseID command */
+	ccw1_t     sense_ccw[2];  /* ccw area for SenseID command */
+	senseid_t  isid;          /* internal sid */				
+	devstat_t  devstat;       /* required by request_irq() */
+	__u8       pathmask;      /* calulate path mask */
+	__u8       domask;        /* path mask to use */
+	int        inlreq;        /* inline request_irq() */
+	int        irq_ret;       /* return code */
+	devstat_t *pdevstat;      /* ptr to devstat in use */
+	int        retry;         /* retry count */
+	int        io_retry;      /* retry indicator */
+
+	senseid_t *psid     = sid;/* start with the external buffer */	
+	int        sbuffer  = 0; /* switch SID data buffer */
+
+   if ( (irq > highest_subchannel) || (irq < 0 ) )
+   {
+      return( -ENODEV );
+
+   }
+	else if ( ioinfo[irq] == INVALID_STORAGE_AREA )
+	{
+		return( -ENODEV);
+
+   } /* endif */
+
+   if ( ioinfo[irq]->ui.flags.oper == 0 )
+   {
+      return( -ENODEV );
+
+   } /* endif */
+
+		if ( !ioinfo[irq]->ui.flags.ready )
+       {
+
+		pdevstat = &devstat;
+
+       /*
+		 * Perform SENSE ID command processing. We have to request device
+		 *  ownership and provide a dummy I/O handler. We issue sync. I/O
+		 *  requests and evaluate the devstat area on return therefore
+		 *  we don't need a real I/O handler in place.
+        */
+		irq_ret = request_irq( irq, init_IRQ_handler, 0, "SID", &devstat);
+
+		if ( irq_ret == 0 )
+			inlreq = 1;
+   }
+   else
+   {
+		inlreq   = 0;
+		irq_ret  = 0;
+		pdevstat = ioinfo[irq]->irq_desc.action->dev_id;
+
+   } /* endif */
+
+	if ( irq_ret == 0 )
+{
+      int i;
+
+		s390irq_spin_lock( irq);
+
+		// more than one path installed ?
+		if ( ioinfo[irq]->schib.pmcw.pim != 0x80 )
+{
+			sense_ccw[0].cmd_code = CCW_CMD_SUSPEND_RECONN;
+			sense_ccw[0].cda      = 0;
+			sense_ccw[0].count    = 0;
+			sense_ccw[0].flags    = CCW_FLAG_SLI | CCW_FLAG_CC;
+
+			sense_ccw[1].cmd_code = CCW_CMD_SENSE_ID;
+			sense_ccw[1].cda      = (char *)virt_to_phys( psid );
+			sense_ccw[1].count    = sizeof( senseid_t);
+			sense_ccw[1].flags    = CCW_FLAG_SLI;
+		}
+		else
+		{
+			sense_ccw[0].cmd_code = CCW_CMD_SENSE_ID;
+			sense_ccw[0].cda      = (char *)virt_to_phys( psid );
+			sense_ccw[0].count    = sizeof( senseid_t);
+			sense_ccw[0].flags    = CCW_FLAG_SLI;
+
+		} /* endif */
+
+		for ( i = 0 ; (i < 8) ; i++ )
+		{
+			pathmask = 0x80 >> i;						
+
+			domask = ioinfo[irq]->opm & pathmask;
+
+			if ( lpm )
+				domask &= lpm;
+
+			if ( domask )
+		{
+				psid->cu_type    = 0xFFFF;  /* initialize fields ... */
+				psid->cu_model   = 0;
+				psid->dev_type   = 0;
+				psid->dev_model  = 0;
+
+				retry            = 5;  /* retry count    */
+				io_retry         = 1;  /* enable retries */
+   	
+				/*
+				 * We now issue a SenseID request. In case of BUSY,
+				 *  STATUS PENDING or non-CMD_REJECT error conditions
+				 *  we run simple retries.
+				 */
+				do
+	{
+					memset( pdevstat, '\0', sizeof( devstat_t) );
+
+					irq_ret = s390_start_IO( irq,
+					                         sense_ccw,
+					                         0x00E2C9C4,  // == SID
+			   		                      domask,
+					                         DOIO_WAIT_FOR_INTERRUPT
+					                          | DOIO_TIMEOUT
+					                          | DOIO_VALID_LPM
+					                          | DOIO_DONT_CALL_INTHDLR );
+
+					//
+					// The OSA_E FE card possibly causes -ETIMEDOUT
+					//  conditions, as the SenseID may stay start
+					//  pending. This will cause start_IO() to finally
+					//  halt the operation we should retry. If the halt
+					//  fails this may cause -EBUSY we simply retry
+					//  and eventually clean up with free_irq().   	     		
+					//
+
+					if ( psid->cu_type  == 0xFFFF )
+	{
+						if ( pdevstat->flag & DEVSTAT_STATUS_PENDING )
+		{
+#ifdef CONFIG_DEBUG_IO
+							printk( "SenseID : device %04X on "
+							        "Subchannel %04X "
+							        "reports pending status, "
+							        "retry : %d\n",
+							        ioinfo[irq]->schib.pmcw.dev,
+					   		     irq,
+							        retry);
+#endif
+						} /* endif */
+
+						if ( pdevstat->flag & DEVSTAT_FLAG_SENSE_AVAIL )
+			{
+							/*
+							 * if the device doesn't support the SenseID
+							 *  command further retries wouldn't help ...
+							 */
+							if (  pdevstat->ii.sense.data[0]
+							    & (SNS0_CMD_REJECT | SNS0_INTERVENTION_REQ) )
+			{
+#ifdef CONFIG_DEBUG_IO
+								printk( "SenseID : device %04X on "
+								        "Subchannel %04X "
+								        "reports cmd reject or "
+								        "intervention required\n",
+								        ioinfo[irq]->schib.pmcw.dev,
+								        irq);
+#endif
+								io_retry = 1;
+		}
+#ifdef CONFIG_DEBUG_IO
+		else
+		{
+								printk( "SenseID : UC on "
+								        "dev %04X, "
+								        "retry %d, "
+								        "lpum %02X, "
+								        "cnt %02d, "
+								        "sns :"
+								        " %02X%02X%02X%02X "
+								        "%02X%02X%02X%02X ...\n",
+								        ioinfo[irq]->schib.pmcw.dev,
+								        retry,
+								        pdevstat->lpum,
+								        pdevstat->scnt,
+								        pdevstat->ii.sense.data[0],
+								        pdevstat->ii.sense.data[1],
+								        pdevstat->ii.sense.data[2],
+								        pdevstat->ii.sense.data[3],
+								        pdevstat->ii.sense.data[4],
+								        pdevstat->ii.sense.data[5],
+								        pdevstat->ii.sense.data[6],
+								        pdevstat->ii.sense.data[7]);
+
+		} /* endif */
+#endif
+	}
+						else if (    ( pdevstat->flag & DEVSTAT_NOT_OPER )
+					             || ( irq_ret        == -ENODEV         ) )
+	{
+#ifdef CONFIG_DEBUG_IO
+							printk( "SenseID : path %02X for "
+							        "device %04X on "
+							        "subchannel %04X "
+							        "is 'not operational'\n",
+							        domask,
+							        ioinfo[irq]->schib.pmcw.dev,
+							        irq);
+#endif
+
+							io_retry          = 0;
+							ioinfo[irq]->opm &= ~domask;
+
+}
+#ifdef CONFIG_DEBUG_IO
+						else if (     (pdevstat->flag !=
+						                    (   DEVSTAT_START_FUNCTION
+						                      | DEVSTAT_FINAL_STATUS    ) )
+						           && !(pdevstat->flag &
+						                    DEVSTAT_STATUS_PENDING        ) )
+						{
+							printk( "SenseID : start_IO() for "
+							        "device %04X on "
+							        "subchannel %04X "
+							        "returns %d, retry %d, "
+							        "status %04X\n",
+							        ioinfo[irq]->schib.pmcw.dev,
+							        irq,
+							        irq_ret,
+							        retry,
+							        pdevstat->flag);
+
+						} /* endif */
+#endif
+	}
+					else   // we got it ...
+	{
+						if ( !sbuffer )	// switch buffers
+	{
+							/*
+							 * we report back the
+							 *  first hit only
+							 */
+							psid = &isid;
+
+							if ( ioinfo[irq]->schib.pmcw.pim != 0x80 )
+      {
+								sense_ccw[1].cda = (char *)virt_to_phys( psid );
+      }
+      else
+      {
+								sense_ccw[0].cda = (char *)virt_to_phys( psid );
+
+      } /* endif */
+
+							/*
+							 * if just the very first
+							 *  was requested to be
+							 *  sensed disable further
+							 *  scans.
+							 */	
+							if ( !lpm )
+								lpm = domask;
+
+							sbuffer = 1;
+
+	} /* endif */
+
+					   if ( pdevstat->rescnt < (sizeof( senseid_t) - 8) )
+{
+							ioinfo[irq]->ui.flags.esid = 1;
+
+						} /* endif */
+
+						io_retry = 0;
+
+					} /* endif */
+
+					if ( io_retry )
+            {
+						retry--;
+	
+						if ( retry == 0 )
+						{
+							io_retry = 0;
+
+            } /* endif */
+
+					} /* endif */
+
+				} while ( (io_retry) );
+
+ 			} /* endif - domask */
+
+      } /* endfor */
+
+		s390irq_spin_unlock( irq);
+
+		/*
+		 * If we installed the irq action handler we have to
+		 *  release it too.
+		 */
+		if ( inlreq )
+			free_irq( irq, pdevstat);
+
+		/*
+		 * if running under VM check there ... perhaps we should do
+		 *  only if we suffered a command reject, but it doesn't harm
+		 */
+		if (    ( sid->cu_type == 0xFFFF    )
+		     && ( MACHINE_IS_VM              ) )
+		{
+			VM_virtual_device_info( ioinfo[irq]->schib.pmcw.dev,
+			                        sid );
+		} /* endif */
+
+		if ( sid->cu_type == 0xFFFF )
+{
+			/*
+			 * SenseID CU-type of 0xffff indicates that no device
+			 *  information could be retrieved (pre-init value).
+			 *
+			 * If we can't couldn't identify the device type we
+			 *  consider the device "not operational".
+			 */
+#ifdef CONFIG_DEBUG_IO
+			printk( "SenseID : unknown device %04X on subchannel %04X\n",
+			        ioinfo[irq]->schib.pmcw.dev,
+			        irq);
+#endif
+			ioinfo[irq]->ui.flags.unknown = 1;
+
+		} /* endif */
+
+		/*
+		 * Issue device info message if unit was operational .
+		 */
+		if ( ioinfo[irq]->ui.flags.unknown )
+	{
+			if ( sid->dev_type != 0 )
+      {
+				printk( "SenseID : device %04X reports: CU  Type/Mod = %04X/%02X,"
+				        " Dev Type/Mod = %04X/%02X\n",
+				        ioinfo[irq]->schib.pmcw.dev,
+				        sid->cu_type,
+				        sid->cu_model,
+				        sid->dev_type,
+				        sid->dev_model);
+			}
+			else
+         {
+				printk( "SenseID : device %04X reports:"
+				        " Dev Type/Mod = %04X/%02X\n",
+				        ioinfo[irq]->schib.pmcw.dev,
+				        sid->cu_type,
+				        sid->cu_model);
+
+         } /* endif */
+
+	} /* endif */
+
+		if ( ioinfo[irq]->ui.flags.unknown )
+			irq_ret = 0;
+		else
+			irq_ret = -ENODEV;
+
+	} /* endif */
+
+   return( irq_ret );
+}
+
+static int __inline__ s390_SetMultiPath( int irq )
+{
+	int cc;
+
+	cc = stsch( irq, &ioinfo[irq]->schib );
+
+	if ( !cc )
+      {
+		ioinfo[irq]->schib.pmcw.mp = 1;     /* multipath mode */
+
+		cc = msch( irq, &ioinfo[irq]->schib );
+
+	} /* endif */
+
+	return( cc);
+}
+
+/*
+ * Device Path Verification
+ *
+ * Path verification is accomplished by checking which paths (CHPIDs) are
+ *  available. Further, a path group ID is set, if possible in multipath
+ *  mode, otherwise in single path mode.
+ *
+ */
+int s390_DevicePathVerification( int irq, __u8 usermask )
+{
+#if 1
+	int  ccode;
+	__u8 pathmask;
+	__u8 domask;
+
+	int ret = 0;
+
+	if ( ioinfo[irq]->ui.flags.pgid_supp == 0 )
+	{
+		return( 0);	// just exit ...
+
+	} /* endif */
+
+	ccode = stsch( irq, &(ioinfo[irq]->schib) );
+
+	if ( ccode )
+	{
+		ret = -ENODEV;
+}
+	else if ( ioinfo[irq]->schib.pmcw.pim == 0x80 )
+	{
+/*
+		 * no error, just not required for single path only devices
+ */
+		ioinfo[irq]->ui.flags.pgid_supp = 0;
+		ret = 0;
+	}
+	else
+{
+		int    i;
+		pgid_t pgid;
+		__u8   dev_path;
+		int    first  = 1;
+
+		ioinfo[irq]->opm =   ioinfo[irq]->schib.pmcw.pim
+		                   & ioinfo[irq]->schib.pmcw.pam
+		                   & ioinfo[irq]->schib.pmcw.pom;
+
+		if ( usermask )
+	{
+			dev_path = usermask;
+	}
+	else
+	{
+			dev_path = ioinfo[irq]->opm;
+
+	} /* endif */
+
+   	/*
+		 * let's build a path group ID if we don't have one yet
+		 */
+		if ( ioinfo[irq]->ui.flags.pgid == 0)
+		{
+			ioinfo[irq]->pgid.cpu_addr  = *(__u16 *)__LC_CPUADDR;
+			ioinfo[irq]->pgid.cpu_id    = ((cpuid_t *)__LC_CPUID)->ident;
+			ioinfo[irq]->pgid.cpu_model = ((cpuid_t *)__LC_CPUID)->machine;
+			ioinfo[irq]->pgid.tod_high  = *(__u32 *)&irq_IPL_TOD;
+
+			ioinfo[irq]->ui.flags.pgid  = 1;
+
+		} /* endif */
+
+		memcpy( &pgid, &ioinfo[irq]->pgid, sizeof(pgid_t));
+
+		for ( i = 0; i < 8 && !ret ; i++)
+		{
+			pathmask = 0x80 >> i;						
+
+			domask = dev_path & pathmask;
+
+			if ( domask )
+				{
+				ret = s390_SetPGID( irq, domask, &pgid );
+
+				/*
+				 * For the *first* path we are prepared
+				 *  for recovery
+				 *
+				 *  - If we fail setting the PGID we assume its
+				 *     using  a different PGID already (VM) we
+				 *     try to sense.
+				 */
+				if ( ret == -EOPNOTSUPP && first )
+				{
+					*(int *)&pgid = 0;
+
+					ret   = s390_SensePGID( irq, domask, &pgid);
+					first = 0;
+			
+					if ( ret == 0 )
+					{
+			/*
+						 * Check whether we retrieved
+						 *  a reasonable PGID ...
+			 */
+						if ( pgid.inf.ps.state1 == SNID_STATE1_GROUPED )
+				{
+							memcpy( &(ioinfo[irq]->pgid),
+							        &pgid,
+							        sizeof(pgid_t) );
+		}
+						else // ungrouped or garbage ...
+				{
+							ret = -EOPNOTSUPP;
+
+						} /* endif */
+				}
+					else
+				{
+						ioinfo[irq]->ui.flags.pgid_supp = 0;
+
+#ifdef CONFIG_DEBUG_IO
+						printk( "PathVerification(%04X) "
+						        "- Device %04X doesn't "
+						        " support path grouping\n",
+						        irq,
+						        ioinfo[irq]->schib.pmcw.dev);
+#endif
+
+					} /* endif */
+				}
+				else if ( ret )
+				{
+
+#ifdef CONFIG_DEBUG_IO
+						printk( "PathVerification(%04X) "
+						        "- Device %04X doesn't "
+						        " support path grouping\n",
+						        irq,
+						        ioinfo[irq]->schib.pmcw.dev);
+						
+#endif
+
+					ioinfo[irq]->ui.flags.pgid_supp = 0;
+
+				} /* endif */
+      	
+				} /* endif */
+
+		} /* endfor */
+
+			} /* endif */
+
+	return ret;
+#else
+	return 0;
+#endif
+}
+
+			/*
+ * s390_SetPGID
+ *
+ * Set Path Group ID
+			 *
+			 */
+int s390_SetPGID( int irq, __u8 lpm, pgid_t *pgid )
+			{
+	ccw1_t     spid_ccw[2]; /* ccw area for SPID command */
+	devstat_t  devstat;     /* required by request_irq() */
+	devstat_t *pdevstat = &devstat;
+
+	int        irq_ret = 0; /* return code */
+	int        retry   = 5; /* retry count */
+	int        inlreq  = 0; /* inline request_irq() */
+	int        mpath   = 1; /* try multi-path first */
+
+	if ( (irq > highest_subchannel) || (irq < 0 ) )
+	{
+		return( -ENODEV );
+
+	}
+	else if ( ioinfo[irq] == INVALID_STORAGE_AREA )
+			{
+		return( -ENODEV);
+
+	} /* endif */
+
+	if ( ioinfo[irq]->ui.flags.oper == 0 )
+	{
+		return( -ENODEV );
+
+	} /* endif */
+
+	if ( !ioinfo[irq]->ui.flags.ready )
+	{
+		/*
+		 * Perform SENSE ID command processing. We have to request device
+		 *  ownership and provide a dummy I/O handler. We issue sync. I/O
+		 *  requests and evaluate the devstat area on return therefore
+		 *  we don't need a real I/O handler in place.
+		 */
+		irq_ret = request_irq( irq,
+		                       init_IRQ_handler,
+		                       0,
+		                       "SPID",
+		                       pdevstat);
+
+		if ( irq_ret == 0 )
+			inlreq = 1;
+   }
+	else
+	{
+		pdevstat = ioinfo[irq]->irq_desc.action->dev_id;
+
+	} /* endif */
+
+	if ( irq_ret == 0 )
+				   {
+		s390irq_spin_lock( irq);
+
+		spid_ccw[0].cmd_code = 0x5B;	/* suspend multipath reconnect */
+		spid_ccw[0].cda      = 0;
+		spid_ccw[0].count    = 0;
+		spid_ccw[0].flags    = CCW_FLAG_SLI | CCW_FLAG_CC;
+
+		spid_ccw[1].cmd_code = CCW_CMD_SET_PGID;
+		spid_ccw[1].cda      = (char *)virt_to_phys( pgid );
+		spid_ccw[1].count    = sizeof( pgid_t);
+		spid_ccw[1].flags    = CCW_FLAG_SLI;
+
+		pgid->inf.fc = SPID_FUNC_MULTI_PATH | SPID_FUNC_ESTABLISH;
+
+						/*
+		 * We now issue a SenseID request. In case of BUSY
+		 *  or STATUS PENDING conditions we retry 5 times.
+						 */
+		do
+		{
+			memset( pdevstat, '\0', sizeof( devstat_t) );
+
+			irq_ret = s390_start_IO( irq,
+			                         spid_ccw,
+			                         0xE2D7C9C4,  // == SPID
+			                         lpm,         // n/a
+			                         DOIO_WAIT_FOR_INTERRUPT
+			                          | DOIO_VALID_LPM
+			                          | DOIO_DONT_CALL_INTHDLR );
+
+			if ( !irq_ret )
+			{
+				if ( pdevstat->flag & DEVSTAT_STATUS_PENDING )
+				{
+#ifdef CONFIG_DEBUG_IO
+					printk( "SPID - Device %04X "
+					        "on Subchannel %04X "
+					        "reports pending status, "
+					        "retry : %d\n",
+					        ioinfo[irq]->schib.pmcw.dev,
+					        irq,
+					        retry);
+#endif
+				} /* endif */
+
+				if ( pdevstat->flag == (   DEVSTAT_START_FUNCTION
+				                         | DEVSTAT_FINAL_STATUS   ) )
+						{
+					retry = 0;	// successfully set ...
+				}
+				else if ( pdevstat->flag & DEVSTAT_FLAG_SENSE_AVAIL )
+				{
+					/*
+					 * If the device doesn't support the
+					 *  Sense Path Group ID command
+					 *  further retries wouldn't help ...
+					 */
+					if ( pdevstat->ii.sense.data[0] & SNS0_CMD_REJECT )
+					{
+						if ( mpath )
+						{
+							pgid->inf.fc =   SPID_FUNC_SINGLE_PATH
+							               | SPID_FUNC_ESTABLISH;
+							mpath        = 0;
+							retry--;
+						}
+						else
+						{
+							irq_ret = -EOPNOTSUPP;
+							retry   = 0;			
+
+						} /* endif */
+					}
+#ifdef CONFIG_DEBUG_IO
+					else
+					{
+						printk( "SPID - device %04X,"
+						        " unit check,"
+						        " retry %d, cnt %02d,"
+						        " sns :"
+						        " %02X%02X%02X%02X %02X%02X%02X%02X ...\n",
+						        ioinfo[irq]->schib.pmcw.dev,
+						        retry,
+						        pdevstat->scnt,
+						        pdevstat->ii.sense.data[0],
+						        pdevstat->ii.sense.data[1],
+						        pdevstat->ii.sense.data[2],
+						        pdevstat->ii.sense.data[3],
+						        pdevstat->ii.sense.data[4],
+						        pdevstat->ii.sense.data[5],
+						        pdevstat->ii.sense.data[6],
+						        pdevstat->ii.sense.data[7]);
+
+					} /* endif */
+#endif
+				}
+				else if ( pdevstat->flag & DEVSTAT_NOT_OPER )
+				{
+					printk( "SPID - Device %04X "
+					        "on Subchannel %04X "
+					        "became 'not operational'\n",
+					        ioinfo[irq]->schib.pmcw.dev,
+					        irq);
+
+					retry  = 0;
+
+				} /* endif */
+			}
+			else if ( irq_ret != -ENODEV )
+         {
+				retry--;
+			}
+			else
+			{
+				retry = 0;
+
+         } /* endif */
+
+		} while ( retry > 0 );
+
+		s390irq_spin_unlock( irq);
+
+   /*
+		 * If we installed the irq action handler we have to
+		 *  release it too.
+    */
+		if ( inlreq )
+			free_irq( irq, pdevstat);
+
+	} /* endif */
+
+   return( irq_ret );
+}
+
+
+/*
+ * s390_SensePGID
+ *
+ * Sense Path Group ID
+ *
+ */
+int s390_SensePGID( int irq, __u8 lpm, pgid_t *pgid )
+{
+	ccw1_t     snid_ccw;    /* ccw area for SNID command */
    devstat_t  devstat;     /* required by request_irq() */
+	devstat_t *pdevstat = &devstat;
 
    int        irq_ret = 0; /* return code */
    int        retry   = 5; /* retry count */
@@ -3156,15 +5157,20 @@ int s390_SenseID( int irq, senseid_t *sid )
 	{
 		return( -ENODEV );
 
+	}
+	else if ( ioinfo[irq] == INVALID_STORAGE_AREA )
+	{
+		return( -ENODEV);
+
 	} /* endif */
 
-	if ( ioinfo[irq].ui.flags.oper == 0 )
+	if ( ioinfo[irq]->ui.flags.oper == 0 )
 	{
 		return( -ENODEV );
 
 	} /* endif */
 
-	if ( !ioinfo[irq].ui.flags.ready )
+	if ( !ioinfo[irq]->ui.flags.ready )
 	{
 		/*
 		 * Perform SENSE ID command processing. We have to request device
@@ -3172,10 +5178,19 @@ int s390_SenseID( int irq, senseid_t *sid )
        *  requests and evaluate the devstat area on return therefore
        *  we don't need a real I/O handler in place.
        */
-		irq_ret = request_irq( irq, init_IRQ_handler, 0, "SID", &devstat);
+		irq_ret = request_irq( irq,
+		                       init_IRQ_handler,
+		                       0,
+		                       "SNID",
+		                       pdevstat);
 
 		if ( irq_ret == 0 )
 			inlreq = 1;
+
+   }
+	else
+	{
+		pdevstat = ioinfo[irq]->irq_desc.action->dev_id;
 
 	} /* endif */
 
@@ -3183,15 +5198,10 @@ int s390_SenseID( int irq, senseid_t *sid )
    {
 		s390irq_spin_lock( irq);
 
-		sense_ccw.cmd_code = CCW_CMD_SENSE_ID;
-		sense_ccw.cda      = (char *)virt_to_phys( sid );
-		sense_ccw.count    = sizeof( senseid_t);
-		sense_ccw.flags    = CCW_FLAG_SLI;
-
-		senseid[irq].cu_type    = 0xFFFF;  /* initialize fields ... */
-		senseid[irq].cu_model   = 0;
-		senseid[irq].dev_type   = 0;
-		senseid[irq].dev_model  = 0;
+		snid_ccw.cmd_code = CCW_CMD_SENSE_PGID;
+		snid_ccw.cda      = (char *)virt_to_phys( pgid );
+		snid_ccw.count    = sizeof( pgid_t);
+		snid_ccw.flags    = CCW_FLAG_SLI;
 
 		/*
 		 * We now issue a SenseID request. In case of BUSY
@@ -3199,78 +5209,100 @@ int s390_SenseID( int irq, senseid_t *sid )
 		 */
 		do
 		{
-			memset( &devstat, '\0', sizeof( devstat_t) );
+			memset( pdevstat, '\0', sizeof( devstat_t) );
 
 			irq_ret = s390_start_IO( irq,
-			                         &sense_ccw,
-			                         0x00E2C9C4,  // == SID
-			                         0,           // n/a
-			                         DOIO_WAIT_FOR_INTERRUPT );
+			                         &snid_ccw,
+			                         0xE2D5C9C4,  // == SNID
+			                         lpm,         // n/a
+			                         DOIO_WAIT_FOR_INTERRUPT
+			                          | DOIO_VALID_LPM
+			                          | DOIO_DONT_CALL_INTHDLR );
 
-			if ( sid->cu_type == 0xFFFF )
-			{
-				if ( devstat.flag & DEVSTAT_STATUS_PENDING )
+			if ( irq_ret == 0 )
 				{
-#if CONFIG_DEBUG_IO
-					printk( "Device %04X on Subchannel %04X "
-					        "reports pending status, retry : %d\n",
-					        schiblock[irq].pmcw.dev,
-					        irq,
-					        retry);
-#endif
-				} /* endif */
-
-				if ( devstat.flag & DEVSTAT_FLAG_SENSE_AVAIL )
+				if ( pdevstat->flag & DEVSTAT_FLAG_SENSE_AVAIL )
 				{
 					/*
-					 * if the device doesn't support the SenseID
-					 *  command further retries wouldn't help ...
+					 * If the device doesn't support the
+					 *  Sense Path Group ID command
+					 *  further retries wouldn't help ...
 					 */
-					if ( devstat.ii.sense.data[0] == SNS0_CMD_REJECT )
+					if ( pdevstat->ii.sense.data[0] & SNS0_CMD_REJECT )
 					{
 						retry = 0;
+						irq_ret = -EOPNOTSUPP;
 					}
-#if CONFIG_DEBUG_IO
 					else
 					{
-						printk( "Device %04X,"
-						        " UC/SenseID,"
+#ifdef CONFIG_DEBUG_IO
+						printk( "SNID - device %04X,"
+						        " unit check,"
+						        " flag %04X, "
 						        " retry %d, cnt %02d,"
 						        " sns :"
 						        " %02X%02X%02X%02X %02X%02X%02X%02X ...\n",
-						        schiblock[irq].pmcw.dev,
+						        ioinfo[irq]->schib.pmcw.dev,
+						        pdevstat->flag,
 						        retry,
-						        devstat.scnt,
-						        devstat.ii.sense.data[0],
-						        devstat.ii.sense.data[1],
-						        devstat.ii.sense.data[2],
-						        devstat.ii.sense.data[3],
-						        devstat.ii.sense.data[4],
-						        devstat.ii.sense.data[5],
-						        devstat.ii.sense.data[6],
-						        devstat.ii.sense.data[7]);
+						        pdevstat->scnt,
+						        pdevstat->ii.sense.data[0],
+						        pdevstat->ii.sense.data[1],
+						        pdevstat->ii.sense.data[2],
+						        pdevstat->ii.sense.data[3],
+						        pdevstat->ii.sense.data[4],
+						        pdevstat->ii.sense.data[5],
+						        pdevstat->ii.sense.data[6],
+						        pdevstat->ii.sense.data[7]);
+
+#endif
+						retry--;
 
 					} /* endif */
-#endif
 				}
-				else if ( devstat.flag & DEVSTAT_NOT_OPER )
+				else if ( pdevstat->flag & DEVSTAT_NOT_OPER )
 				{
-					printk( "Device %04X on Subchannel %04X "
+					printk( "SNID - Device %04X "
+					        "on Subchannel %04X "
 					        "became 'not operational'\n",
-					        schiblock[irq].pmcw.dev,
+					        ioinfo[irq]->schib.pmcw.dev,
 					        irq);
 
 					retry = 0;
 
-				} /* endif */
 			}
-			else   // we got it ...
+				else
+			{
+					retry = 0; // success ...
+
+			} /* endif */
+			}
+			else if ( irq_ret != -ENODEV ) // -EIO, or -EBUSY
+			{
+#ifdef CONFIG_DEBUG_IO
+				if ( pdevstat->flag & DEVSTAT_STATUS_PENDING )
+				{
+					printk( "SNID - Device %04X "
+					        "on Subchannel %04X "
+					        "reports pending status, "
+					        "retry : %d\n",
+					        ioinfo[irq]->schib.pmcw.dev,
+					        irq,
+					        retry);
+				} /* endif */
+#endif
+
+				printk( "SNID - device %04X,"
+				        " start_io() reports rc : %d, retrying ...\n",
+				        ioinfo[irq]->schib.pmcw.dev,
+				        irq_ret);
+			retry--;
+			}
+			else	// -ENODEV ...
 			{
 				retry = 0;
 
 			} /* endif */
-
-			retry--;
 
 		} while ( retry > 0 );
 
@@ -3281,106 +5313,217 @@ int s390_SenseID( int irq, senseid_t *sid )
 		 *  release it too.
 		 */
 		if ( inlreq )
-			free_irq( irq, &devstat);
-
-		/*
-		 * if running under VM check there ... perhaps we should do
-		 *  only if we suffered a command reject, but it doesn't harm
-		 */
-		if (    ( sid->cu_type == 0xFFFF )
-		     && ( MACHINE_IS_VM              ) )
-		{
-			VM_virtual_device_info( schiblock[irq].pmcw.dev,
-			                        sid );
-		} /* endif */
-
-		if ( sid->cu_type == 0xFFFF )
-		{
-			/*
-			 * SenseID CU-type of 0xffff indicates that no device
-			 *  information could be retrieved (pre-init value).
-			 *
-			 * If we can't couldn't identify the device type we
-			 *  consider the device "not operational".
-			 */
-			printk( "Unknown device %04X on subchannel %04X\n",
-			        schiblock[irq].pmcw.dev,
-			        irq);
-			ioinfo[irq].ui.flags.oper = 0;
-
-		} /* endif */
-
-		/*
-		 * Issue device info message if unit was operational .
-		 */
-		if ( ioinfo[irq].ui.flags.oper )
-		{
-			if ( sid->dev_type != 0 )
-			{
-				printk( "Device %04X reports: CU  Type/Mod = %04X/%02X,"
-				        " Dev Type/Mod = %04X/%02X\n",
-				        schiblock[irq].pmcw.dev,
-				        sid->cu_type,
-				        sid->cu_model,
-				        sid->dev_type,
-				        sid->dev_model);
-			}
-			else
-			{
-				printk( "Device %04X reports:"
-				        " Dev Type/Mod = %04X/%02X\n",
-				        schiblock[irq].pmcw.dev,
-				        sid->cu_type,
-				        sid->cu_model);
-
-			} /* endif */
-
-		} /* endif */
-
-		if ( ioinfo[irq].ui.flags.oper )
-			irq_ret = 0;
-		else
-			irq_ret = -ENODEV;
+			free_irq( irq, pdevstat);
 
 	} /* endif */
 
    return( irq_ret );
 }
 
-void do_crw_pending(void)
-{
+		/*
+ * s390_do_crw_pending
+ *
+ * Called by the machine check handler to process CRW pending
+ *  conditions. It may be a single CRW, or CRWs may be chained.
+ *
+ * Note : we currently process CRWs for subchannel source only
+		 */
+void s390_do_crw_pending( crwe_t *pcrwe )
+		{
+	int irq;
+	int dev_oper = 0;
+	int dev_no   = -1;	
+	int lock     = 0;
+
+#ifdef CONFIG_DEBUG_CRW
+	printk( "do_crw_pending : starting ...\n");
+#endif
+
+	while ( pcrwe != NULL )
+		{
+		switch ( pcrwe->crw.rsc ) {	
+		case CRW_RSC_SCH :
+
+#ifdef CONFIG_DEBUG_CRW
+			printk( "do_crw_pending : source is "
+			        "subchannel\n");
+#endif
+			irq = pcrwe->crw.rsid;
+
+			/*
+			 * If the device isn't known yet
+			 *   we can't lock it ...
+			 */
+	      if ( ioinfo[irq] != INVALID_STORAGE_AREA )
+			{
+				s390irq_spin_lock( irq );
+            lock = 1;
+
+				dev_oper = ioinfo[irq]->ui.flags.oper;
+
+				if ( ioinfo[irq]->ui.flags.dval )
+					dev_no = ioinfo[irq]->devno;
+
+		} /* endif */
+
+#ifdef CONFIG_DEBUG_CRW
+			printk( "do_crw_pending : subchannel validation - start ...\n");
+#endif
+			s390_validate_subchannel( irq, 0 );
+
+			if ( irq > highest_subchannel )
+				highest_subchannel = irq;
+
+#ifdef CONFIG_DEBUG_CRW
+			printk( "do_crw_pending : subchannel validation - done\n");
+#endif
+		/*
+			 * After the validate processing
+			 *   the ioinfo control block
+			 *   should be allocated ...
+		 */
+			if ( lock )
+		{
+				s390irq_spin_unlock( irq );
+
+			} /* endif */
+
+#ifdef CONFIG_DEBUG_CRW
+	      if ( ioinfo[irq] != INVALID_STORAGE_AREA )
+			{
+				printk( "do_crw_pending : ioinfo at %08X\n",
+				        (unsigned)ioinfo[irq]);
+
+			} /* endif */
+#endif
+
+	      if ( ioinfo[irq] != INVALID_STORAGE_AREA )
+			{
+				if ( ioinfo[irq]->ui.flags.oper == 0 )
+				{
+					/*
+					 * If the device has gone
+					 *  call not oper handler        	
+					 */       	
+					if (    (             dev_oper == 1    )
+					     && ( ioinfo[irq]->nopfunc != NULL ) )
+					{
+                  free_irq( irq,
+						          ioinfo[irq]->irq_desc.action->dev_id );
+						ioinfo[irq]->nopfunc( irq,
+						                      DEVSTAT_DEVICE_GONE );				
+
+					} /* endif */
+			}
+			else
+			{
+#ifdef CONFIG_DEBUG_CRW
+					printk( "do_crw_pending : device "
+					        "recognition - start ...\n");
+#endif
+					s390_device_recognition_irq( irq );
+
+#ifdef CONFIG_DEBUG_CRW
+					printk( "do_crw_pending : device "
+					        "recognition - done\n");
+#endif
+		
+					/*
+					 * the device became operational
+					 */
+					if ( dev_oper == 0 )
+					{
+						devreg_t *pdevreg;
+
+						pdevreg = s390_search_devreg( ioinfo[irq] );
+
+						if ( pdevreg != NULL )
+						{
+							if ( pdevreg->oper_func != NULL )
+								pdevreg->oper_func( irq, pdevreg );
+
+			} /* endif */
+					}
+					/*
+					 * ... it is and was operational, but
+					 *      the devno may have changed
+					 */
+					else if ( ioinfo[irq]->devno != dev_no )   					
+					{
+						ioinfo[irq]->nopfunc( irq,
+						                      DEVSTAT_REVALIDATE );				
+
+		} /* endif */
+
+				} /* endif */
+
+	} /* endif */
+
+			break;
+
+		case CRW_RSC_MONITOR :
+
+#ifdef CONFIG_DEBUG_CRW
+			printk( "do_crw_pending : source is "
+			        "monitoring facility\n");
+#endif
+			break;
+
+		case CRW_RSC_CPATH :   	
+
+#ifdef CONFIG_DEBUG_CRW
+			printk( "do_crw_pending : source is "
+			        "channel path\n");
+#endif
+			break;
+
+		case CRW_RSC_CONFIG : 	
+
+#ifdef CONFIG_DEBUG_CRW
+			printk( "do_crw_pending : source is "
+			        "configuration-alert facility\n");
+#endif
+			break;
+
+		case CRW_RSC_CSS :
+
+#ifdef CONFIG_DEBUG_CRW
+			printk( "do_crw_pending : source is "
+			        "channel path\n");
+#endif
+			break;
+
+		default :
+
+#ifdef CONFIG_DEBUG_CRW
+			printk( "do_crw_pending : unknown source\n");
+#endif
+			break;		
+
+		} /* endswitch */
+
+		pcrwe = pcrwe->crwe_next;
+
+	} /* endwhile */
+
+#ifdef CONFIG_DEBUG_CRW
+	printk( "do_crw_pending : done\n");
+#endif
+
+   return;
 }
-#ifdef CONFIG_READIPL_ENABLED
+
+
+/* added by Holger Smolinski for reipl support in reipl.S */
+extern void do_reipl (int);
 void 
-do_reipl ( int sch ) 
+reipl ( int sch )
 {
-	static ccw1_t iplccw[2] = {
-		{ CCW_CMD_READ_IPL, CCW_FLAG_CC, 24, 0x00000000 },
-		{ CCW_CMD_TIC     , CCW_FLAG_CC,  0, 0x00000008 }
-	};
-	static orb_t  iplorb = {
-	  0,
-	};
-	static psw_t psw_0 = {0,};
-	static long cr6_0 = 0x0;
-	static psw_t psw_1 = {0,};
-	static long cr6_1 = 0x0;
         int i;
 
-	/* First disable all Devices/IRQs */
 	for ( i = 0; i < highest_subchannel; i ++ ) {
 	  free_irq ( i, (void*)REIPL_DEVID_MAGIC );
 	}
-	/* re enable the one device */
-	enable_subchannel (sch);
-	__asm__ __volatile__ ( "spx 0" );
-	__asm__ __volatile__ ( "lpsw %0" ::  "m" (psw_0) ); /* disable all */
-	__asm__ __volatile__ ( "lctl 6,6,%0" : : "m" (cr6_0) ); 
-	__asm__ __volatile__ ( "lr 1,%0\n" 
-			       "ssch %1\n"
-			       :: "d" (sch), "m" (iplorb) : "1" );
-	__asm__ __volatile__ ( "lctl 6,6,%0" :: "m" (cr6_1) );
-	__asm__ __volatile__ ( "lpsw %0" ::  "m" (psw_1) );
-	__asm__ __volatile__ ( "lpsw 0" ); /* restart */
+	do_reipl( 0x10000 | sch );
 }
-#endif
+

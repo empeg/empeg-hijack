@@ -41,7 +41,7 @@
 #include <asm/mbx.h>
 #include <asm/machdep.h>
 
-#include "time.h"
+#include <asm/time.h>
 #include "local_irq.h"
 
 static int mbx_set_rtc_time(unsigned long time);
@@ -454,6 +454,7 @@ mbx_init(unsigned long r3, unsigned long r4, unsigned long r5,
 	ppc_md.kbd_init_hw       = pckbd_init_hw;
 #ifdef CONFIG_MAGIC_SYSRQ
 	ppc_md.kbd_sysrq_xlate	 = pckbd_sysrq_xlate;
+	ppc_md.SYSRQ_KEY	 = 0x54;
 #endif
 
 #if defined(CONFIG_BLK_DEV_IDE) || defined(CONFIG_BLK_DEV_IDE_MODULE)

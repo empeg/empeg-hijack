@@ -29,6 +29,8 @@
 #include <asm/spinlock.h>
 #include <asm/dma.h>
 #include <asm/machdep.h>
+#include <asm/nvram.h>
+#include <asm/time.h>
 
 /* Tell string.h we don't want memcpy etc. as cpp defines */
 #define EXPORT_SYMTAB_STROPS
@@ -45,10 +47,14 @@ extern int sys_sigreturn(struct pt_regs *regs);
 extern atomic_t ppc_n_lost_interrupts;
 extern void do_lost_interrupts(unsigned long);
 extern int do_signal(sigset_t *, struct pt_regs *);
+extern unsigned long mktime(unsigned int, unsigned int, unsigned int,
+                            unsigned int, unsigned int, unsigned int);
+extern void to_tm(int tim, struct rtc_time * tm);
 
-asmlinkage long long __ashrdi3(long long, int);
-asmlinkage long long __lshrdi3(long long, int);
-asmlinkage int abs(int);
+long long __ashrdi3(long long, int);
+long long __ashldi3(long long, int);
+long long __lshrdi3(long long, int);
+int abs(int);
 
 EXPORT_SYMBOL(clear_page);
 EXPORT_SYMBOL(do_signal);
@@ -152,6 +158,7 @@ EXPORT_SYMBOL(ppc_ide_md);
 
 EXPORT_SYMBOL(start_thread);
 EXPORT_SYMBOL(kernel_thread);
+EXPORT_SYMBOL(init_mm);
 
 EXPORT_SYMBOL(__cli);
 EXPORT_SYMBOL(__sti);
@@ -164,6 +171,11 @@ EXPORT_SYMBOL(giveup_fpu);
 EXPORT_SYMBOL(enable_kernel_fp);
 EXPORT_SYMBOL(flush_icache_range);
 EXPORT_SYMBOL(xchg_u32);
+
+#ifdef CONFIG_ALTIVEC
+EXPORT_SYMBOL(giveup_altivec);
+#endif
+
 #ifdef __SMP__
 EXPORT_SYMBOL(__global_cli);
 EXPORT_SYMBOL(__global_sti);
@@ -200,6 +212,8 @@ EXPORT_SYMBOL(find_path_device);
 EXPORT_SYMBOL(find_phandle);
 EXPORT_SYMBOL(device_is_compatible);
 EXPORT_SYMBOL(machine_is_compatible);
+EXPORT_SYMBOL(find_pci_device_OFnode);
+EXPORT_SYMBOL(find_all_nodes);
 EXPORT_SYMBOL(get_property);
 EXPORT_SYMBOL(pci_io_base);
 EXPORT_SYMBOL(pci_device_loc);
@@ -210,14 +224,21 @@ EXPORT_SYMBOL(feature_test);
 EXPORT_SYMBOL(note_scsi_host);
 #endif
 EXPORT_SYMBOL(kd_mksound);
-#ifdef CONFIG_PMAC
+/*#ifdef CONFIG_PMAC */
 EXPORT_SYMBOL(nvram_read_byte);
 EXPORT_SYMBOL(nvram_write_byte);
-#endif /* CONFIG_PMAC */
+EXPORT_SYMBOL(pmac_xpram_read);
+EXPORT_SYMBOL(pmac_xpram_write);
+/*#endif*/ /* CONFIG_PMAC */
+#ifdef CONFIG_PPC_RTC
+EXPORT_SYMBOL(mktime);
+EXPORT_SYMBOL(to_tm);
+#endif
 
 EXPORT_SYMBOL(abs);
 
 EXPORT_SYMBOL_NOVERS(__ashrdi3);
+EXPORT_SYMBOL_NOVERS(__ashldi3);
 EXPORT_SYMBOL_NOVERS(__lshrdi3);
 EXPORT_SYMBOL_NOVERS(memcpy);
 EXPORT_SYMBOL_NOVERS(memset);

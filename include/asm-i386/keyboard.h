@@ -38,6 +38,9 @@ extern unsigned char pckbd_sysrq_xlate[128];
 #define kbd_sysrq_xlate		pckbd_sysrq_xlate
 
 #define SYSRQ_KEY 0x54
+#if defined(CONFIG_KDB)
+#define E1_PAUSE  119			/* PAUSE key */
+#endif
 
 /* resource allocation */
 #define kbd_request_region() request_region(0x60, 16, "keyboard")

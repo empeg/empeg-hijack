@@ -30,6 +30,7 @@
 #include <linux/pci.h>
 #include <linux/init.h>
 #include <linux/reboot.h>
+#include <linux/mc146818rtc.h>
 
 #include <asm/ptrace.h>
 #include <asm/system.h>
@@ -68,6 +69,11 @@ nautilus_init_irq(void)
 {
 	STANDARD_INIT_IRQ_PROLOG;
 
+	if (alpha_using_srm) {
+		alpha_mv.device_interrupt = srm_device_interrupt;
+		alpha_mv.kill_arch = generic_kill_arch;
+	}
+
 	enable_irq(2);			/* enable cascade */
 	disable_irq(8);
 }
@@ -88,7 +94,7 @@ nautilus_kill_arch (int mode, char *restart_cmd)
 	{
 		unsigned char control;
 
-		cli();
+		__cli();
 
 		/* Reset periodic interrupt frequency.  */
 		CMOS_WRITE(0x26, RTC_FREQ_SELECT);
@@ -99,7 +105,7 @@ nautilus_kill_arch (int mode, char *restart_cmd)
 		CMOS_WRITE(control, RTC_CONTROL);	
 		CMOS_READ(RTC_INTR_FLAGS);
 
-		sti();
+		__sti();
 	}
 #endif
 
@@ -109,8 +115,8 @@ nautilus_kill_arch (int mode, char *restart_cmd)
 		break;
 	case LINUX_REBOOT_CMD_RESTART:
 		{
-			int v;
-			irongate_hose_write_config_byte(0, 0x07<<3, 0x43, &v, 0);
+			unsigned char v;
+			irongate_hose_read_config_byte(0, 0x07<<3, 0x43, &v, 0);
 			irongate_hose_write_config_byte(0, 0x07<<3, 0x43, v | 0x80, 0);
 			outb(1, 0x92);
 			outb(0, 0x92);
@@ -498,7 +504,8 @@ void nautilus_machine_check(unsigned long vector, unsigned long la_ptr,
 	break;
     }
 
-    printk(KERN_CRIT "> NAUTILUS Machine check 0x%x [%s]\n", vector, mchk_class);
+    printk(KERN_CRIT "> NAUTILUS Machine check 0x%lx [%s]\n",
+	   vector, mchk_class);
 
     if ( cpu_analysis )	
 	ev6_cpu_machine_check(  vector,

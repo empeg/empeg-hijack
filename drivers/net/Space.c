@@ -57,6 +57,7 @@ extern int eepro_probe(struct device *);
 extern int eepro100_probe(struct device *);
 extern int el3_probe(struct device *);
 extern int at1500_probe(struct device *);
+extern int bond_init(struct device *);
 extern int pcnet32_probe(struct device *);
 extern int at1700_probe(struct device *);
 extern int fmv18x_probe(struct device *);
@@ -103,6 +104,7 @@ extern int pamsnet_probe(struct device *);
 extern int tlan_probe(struct device *);
 extern int mace_probe(struct device *);
 extern int bmac_probe(struct device *);
+extern int gmac_probe(struct device *);
 extern int ncr885e_probe(struct device *);
 extern int cs89x0_probe(struct device *dev);
 extern int ethertap_probe(struct device *dev);
@@ -120,10 +122,12 @@ extern int via_rhine_probe(struct device *dev);
 extern int tc515_probe(struct device *dev);
 extern int lance_probe(struct device *dev);
 extern int rcpci_probe(struct device *);
-extern int dmfe_reg_board(struct device *);
+extern int dmfe_probe(struct device *);
+extern int sktr_probe(struct device *dev);
 
 /* Gigabit Ethernet adapters */
 extern int yellowfin_probe(struct device *dev);
+extern int hamachi_probe(struct device *dev);
 extern int acenic_probe(struct device *dev);
 extern int skge_probe(struct device *dev);
 
@@ -145,6 +149,9 @@ extern int iph5526_probe(struct device *dev);
 
 /* SBNI adapters */
 extern int sbni_probe(struct device *);
+
+/* WAN Adapters */
+extern int lmc_probe_fake(struct device *);
 
 struct devprobe
 {
@@ -201,6 +208,9 @@ struct devprobe pci_probes[] __initdata = {
 #ifdef CONFIG_EEXPRESS_PRO100	/* Intel EtherExpress Pro/100 */
 	{eepro100_probe, 0},
 #endif
+#ifdef CONFIG_LANMEDIA          /* Lanmedia must be before Tulip */
+        {lmc_probe_fake, 0},
+#endif
 #if defined(CONFIG_DEC_ELCP) || defined(CONFIG_DEC_ELCP_OLD)
 	{tulip_probe, 0},
 #endif
@@ -221,11 +231,14 @@ struct devprobe pci_probes[] __initdata = {
 #endif
 
 #ifdef CONFIG_DM9102
-	{dmfe_reg_board, 0}, 
+	{dmfe_probe, 0}, 
 #endif
 
 #ifdef CONFIG_YELLOWFIN
 	{yellowfin_probe, 0},
+#endif
+#ifdef CONFIG_HAMACHI
+	{hamachi_probe, 0},
 #endif
 #ifdef CONFIG_ACENIC
 	{acenic_probe, 0},
@@ -237,7 +250,7 @@ struct devprobe pci_probes[] __initdata = {
 	{via_rhine_probe, 0},
 #endif
 #ifdef CONFI_NET_DM9102
-	{dmfe_reg_board, 0},
+	{dmfe_probe, 0},
 #endif	
 	{NULL, 0},
 };
@@ -463,6 +476,9 @@ struct devprobe ppc_probes[] __initdata = {
 #ifdef CONFIG_BMAC
 	{bmac_probe, 0},
 #endif
+#ifdef CONFIG_GMAC
+	{gmac_probe, 0},
+#endif
 #ifdef CONFIG_NCR885E
 	{ncr885e_probe, 0},
 #endif
@@ -626,6 +642,18 @@ static int fcif_probe(struct device *dev)
 #   define NEXT_DEV	(&tap0_dev)
 #endif
 
+#ifdef CONFIG_BONDING
+static struct device bonding_dev = { "bond0", 0, 0, 0, 0, 0, 0, 0, 0, 0, NEXT_DEV, bond_init, };
+#    undef NEXT_DEV
+#    define NEXT_DEV    (&bonding_dev)
+#endif
+
+#ifdef CONFIG_LANMEDIA
+static struct device lmc_dev = { "lmc_dev", 0, 0, 0, 0, 0, 0, 0, 0, 0, NEXT_DEV, lmc_probe_fake, };
+#    undef NEXT_DEV
+#    define NEXT_DEV    (&lmc_dev)
+#endif
+
 #ifdef CONFIG_SDLA
     extern int sdla_init(struct device *);
     static struct device sdla0_dev = { "sdla0", 0, 0, 0, 0, 0, 0, 0, 0, 0, NEXT_DEV, sdla_init, };
@@ -782,6 +810,7 @@ struct device eql_dev = {
 /* Token-ring device probe */
 extern int ibmtr_probe(struct device *);
 extern int olympic_probe(struct device *);
+extern int streamer_probe(struct device *);
 
 static int
 trif_probe(struct device *dev)
@@ -793,6 +822,9 @@ trif_probe(struct device *dev)
 #ifdef CONFIG_IBMOL
 	&& olympic_probe(dev)
 #endif
+#ifdef CONFIG_IBMLS
+	&& streamer_probe(dev)
+#endif	
 #ifdef CONFIG_SKTR
 	&& sktr_probe(dev)
 #endif

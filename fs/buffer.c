@@ -27,6 +27,10 @@
 /* invalidate_buffers/set_blocksize/sync_dev race conditions and
    fs corruption fixes, 1999, Andrea Arcangeli <andrea@suse.de> */
 
+/* Wait for dirty buffers to sync in sync_page_buffers.
+ * 2000, Marcelo Tosatti <marcelo@conectiva.com.br>
+ */
+
 #include <linux/malloc.h>
 #include <linux/locks.h>
 #include <linux/errno.h>
@@ -39,10 +43,13 @@
 #include <linux/file.h>
 #include <linux/init.h>
 #include <linux/quotaops.h>
+#include <linux/buffer.h>
+#include <linux/jfs.h>
 
 #include <asm/uaccess.h>
 #include <asm/io.h>
 #include <asm/bitops.h>
+#include <asm/pgtable.h>
 
 #define NR_SIZES 7
 static char buffersize_index[65] =
@@ -74,7 +81,8 @@ static kmem_cache_t *bh_cachep;
 
 static struct buffer_head * unused_list = NULL;
 static struct buffer_head * reuse_list = NULL;
-static struct wait_queue * buffer_wait = NULL;
+
+struct wait_queue * buffer_wait = NULL;
 
 static int nr_buffers = 0;
 static int nr_buffers_type[NR_LIST] = {0,};
@@ -150,6 +158,15 @@ repeat:
 	bh->b_count--;
 }
 
+/* @@@ ext3 debugging only. */
+static void check_buffer_flushable(struct buffer_head *bh)
+{
+	if (bh->b_jlist == 0)
+		J_ASSERT (bh->b_transaction == NULL);
+	else
+		J_ASSERT (bh->b_jlist == BJ_Data);
+}
+
 /* Call sync_buffers with wait!=0 to ensure that the call does not
  * return until all buffer writes have completed.  Sync() may return
  * before the writes have finished; fsync() may not.
@@ -160,7 +177,7 @@ repeat:
  * We will ultimately want to put these in a separate list, but for
  * now we search all of the lists for dirty buffers.
  */
-static int sync_buffers(kdev_t dev, int wait)
+int sync_buffers(kdev_t dev, int wait)
 {
 	int i, retry, pass = 0, err = 0;
 	struct buffer_head * bh, *next;
@@ -182,6 +199,7 @@ repeat:
 		for (i = nr_buffers_type[BUF_DIRTY]*2 ; i-- > 0 ; bh = next) {
 			if (bh->b_list != BUF_DIRTY)
 				goto repeat;
+			check_buffer_flushable(bh);
 			next = bh->b_next_free;
 			if (!lru_list[BUF_DIRTY])
 				break;
@@ -224,6 +242,7 @@ repeat:
 			bh->b_count++;
 			next->b_count++;
 			bh->b_flushtime = 0;
+			check_buffer_flushable(bh);
 			ll_rw_block(WRITE, 1, &bh);
 			bh->b_count--;
 			next->b_count--;
@@ -266,9 +285,9 @@ repeat:
 
 void sync_dev(kdev_t dev)
 {
-	sync_supers(dev);
 	sync_inodes(dev);
 	DQUOT_SYNC(dev);
+	sync_supers(dev);
 	/* sync all the dirty buffers out to disk only _after_ all the
 	   high level layers finished generated buffer dirty data
 	   (or we'll return with some buffer still dirty on the blockdevice
@@ -290,8 +309,8 @@ void sync_dev(kdev_t dev)
 int fsync_dev(kdev_t dev)
 {
 	sync_buffers(dev, 0);
-	sync_supers(dev);
 	sync_inodes(dev);
+	sync_supers(dev);
 	DQUOT_SYNC(dev);
 	return sync_buffers(dev, 1);
 }
@@ -678,21 +697,26 @@ void set_blocksize(kdev_t dev, int size)
 			bhnext = bh->b_next_free;
 			if (bh->b_dev != dev || bh->b_size == size)
 				continue;
-			if (buffer_dirty(bh))
-				printk(KERN_ERR "set_blocksize: dev %s buffer_dirty %lu size %lu\n", kdevname(dev), bh->b_blocknr, bh->b_size);
 			if (buffer_locked(bh))
 			{
 				slept = 1;
 				wait_on_buffer(bh);
 			}
+			if (buffer_dirty(bh))
+				printk(KERN_WARNING "set_blocksize: dev %s buffer_dirty %lu size %lu\n", kdevname(dev), bh->b_blocknr, bh->b_size);
 			if (!bh->b_count)
 				put_last_free(bh);
 			else
-				printk(KERN_ERR
+			{
+				mark_buffer_clean(bh);
+				clear_bit(BH_Uptodate, &bh->b_state);
+				clear_bit(BH_Req, &bh->b_state);
+				printk(KERN_WARNING
 				       "set_blocksize: "
-				       "b_count %d, dev %s, block %lu!\n",
+				       "b_count %d, dev %s, block %lu, from %p\n",
 				       bh->b_count, bdevname(bh->b_dev),
-				       bh->b_blocknr);
+				       bh->b_blocknr, __builtin_return_address(0));
+			}
 			if (slept)
 				goto again;
 		}
@@ -707,6 +731,7 @@ static void refill_freelist(int size)
 	if (!grow_buffers(size)) {
 		wakeup_bdflush(1);
 		current->policy |= SCHED_YIELD;
+		current->state = TASK_RUNNING;
 		schedule();
 	}
 }
@@ -723,7 +748,7 @@ void init_buffer(struct buffer_head *bh, kdev_t dev, int block,
 	bh->b_dev_id = dev_id;
 }
 
-static void end_buffer_io_sync(struct buffer_head *bh, int uptodate)
+void end_buffer_io_sync(struct buffer_head *bh, int uptodate)
 {
 	mark_buffer_uptodate(bh, uptodate);
 	unlock_buffer(bh);
@@ -815,14 +840,18 @@ void refile_buffer(struct buffer_head * buf)
 
 	if(buf->b_dev == B_FREE) {
 		printk("Attempt to refile free buffer\n");
+		*((char *) 0) = 0;
 		return;
 	}
-	if (buffer_dirty(buf))
+	if (buf->b_jlist != BJ_None && buf->b_jlist != BJ_Data)
+		dispose = BUF_JOURNAL;
+	else if (buffer_dirty(buf))
 		dispose = BUF_DIRTY;
 	else if (buffer_locked(buf))
 		dispose = BUF_LOCKED;
 	else
 		dispose = BUF_CLEAN;
+
 	if(dispose != buf->b_list) {
 		file_buffer(buf, dispose);
 		if(dispose == BUF_DIRTY) {
@@ -843,6 +872,13 @@ void refile_buffer(struct buffer_head * buf)
 				wakeup_bdflush(1);
 		}
 	}
+
+	/* If we have just written a checkpointed jfs buffer, then we
+	   can now unlink it from its original transaction: there's no
+	   need to keep the transaction pinned in the log once the datat
+	   is safely on disk. */
+	if (dispose == BUF_CLEAN && buf->b_cp_transaction)
+		journal_remove_checkpoint(buf);
 }
 
 /*
@@ -857,9 +893,13 @@ void __brelse(struct buffer_head * buf)
 
 	if (buf->b_count) {
 		buf->b_count--;
+		if (!buf->b_count &&
+		    (buf->b_jlist != BJ_None && buf->b_jlist != BJ_Shadow && buf->b_jlist != BJ_Data))
+			J_ASSERT (!test_bit(BH_JWrite, &buf->b_state));
 		return;
 	}
 	printk("VFS: brelse: Trying to free free buffer\n");
+	J_ASSERT(buf->b_count > 0);
 }
 
 /*
@@ -870,7 +910,10 @@ void __brelse(struct buffer_head * buf)
  */
 void __bforget(struct buffer_head * buf)
 {
-	if (buf->b_count != 1 || buffer_locked(buf)) {
+	/* @@@ TODO (non-urgent): Put checkpointed buffers on the
+           current transaction's forget list here. */
+	if (buf->b_count != 1 || buffer_locked(buf) ||
+	    buffer_journaled(buf)) {
 		__brelse(buf);
 		return;
 	}
@@ -965,7 +1008,7 @@ struct buffer_head * breada(kdev_t dev, int block, int bufsize,
 /*
  * Note: the caller should wake up the buffer_wait list if needed.
  */
-static void put_unused_buffer_head(struct buffer_head * bh)
+void put_unused_buffer_head(struct buffer_head * bh)
 {
 	if (nr_unused_buffer_heads >= MAX_UNUSED_BUFFERS) {
 		nr_buffer_heads--;
@@ -1013,7 +1056,7 @@ static inline int recover_reusable_buffer_heads(void)
  * no-buffer-head deadlock.  Return NULL on failure; waiting for
  * buffer heads is now handled in create_buffers().
  */ 
-static struct buffer_head * get_unused_buffer_head(int async)
+struct buffer_head * get_unused_buffer_head(int async)
 {
 	struct buffer_head * bh;
 
@@ -1258,7 +1301,7 @@ bad_count:
 int brw_page(int rw, struct page *page, kdev_t dev, int b[], int size, int bmap)
 {
 	struct buffer_head *bh, *prev, *next, *arr[MAX_BUF_PER_PAGE];
-	int block, nr;
+	int block, nr, need_dcache_flush;
 
 	if (!PageLocked(page))
 		panic("brw_page: page not locked for I/O");
@@ -1277,6 +1320,7 @@ int brw_page(int rw, struct page *page, kdev_t dev, int b[], int size, int bmap)
 		return -ENOMEM;
 	}
 	nr = 0;
+	need_dcache_flush = 0;
 	next = bh;
 	do {
 		struct buffer_head * tmp;
@@ -1303,9 +1347,10 @@ int brw_page(int rw, struct page *page, kdev_t dev, int b[], int size, int bmap)
 					ll_rw_block(READ, 1, &tmp);
 				wait_on_buffer(tmp);
 			}
-			if (rw == READ) 
+			if (rw == READ) {
 				memcpy(next->b_data, tmp->b_data, size);
-			else {
+				need_dcache_flush = 1;
+			} else {
 				memcpy(tmp->b_data, next->b_data, size);
 				mark_buffer_dirty(tmp, 0);
 			}
@@ -1319,6 +1364,8 @@ int brw_page(int rw, struct page *page, kdev_t dev, int b[], int size, int bmap)
 			set_bit(BH_Dirty, &next->b_state);
 		arr[nr++] = next;
 	} while (prev = next, (next = next->b_this_page) != NULL);
+	if (need_dcache_flush)
+		flush_dcache_page(page_address(page));
 	prev->b_this_page = bh;
 	
 	if (nr) {
@@ -1451,7 +1498,44 @@ static int grow_buffers(int size)
  * Can the buffer be thrown out?
  */
 #define BUFFER_BUSY_BITS	((1<<BH_Dirty) | (1<<BH_Lock) | (1<<BH_Protected))
-#define buffer_busy(bh)		((bh)->b_count || ((bh)->b_state & BUFFER_BUSY_BITS))
+static inline int buffer_busy(struct buffer_head *bh) 
+{
+	if (bh->b_count)
+		return 1;
+	if (bh->b_state & BUFFER_BUSY_BITS)
+		return 1;
+	if (bh->b_jlist != BJ_None || bh->b_cp_transaction != NULL)
+		return 1;
+	/* @@@ Expensive debugging code, eliminate at some point */
+	J_ASSERT(bh->b_transaction == NULL);
+	J_ASSERT(!test_bit(BH_JWrite, &bh->b_state));
+	return 0;
+}
+
+
+static int sync_page_buffers(struct buffer_head *bh, int wait)
+{
+	struct buffer_head * tmp = bh;
+
+	do {
+		struct buffer_head *p = tmp;
+		tmp = tmp->b_this_page;
+		if (buffer_locked(p)) {
+			if (wait)
+				__wait_on_buffer(p);
+		} else if (buffer_dirty(p) && !p->b_jlist)
+			ll_rw_block(WRITE, 1, &p);
+	} while (tmp != bh);
+
+	do {
+		struct buffer_head *p = tmp;
+		tmp = tmp->b_this_page;
+		if (buffer_busy(p))
+			return 1;
+	} while (tmp != bh);
+
+	return 0;
+}
 
 /*
  * try_to_free_buffers() checks if all the buffers on this particular page
@@ -1460,22 +1544,19 @@ static int grow_buffers(int size)
  * Wake up bdflush() if this fails - if we're running low on memory due
  * to dirty buffers, we need to flush them out as quickly as possible.
  */
-int try_to_free_buffers(struct page * page_map)
+int try_to_free_buffers(struct page * page_map, int wait)
 {
 	struct buffer_head * tmp, * bh = page_map->buffers;
+	int too_many;
 
 	tmp = bh;
 	do {
-		struct buffer_head * p = tmp;
-
+		if (buffer_busy(tmp))
+			goto busy;
 		tmp = tmp->b_this_page;
-		if (!buffer_busy(p))
-			continue;
-
-		wakeup_bdflush(0);
-		return 0;
 	} while (tmp != bh);
 
+ succeed:
 	tmp = bh;
 	do {
 		struct buffer_head * p = tmp;
@@ -1493,6 +1574,28 @@ int try_to_free_buffers(struct page * page_map)
 	page_map->buffers = NULL;
 	__free_page(page_map);
 	return 1;
+
+ busy:
+	too_many = (nr_buffers * bdf_prm.b_un.nfract/100);
+
+	if (!sync_page_buffers(bh, wait)) {
+
+		/* If a high percentage of the buffers are dirty, 
+		 * wake kflushd 
+		 */
+		if (nr_buffers_type[BUF_DIRTY] > too_many)
+			wakeup_bdflush(0);
+			
+		/*
+		 * We can jump after the busy check because
+		 * we rely on the kernel lock.
+		 */
+		goto succeed;
+	}
+
+	if(nr_buffers_type[BUF_DIRTY] > too_many)
+		wakeup_bdflush(0);
+	return 0;
 }
 
 /* ================== Debugging =================== */
@@ -1503,7 +1606,7 @@ void show_buffers(void)
 	int found = 0, locked = 0, dirty = 0, used = 0, lastused = 0;
 	int protected = 0;
 	int nlist;
-	static char *buf_types[NR_LIST] = {"CLEAN","LOCKED","DIRTY"};
+	static char *buf_types[NR_LIST] = {"CLEAN","LOCKED","DIRTY","JFS"};
 
 	printk("Buffer memory:   %8ldkB\n",buffermem>>10);
 	printk("Buffer heads:    %6d\n",nr_buffer_heads);
@@ -1654,6 +1757,9 @@ static int sync_old_buffers(void)
 	for(nlist = BUF_LOCKED; nlist <= BUF_DIRTY; nlist++)
 #endif
 	{
+		if (nlist == BUF_JOURNAL)
+			continue;	/* Never sync journaled buffers, even
+					   when debugging! */
 		ndirty = 0;
 		nwritten = 0;
 	repeat:
@@ -1663,6 +1769,7 @@ static int sync_old_buffers(void)
 			 for (i = nr_buffers_type[nlist]; i-- > 0; bh = next) {
 				 /* We may have stalled while waiting for I/O to complete. */
 				 if(bh->b_list != nlist) goto repeat;
+				 check_buffer_flushable(bh);
 				 next = bh->b_next_free;
 				 if(!lru_list[nlist]) {
 					 printk("Dirty list empty %d\n", i);
@@ -1693,6 +1800,7 @@ static int sync_old_buffers(void)
 #ifdef DEBUG
 				 if(nlist != BUF_DIRTY) ncount++;
 #endif
+				 check_buffer_flushable(bh);
 				 ll_rw_block(WRITE, 1, &bh);
 				 bh->b_count--;
 				 next->b_count--;
@@ -1809,6 +1917,12 @@ int bdflush(void * unused)
 #endif
 		 {
 			 ndirty = 0;
+
+			 /* Never sync journaled buffers, even when
+			  * debugging! */
+			 if (nlist == BUF_JOURNAL)
+				 continue;	
+
 		 repeat:
 
 			 bh = lru_list[nlist];
@@ -1817,6 +1931,7 @@ int bdflush(void * unused)
 				       bh = next) {
 					  /* We may have stalled while waiting for I/O to complete. */
 					  if(bh->b_list != nlist) goto repeat;
+					  check_buffer_flushable(bh);
 					  next = bh->b_next_free;
 					  if(!lru_list[nlist]) {
 						  printk("Dirty list empty %d\n", i);
@@ -1844,6 +1959,7 @@ int bdflush(void * unused)
 					  bh->b_count++;
 					  ndirty++;
 					  bh->b_flushtime = 0;
+					  check_buffer_flushable(bh);
 					  if (major == LOOP_MAJOR) {
 						  ll_rw_block(wrta_cmd,1, &bh);
 						  wrta_cmd = WRITEA;
@@ -1924,5 +2040,3 @@ int kupdate(void * unused)
 		sync_old_buffers();
 	}
 }
-
-#include "reiserfs/buffer.c"

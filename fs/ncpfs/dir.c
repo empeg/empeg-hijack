@@ -868,7 +868,9 @@ dentry->d_parent->d_name.name, dentry->d_name.name);
 int ncp_create_new(struct inode *dir, struct dentry *dentry, int mode,
 		int attributes)
 {
+ 	struct ncp_server *server = NCP_SERVER(dir);
 	int error, result;
+	int opmode;
 	struct ncpfs_inode_info finfo;
 	__u8 _name[dentry->d_name.len + 1];
 	
@@ -886,18 +888,25 @@ dentry->d_parent->d_name.name, dentry->d_name.name, mode);
 	io2vol(NCP_SERVER(dir), _name, !ncp_preserve_case(dir));
 
 	error = -EACCES;
-	result = ncp_open_create_file_or_subdir(NCP_SERVER(dir), dir, _name,
+	result = ncp_open_create_file_or_subdir(server, dir, _name,
 			   OC_MODE_CREATE | OC_MODE_OPEN | OC_MODE_REPLACE,
 			   attributes, AR_READ | AR_WRITE, &finfo.nw_info);
-	if (!result) {
-		finfo.nw_info.access = O_RDWR;
-		error = ncp_instantiate(dir, dentry, &finfo);
-	} else {
-		if (result == 0x87) error = -ENAMETOOLONG;
-		DPRINTK(KERN_DEBUG "ncp_create: %s/%s failed\n",
-			dentry->d_parent->d_name.name, dentry->d_name.name);
-	}
-
+	opmode = O_RDWR;
+	if (result) {
+		result = ncp_open_create_file_or_subdir(server, dir, _name,
+				OC_MODE_CREATE | OC_MODE_OPEN | OC_MODE_REPLACE,
+				attributes, AR_WRITE, &finfo.nw_info);
+		if (result) {
+			if (result == 0x87)
+				error = -ENAMETOOLONG;
+			DPRINTK("ncp_create: %s/%s failed\n",
+				dentry->d_parent->d_name.name, dentry->d_name.name);
+			goto out;
+		}
+		opmode = O_WRONLY;
+ 	}
+	finfo.nw_info.access = opmode;
+	error = ncp_instantiate(dir, dentry, &finfo);
 out:
 	return error;
 }
@@ -1009,9 +1018,9 @@ printk(KERN_DEBUG "ncp_unlink: closing file\n");
 
 	error = ncp_del_file_or_subdir2(NCP_SERVER(dir), dentry);
 #ifdef CONFIG_NCPFS_STRONG
-	/* 9C is Invalid path.. It should be 8F, 90 - read only, but
-	   it is not :-( */
-	if (error == 0x9C && NCP_SERVER(dir)->m.flags & NCP_MOUNT_STRONG) { /* R/O */
+	/* 9C is Invalid path, used by traditional NW filesystem... 
+	   8F, 90 is Some/All read-only and is used by NSS :-( */
+	if ((error == 0x9C || error == 0x8F || error == 0x90) && NCP_SERVER(dir)->m.flags & NCP_MOUNT_STRONG) { /* R/O */
 		error = ncp_force_unlink(dir, dentry);
 	}
 #endif
@@ -1076,7 +1085,7 @@ static int ncp_rename(struct inode *old_dir, struct dentry *old_dentry,
 					    old_dir, _old_name,
 					    new_dir, _new_name);
 #ifdef CONFIG_NCPFS_STRONG
-	if ((error == 0x90 || error == -EACCES) && NCP_SERVER(old_dir)->m.flags & NCP_MOUNT_STRONG) {	/* RO */
+	if ((error == 0x90 || error == 0x8B || error == -EACCES) && NCP_SERVER(old_dir)->m.flags & NCP_MOUNT_STRONG) {	/* RO */
 		error = ncp_force_rename(old_dir, old_dentry, _old_name,
                                          new_dir, new_dentry, _new_name);
 	}

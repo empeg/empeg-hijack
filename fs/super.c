@@ -111,7 +111,6 @@ static struct vfsmount *add_vfsmnt(struct super_block *sb,
 
 	sema_init(&lptr->mnt_dquot.dqio_sem, 1);
 	sema_init(&lptr->mnt_dquot.dqoff_sem, 1);
-	lptr->mnt_dquot.flags = 0;
 
 	/* N.B. Is it really OK to have a vfsmount without names? */
 	if (dev_name && !IS_ERR(tmp = getname(dev_name))) {
@@ -850,14 +849,35 @@ int fs_may_mount(kdev_t dev)
  * mount point will always go to the top of stack element.
  * Anyone using this new feature must know what he/she is doing.
  */
+int do_mount(kdev_t dev, const char * dev_name, const char * dir_name, const char * type, int flags, void * data) {
+#ifdef CONFIG_EXT3_FS
+	int ret = -EACCES;
+	const char e2[] = "ext2";
+    const char e3[] = "ext3";
 
-int do_mount(kdev_t dev, const char * dev_name, const char * dir_name, const char * type, int flags, void * data)
-{
+    if (strcmp(type, "ext2") == 0) {
+    	printk("empeg-EXT3: changing mount type for:%s\n",dev_name);
+        type = e3;
+		ret = orig_do_mount(dev, dev_name, dir_name, type, flags, data);
+		if(ret!=0) {
+   			printk("empeg-EXT3: ext3 mount of %s failed falling back to ext2.\n",dev_name);
+			type = e2;
+			ret = orig_do_mount(dev, dev_name, dir_name, type, flags, data);
+		}
+   	} else {
+        	ret = orig_do_mount(dev, dev_name, dir_name, type, flags, data);
+	}
+
+	return ret;
+}
+
+int orig_do_mount(kdev_t dev, const char * dev_name, const char * dir_name, const char * type, int flags, void * data) {
+#endif
 	struct dentry * dir_d;
 	struct super_block * sb;
 	struct vfsmount *vfsmnt;
 	int error;
-
+	
 	error = -EACCES;
 	if (!(flags & MS_RDONLY) && dev && is_read_only(dev))
 		goto out;
@@ -1137,6 +1157,8 @@ clean_up:
 	goto dput_and_out;
 }
 
+extern char * root_mount_data;
+
 void __init mount_root(void)
 {
 	struct file_system_type * fs_type;
@@ -1223,7 +1245,7 @@ void __init mount_root(void)
 	else for (fs_type = file_systems ; fs_type ; fs_type = fs_type->next) {
   		if (!(fs_type->fs_flags & FS_REQUIRES_DEV))
   			continue;
-  		sb = read_super(ROOT_DEV,fs_type->name,root_mountflags,NULL,1);
+  		sb = read_super(ROOT_DEV,fs_type->name,root_mountflags,root_mount_data,1);
 		if (sb) {
 			sb->s_flags = root_mountflags;
 			current->fs->root = dget(sb->s_root);

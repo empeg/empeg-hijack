@@ -22,10 +22,21 @@
  *
  *  6/8/99  - Official Release 0.2.0   
  *            Merged into the kernel code 
- *  
- *  To Do:
  *
- *  Sanitize for smp
+ *  3/10/00 - Enabled FDX and fixed bugs produced thereafter.
+ *  	      Put in smp code
+ *
+ *  5/20/00 - Changes to handle Olympic on LinuxPPC. Endian changes.
+ *            The odd thing about the changes is that the fix for
+ *            endian issues with the big-endian data in the arb, asb...
+ *            was to always swab() the bytes, no matter what CPU.
+ *            That's because the read[wl]() functions always swap the
+ *            bytes on the way in on PPC.
+ *            Fixing the hardware descriptors was another matter,
+ *            because they weren't going through read[wl](), there all
+ *            the results had to be in memory in le32 values. kdaaker
+ *
+ *  To Do:
  *
  *  If Problems do Occur
  *  Most problems can be rectified by either closing and opening the interface
@@ -71,6 +82,7 @@
 #include <asm/io.h>
 #include <asm/system.h>
 #include <asm/bitops.h>
+#include <asm/spinlock.h>
 
 #include "olympic.h"
 
@@ -83,7 +95,7 @@
  */
 
 static char *version = 
-"Olympic.c v0.2.0 6/8/99 - Peter De Schrijver & Mike Phillips" ; 
+"Olympic.c v0.4.0 3/10/00 - Peter De Schrijver & Mike Phillips" ; 
 
 static char *open_maj_error[]  = {"No error", "Lobe Media Test", "Physical Insertion",
 				   "Address Verification", "Neighbor Notification (Ring Poll)",
@@ -163,7 +175,15 @@ __initfunc(static int olympic_scan(struct device *dev))
 	if (pci_present()) {
 
 		while((pci_device=pci_find_device(PCI_VENDOR_ID_IBM, PCI_DEVICE_ID_IBM_TR_WAKE, pci_device))) {
+			u16 pci_command;
 
+		        /* PCI Spec 2.1 states that it is either the driver or PCI card's
+		         * responsibility to set the PCI Master Enable Bit if needed.
+		         * (From Mark Stockton <marks@schooner.sys.hou.compaq.com>)
+		         */
+		        pci_read_config_word(pci_device, PCI_COMMAND, &pci_command);
+			pci_command |= PCI_COMMAND_IO | PCI_COMMAND_MEMORY;
+			pci_write_config_word(pci_device, PCI_COMMAND, pci_command);
 			pci_set_master(pci_device);
 
 			/* Check to see if io has been allocated, if so, we've already done this card,
@@ -245,6 +265,8 @@ __initfunc(static int olympic_init(struct device *dev))
 		}
 	}
 
+	spin_lock_init(&olympic_priv->olympic_lock) ; 
+
 #if OLYMPIC_DEBUG
 	printk("BCTL: %x\n",readl(olympic_mmio+BCTL));
 	printk("GPR: %x\n",readw(olympic_mmio+GPR));
@@ -311,14 +333,14 @@ __initfunc(static int olympic_init(struct device *dev))
 		return -1;
 	}
 
-	uaa_addr=ntohs(readw(init_srb+8));
+	uaa_addr=swab16(readw(init_srb+8));
 
 #if OLYMPIC_DEBUG
 	printk("UAA resides at %x\n",uaa_addr);
 #endif
 
-	writel(uaa_addr,olympic_mmio+LAPA);
-	adapter_addr=olympic_priv->olympic_lap + (uaa_addr & (~0xf800));
+	writel(uaa_addr, olympic_mmio+LAPA);
+	adapter_addr = olympic_priv->olympic_lap + (uaa_addr & (~0xf800));
 
 #if OLYMPIC_DEBUG
 	printk("adapter address: %02x:%02x:%02x:%02x:%02x:%02x\n",
@@ -328,8 +350,8 @@ __initfunc(static int olympic_init(struct device *dev))
 
 	memcpy_fromio(&dev->dev_addr[0], adapter_addr,6);
 
-	olympic_priv->olympic_addr_table_addr = ntohs(readw(init_srb + 12)) ; 
-	olympic_priv->olympic_parms_addr      = ntohs(readw(init_srb + 14)) ; 
+	olympic_priv->olympic_addr_table_addr = swab16(readw(init_srb + 12)); 
+	olympic_priv->olympic_parms_addr = swab16(readw(init_srb + 14)); 
 
 	return 0;
 
@@ -391,9 +413,9 @@ static int olympic_open(struct device *dev)
 		/* If Network Monitor, instruct card to copy MAC frames through the ARB */
 
 #if OLYMPIC_NETWORK_MONITOR
-		writew(ntohs(OPEN_ADAPTER_ENABLE_FDX | OPEN_ADAPTER_PASS_ADC_MAC | OPEN_ADAPTER_PASS_ATT_MAC | OPEN_ADAPTER_PASS_BEACON),init_srb+8);
+		writew(swab16(OPEN_ADAPTER_ENABLE_FDX | OPEN_ADAPTER_PASS_ADC_MAC | OPEN_ADAPTER_PASS_ATT_MAC | OPEN_ADAPTER_PASS_BEACON), init_srb+8);
 #else
-		writew(OPEN_ADAPTER_ENABLE_FDX,init_srb+8);
+		writew(swab16(OPEN_ADAPTER_ENABLE_FDX), init_srb+8);
 #endif		
 
 		if (olympic_priv->olympic_laa[0]) {
@@ -427,7 +449,7 @@ static int olympic_open(struct device *dev)
 #if OLYMPIC_DEBUG
 		printk("init_srb(%p): ",init_srb);
 		for(i=0;i<20;i++)
-			printk("%x ",readb(init_srb+i));
+			printk("%02x ",readb(init_srb+i));
 		printk("\n");
 #endif
 		
@@ -486,10 +508,10 @@ static int olympic_open(struct device *dev)
 	if (olympic_priv->olympic_message_level) 
 		printk(KERN_INFO "%s: Opened in %d Mbps mode\n",dev->name, olympic_priv->olympic_ring_speed);
 
-	olympic_priv->asb=ntohs(readw(init_srb+8));
-	olympic_priv->srb=ntohs(readw(init_srb+10));
-	olympic_priv->arb=ntohs(readw(init_srb+12));
-	olympic_priv->trb=ntohs(readw(init_srb+16));
+	olympic_priv->asb = swab16(readw(init_srb+8));
+	olympic_priv->srb = swab16(readw(init_srb+10));
+	olympic_priv->arb = swab16(readw(init_srb+12));
+	olympic_priv->trb = swab16(readw(init_srb+16));
 
 	olympic_priv->olympic_receive_options = 0x01 ; 
 	olympic_priv->olympic_copy_all_options = 0 ; 
@@ -510,8 +532,8 @@ static int olympic_open(struct device *dev)
 
 		skb->dev = dev;
 
-		olympic_priv->olympic_rx_ring[i].buffer=virt_to_bus(skb->data);
-		olympic_priv->olympic_rx_ring[i].res_length = olympic_priv->pkt_buf_sz ; 
+		olympic_priv->olympic_rx_ring[i].buffer = cpu_to_le32(virt_to_bus(skb->data));
+		olympic_priv->olympic_rx_ring[i].res_length = cpu_to_le32(olympic_priv->pkt_buf_sz); 
 		olympic_priv->rx_ring_skb[i]=skb;
 	}
 
@@ -521,17 +543,17 @@ static int olympic_open(struct device *dev)
 		return -EIO;
 	}
 
-	writel(virt_to_bus(&olympic_priv->olympic_rx_ring[0]),olympic_mmio+RXDESCQ);
-	writel(virt_to_bus(&olympic_priv->olympic_rx_ring[0]),olympic_mmio+RXCDA);
-	writew(i,olympic_mmio+RXDESCQCNT);
+	writel(virt_to_bus(&olympic_priv->olympic_rx_ring[0]), olympic_mmio+RXDESCQ);
+	writel(virt_to_bus(&olympic_priv->olympic_rx_ring[0]), olympic_mmio+RXCDA);
+	writew(i, olympic_mmio+RXDESCQCNT);
 		
-	writel(virt_to_bus(&olympic_priv->olympic_rx_status_ring[0]),olympic_mmio+RXSTATQ);
-	writel(virt_to_bus(&olympic_priv->olympic_rx_status_ring[0]),olympic_mmio+RXCSA);
+	writel(virt_to_bus(&olympic_priv->olympic_rx_status_ring[0]), olympic_mmio+RXSTATQ);
+	writel(virt_to_bus(&olympic_priv->olympic_rx_status_ring[0]), olympic_mmio+RXCSA);
 	
- 	olympic_priv->rx_ring_last_received=OLYMPIC_RX_RING_SIZE-1;	/* last processed rx status */
-	olympic_priv->rx_status_last_received = OLYMPIC_RX_RING_SIZE-1;  
+ 	olympic_priv->rx_ring_last_received = OLYMPIC_RX_RING_SIZE - 1;	/* last processed rx status */
+	olympic_priv->rx_status_last_received = OLYMPIC_RX_RING_SIZE - 1;  
 
-	writew(i,olympic_mmio+RXSTATQCNT);
+	writew(i, olympic_mmio+RXSTATQCNT);
 
 #if OLYMPIC_DEBUG 
 	printk("# of rx buffers: %d, RXENQ: %x\n",i, readw(olympic_mmio+RXENQ));
@@ -560,9 +582,9 @@ static int olympic_open(struct device *dev)
 		olympic_priv->olympic_tx_ring[i].buffer=0xdeadbeef;
 
 	olympic_priv->free_tx_ring_entries=OLYMPIC_TX_RING_SIZE;
-	writel(virt_to_bus(&olympic_priv->olympic_tx_ring[0]),olympic_mmio+TXDESCQ_1);
-	writel(virt_to_bus(&olympic_priv->olympic_tx_ring[0]),olympic_mmio+TXCDA_1);
-	writew(OLYMPIC_TX_RING_SIZE,olympic_mmio+TXDESCQCNT_1);
+	writel(virt_to_bus(&olympic_priv->olympic_tx_ring[0]), olympic_mmio+TXDESCQ_1);
+	writel(virt_to_bus(&olympic_priv->olympic_tx_ring[0]), olympic_mmio+TXCDA_1);
+	writew(OLYMPIC_TX_RING_SIZE, olympic_mmio+TXDESCQCNT_1);
 	
 	writel(virt_to_bus(&olympic_priv->olympic_tx_status_ring[0]),olympic_mmio+TXSTATQ_1);
 	writel(virt_to_bus(&olympic_priv->olympic_tx_status_ring[0]),olympic_mmio+TXCSA_1);
@@ -639,34 +661,35 @@ static void olympic_rx(struct device *dev)
 	rx_status=&(olympic_priv->olympic_rx_status_ring[(olympic_priv->rx_status_last_received + 1) & (OLYMPIC_RX_RING_SIZE - 1)]) ; 
  
 	while (rx_status->status_buffercnt) { 
+                __u32 l_status_buffercnt;
 
 		olympic_priv->rx_status_last_received++ ;
 		olympic_priv->rx_status_last_received &= (OLYMPIC_RX_RING_SIZE -1);
 #if OLYMPIC_DEBUG
 		printk(" stat_ring addr: %x \n", &(olympic_priv->olympic_rx_status_ring[olympic_priv->rx_status_last_received]) ); 
-		printk("rx status: %x rx len: %x \n",rx_status->status_buffercnt,rx_status->fragmentcnt_framelen);	
+		printk("rx status: %x rx len: %x \n", le32_to_cpu(rx_status->status_buffercnt), le32_to_cpu(rx_status->fragmentcnt_framelen));
 #endif
-		length=rx_status->fragmentcnt_framelen & 0xffff;
-		buffer_cnt = rx_status->status_buffercnt & 0xffff ; 
+		length = le32_to_cpu(rx_status->fragmentcnt_framelen) & 0xffff;
+		buffer_cnt = le32_to_cpu(rx_status->status_buffercnt) & 0xffff; 
 		i = buffer_cnt ; /* Need buffer_cnt later for rxenq update */ 
-		frag_len = rx_status->fragmentcnt_framelen >> 16 ; 
+		frag_len = le32_to_cpu(rx_status->fragmentcnt_framelen) >> 16; 
 
 #if OLYMPIC_DEBUG 
-		printk("length: %x, frag_len: %x, buffer_cnt: %x\n",length,frag_len,buffer_cnt);
+		printk("length: %x, frag_len: %x, buffer_cnt: %x\n", length, frag_len, buffer_cnt);
 #endif
-
-		if(rx_status->status_buffercnt & 0xC0000000) {
-			if (rx_status->status_buffercnt & 0x3B000000) {
+                l_status_buffercnt = le32_to_cpu(rx_status->status_buffercnt);
+		if(l_status_buffercnt & 0xC0000000) {
+			if (l_status_buffercnt & 0x3B000000) {
 				if (olympic_priv->olympic_message_level) {
-					if (rx_status->status_buffercnt & (1<<29))  /* Rx Frame Truncated */
+					if (l_status_buffercnt & (1<<29))  /* Rx Frame Truncated */
 						printk(KERN_WARNING "%s: Rx Frame Truncated \n",dev->name);
-					if (rx_status->status_buffercnt & (1<<28)) /*Rx receive overrun */
+					if (l_status_buffercnt & (1<<28)) /*Rx receive overrun */
 						printk(KERN_WARNING "%s: Rx Frame Receive overrun \n",dev->name);
-					if (rx_status->status_buffercnt & (1<<27)) /* No receive buffers */
+					if (l_status_buffercnt & (1<<27)) /* No receive buffers */
 						printk(KERN_WARNING "%s: No receive buffers \n",dev->name);
-					if (rx_status->status_buffercnt & (1<<25)) /* Receive frame error detect */
+					if (l_status_buffercnt & (1<<25)) /* Receive frame error detect */
 						printk(KERN_WARNING "%s: Receive frame error detect \n",dev->name);
-					if (rx_status->status_buffercnt & (1<<24)) /* Received Error Detect */
+					if (l_status_buffercnt & (1<<24)) /* Received Error Detect */
 						printk(KERN_WARNING "%s: Received Error Detect \n",dev->name);
 				} 
 				olympic_priv->rx_ring_last_received += i ; 
@@ -702,8 +725,8 @@ static void olympic_rx(struct device *dev)
 						skb2=olympic_priv->rx_ring_skb[rx_ring_last_received] ; 
 						skb_put(skb2,length);
 						skb2->protocol = tr_type_trans(skb2,dev);
-						olympic_priv->olympic_rx_ring[rx_ring_last_received].buffer=virt_to_bus(skb->data);
-						olympic_priv->olympic_rx_ring[rx_ring_last_received].res_length = olympic_priv->pkt_buf_sz ; 
+						olympic_priv->olympic_rx_ring[rx_ring_last_received].buffer = cpu_to_le32(virt_to_bus(skb->data));
+						olympic_priv->olympic_rx_ring[rx_ring_last_received].res_length = cpu_to_le32(olympic_priv->pkt_buf_sz); 
 						olympic_priv->rx_ring_skb[rx_ring_last_received] = skb ; 
 						netif_rx(skb2) ; 
 					} else {
@@ -712,8 +735,8 @@ static void olympic_rx(struct device *dev)
 							olympic_priv->rx_ring_last_received &= (OLYMPIC_RX_RING_SIZE -1);
 							rx_ring_last_received = olympic_priv->rx_ring_last_received ; 
 							rx_desc = &(olympic_priv->olympic_rx_ring[rx_ring_last_received]);
-							cpy_length = (i == 1 ? frag_len : rx_desc->res_length); 
-							memcpy(skb_put(skb, cpy_length), bus_to_virt(rx_desc->buffer), cpy_length) ; 
+							cpy_length = (i == 1 ? frag_len : le32_to_cpu(rx_desc->res_length)); 
+							memcpy(skb_put(skb, cpy_length), bus_to_virt(le32_to_cpu(rx_desc->buffer)), cpy_length) ; 
 						} while (--i) ; 
 		
 						skb->protocol = tr_type_trans(skb,dev);
@@ -750,6 +773,8 @@ static void olympic_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 	
 	if (!(sisr & SISR_MI)) /* Interrupt isn't for us */ 
 		return ;
+
+	spin_lock(&olympic_priv->olympic_lock);
 
 	if (dev->interrupt) 
 		printk(KERN_WARNING "%s: Re-entering interrupt \n",dev->name) ; 
@@ -830,20 +855,25 @@ static void olympic_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 
 	writel(SISR_MI,olympic_mmio+SISR_MASK_SUM);
 
+	spin_unlock(&olympic_priv->olympic_lock) ; 
+
 }	
 
 static int olympic_xmit(struct sk_buff *skb, struct device *dev) 
 {
 	struct olympic_private *olympic_priv=(struct olympic_private *)dev->priv;
-    __u8 *olympic_mmio=olympic_priv->olympic_mmio;
+	__u8 *olympic_mmio=olympic_priv->olympic_mmio;
+	unsigned long flags ; 
 
 	if (test_and_set_bit(0, (void*)&dev->tbusy) != 0) {
 		return 1;
 	}
 
+	spin_lock_irqsave(&olympic_priv->olympic_lock, flags) ; 
+
 	if(olympic_priv->free_tx_ring_entries) {
-		olympic_priv->olympic_tx_ring[olympic_priv->tx_ring_free].buffer=virt_to_bus(skb->data);
-		olympic_priv->olympic_tx_ring[olympic_priv->tx_ring_free].status_length=skb->len | (0x80000000);
+		olympic_priv->olympic_tx_ring[olympic_priv->tx_ring_free].buffer = cpu_to_le32(virt_to_bus(skb->data));
+		olympic_priv->olympic_tx_ring[olympic_priv->tx_ring_free].status_length = cpu_to_le32(skb->len | (0x80000000));
 		olympic_priv->tx_ring_skb[olympic_priv->tx_ring_free]=skb;
 		olympic_priv->free_tx_ring_entries--;
 
@@ -854,11 +884,12 @@ static int olympic_xmit(struct sk_buff *skb, struct device *dev)
 		writew((((readw(olympic_mmio+TXENQ_1)) & 0x8000) ^ 0x8000) | 1,olympic_mmio+TXENQ_1);
 
 		dev->tbusy=0;		
-
+		spin_unlock_irqrestore(&olympic_priv->olympic_lock, flags) ; 
 		return 0;
-	} else 
+	} else {
+		spin_unlock_irqrestore(&olympic_priv->olympic_lock, flags) ; 
 		return 1;
-
+	}	
 }
 	
 
@@ -939,9 +970,9 @@ static void olympic_set_rx_mode(struct device *dev)
 	options = olympic_priv->olympic_copy_all_options; 
 
 	if (dev->flags&IFF_PROMISC)  
-		options |= (3<<5) ; /* All LLC and MAC frames, all through the main rx channel */  
+		options |= 0x61 ; 
 	else
-		options &= ~(3<<5) ; 
+		options &= ~0x61 ; 
 
 	if (dev->mc_count) {  
 		set_mc_list = 1 ; 
@@ -1216,7 +1247,7 @@ static void olympic_arb_cmd(struct device *dev)
 	__u16 lan_status = 0, lan_status_diff  ; /* Initialize to stop compiler warning */
 	__u8 fdx_prot_error ; 
 	__u16 next_ptr;
-
+	int i ; 
 #if OLYMPIC_NETWORK_MONITOR
 	struct trh_hdr *mac_hdr ; 
 #endif
@@ -1229,9 +1260,9 @@ static void olympic_arb_cmd(struct device *dev)
 	if (readb(arb_block+0) == ARB_RECEIVE_DATA) { /* Receive.data, MAC frames */
 
 		header_len = readb(arb_block+8) ; /* 802.5 Token-Ring Header Length */	
-		frame_len = ntohs(readw(arb_block + 10)) ; 
+		frame_len = swab16(readw(arb_block + 10)) ; 
 
-		buff_off = ntohs(readw(arb_block + 6)) ;
+		buff_off = swab16(readw(arb_block + 6)) ;
 		
 		buf_ptr = olympic_priv->olympic_lap + buff_off ; 
 
@@ -1253,7 +1284,7 @@ static void olympic_arb_cmd(struct device *dev)
 
 		do {
 			frame_data = buf_ptr+offsetof(struct mac_receive_buffer,frame_data) ; 
-			buffer_len = ntohs(readw(buf_ptr+offsetof(struct mac_receive_buffer,buffer_length))); 
+			buffer_len = swab16(readw(buf_ptr+offsetof(struct mac_receive_buffer,buffer_length))); 
 			memcpy_fromio(skb_put(mac_frame, buffer_len), frame_data , buffer_len ) ;
 			next_ptr=readw(buf_ptr+offsetof(struct mac_receive_buffer,next)); 
 
@@ -1276,7 +1307,7 @@ static void olympic_arb_cmd(struct device *dev)
 
 		/* Is the ASB free ? */ 	
 		
-		if (!(readl(olympic_priv->olympic_mmio + SISR) & SISR_ASB_FREE)) {
+		if (readb(asb_block + 2) != 0xff) { 
 			olympic_priv->asb_queued = 1 ; 
 			writel(LISR_ASB_FREE_REQ,olympic_priv->olympic_mmio+LISR_SUM); 
 			return ; 	
@@ -1290,12 +1321,12 @@ static void olympic_arb_cmd(struct device *dev)
 
 		writel(LISR_ASB_REPLY | LISR_ASB_FREE_REQ,olympic_priv->olympic_mmio+LISR_SUM);
 		
-		olympic_priv->asb_queued = 2 ; 
+		olympic_priv->asb_queued = 2; 
 	
-		return ; 	
+		return; 	
 		
 	} else if (readb(arb_block) == ARB_LAN_CHANGE_STATUS) { /* Lan.change.status */
-		lan_status = readw(arb_block+6);
+		lan_status = swab16(readw(arb_block+6)) ;
 		fdx_prot_error = readb(arb_block+8) ; 
 		
 		/* Issue ARB Free */
@@ -1323,11 +1354,20 @@ static void olympic_arb_cmd(struct device *dev)
 			dev->tbusy = 1 ;
 			dev->interrupt = 1 ; 
 			dev->start = 0 ; 
+	
 			olympic_priv->srb = readw(olympic_priv->olympic_lap + LAPWWO) ; 
+			olympic_priv->rx_status_last_received++;
+			olympic_priv->rx_status_last_received&=OLYMPIC_RX_RING_SIZE-1;
+			for(i=0;i<OLYMPIC_RX_RING_SIZE;i++) {
+				dev_kfree_skb(olympic_priv->rx_ring_skb[olympic_priv->rx_status_last_received]);
+				olympic_priv->rx_status_last_received++;
+				olympic_priv->rx_status_last_received&=OLYMPIC_RX_RING_SIZE-1;
+			}
+
 			free_irq(dev->irq,dev);
 			
 			printk(KERN_WARNING "%s: Adapter has been closed \n", dev->name) ; 
-	
+			MOD_DEC_USE_COUNT ; 
 		} /* If serious error */
 		
 		if (olympic_priv->olympic_message_level) { 
@@ -1552,9 +1592,9 @@ static int sprintf_info(char *buffer, struct device *dev)
 	  readb(opt+offsetof(struct olympic_parameters_table, poll_addr)+3),
 	  readb(opt+offsetof(struct olympic_parameters_table, poll_addr)+4),
 	  readb(opt+offsetof(struct olympic_parameters_table, poll_addr)+5),
-	  ntohs(readw(opt+offsetof(struct olympic_parameters_table, acc_priority))),
-	  ntohs(readw(opt+offsetof(struct olympic_parameters_table, auth_source_class))),
-	  ntohs(readw(opt+offsetof(struct olympic_parameters_table, att_code))));
+	  swab16(readw(opt+offsetof(struct olympic_parameters_table, acc_priority))),
+	  swab16(readw(opt+offsetof(struct olympic_parameters_table, auth_source_class))),
+	  swab16(readw(opt+offsetof(struct olympic_parameters_table, att_code))));
 
 	size += sprintf(buffer+size, "%6s: Source Address    : Bcn T : Maj. V : Lan St : Lcl Rg : Mon Err : Frame Correl : \n",
 	  dev->name) ; 
@@ -1567,20 +1607,20 @@ static int sprintf_info(char *buffer, struct device *dev)
 	  readb(opt+offsetof(struct olympic_parameters_table, source_addr)+3),
 	  readb(opt+offsetof(struct olympic_parameters_table, source_addr)+4),
 	  readb(opt+offsetof(struct olympic_parameters_table, source_addr)+5),
-	  ntohs(readw(opt+offsetof(struct olympic_parameters_table, beacon_type))),
-	  ntohs(readw(opt+offsetof(struct olympic_parameters_table, major_vector))),
-	  ntohs(readw(opt+offsetof(struct olympic_parameters_table, lan_status))),
-	  ntohs(readw(opt+offsetof(struct olympic_parameters_table, local_ring))),
-	  ntohs(readw(opt+offsetof(struct olympic_parameters_table, mon_error))),
-	  ntohs(readw(opt+offsetof(struct olympic_parameters_table, frame_correl))));
+	  swab16(readw(opt+offsetof(struct olympic_parameters_table, beacon_type))),
+	  swab16(readw(opt+offsetof(struct olympic_parameters_table, major_vector))),
+	  swab16(readw(opt+offsetof(struct olympic_parameters_table, lan_status))),
+	  swab16(readw(opt+offsetof(struct olympic_parameters_table, local_ring))),
+	  swab16(readw(opt+offsetof(struct olympic_parameters_table, mon_error))),
+	  swab16(readw(opt+offsetof(struct olympic_parameters_table, frame_correl))));
 
 	size += sprintf(buffer+size, "%6s: Beacon Details :  Tx  :  Rx  : NAUN Node Address : NAUN Node Phys : \n",
 	  dev->name) ; 
 
 	size += sprintf(buffer+size, "%6s:                :  %02x  :  %02x  : %02x:%02x:%02x:%02x:%02x:%02x : %02x:%02x:%02x:%02x    : \n",
 	  dev->name,
-	  ntohs(readw(opt+offsetof(struct olympic_parameters_table, beacon_transmit))),
-	  ntohs(readw(opt+offsetof(struct olympic_parameters_table, beacon_receive))),
+	  swab16(readw(opt+offsetof(struct olympic_parameters_table, beacon_transmit))),
+	  swab16(readw(opt+offsetof(struct olympic_parameters_table, beacon_receive))),
 	  readb(opt+offsetof(struct olympic_parameters_table, beacon_naun)),
 	  readb(opt+offsetof(struct olympic_parameters_table, beacon_naun)+1),
 	  readb(opt+offsetof(struct olympic_parameters_table, beacon_naun)+2),

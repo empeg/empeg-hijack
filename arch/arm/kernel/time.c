@@ -45,7 +45,8 @@ extern volatile unsigned long lost_ticks;
 #define BIN_TO_BCD(val) ((val)=(((val)/10)<<4) + (val)%10)
 #endif
 
-#if 0
+#ifndef MKTIME_DEFINED
+#define MKTIME_DEFINED
 /* Converts Gregorian date to seconds since 1970-01-01 00:00:00.
  * Assumes input in normal date format, i.e. 1980-12-31 23:59:59
  * => year=1980, mon=12, day=31, hour=23, min=59, sec=59.
@@ -76,6 +77,7 @@ unsigned long mktime(unsigned int year, unsigned int mon,
 		   )*60 + min /* now have minutes */
 		  )*60 + sec; /* finally seconds */
 }
+#endif MKTIME_DEFINED
 
 /*
  * Handle profile stuff...
@@ -95,7 +97,7 @@ static void do_profile(unsigned long pc)
 		prof_buffer[pc] += 1;
 	}
 }
-#endif
+// #endif
 
 #include <asm/arch/time.h>
 

@@ -8,7 +8,7 @@
  *		as published by the Free Software Foundation; either version
  *		2 of the License, or (at your option) any later version.
  *
- * Version:	$Id: af_unix.c,v 1.76.2.2 1999/08/07 10:56:48 davem Exp $
+ * Version:	$Id: af_unix.c,v 1.76.2.4 2000/05/27 04:46:44 davem Exp $
  *
  * Fixes:
  *		Linus Torvalds	:	Assorted bug cures.
@@ -43,6 +43,7 @@
  *					number of socks to 2*max_files and
  *					the number of skb queueable in the
  *					dgram receiver.
+ *	      Malcolm Beattie   :	Set peercred for socketpair
  *
  * Known differences from reference BSD that was tested:
  *
@@ -814,6 +815,9 @@ static int unix_socketpair(struct socket *socka, struct socket *sockb)
 	unix_lock(skb);
 	unix_peer(ska)=skb;
 	unix_peer(skb)=ska;
+	ska->peercred.pid = skb->peercred.pid = current->pid;
+	ska->peercred.uid = skb->peercred.uid = current->euid;
+	ska->peercred.gid = skb->peercred.gid = current->egid;
 
 	if (ska->type != SOCK_DGRAM)
 	{
@@ -968,6 +972,10 @@ static int unix_dgram_sendmsg(struct socket *sock, struct msghdr *msg, int len,
 		if (!unix_peer(sk))
 			return -ENOTCONN;
 	}
+
+	err = -EMSGSIZE;
+	if (len > sk->sndbuf)
+		goto out;
 
 	if (sock->passcred && !sk->protinfo.af_unix.addr)
 		unix_autobind(sock);

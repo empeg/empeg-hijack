@@ -11,6 +11,43 @@
 
 static struct vm_struct * vmlist = NULL;
 
+#if defined(CONFIG_KDB)
+/* kdb_vmlist_check
+ *     Check to determine if an address is within a vmalloced range.
+ * Parameters:
+ *      starta -- Starting address of region to check
+ *     enda    -- Ending address of region to check
+ * Returns:
+ *     0       -- [starta,enda] not within a vmalloc area
+ *     1       -- [starta,enda] within a vmalloc area
+ * Locking:
+ *     None.
+ * Remarks:
+ *     Shouldn't acquire locks.  Always called with all interrupts
+ *     disabled and other cpus halted.  Yet, if a breakpoint or fault
+ *     occurs while the vmlist is in an indeterminate state, this
+ *     function could fail.
+ */
+int
+kdb_vmlist_check(unsigned long starta, unsigned long enda)
+{
+	struct vm_struct *vp;
+
+	for(vp=vmlist; vp; vp = vp->next) {
+		unsigned long end = (unsigned long)vp->addr + vp->size;
+
+		end -= PAGE_SIZE; 	/* Unbias for guard page */
+
+		if ((starta >= (unsigned long)vp->addr)
+		 && (starta < end)
+		 && (enda < end)) {
+			return 1;
+		}
+	}
+	return 0;
+}
+#endif
+
 static inline void free_area_pte(pmd_t * pmd, unsigned long address, unsigned long size)
 {
 	pte_t * pte;

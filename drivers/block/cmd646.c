@@ -1,4 +1,4 @@
-/* $Id: cmd646.c,v 1.11 1998/12/13 08:36:54 davem Exp $
+/* $Id: cmd646.c,v 1.11.2.1 2000/01/31 05:02:39 davem Exp $
  * cmd646.c: Enable interrupts at initialization time on Ultra/PCI machines.
  *           Note, this driver is not used at all on other systems because
  *           there the "BIOS" has done all of the following already.
@@ -6,7 +6,7 @@
  *           on the 646U2 and not on the 646U.
  *
  * Copyright (C) 1998       Eddie C. Dost  (ecd@skynet.be)
- * Copyright (C) 1998       David S. Miller (davem@dm.cobaltmicro.com)
+ * Copyright (C) 1998       David S. Miller (davem@redhat.com)
  */
 
 #include <linux/types.h>
@@ -246,6 +246,10 @@ __initfunc(void ide_init_cmd646 (ide_hwif_t *hwif))
 	(void) pci_write_config_byte(dev, 0x57, 0x5c);
 	(void) pci_write_config_byte(dev, 0x58, 0x3f);
 	(void) pci_write_config_byte(dev, 0x5b, 0x3f);
+
+#ifdef CONFIG_PPC
+	(void) pci_write_config_byte(dev, 0x73, 0xf0);
+#endif /* CONFIG_PPC */
 
 	hwif->dmaproc = &cmd646_dmaproc;
 }

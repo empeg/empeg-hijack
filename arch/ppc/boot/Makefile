@@ -53,6 +53,9 @@ GZIP_FLAGS = -v9
 
 OBJECTS := head.o misc.o ../coffboot/zlib.o
 CFLAGS = -O2 -DSTDC_HEADERS -fno-builtin -I$(TOPDIR)/include
+ifeq ($(CONFIG_SMP),y)
+CFLAGS += -D__SMP__
+endif
 OBJCOPY = $(CROSS_COMPILE)objcopy
 OBJCOPY_ARGS = -O elf32-powerpc
 
@@ -66,7 +69,7 @@ all:	zImage
 zvmlinux.initrd: zvmlinux
 	$(LD) $(ZLINKFLAGS) -o zvmlinux.initrd.tmp $(OBJECTS)
 	$(OBJCOPY) $(OBJCOPY_ARGS) -R .comment \
-		--add-section=initrd=ramdisk.image.gz \
+		--add-section=initrd=../coffboot/ramdisk.image.gz \
 		--add-section=image=../coffboot/vmlinux.gz \
 		zvmlinux.initrd.tmp zvmlinux.initrd
 	$(CC) $(CFLAGS) -DINITRD_OFFSET=`sh offset $(OBJDUMP) zvmlinux.initrd initrd` \
@@ -76,7 +79,7 @@ zvmlinux.initrd: zvmlinux
 		-c -o misc.o misc.c
 	$(LD) $(ZLINKFLAGS) -o zvmlinux.initrd.tmp $(OBJECTS)
 	$(OBJCOPY) $(OBJCOPY_ARGS) -R .comment \
-		--add-section=initrd=ramdisk.image.gz \
+		--add-section=initrd=../coffboot/ramdisk.image.gz \
 		--add-section=image=../coffboot/vmlinux.gz \
 		zvmlinux.initrd.tmp $@
 	rm zvmlinux.initrd.tmp

@@ -71,6 +71,7 @@
 #include "sd.h"
 
 extern int inia100_detect(Scsi_Host_Template *);
+extern int inia100_release(struct Scsi_Host *);
 extern int inia100_command(Scsi_Cmnd *);
 extern int inia100_queue(Scsi_Cmnd *, void (*done) (Scsi_Cmnd *));
 extern int inia100_abort(Scsi_Cmnd *);
@@ -142,7 +143,7 @@ ENABLE_CLUSTERING \
 	proc_info:	NULL,				\
 	name:		inia100_REVID, \
 	detect:		inia100_detect, \
-	release:	NULL, \
+	release:	inia100_release, \
 	info:		NULL,					\
 	command:	inia100_command, \
 	queuecommand:	inia100_queue, \
@@ -167,7 +168,9 @@ ENABLE_CLUSTERING \
 #endif
 #endif
 
+#ifndef VIRT_TO_BUS
 #define VIRT_TO_BUS(i)  (unsigned int) virt_to_bus((void *)(i))
+#endif
 #define ULONG   unsigned long
 #define PVOID   void *
 #define USHORT  unsigned short

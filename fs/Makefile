@@ -16,9 +16,9 @@ O_OBJS    = open.o read_write.o devices.o file_table.o buffer.o \
 		dcache.o inode.o attr.o bad_inode.o file.o $(BINFMTS) 
 
 MOD_LIST_NAME := FS_MODULES
-ALL_SUB_DIRS = coda minix ext2 fat msdos vfat proc isofs nfs umsdos ntfs \
+ALL_SUB_DIRS = coda minix ext2 ext3 fat msdos vfat proc isofs nfs umsdos ntfs \
 		hpfs sysv smbfs ncpfs ufs affs romfs autofs hfs lockd \
-		nfsd nls devpts adfs partitions qnx4 efs reiserfs
+		nfsd nls devpts adfs partitions qnx4 efs jfs
 
 SUB_DIRS := partitions
 
@@ -45,10 +45,18 @@ else
 endif
 
 ifeq ($(CONFIG_EXT2_FS),y)
-SUB_DIRS += ext2
+SUB_DIRS += ext2 jfs
 else
   ifeq ($(CONFIG_EXT2_FS),m)
-  MOD_SUB_DIRS += ext2
+  MOD_SUB_DIRS += ext2 jfs
+  endif
+endif
+
+ifeq ($(CONFIG_EXT3_FS),y)
+SUB_DIRS += ext3 jfs
+else
+  ifeq ($(CONFIG_EXT3_FS),m)
+  MOD_SUB_DIRS += ext3 jfs
   endif
 endif
 
@@ -246,14 +254,6 @@ SUB_DIRS += devpts
 else
   ifeq ($(CONFIG_DEVPTS_FS),m)
   MOD_SUB_DIRS += devpts
-  endif
-endif
-
-ifeq ($(CONFIG_REISERFS_FS),y)
-SUB_DIRS += reiserfs
-else
-  ifeq ($(CONFIG_REISERFS_FS),m)
-  MOD_SUB_DIRS += reiserfs
   endif
 endif
 

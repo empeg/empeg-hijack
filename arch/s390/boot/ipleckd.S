@@ -3,7 +3,7 @@
 #    IPL record for 3380/3390 DASD
 #
 #  S390 version
-#    Copyright (C) 1999 IBM Deutschland Entwicklung GmbH, IBM Corporation
+#    Copyright (C) 1999,2000 IBM Deutschland Entwicklung GmbH, IBM Corporation
 #    Author(s): Holger Smolinski <Holger.Smolinski@de.ibm.com>
 #
 #
@@ -17,6 +17,11 @@
 # r13:	base register 	index to 0x0000
 # r14:	callers address
 # r15:	temporary save register (we have no stack!)
+
+# storage layout:
+
+#include <asm/lowcore.h>
+	
 	.org 0
 .psw:	.long 0x00080000,0x80000000+_start
 .ccw1:	.long 0x06000000,0x00001000     # Re-Read enough of bootsector to start
@@ -25,23 +30,22 @@
 	.org 0x58
 .Lextn:	.long	0x000a0000,0x00000000+.Lextn
 .Lsvcn:	.long	0x000a0000,0x00000000+.Lsvcn
-.Lprgn:	.long	0x000a0000,0x00000000+.Lprgn
+.Lprgn:	.long	0x00080000,0x00000000+.Lecs
 .Lmcn:	.long	0x000a0000,0x00000000+.Lmcn
 .Lion:	.long   0x00080000,0x80000000+.Lionewaddr
 
-	.org 0xd0	
-.Lnull:	
-	.long 0x00000000,0x00000000
 	.org 0xe0
 .Llstad:.long 	0x00000000,0x00000000	# sectorno + ct of bootlist
 
 	.org 0xf0			# Lets start now...
 _start: .globl _start
-	l  	%r1,0xb8		# get IPL-subchannel from lowcore
+	l  	%r1,__LC_SUBCHANNEL_ID	# get IPL-subchannel from lowcore
+	st	%r1,__LC_IPLDEV         # keep it for reipl
 	stsch	.Lrdcdata
-	oi      .Lrdcdata+5,0x80        # enable ssch
-	oi	.Lrdcdata+27,0x01	# enalbe concurrent sense
+	oi      .Lrdcdata+5,0x84        # enable ssch and multipath mode
+.Lecs:  xi	.Lrdcdata+27,0x01	# enable concurrent sense
 	msch	.Lrdcdata
+        xi      .Lprgn,6                # restore Wait and d/a bit in PCnew PSW
 	l	%r2,.Lparm
 	mvc     0x0(8,%r2),.Lnull      # set parmarea to null
 	lctl	%c6,%c6,.Lc6     	# enable all interrupts
@@ -89,14 +93,12 @@ _start: .globl _start
 	j	.Lkcont
 .Lzeroes:
 	lr	%r2,%r3
-	slr	%r3,%r3
+.L001:	slr	%r3,%r3
 	icm	%r3,3,.Lcountarea+6      # get blocksize
-.L008:	slr	%r5,%r5			# no bytes to move
-	mvcle	%r2,%r4,0(%r10)		# fill zeroes to storage
+	slr	%r5,%r5			# no bytes to move
+.L008:	mvcle	%r2,%r4,0   		# fill zeroes to storage
 	jo	.L008			# until block is filled
-	bctr	%r4,0			# skip to next block
-	a  	%r2,.Lcountarea+6       # proceed loadaddress
-	jnz	.Lzeroes		# proceed for additional blocks
+	brct	%r4,.L001   		# skip to next block
 .Lkcont:	
 	ahi	%r10,8
 	j	.Lkloop
@@ -138,12 +140,16 @@ _start: .globl _start
 	lr	%r15,%r4		# save number or blocks
 	slr	%r7,%r7
 	icm	%r7,3,.Lrdcdata+14      # load heads to r7
-	clc	.Lrdcdata+3(2),.L3390     
-	jne	.L010			# 3380 or 3390 ?
-	lhi	%r6,12			# setup r6 correct!
-	j	.L011
-.L010:	
+        lhi     %r6,9
+	clc     .Lrdcdata+3(2),.L9343
+	je	.L011
 	lhi	%r6,10	
+	clc	.Lrdcdata+3(2),.L3380
+	je	.L011
+	lhi	%r6,12
+	clc	.Lrdcdata+3(2),.L3390     
+	je	.L011			
+        bras 	%r14,.Ldisab
 .L011:	
 	# loop for nbl times
 .Lrdloop:	
@@ -222,8 +228,6 @@ _start: .globl _start
 
 # FIXME pre-initialized data should be listed first
 # NULLed storage can be taken from anywhere ;) 
-.L3390:	
-	.word	0x3390
 .Lblklst:	
 	.long   0x00002000     
 	.align 8
@@ -233,12 +237,20 @@ _start: .globl _start
 	.long 0x020a0000,0x00000000+.Ltpi
 .Lorb:	
 	.long 0x0049504c,0x0080ff00	# intparm is " IPL"
-	.long 0x00000000		# CCW address
 .Lc6:	.long 0xff000000
 .Lstart:
 	.long	0x00010000              # do not separate .Lstart and .Lparm
 .Lparm:	
 	.long	0x00008000              # they are loaded with a LM
+.L3390:
+	.word 	0x3390
+.L9343:
+	.word	0x934a
+.L3380:
+	.word	0x3380
+.Lnull:	
+	.long 0x00000000,0x00000000
+	.align 4
 .Lrdcdata:
 	.long 0x00000000,0x00000000
 	.long 0x00000000,0x00000000
@@ -270,7 +282,7 @@ _start: .globl _start
 	.long 0x06000001,0x00000000
 	.long 0x00000000,0x01000000
 	.long 0x12345678
-	.org 0x3c8
+	.org 0x7c8
 .Lrdcccw:				# CCW read device characteristics
 	.long 0x64400040,0x00000000+.Lrdcdata
 	.long 0x63400010,0x00000000+.Ldedata
@@ -282,7 +294,7 @@ _start: .globl _start
 	.long 0x47400010,0x00000000+.Llodata
 .Lrdccw:	
 	.long 0x86400000,0x00000000
-	.org 0x400
+	.org 0x800
 # end of pre initialized data is here CCWarea follows
 # from here we load 1k blocklist 
 # end of function

@@ -49,6 +49,12 @@ SUBDIRS := $(SUBDIRS) arch/i386/kernel arch/i386/mm arch/i386/lib
 CORE_FILES := arch/i386/kernel/kernel.o arch/i386/mm/mm.o $(CORE_FILES)
 LIBS := $(TOPDIR)/arch/i386/lib/lib.a $(LIBS) $(TOPDIR)/arch/i386/lib/lib.a
 
+ifdef CONFIG_KDB
+LIBS := $(LIBS) $(TOPDIR)/arch/i386/kdb/kdb.a
+CORE_FILES := $(CORE_FILES) arch/i386/kdb/kdb.o
+SUBDIRS := $(SUBDIRS) arch/i386/kdb
+endif
+
 ifdef CONFIG_MATH_EMULATION
 SUBDIRS := $(SUBDIRS) arch/i386/math-emu
 DRIVERS := $(DRIVERS) arch/i386/math-emu/math.a
@@ -60,12 +66,17 @@ arch/i386/kernel: dummy
 arch/i386/mm: dummy
 	$(MAKE) linuxsubdirs SUBDIRS=arch/i386/mm
 
+ifdef CONFIG_KDB
+arch/i386/kdb: dummy
+	$(MAKE) linuxsubdirs SUBDIRS=arch/i386/kdb
+endif
+
 MAKEBOOT = $(MAKE) -C arch/$(ARCH)/boot
 
 vmlinux: arch/i386/vmlinux.lds
 
 arch/i386/vmlinux.lds: arch/i386/vmlinux.lds.S FORCE
-	gcc -E -C -P -I$(HPATH) -imacros $(HPATH)/asm-i386/page_offset.h -Ui386 arch/i386/vmlinux.lds.S >arch/i386/vmlinux.lds
+	$(CPP) -C -P -I$(HPATH) -imacros $(HPATH)/asm-i386/page_offset.h -Ui386 arch/i386/vmlinux.lds.S >arch/i386/vmlinux.lds
 
 FORCE: ;
 

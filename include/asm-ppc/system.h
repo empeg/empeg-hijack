@@ -52,6 +52,7 @@ extern __inline__ void __restore_flags(unsigned long flags)
         }
 }
 
+struct task_struct;
 
 extern void __sti(void);
 extern void __cli(void);
@@ -72,6 +73,7 @@ extern void read_rtc_time(void);
 extern void pmac_find_display(void);
 extern void giveup_fpu(struct task_struct *);
 extern void enable_kernel_fp(void);
+extern void giveup_altivec(struct task_struct *);
 extern void cvt_fd(float *from, double *to, unsigned long *fpscr);
 extern void cvt_df(double *from, float *to, unsigned long *fpscr);
 extern int call_rtas(const char *, int, int, unsigned long *, ...);
@@ -81,7 +83,6 @@ void chrp_event_scan(void);
 struct device_node;
 extern void note_scsi_host(struct device_node *, void *);
 
-struct task_struct;
 #define switch_to(prev,next,last) _switch_to((prev),(next),&(last))
 extern void _switch_to(struct task_struct *, struct task_struct *,
 		       struct task_struct **);

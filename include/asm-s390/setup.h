@@ -2,7 +2,7 @@
  *  include/asm-s390/setup.h
  *
  *  S390 version
- *    Copyright (C) 1999 IBM Deutschland Entwicklung GmbH, IBM Corporation
+ *    Copyright (C) 1999,2000 IBM Deutschland Entwicklung GmbH, IBM Corporation
  */
 
 #ifndef _ASM_S390_SETUP_H
@@ -40,8 +40,11 @@
  */
 #define MACHINE_IS_VM    (MACHINE_FLAGS & 1)
 #define MACHINE_HAS_IEEE (MACHINE_FLAGS & 2)
+#define MACHINE_IS_P390  (MACHINE_FLAGS & 4)
+#define MACHINE_HAS_CSP  (MACHINE_FLAGS & 8)
 
 #define RAMDISK_ORIGIN            0x800000
+#define RAMDISK_SIZE              0x800000
 #define RAMDISK_BLKSIZE           0x1000
 #define RAMDISK_IMAGE_START_MASK  0x07FF
 #define RAMDISK_PROMPT_FLAG       0x8000

@@ -22,6 +22,8 @@
 #include <linux/smp_lock.h>
 #include <linux/init.h>
 #include <linux/sysrq.h>
+#include <linux/fs.h>
+#include <linux/jfs.h>
 
 #include <asm/uaccess.h>
 
@@ -280,6 +282,10 @@ static ctl_table fs_table[] = {
 	 0644, NULL, &proc_dointvec},
 	{FS_DENTRY, "dentry-state", &dentry_stat, 6*sizeof(int),
 	 0444, NULL, &proc_dointvec},
+#if defined(CONFIG_EXT3_FS) && defined(JFS_DEBUG)
+	{KERN_SHMMAX, "jfs-debug", &journal_enable_debug, sizeof (int),
+	 0644, NULL, &proc_dointvec},
+#endif
 	{0}
 };
 
@@ -346,26 +352,6 @@ extern asmlinkage int sys_sysctl(struct __sysctl_args *args)
 			  tmp.newval, tmp.newlen);
 	unlock_kernel();
 	return error;
-}
-
-/* Like in_group_p, but testing against egid, not fsgid */
-static int in_egroup_p(gid_t grp)
-{
-	if (grp != current->egid) {
-		int i = current->ngroups;
-		if (i) {
-			gid_t *groups = current->groups;
-			do {
-				if (*groups == grp)
-					goto out;
-				groups++;
-				i--;
-			} while (i);
-		}
-		return 0;
-	}
-out:
-	return 1;
 }
 
 /* ctl_perm does NOT grant the superuser all rights automatically, because
@@ -821,8 +807,11 @@ int proc_dointvec(ctl_table *table, int write, struct file *filp,
 int proc_dointvec_bset(ctl_table *table, int write, struct file *filp,
 			void *buffer, size_t *lenp)
 {
+	if (!capable(CAP_SYS_MODULE)) {
+		return -EPERM;
+	}
 	return do_proc_dointvec(table,write,filp,buffer,lenp,1,
-		(current->pid == 1) ? OP_SET : OP_AND);
+				(current->pid == 1) ? OP_SET : OP_AND);
 }
 
 

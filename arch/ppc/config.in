@@ -1,6 +1,6 @@
 # $Id: config.in,v 1.92.2.4 1999/09/10 01:23:40 paulus Exp $
 # For a description of the syntax of this configuration file,
-# see the Configure script.
+# see Documentation/kbuild/config-language.txt.
 #
 mainmenu_name "Linux/PowerPC Kernel Configuration"
 
@@ -8,7 +8,7 @@ mainmenu_option next_comment
 comment 'Platform support'
 define_bool CONFIG_PPC y
 choice 'Processor type' \
-	"6xx/7xx		CONFIG_6xx \
+	"6xx/7xx/7400		CONFIG_6xx \
 	 860/821		CONFIG_8xx" 6xx/7xx
 
 choice 'Machine Type' \
@@ -21,6 +21,11 @@ choice 'Machine Type' \
 	 MBX		CONFIG_MBX" PowerMac
 
 bool 'Symmetric multi-processing support' CONFIG_SMP
+
+if [ "$CONFIG_6xx" = "y" ]; then
+  bool 'Altivec (G4) support' CONFIG_ALTIVEC
+fi
+
 if [ "$CONFIG_ALL_PPC" != "y" ];then
   define_bool CONFIG_MACH_SPECIFIC y
 fi
@@ -77,9 +82,6 @@ fi
 
 bool 'Support for VGA Console' CONFIG_VGA_CONSOLE
 bool 'Support for frame buffer devices' CONFIG_FB
-if [ "$CONFIG_FB" = "y" ]; then
-  bool 'Backward compatibility mode for Xpmac' CONFIG_FB_COMPAT_XPMAC
-fi
 
 bool 'Power management support for Apple PowerBooks' CONFIG_PMAC_PBOOK
 bool 'Support for PowerMac keyboard' CONFIG_MAC_KEYBOARD
@@ -88,6 +90,7 @@ tristate 'Support for PowerMac serial ports' CONFIG_MAC_SERIAL
 if [ "$CONFIG_MAC_SERIAL" = "y" ]; then
    bool '   Support for console on serial port' CONFIG_SERIAL_CONSOLE
 fi
+tristate 'Support for /dev/rtc' CONFIG_PPC_RTC
 bool 'Support for PowerMac ADB mouse' CONFIG_ADBMOUSE
 bool 'Support for Open Firmware device tree in /proc' CONFIG_PROC_DEVICETREE
 bool 'Support for TotalImpact TotalMP' CONFIG_TOTALMP
@@ -96,7 +99,7 @@ bool 'Support for Motorola Hot Swap' CONFIG_MOTOROLA_HOTSWAP
 if [ "$CONFIG_PREP" = "y" -o "$CONFIG_ALL_PPC" = "y" ]; then
   bool 'PReP bootloader kernel arguments' CONFIG_CMDLINE_BOOL y
   if [ "$CONFIG_CMDLINE_BOOL" = "y" ] ; then
-    string 'Initial kernel command string' CONFIG_CMDLINE console=ttyS0,9600 console=tty0 root=/dev/sda2
+    string 'Initial kernel command string' CONFIG_CMDLINE "console=ttyS0,9600 console=tty0 root=/dev/sda2"
   fi
 fi
 
@@ -151,6 +154,8 @@ if [ "$CONFIG_NET" = "y" ]; then
 fi
 
 source net/ax25/Config.in
+
+source net/irda/Config.in
 
 mainmenu_option next_comment
 comment 'ISDN subsystem'

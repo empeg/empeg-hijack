@@ -50,6 +50,9 @@ typedef struct {
 #define FIRST_EXTERNAL_VECTOR	0x20
 
 #define SYSCALL_VECTOR		0x80
+#if defined(CONFIG_KDB)
+#define KDBENTER_VECTOR		0x81
+#endif
 
 /*
  * Vectors 0x20-0x2f are used for ISA interrupts.
@@ -66,6 +69,9 @@ typedef struct {
 #define INVALIDATE_TLB_VECTOR	0x31
 #define STOP_CPU_VECTOR		0x40
 #define LOCAL_TIMER_VECTOR	0x41
+#if defined(CONFIG_KDB)
+#define KDB_VECTOR		0x42
+#endif	/* CONFIG_KDB */
 #define CALL_FUNCTION_VECTOR	0x50
 
 /*

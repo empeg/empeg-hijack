@@ -5,7 +5,7 @@
 
 SUB_DIRS     := 
 MOD_SUB_DIRS := $(SUB_DIRS)
-ALL_SUB_DIRS := $(SUB_DIRS) hamradio irda fc sk98lin
+ALL_SUB_DIRS := $(SUB_DIRS) hamradio irda fc sk98lin lmc
 
 L_TARGET := net.a
 L_OBJS   :=
@@ -22,6 +22,8 @@ CONFIG_8390_BUILTIN :=
 CONFIG_8390_MODULE  :=
 CONFIG_SLHC_BUILTIN :=
 CONFIG_SLHC_MODULE  :=
+CONFIG_BSDCOMP_BUILTIN :=
+CONFIG_BSDCOMP_MODULE  :=
 CONFIG_PPPDEF_BUILTIN :=
 CONFIG_PPPDEF_MODULE  :=
 CONFIG_7990_BUILTIN :=
@@ -35,12 +37,14 @@ CONFIG_SYNCPPP_MODULE  :=
 
 ifeq ($(CONFIG_ISDN),y)
   ifeq ($(CONFIG_ISDN_PPP),y)
+    CONFIG_BSDCOMP_BUILTIN = y
     CONFIG_SLHC_BUILTIN = y
     CONFIG_PPPDEF_BUILTIN = y
   endif
 else
   ifeq ($(CONFIG_ISDN),m)
     ifeq ($(CONFIG_ISDN_PPP),y)
+      CONFIG_BSDCOMP_MODULE = y
       CONFIG_SLHC_MODULE = y
       CONFIG_PPPDEF_MODULE = y
     endif
@@ -320,19 +324,17 @@ else
   endif
 endif
 
-# bsd_comp.o is *always* a module, for some documented reason
-# (licensing).
 ifeq ($(CONFIG_PPP),y)
 LX_OBJS += ppp.o
-M_OBJS += bsd_comp.o
+CONFIG_BSDCOMP_BUILTIN = y
 CONFIG_SLHC_BUILTIN = y
 CONFIG_PPPDEF_BUILTIN = y
 else
   ifeq ($(CONFIG_PPP),m)
+  CONFIG_BSDCOMP_MODULE = y
   CONFIG_SLHC_MODULE = y
   CONFIG_PPPDEF_MODULE = y
   MX_OBJS += ppp.o
-  M_OBJS += bsd_comp.o
   endif
 endif
 
@@ -372,6 +374,14 @@ L_OBJS += dummy.o
 else
   ifeq ($(CONFIG_DUMMY),m)
   M_OBJS += dummy.o
+  endif
+endif
+
+ifeq ($(CONFIG_BONDING),y)
+L_OBJS += bonding.o
+else
+  ifeq ($(CONFIG_BONDING),m)
+  M_OBJS += bonding.o
   endif
 endif
 
@@ -832,6 +842,14 @@ else
   endif
 endif
 
+ifeq ($(CONFIG_HAMACHI),y)
+L_OBJS += hamachi.o
+else
+  ifeq ($(CONFIG_HAMACHI),m)
+  M_OBJS += hamachi.o
+  endif
+endif
+
 ifeq ($(CONFIG_HOSTESS_SV11),y)
 L_OBJS += hostess_sv11.o
 CONFIG_85230_BUILTIN = y
@@ -856,6 +874,17 @@ else
   endif
 endif
 
+ifeq ($(CONFIG_LANMEDIA),y)
+  SUB_DIRS += lmc
+  MOD_IN_SUB_DIRS += lmc
+  L_OBJS += lmc/lmc.o
+  CONFIG_SYNCPPP_BUILTIN = y
+else
+  ifeq ($(CONFIG_LANMEDIA),m)
+  CONFIG_SYNCPPP_MODULE = y
+  MOD_IN_SUB_DIRS += lmc
+  endif
+endif
 
 ifeq ($(CONFIG_COSA),y)
 L_OBJS += cosa.o
@@ -864,6 +893,14 @@ else
   ifeq ($(CONFIG_COSA),m)
   CONFIG_SYNCPPP_MODULE = y
   M_OBJS += cosa.o
+  endif
+endif
+
+ifeq ($(CONFIG_SYNCLINK_SYNCPPP),y)
+CONFIG_SYNCPPP_BUILTIN = y
+else
+  ifeq ($(CONFIG_SYNCLINK_SYNCPPP),m)
+  CONFIG_SYNCPPP_MODULE = y
   endif
 endif
 
@@ -943,6 +980,48 @@ else
   endif
 endif
 
+ifeq ($(CONFIG_HDLC),y)
+L_OBJS += hdlc.o
+CONFIG_SYNCPPP_BUILTIN = y
+else
+  ifeq ($(CONFIG_HDLC),m)
+  M_OBJS += hdlc.o
+  CONFIG_SYNCPPP_MODULE = y
+  endif
+endif
+
+ifeq ($(CONFIG_N2),y)
+L_OBJS += n2.o
+else
+  ifeq ($(CONFIG_N2),m)
+  M_OBJS += n2.o
+  endif
+endif
+
+ifeq ($(CONFIG_C101),y)
+L_OBJS += c101.o
+else
+  ifeq ($(CONFIG_C101),m)
+  M_OBJS += c101.o
+  endif
+endif
+
+ifeq ($(CONFIG_WANXL),y)
+L_OBJS += wanxl.o
+else
+  ifeq ($(CONFIG_WANXL),m)
+  M_OBJS += wanxl.o
+  endif
+endif
+
+ifeq ($(CONFIG_PC300),y)
+L_OBJS += pc300.o
+else
+  ifeq ($(CONFIG_PC300),m)
+  M_OBJS += pc300.o
+  endif
+endif
+
 # If anything built-in uses syncppp, then build it into the kernel also.
 # If not, but a module uses it, build as a module.
 
@@ -951,6 +1030,16 @@ LX_OBJS += syncppp.o
 else
   ifdef CONFIG_SYNCPPP_MODULE
   MX_OBJS += syncppp.o
+  endif
+endif
+
+# If anything built-in uses bsd_comp, then build it into the kernel also.
+# If not, but a module uses it, build as a module.
+ifdef CONFIG_BSDCOMP_BUILTIN
+LX_OBJS += bsd_comp.o
+else
+  ifdef CONFIG_BSDCOMP_MODULE
+  MX_OBJS += bsd_comp.o
   endif
 endif
 
@@ -966,10 +1055,8 @@ endif
 
 # if anything built-in uses ppp_deflate, then build it into the kernel also.
 # If not, but a module uses it, build as a module.
-# ... NO!!!  ppp_deflate.o does not work as resident;
-# it works only as a module!
 ifdef CONFIG_PPPDEF_BUILTIN
-MX_OBJS += ppp_deflate.o
+LX_OBJS += ppp_deflate.o
 else
   ifdef CONFIG_PPPDEF_MODULE
   MX_OBJS += ppp_deflate.o
@@ -1182,6 +1269,14 @@ L_OBJS += bmac.o
 else
   ifeq ($(CONFIG_BMAC),m)
   M_OBJS += bmac.o
+  endif
+endif
+
+ifeq ($(CONFIG_GMAC),y)
+L_OBJS += gmac.o
+else
+  ifeq ($(CONFIG_GMAC),m)
+  M_OBJS += gmac.o
   endif
 endif
 

@@ -69,6 +69,8 @@ extern int psaux_init(void);
 extern void watchdog_init(void);
 extern void wdt_init(void);
 extern void acq_init(void);
+extern void wdt60xx_init(void);
+extern void sbc60xxwdt_init(void);
 extern void dtlk_init(void);
 extern void pcwatchdog_init(void);
 extern void sa1100wdog_init(void);
@@ -85,6 +87,7 @@ extern int qpmouse_init(void);
 extern int ds1620_init(void);
 extern int nwbutton_init(void);
 extern int nwflash_init(void);
+extern int tosh_init(void);
 
 static int misc_read_proc(char *buf, char **start, off_t offset,
 			  int len, int *eof, void *private)
@@ -212,6 +215,9 @@ int __init misc_init(void)
 #ifdef CONFIG_ACQUIRE_WDT
 	acq_init();
 #endif
+#ifdef CONFIG_60XX_WDT
+	sbc60xxwdt_init();
+#endif
 #ifdef CONFIG_SA1100_WDOG
 	sa1100wdog_init();
 #endif
@@ -222,7 +228,7 @@ int __init misc_init(void)
 	dtlk_init();
 #endif
 #ifdef CONFIG_APM
-	apm_bios_init();
+	apm_init();
 #endif
 #ifdef CONFIG_H8
 	h8_init();
@@ -268,6 +274,9 @@ int __init misc_init(void)
 #endif
 #ifdef CONFIG_SGI
 	streamable_init ();
+#endif
+#ifdef CONFIG_TOSHIBA
+	tosh_init();
 #endif
 	if (register_chrdev(MISC_MAJOR,"misc",&misc_fops)) {
 		printk("unable to get major %d for misc devices\n",

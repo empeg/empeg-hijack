@@ -375,8 +375,27 @@ static _INLINE_ void rs_sched_event(struct async_struct *info,
 	mark_bh(SERIAL_BH);
 }
 
+#if defined(CONFIG_KDB)
+#include <linux/kdb.h>
+/*
+ * kdb_serial_line records the serial line number of the 
+ * first serial console.  kdb_info will be set upon receipt 
+ * of the first ^A (which cannot happen until the port is
+ * opened and the interrupt handler attached).  To enter 
+ * kdb before this on a serial console-only system, you must
+ * use the 'kdb' flag to lilo and set the appropriate breakpoints.
+ */
+
+extern int  kdb_port;
+static int  kdb_serial_line = -1;
+#endif	/* CONFIG_KDB */
+
 static _INLINE_ void receive_chars(struct async_struct *info,
+#if defined(CONFIG_KDB)
+				 int *status, struct pt_regs * regs)
+#else
 				 int *status)
+#endif
 {
 	struct tty_struct *tty = info->tty;
 	unsigned char ch;
@@ -386,6 +405,13 @@ static _INLINE_ void receive_chars(struct async_struct *info,
 	icount = &info->state->icount;
 	do {
 		ch = serial_inp(info, UART_RX);
+#if defined(CONFIG_KDB)
+		if ((info->line == kdb_serial_line)
+		 && (ch == 1)) /* CNTRL-A */ {
+			kdb(KDB_REASON_KEYBOARD, 0, regs);
+			break;
+		}
+#endif
 		if (tty->flip.count >= TTY_FLIPBUF_SIZE)
 			break;
 		*tty->flip.char_buf_ptr = ch;
@@ -612,7 +638,11 @@ static void rs_interrupt(int irq, void *dev_id, struct pt_regs * regs)
 		printk("status = %x...", status);
 #endif
 		if (status & UART_LSR_DR)
+#if defined(CONFIG_KDB)
+			receive_chars(info, &status, regs);
+#else
 			receive_chars(info, &status);
+#endif
 		check_modem_status(info);
 		if (status & UART_LSR_THRE)
 			transmit_chars(info, 0);
@@ -676,7 +706,11 @@ static void rs_interrupt_single(int irq, void *dev_id, struct pt_regs * regs)
 		printk("status = %x...", status);
 #endif
 		if (status & UART_LSR_DR)
+#if defined(CONFIG_KDB)
+			receive_chars(info, &status, regs);
+#else
 			receive_chars(info, &status);
+#endif
 		check_modem_status(info);
 		if (status & UART_LSR_THRE)
 			transmit_chars(info, 0);
@@ -739,7 +773,11 @@ static void rs_interrupt_multi(int irq, void *dev_id, struct pt_regs * regs)
 		printk("status = %x...", status);
 #endif
 		if (status & UART_LSR_DR)
+#if defined(CONFIG_KDB)
+			receive_chars(info, &status, regs);
+#else
 			receive_chars(info, &status);
+#endif
 		check_modem_status(info);
 		if (status & UART_LSR_THRE)
 			transmit_chars(info, 0);
@@ -816,6 +854,7 @@ static void do_softint(void *private_)
 		    tty->ldisc.write_wakeup)
 			(tty->ldisc.write_wakeup)(tty);
 		wake_up_interruptible(&tty->write_wait);
+		wake_up_interruptible(&tty->poll_wait);
 	}
 }
 
@@ -1383,8 +1422,13 @@ static void change_speed(struct async_struct *info,
 	if (info->state->type == PORT_16750)
 		serial_outp(info, UART_FCR, fcr); 	/* set fcr */
 	serial_outp(info, UART_LCR, cval);		/* reset DLAB */
-	if (info->state->type != PORT_16750)
+	if (info->state->type != PORT_16750) {
+		if (fcr & UART_FCR_ENABLE_FIFO) {
+			/* emulated UARTs (Lucent Venus 167x) need two steps */
+			serial_outp(info, UART_FCR, UART_FCR_ENABLE_FIFO);
+		}
 		serial_outp(info, UART_FCR, fcr); 	/* set fcr */
+	}
 	restore_flags(flags);
 }
 
@@ -1532,6 +1576,7 @@ static void rs_flush_buffer(struct tty_struct *tty)
 	info->xmit_cnt = info->xmit_head = info->xmit_tail = 0;
 	restore_flags(flags);
 	wake_up_interruptible(&tty->write_wait);
+	wake_up_interruptible(&tty->poll_wait);
 	if ((tty->flags & (1 << TTY_DO_WRITE_WAKEUP)) &&
 	    tty->ldisc.write_wakeup)
 		(tty->ldisc.write_wakeup)(tty);
@@ -2775,29 +2820,31 @@ static inline int line_info(char *buf, struct serial_state *state)
 	return ret;
 }
 
-int rs_read_proc(char *page, char **start, off_t off, int count,
+int rs_read_proc(char *page, char **start, off_t idx, ssize_t count,
 		 int *eof, void *data)
 {
-	int i, len = 0, l;
-	off_t	begin = 0;
+	int n;
 
-	len += sprintf(page, "serinfo:1.0 driver:%s\n", serial_version);
-	for (i = 0; i < NR_PORTS && len < 3900; i++) {
-		l = line_info(page + len, &rs_table[i]);
-		len += l;
-		if (len+begin > off+count)
-			goto done;
-		if (len+begin < off) {
-			begin += len;
-			len = 0;
-		}
+	*start = (char *) 1L;
+
+	if (!idx) {
+		n = sprintf(page, "serinfo:1.0 driver:%s\n", serial_version);
+		goto out;
 	}
-	*eof = 1;
-done:
-	if (off >= len+begin)
-		return 0;
-	*start = page + (begin-off);
-	return ((count < begin+len-off) ? count : begin+len-off);
+	idx--;
+
+	n = 0;
+	if (idx >= NR_PORTS || idx < 0)
+		goto out;
+
+	n = line_info(page, &rs_table[idx]);
+	if (idx + 1 == NR_PORTS)
+		*eof = 1;
+
+ out:
+	if (n > count)
+		n = 0;
+	return n;
 }
 
 /*
@@ -3358,6 +3405,7 @@ static void serial_console_write(struct console *co, const char *s,
 	unsigned i;
 
 	ser = rs_table + co->index;
+
 	/*
 	 *	First save the IER then disable the interrupts
 	 */
@@ -3534,6 +3582,18 @@ __initfunc(static int serial_console_setup(struct console *co, char *options))
 	 */
 	if (inb(ser->port + UART_LSR) == 0xff)
 		return -1;
+
+#if defined(CONFIG_KDB)
+	/*
+	 * Remember the line number of the first serial
+	 * console.  We'll make this the kdb serial console too.
+	 */
+	if (kdb_serial_line == -1) {
+		kdb_serial_line = co->index;
+		kdb_port = ser->port;
+	}
+#endif	/* CONFIG_KDB */
+
 	return 0;
 }
 

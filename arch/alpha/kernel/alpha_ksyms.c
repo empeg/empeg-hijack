@@ -48,6 +48,8 @@ extern void __remlu (void);
 extern void __divqu (void);
 extern void __remqu (void);
 
+EXPORT_SYMBOL(init_mm);
+
 EXPORT_SYMBOL(alpha_mv);
 EXPORT_SYMBOL(enable_irq);
 EXPORT_SYMBOL(disable_irq);
@@ -160,6 +162,7 @@ EXPORT_SYMBOL(flush_tlb_all);
 EXPORT_SYMBOL(flush_tlb_mm);
 EXPORT_SYMBOL(flush_tlb_page);
 EXPORT_SYMBOL(flush_tlb_range);
+EXPORT_SYMBOL(smp_imb);
 EXPORT_SYMBOL(cpu_data);
 EXPORT_SYMBOL(cpu_number_map);
 EXPORT_SYMBOL(global_bh_lock);

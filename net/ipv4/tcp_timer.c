@@ -5,7 +5,7 @@
  *
  *		Implementation of the Transmission Control Protocol(TCP).
  *
- * Version:	$Id: tcp_timer.c,v 1.62.2.4 1999/09/23 19:21:39 davem Exp $
+ * Version:	$Id: tcp_timer.c,v 1.62.2.9 2000/05/27 04:04:43 davem Exp $
  *
  * Authors:	Ross Biro, <bir7@leland.Stanford.Edu>
  *		Fred N. van Kempen, <waltje@uWalt.NL.Mugnet.ORG>
@@ -131,6 +131,7 @@ static int tcp_write_err(struct sock *sk, int force)
 	} else {
 		/* Clean up time. */
 		tcp_set_state(sk, TCP_CLOSE);
+		sk->shutdown |= SHUTDOWN_MASK;
 		return 0;
 	}
 	return 1;
@@ -140,26 +141,47 @@ static int tcp_write_err(struct sock *sk, int force)
 static int tcp_write_timeout(struct sock *sk)
 {
 	struct tcp_opt *tp = &(sk->tp_pinfo.af_tcp);
+	unsigned char orig_state = sk->state;
+	int ret;
 
 	/* Look for a 'soft' timeout. */
-	if ((sk->state == TCP_ESTABLISHED &&
+	if ((orig_state == TCP_ESTABLISHED &&
 	     tp->retransmits && (tp->retransmits % TCP_QUICK_TRIES) == 0) ||
-	    (sk->state != TCP_ESTABLISHED && tp->retransmits > sysctl_tcp_retries1)) {
+	    (orig_state != TCP_ESTABLISHED && tp->retransmits > sysctl_tcp_retries1)) {
 		dst_negative_advice(&sk->dst_cache);
 	}
 	
 	/* Have we tried to SYN too many times (repent repent 8)) */
-	if(tp->retransmits > sysctl_tcp_syn_retries && sk->state==TCP_SYN_SENT) {
+	if(tp->retransmits > sysctl_tcp_syn_retries && orig_state==TCP_SYN_SENT) {
 		tcp_write_err(sk, 1);
+
 		/* Don't FIN, we got nothing back */
-		return 0;
+		ret = 0;
+	} else {
+		/* Has it gone just too far? */
+		if (tp->retransmits > sysctl_tcp_retries2) 
+			ret = tcp_write_err(sk, 0);
+		else
+			ret = 1;
 	}
 
-	/* Has it gone just too far? */
-	if (tp->retransmits > sysctl_tcp_retries2) 
-		return tcp_write_err(sk, 0);
+	/* Did we timeout a connecting socket?  The check must be
+	 * like this just in case someone sets syn_retries larger
+	 * than retries2, which is silly but handle it.  -DaveM
+	 */
+	if (orig_state == TCP_SYN_SENT && sk->state == TCP_CLOSE) {
+		/* Back out identity changes done by connect.
+		 * The move to TCP_CLOSE has unhashed us and
+		 * killed the bind bucket reference, making this
+		 * safe. -DaveM
+		 */
+		sk->dport = 0;
+		sk->daddr = 0;
+		sk->num = 0;
+		tcp_clear_xmit_timer(sk, TIME_RETRANS);
+	}
 
-	return 1;
+	return ret;
 }
 
 void tcp_delack_timer(unsigned long data)
@@ -366,12 +388,14 @@ static void tcp_keepalive(unsigned long data)
 	for(i = chain_start; i < (chain_start + ((tcp_ehash_size/2) >> 2)); i++) {
 		struct sock *sk = tcp_ehash[i];
 		while(sk) {
+			struct sock *sk_next = sk->next;
+
 			if(!atomic_read(&sk->sock_readers) && sk->keepopen) {
 				count += tcp_keepopen_proc(sk);
 				if(count == sysctl_tcp_max_ka_probes)
 					goto out;
 			}
-			sk = sk->next;
+			sk = sk_next;
 		}
 	}
 out:
@@ -406,6 +430,15 @@ void tcp_retransmit_timer(unsigned long data)
 	if (atomic_read(&sk->sock_readers)) {
 		/* Try again later */  
 		tcp_reset_xmit_timer(sk, TIME_RETRANS, HZ/20);
+		return;
+	}
+
+	/* Unfortunately, here in 2.2.x on SMP this timer can race
+	 * with the user level context.  It is fixed properly in 2.3.x
+	 * and later, but for now we have to use this hack.
+	 */
+	if (tp->packets_out == 0) {
+		tcp_clear_xmit_timer(sk, TIME_RETRANS);
 		return;
 	}
 

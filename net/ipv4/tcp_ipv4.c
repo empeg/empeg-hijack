@@ -327,6 +327,11 @@ static __inline__ void __tcp_v4_hash(struct sock *sk)
 {
 	struct sock **skp;
 
+	if (sk->pprev) {
+		printk("tcp_v4_hash: bug, socket state is %d\n", sk->state);
+		*(int *)0 = 0;
+	}
+
 	if(sk->state == TCP_LISTEN)
 		skp = &tcp_listening_hash[tcp_sk_listen_hashfn(sk)];
 	else
@@ -356,7 +361,8 @@ static void tcp_v4_unhash(struct sock *sk)
 		*sk->pprev = sk->next;
 		sk->pprev = NULL;
 		tcp_reg_zap(sk);
-		__tcp_put_port(sk);
+		if (sk->prev != NULL)
+			__tcp_put_port(sk);
 	}
 	SOCKHASH_UNLOCK();
 }
@@ -1041,8 +1047,8 @@ static void tcp_v4_send_ack(struct sk_buff *skb, __u32 seq, __u32 ack, __u16 win
 	rth.source = th->dest; 
 	rth.doff = sizeof(struct tcphdr)/4;
 
-	rth.seq = seq;
-	rth.ack_seq = ack; 
+	rth.seq = htonl(seq);
+	rth.ack_seq = htonl(ack); 
 	rth.ack = 1;
 
 	rth.window = htons(window);
@@ -1367,6 +1373,8 @@ struct sock *tcp_create_openreq_child(struct sock *sk, struct open_request *req,
 
 		memcpy(newsk, sk, sizeof(*newsk));
 		newsk->sklist_next = NULL;
+		newsk->next = NULL;
+		newsk->pprev = NULL;
 		newsk->state = TCP_SYN_RECV;
 
 		/* Clone the TCP header template */
@@ -1572,24 +1580,28 @@ exit:
 	return NULL;
 }
 
-static void tcp_v4_rst_req(struct sock *sk, struct sk_buff *skb)
+static struct sock *tcp_v4_rst_req(struct sock *sk, struct sk_buff *skb)
 {
 	struct tcp_opt *tp = &sk->tp_pinfo.af_tcp;
 	struct open_request *req, *prev;
 
 	req = tcp_v4_search_req(tp,skb->nh.iph, skb->h.th, &prev);
 	if (!req)
-		return;
+		return NULL;
 	/* Sequence number check required by RFC793 */
 	if (before(TCP_SKB_CB(skb)->seq, req->rcv_isn) ||
 	    after(TCP_SKB_CB(skb)->seq, req->rcv_isn+1))
-		return;
+		return NULL;
+	if (req->sk)
+		return req->sk;
+
 	tcp_synq_unlink(tp, req, prev);
-	(req->sk ? sk->ack_backlog : tp->syn_backlog)--;
+	tp->syn_backlog--;
 	req->class->destructor(req);
 	tcp_openreq_free(req); 
 
 	net_statistics.EmbryonicRsts++;
+	return NULL;
 }
 
 /* Check for embryonic sockets (open_requests) We check packets with
@@ -1603,10 +1615,8 @@ static inline struct sock *tcp_v4_hnd_req(struct sock *sk,struct sk_buff *skb)
 	u32 flg = ((u32 *)th)[3]; 
 
 	/* Check for RST */
-	if (flg & __constant_htonl(0x00040000)) {
-		tcp_v4_rst_req(sk, skb);
-		return NULL;
-	}
+	if (flg & __constant_htonl(0x00040000))
+		return tcp_v4_rst_req(sk, skb);
 
 	/* Check for SYN|ACK */
 	if (flg & __constant_htonl(0x00120000)) {

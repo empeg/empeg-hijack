@@ -44,6 +44,7 @@ else
             bool '     NS87415 chipset support (EXPERIMENTAL)' CONFIG_BLK_DEV_NS87415
             bool '     VIA82C586 chipset support (EXPERIMENTAL)' CONFIG_BLK_DEV_VIA82C586
             bool '     CMD646 chipset support (EXPERIMENTAL)' CONFIG_BLK_DEV_CMD646
+            bool '     Cyrix CS5530 MediaGX chipset support' CONFIG_BLK_DEV_CS5530 
           fi
         fi
         if [ "$CONFIG_PPC" = "y" -o "$CONFIG_ARM" = "y" ]; then
@@ -125,6 +126,9 @@ if [ "$CONFIG_MD_LINEAR" = "y" -o "$CONFIG_MD_STRIPED" = "y" ]; then
   bool '      Boot support (linear, striped)' CONFIG_MD_BOOT
 fi
 tristate 'RAM disk support' CONFIG_BLK_DEV_RAM
+if [ "$CONFIG_BLK_DEV_RAM" = "y" -o "$CONFIG_BLK_DEV_RAM" = "m" ]; then
+  int '   Default RAM disk size' CONFIG_BLK_DEV_RAM_SIZE 4096
+fi
 if [ "$CONFIG_BLK_DEV_RAM" = "y" ]; then
   bool '   Initial RAM disk (initrd) support' CONFIG_BLK_DEV_INITRD
 fi

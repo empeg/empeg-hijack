@@ -1,4 +1,4 @@
-/*  $Id: init.c,v 1.127.2.6 1999/12/05 07:24:42 davem Exp $
+/*  $Id: init.c,v 1.127.2.8 2000/03/03 23:50:41 davem Exp $
  *  arch/sparc64/mm/init.c
  *
  *  Copyright (C) 1996-1999 David S. Miller (davem@caip.rutgers.edu)
@@ -709,6 +709,14 @@ static void inherit_prom_mappings(void)
 
 	/* Now fixup OBP's idea about where we really are mapped. */
 	prom_printf("Remapping the kernel... ");
+
+	/* Spitfire Errata #32 workaround */
+	__asm__ __volatile__("stxa	%0, [%1] %2\n\t"
+			     "flush	%%g6"
+			     : /* No outputs */
+			     : "r" (0),
+			     "r" (PRIMARY_CONTEXT), "i" (ASI_DMMU));
+
 	phys_page = spitfire_get_dtlb_data(63) & _PAGE_PADDR;
 	phys_page += ((unsigned long)&prom_boot_page -
 		      (unsigned long)&empty_zero_page);
@@ -731,10 +739,26 @@ static void inherit_prom_mappings(void)
 		: "memory");
 
 	tte_vaddr = (unsigned long) &empty_zero_page;
+
+	/* Spitfire Errata #32 workaround */
+	__asm__ __volatile__("stxa	%0, [%1] %2\n\t"
+			     "flush	%%g6"
+			     : /* No outputs */
+			     : "r" (0),
+			     "r" (PRIMARY_CONTEXT), "i" (ASI_DMMU));
+
 	kern_locked_tte_data = tte_data = spitfire_get_dtlb_data(63);
 
 	remap_func = (void *)  ((unsigned long) &prom_remap -
 				(unsigned long) &prom_boot_page);
+
+
+	/* Spitfire Errata #32 workaround */
+	__asm__ __volatile__("stxa	%0, [%1] %2\n\t"
+			     "flush	%%g6"
+			     : /* No outputs */
+			     : "r" (0),
+			     "r" (PRIMARY_CONTEXT), "i" (ASI_DMMU));
 
 	remap_func(spitfire_get_dtlb_data(63) & _PAGE_PADDR,
 		   (unsigned long) &empty_zero_page,
@@ -798,8 +822,16 @@ static void __flush_nucleus_vptes(void)
 
 	/* Only DTLB must be checked for VPTE entries. */
 	for(i = 0; i < 63; i++) {
-		unsigned long tag = spitfire_get_dtlb_tag(i);
+		unsigned long tag;
 
+		/* Spitfire Errata #32 workaround */
+		__asm__ __volatile__("stxa	%0, [%1] %2\n\t"
+				     "flush	%%g6"
+				     : /* No outputs */
+				     : "r" (0),
+				     "r" (PRIMARY_CONTEXT), "i" (ASI_DMMU));
+
+		tag = spitfire_get_dtlb_tag(i);
 		if(((tag & ~(PAGE_MASK)) == 0) &&
 		   ((tag &  (PAGE_MASK)) >= prom_reserved_base)) {
 			__asm__ __volatile__("stxa %%g0, [%0] %1"
@@ -912,10 +944,26 @@ void inherit_locked_prom_mappings(int save_p)
 	for(i = 0; i < 63; i++) {
 		unsigned long data;
 
+
+		/* Spitfire Errata #32 workaround */
+		__asm__ __volatile__("stxa	%0, [%1] %2\n\t"
+				     "flush	%%g6"
+				     : /* No outputs */
+				     : "r" (0),
+				     "r" (PRIMARY_CONTEXT), "i" (ASI_DMMU));
+
 		data = spitfire_get_dtlb_data(i);
 		if((data & (_PAGE_L|_PAGE_VALID)) == (_PAGE_L|_PAGE_VALID)) {
-			unsigned long tag = spitfire_get_dtlb_tag(i);
+			unsigned long tag;
 
+			/* Spitfire Errata #32 workaround */
+			__asm__ __volatile__("stxa	%0, [%1] %2\n\t"
+					     "flush	%%g6"
+					     : /* No outputs */
+					     : "r" (0),
+					     "r" (PRIMARY_CONTEXT), "i" (ASI_DMMU));
+
+			tag = spitfire_get_dtlb_tag(i);
 			if(save_p) {
 				prom_dtlb[dtlb_seen].tlb_ent = i;
 				prom_dtlb[dtlb_seen].tlb_tag = tag;
@@ -935,10 +983,25 @@ void inherit_locked_prom_mappings(int save_p)
 	for(i = 0; i < 63; i++) {
 		unsigned long data;
 
+		/* Spitfire Errata #32 workaround */
+		__asm__ __volatile__("stxa	%0, [%1] %2\n\t"
+				     "flush	%%g6"
+				     : /* No outputs */
+				     : "r" (0),
+				     "r" (PRIMARY_CONTEXT), "i" (ASI_DMMU));
+
 		data = spitfire_get_itlb_data(i);
 		if((data & (_PAGE_L|_PAGE_VALID)) == (_PAGE_L|_PAGE_VALID)) {
-			unsigned long tag = spitfire_get_itlb_tag(i);
+			unsigned long tag;
 
+			/* Spitfire Errata #32 workaround */
+			__asm__ __volatile__("stxa	%0, [%1] %2\n\t"
+					     "flush	%%g6"
+					     : /* No outputs */
+					     : "r" (0),
+					     "r" (PRIMARY_CONTEXT), "i" (ASI_DMMU));
+
+			tag = spitfire_get_itlb_tag(i);
 			if(save_p) {
 				prom_itlb[itlb_seen].tlb_ent = i;
 				prom_itlb[itlb_seen].tlb_tag = tag;
@@ -989,13 +1052,11 @@ void prom_reload_locked(void)
 
 void __flush_dcache_range(unsigned long start, unsigned long end)
 {
-	unsigned long va;
-	int n = 0;
-
-	for (va = start; va < end; va += 32) {
-		spitfire_put_dcache_tag(va & 0x3fe0, 0x0);
-		if (++n >= 512)
-			break;
+	start &= PAGE_MASK;
+	end = PAGE_ALIGN(end);
+	while (start < end) {
+		flush_dcache_page(start);
+		start += PAGE_SIZE;
 	}
 }
 
@@ -1020,6 +1081,13 @@ void __flush_tlb_all(void)
 			     : "=r" (pstate)
 			     : "i" (PSTATE_IE));
 	for(i = 0; i < 64; i++) {
+		/* Spitfire Errata #32 workaround */
+		__asm__ __volatile__("stxa	%0, [%1] %2\n\t"
+				     "flush	%%g6"
+				     : /* No outputs */
+				     : "r" (0),
+				     "r" (PRIMARY_CONTEXT), "i" (ASI_DMMU));
+
 		if(!(spitfire_get_dtlb_data(i) & _PAGE_L)) {
 			__asm__ __volatile__("stxa %%g0, [%0] %1"
 					     : /* no outputs */
@@ -1028,6 +1096,14 @@ void __flush_tlb_all(void)
 			spitfire_put_dtlb_data(i, 0x0UL);
 			membar("#Sync");
 		}
+
+		/* Spitfire Errata #32 workaround */
+		__asm__ __volatile__("stxa	%0, [%1] %2\n\t"
+				     "flush	%%g6"
+				     : /* No outputs */
+				     : "r" (0),
+				     "r" (PRIMARY_CONTEXT), "i" (ASI_DMMU));
+
 		if(!(spitfire_get_itlb_data(i) & _PAGE_L)) {
 			__asm__ __volatile__("stxa %%g0, [%0] %1"
 					     : /* no outputs */

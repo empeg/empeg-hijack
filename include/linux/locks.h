@@ -8,6 +8,8 @@
 #include <linux/pagemap.h>
 #endif
 
+extern void jfs_prelock_buffer_check(struct buffer_head *);
+
 /*
  * Buffer cache locking - note that interrupts may only unlock, not
  * lock buffers.
@@ -22,6 +24,8 @@ extern inline void wait_on_buffer(struct buffer_head * bh)
 
 extern inline void lock_buffer(struct buffer_head * bh)
 {
+	/* @@@ Debugging for the journaling code */
+	jfs_prelock_buffer_check(bh);
 	while (test_and_set_bit(BH_Lock, &bh->b_state))
 		__wait_on_buffer(bh);
 }

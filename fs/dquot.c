@@ -102,6 +102,15 @@ static struct wait_queue *dquot_wait = (struct wait_queue *)NULL,
 
 void dqput(struct dquot *);
 static struct dquot *dqduplicate(struct dquot *);
+static void do_write_dquot(struct dquot *dquot);
+
+static inline void mark_dquot_dirty(struct dquot *dquot)
+{
+	if (dquot->dq_mnt->mnt_dquot.flags & DQUOT_WRITETHROUGH)
+		do_write_dquot(dquot);
+	else
+		dquot->dq_flags |= DQ_MOD;
+}
 
 static inline char is_enabled(struct vfsmount *vfsmnt, short type)
 {
@@ -251,7 +260,7 @@ static inline void unlock_dquot(struct dquot *dquot)
 /*
  *	We don't have to be afraid of deadlocks as we never have quotas on quota files...
  */
-static void write_dquot(struct dquot *dquot)
+static void do_write_dquot(struct dquot *dquot)
 {
 	short type = dquot->dq_type;
 	struct file *filp;
@@ -260,11 +269,8 @@ static void write_dquot(struct dquot *dquot)
 	ssize_t ret;
 	struct semaphore *sem = &dquot->dq_mnt->mnt_dquot.dqio_sem;
 
-	lock_dquot(dquot);
-	if (!dquot->dq_mnt) {	/* Invalidated quota? */
-		unlock_dquot(dquot);
+	if (!dquot->dq_mnt)	/* Invalidated quota? */
 		return;
-	}
 	down(sem);
 	filp = dquot->dq_mnt->mnt_dquot.files[type];
 	offset = dqoff(dquot->dq_id);
@@ -286,9 +292,15 @@ static void write_dquot(struct dquot *dquot)
 
 	set_fs(fs);
 	up(sem);
-	unlock_dquot(dquot);
 
 	dqstats.writes++;
+}
+
+static void write_dquot(struct dquot *dquot)
+{
+	lock_dquot(dquot);
+	do_write_dquot(dquot);
+	unlock_dquot(dquot);
 }
 
 static void read_dquot(struct dquot *dquot)
@@ -539,7 +551,6 @@ static inline struct dquot *find_best_free(void)
 struct dquot *get_empty_dquot(void)
 {
 	struct dquot *dquot;
-	int count;
 
 repeat:
 	dquot = find_best_free();
@@ -569,10 +580,9 @@ pressure:
 	/*
 	 * Try pruning the dcache to free up some dquots ...
 	 */
-	printk(KERN_DEBUG "get_empty_dquot: pruning %d\n", count);
 	if (prune_dcache(0, 128))
 	{
-		free_inode_memory(count);
+		free_inode_memory(10);
 		goto repeat;
 	}
 
@@ -794,13 +804,13 @@ static void reset_dquot_ptrs(kdev_t dev, short type)
 static inline void dquot_incr_inodes(struct dquot *dquot, unsigned long number)
 {
 	dquot->dq_curinodes += number;
-	dquot->dq_flags |= DQ_MOD;
+	mark_dquot_dirty(dquot);
 }
 
 static inline void dquot_incr_blocks(struct dquot *dquot, unsigned long number)
 {
 	dquot->dq_curblocks += number;
-	dquot->dq_flags |= DQ_MOD;
+	mark_dquot_dirty(dquot);
 }
 
 static inline void dquot_decr_inodes(struct dquot *dquot, unsigned long number)
@@ -812,7 +822,7 @@ static inline void dquot_decr_inodes(struct dquot *dquot, unsigned long number)
 	if (dquot->dq_curinodes < dquot->dq_isoftlimit)
 		dquot->dq_itime = (time_t) 0;
 	dquot->dq_flags &= ~DQ_INODES;
-	dquot->dq_flags |= DQ_MOD;
+	mark_dquot_dirty(dquot);
 }
 
 static inline void dquot_decr_blocks(struct dquot *dquot, unsigned long number)
@@ -824,7 +834,7 @@ static inline void dquot_decr_blocks(struct dquot *dquot, unsigned long number)
 	if (dquot->dq_curblocks < dquot->dq_bsoftlimit)
 		dquot->dq_btime = (time_t) 0;
 	dquot->dq_flags &= ~DQ_BLKS;
-	dquot->dq_flags |= DQ_MOD;
+	mark_dquot_dirty(dquot);
 }
 
 static inline char need_print_warning(short type, uid_t initiator, struct dquot *dquot)
@@ -990,7 +1000,7 @@ static int set_dqblk(kdev_t dev, int id, short type, int flags, struct dqblk *dq
 		else
 			dquot->dq_flags &= ~DQ_FAKE;
 
-		dquot->dq_flags |= DQ_MOD;
+		mark_dquot_dirty(dquot);
 		unlock_dquot(dquot);
 		dqput(dquot);
 	}
@@ -1543,6 +1553,10 @@ int quota_on(kdev_t dev, short type, char *path)
 	dqput(dquot);
 
 	vfsmnt->mnt_sb->dq_op = &dquot_operations;
+	/* Call the super-specific setup function _before_ dropping the dquot
+	 * semaphore */
+	if (vfsmnt->mnt_sb->s_op->init_dquot)
+		vfsmnt->mnt_sb->s_op->init_dquot(vfsmnt);
 	add_dquot_ref(dev, type);
 
 	up(&mnt_dquot->dqoff_sem);
@@ -1584,7 +1598,7 @@ asmlinkage int sys_quotactl(int cmd, const char *special, int id, caddr_t addr)
 			break;
 		case Q_GETQUOTA:
 			if (((type == USRQUOTA && current->euid != id) ||
-			     (type == GRPQUOTA && in_group_p(id))) &&
+			     (type == GRPQUOTA && !in_egroup_p(id))) &&
 			    !capable(CAP_SYS_RESOURCE))
 				goto out;
 			break;

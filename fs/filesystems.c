@@ -11,6 +11,7 @@
 
 #include <linux/minix_fs.h>
 #include <linux/ext2_fs.h>
+#include <linux/ext3_fs.h>
 #include <linux/msdos_fs.h>
 #include <linux/umsdos_fs.h>
 #include <linux/proc_fs.h>
@@ -29,7 +30,6 @@
 #include <linux/ntfs_fs.h>
 #include <linux/hfs_fs.h>
 #include <linux/devpts_fs.h>
-#include <linux/reiserfs_fs.h>
 #include <linux/major.h>
 #include <linux/smp.h>
 #include <linux/smp_lock.h>
@@ -52,16 +52,16 @@ extern int init_devpts_fs(void);
 
 void __init filesystem_setup(void)
 {
+#ifdef CONFIG_EXT3_FS
+	init_ext3_fs();
+#endif
+
 #ifdef CONFIG_EXT2_FS
 	init_ext2_fs();
 #endif
 
 #ifdef CONFIG_MINIX_FS
 	init_minix_fs();
-#endif
-
-#ifdef CONFIG_REISERFS_FS
-	init_reiserfs_fs();
 #endif
 
 #ifdef CONFIG_ROMFS_FS

@@ -1,4 +1,4 @@
-/* $Id: string.h,v 1.14 1998/10/20 03:09:18 jj Exp $
+/* $Id: string.h,v 1.14.2.1 2000/05/27 04:46:42 davem Exp $
  * string.h: External definitions for optimized assembly string
  *           routines for the Linux Kernel.
  *
@@ -113,7 +113,7 @@ extern inline void *__nonconstant_memset(void *s, char c, __kernel_size_t count)
 
 extern __kernel_size_t __strlen(const char *);
 
-#if __GNUC__ > 2 || __GNUC_MINOR__ >= 91
+#if (__GNUC__ > 2) || (__GNUC__ == 2 && __GNUC_MINOR__ >= 91)
 extern __kernel_size_t strlen(const char *);
 #else /* !EGCS */
 /* Ugly but it works around a bug in our original sparc64-linux-gcc.  */

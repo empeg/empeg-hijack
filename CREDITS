@@ -12,7 +12,7 @@
 N: Matti Aarnio
 E: mea@nic.funet.fi
 D: Alpha systems hacking, IPv6 and other network related stuff
-D: One of assisting postmasters for vger.rutgers.edu's lists
+D: One of assisting postmasters for vger.kernel.org's lists
 S: (ask for current address)
 S: Finland
 
@@ -253,9 +253,9 @@ W: http://math-www.uni-paderborn.de/~axel/
 D: Configuration help text support
 D: Linux CD and Support Giveaway List
 
-N: Zoltan Boszormenyi
-E: zboszor@mol.hu
-D: MTRR emulation with Cyrix style ARR registers
+N: Zoltán Böszörményi
+E: zboszor@mail.externet.hu
+D: MTRR emulation with Cyrix style ARR registers, Athlon MTRR support
 
 N: John Boyd
 E: boyd@cis.ohio-state.edu
@@ -371,7 +371,7 @@ S: Stanford, California 94305
 S: USA
 
 N: Juan Jose Ciarlante
-W: http://juanjox.linuxhq.com/
+W: http://juanjox.kernelnotes.org/
 E: jjciarla@raiz.uncu.edu.ar
 E: jjo@mendoza.gov.ar
 D: Network driver alias support
@@ -645,6 +645,10 @@ S: 1150 Ringwood Court
 S: San Jose, California 95131
 S: USA
 
+N: Kumar Gala
+E: kumar.gala@motorola.com
+D: AltiVec PowerPC support
+
 N: Nigel Gamble
 E: nigel@nrg.org
 E: nigel@sgi.com
@@ -812,6 +816,7 @@ E: bh40@calva.net
 E: benh@mipsys.com
 D: PowerMac booter (BootX)
 D: Additional PowerBook support
+D: Apple "Core99" machines support (ibook,g4,...)
 S: 22, rue des Marguettes
 S: 75012 Paris
 S: France
@@ -867,7 +872,8 @@ S: CV5 8BZ
 S: United Kingdom
 
 N: Ron Holt
-E: ron@sovereign.org
+E: ron@holt.org
+E: rholt@netcom.com
 W: http://www.holt.org/
 P: 1024/1FD44539 DF 4B EB 9F 5B 68 38 9A  40 E3 FB 71 D1 C8 0B 56
 D: Kernel development
@@ -977,9 +983,10 @@ S: Chapel Hill, North Carolina 27514-4818
 S: USA
 
 N: Dave Jones
+E: davej@suse.de
 E: dave@powertweak.com
 E: djones2@glam.ac.uk
-W: http://linux.powertweak.com
+W: http://powertweak.sourceforge.net
 D: Userspace PCI bridge tuning (Powertweak).
 D: Centaur/IDT Winchip/Winchip 2 tweaks.
 D: Misc clean ups and other random hacking.
@@ -1338,6 +1345,15 @@ D: XF86_Mach8
 D: XF86_8514
 D: cfdisk (curses based disk partitioning program)
 
+N: Torben Mathiasen
+E: tmm@image.dk
+E: torben.mathiasen@compaq.com
+D: Maintainer of ThunderLAN driver.
+D: Fixes for TLAN running Full Duplex, and other kernel hacks.
+S: Bremensgade 29, st.th
+S: 2300 Copenhagen S
+S: Denmark
+
 N: Mike McLagan
 E: mike.mclagan@linux.org
 W: http://www.invlogic.com/~mmclagan
@@ -1408,7 +1424,7 @@ S: 7546 JA  Enschede
 S: Netherlands
 
 N: David S. Miller
-E: davem@dm.cobaltmicro.com
+E: davem@redhat.com
 D: Sparc and blue box hacker
 D: Vger Linux mailing list co-maintainer
 D: Linux Emacs elf/qmagic support + other libc/gcc things
@@ -1546,6 +1562,15 @@ N: David Parsons
 E: orc@pell.chi.il.us
 D: improved memory detection code.
 
+N: Ivan Passos
+E: ivan@cyclades.com
+D: Author of the Cyclades-PC300 synchronous card driver
+D: Maintainer of the Cyclom-Y/Cyclades-Z asynchronous card driver
+S: Cyclades Corp
+S: 41934 Christy St
+S: Fremont, CA 94538
+S: USA
+
 N: Vojtech Pavlik
 E: vojtech@suse.cz
 D: Joystick driver
@@ -1627,9 +1652,23 @@ N: Ken Pizzini
 E: ken@halcyon.com
 D: CDROM driver "sonycd535" (Sony CDU-535/531)
 
+N: Matt Porter
+E: mporter@phx.mcd.mot.com
+D: Motorola PowerPC PReP support
+S: 2900 S. Diable Way
+S: Tempe, Arizona 85282
+S: USA
+
 N: Frederic Potter 
 E: Frederic.Potter@masi.ibp.fr 
 D: Some PCI kernel support
+
+N: Peter Pregler
+E: Peter_Pregler@email.com
+D: V4L-Driver for the CPiA PPC2 driven parallel connected camera.
+P: 1024D/554D35AE 1314 1889 46A5 14F3 EE4D  1958 4A9C 2B10 554D 35AE
+S: (ask for current address)
+S: Austria
 
 N: Stefan Probst
 E: sp@caldera.de
@@ -1739,6 +1778,13 @@ S: 21 Rue Carnot
 S: 95170 Deuil La Barre
 S: France
 
+N: Aristeu Sergio Rozanski Filho
+E: aris@conectiva.com.br
+D: Support for EtherExpress 10 ISA (i82595) in eepro driver
+S: Rua Tocantins, 89 - Cristo Rei
+S: 80050-430 - Curitiba - Parana
+S: Brazil
+
 N: Alessandro Rubini
 E: rubini@ipvvis.unipv.it
 D: the gpm mouse server and kernel support for it
@@ -1753,7 +1799,9 @@ S: Germany
 
 N: Paul Russell
 E: Paul.Russell@rustcorp.com.au
-W: http://www.rustcorp.com
+W: http://netfilter.filewatcher.org/ipchains
+W: http://www.samba.org/netfilter/ipchains
+W: http://netfilter.kernelnotes.org/ipchains
 D: Ruggedly handsome.
 D: Developed Generic IP Firewalling Chains with Michael Neuling.
 
@@ -1897,6 +1945,13 @@ D: Optics Storage 8000AT cdrom driver
 S: Cliffwood, New Jersey 07721
 S: USA
 
+N: Andrew Stanley-Jones
+E: asj@lanmedia.com
+D: LanMedia Corp. Device WAN card device driver
+S: #102, 686 W. Maude Ave
+S: Sunyvale, CA 94086
+S: USA
+
 N: Henrik Storner
 E: storner@image.dk
 W: http://www.image.dk/~storner/
@@ -1954,6 +2009,16 @@ D: Original kernel hacker
 S: 1050 Woodduck Avenue
 S: Santa Clara, California 95051
 S: USA
+
+N: Marcelo W. Tosatti
+E: marcelo@conectiva.com.br
+W: http://bazar.conectiva.com.br/~marcelo/
+D: Miscellaneous kernel hacker
+D: Linux high availability hacker
+S: Conectiva S.A.
+S: R. Tocantins, 89 - Cristo Rei
+S: 80050-430 - Curitiba - Paraná
+S: Brazil
 
 N: Stefan Traby
 E: stefan@quant-x.com
@@ -2047,12 +2112,8 @@ S: 97078 Wuerzburg
 S: Germany
 
 N: Greg Ungerer
-E: gerg@stallion.com
+E: gerg@moreton.com.au
 D: Author of Stallion multiport serial drivers
-S: Stallion Technologies
-S: 33 Woodstock Rd
-S: Toowong, QLD. 4066
-S: Australia
 
 N: Jeffrey A. Uphoff
 E: juphoff@nrao.edu
@@ -2079,7 +2140,7 @@ S: Germany
 
 N: Geert Uytterhoeven
 E: geert@linux-m68k.org
-W: http://www.cs.kuleuven.ac.be/~geert/
+W: http://home.tvd.be/cr26864/
 P: 1024/EC4A1EE1 8B 88 38 35 88 1E 95 A1  CD 9E AE DC 4B 4A 2F 41
 D: m68k/Amiga and PPC/CHRP Longtrail coordinator
 D: Frame buffer device and XF68_FBDev maintainer
@@ -2133,10 +2194,10 @@ S: The Netherlands
 N: Tim Waugh
 E: tim@cyberelk.demon.co.uk
 D: Co-architect of the parallel-port sharing system
-S: 34 Bladon Close
+S: 17 Curling Vale
 S: GUILDFORD
 S: Surrey
-S: GU1 1TY
+S: GU2 7PJ
 S: United Kingdom
 
 N: Juergen Weigert
@@ -2252,15 +2313,15 @@ S: 2612 XV Delft
 S: The Netherlands
 
 N: David Woodhouse
-E: David.Woodhouse@mvhi.com
-E: Dave@imladris.demon.co.uk
-D: Extensive ARCnet rewrite
-D: ARCnet COM20020, COM90xx IO-MAP drivers
-D: SO_BINDTODEVICE in 2.1.x (from Elliot Poger's code in 2.0.31)
-D: Contributed to NCPFS rewrite for 2.1.x dcache
-D: Alpha platforms: SX164, LX164 and Ruffian ported to 2.1.x
-S: 29, David Bull Way
-S: Milton, Cambridge. CB4 6DP
+E: dwmw2@infradead.org
+E: dwmw2@redhat.com
+D: ARCnet stuff, Applicom board driver, SO_BINDTODEVICE,
+D: some Alpha platform porting from 2.0, Memory Technology Devices,
+D: Acquire watchdog timer, PC speaker driver maintenance,
+D: various other stuff that annoyed me by not working.
+S: c/o Red Hat UK Limited
+S: 35-36 Cambridge Place
+S: Cambridge. CB2 1NS
 S: England
 
 N: Frank Xia
@@ -2268,6 +2329,13 @@ E: qx@math.columbia.edu
 D: Xiafs filesystem [defunct]
 S: 542 West 112th Street, 5N
 S: New York, New York 10025
+S: USA
+
+N: Victor Yodaiken
+E: yodaiken@fsmlabs.com
+D: RTLinux (RealTime Linux)
+S: POB 1822 
+S: Socorro NM, 87801
 S: USA
 
 N: Eric Youngdale

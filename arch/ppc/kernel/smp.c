@@ -7,7 +7,7 @@
  * deal of code from the sparc and intel versions.
  *
  * Support for PReP (Motorola MTX/MVME) SMP by Troy Benjegerdes
- * (troy@microux.com, hozer@drgw.net)
+ * (troy@blacklablinux.com, hozer@drgw.net)
  */
 
 #include <linux/kernel.h>
@@ -35,8 +35,8 @@
 #include <asm/io.h>
 #include <asm/prom.h>
 #include <asm/gemini.h>
-
-#include "time.h"
+#include <asm/residual.h>
+#include <asm/time.h>
 #include "open_pic.h"
 
 int first_cpu_booted = 0;
@@ -441,6 +441,8 @@ void __init smp_callin(void)
 	 */
 	if ( _machine & (_MACH_gemini|_MACH_chrp|_MACH_prep) )
 		do_openpic_setup_cpu();
+	if ( _machine == _MACH_gemini )
+	        gemini_init_l2();
 	while(!smp_commenced)
 		barrier();
 	__sti();

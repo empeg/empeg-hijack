@@ -5,7 +5,7 @@
  *
  *		Implementation of the Transmission Control Protocol(TCP).
  *
- * Version:	$Id: tcp_input.c,v 1.164.2.8 1999/09/23 19:21:23 davem Exp $
+ * Version:	$Id: tcp_input.c,v 1.164.2.15 2000/05/27 04:01:49 davem Exp $
  *
  * Authors:	Ross Biro, <bir7@leland.Stanford.Edu>
  *		Fred N. van Kempen, <waltje@uWalt.NL.Mugnet.ORG>
@@ -55,6 +55,7 @@
  *					work without delayed acks. 
  *		Andi Kleen:		Process packets with PSH set in the
  *					fast path.
+ *		Vincent Zweije		Fix TIME-WAIT FIN ACK bug.
  */
 
 #include <linux/config.h>
@@ -270,10 +271,12 @@ extern __inline__ int tcp_sequence(struct tcp_opt *tp, u32 seq, u32 end_seq)
 /* When we get a reset we do this. */
 static void tcp_reset(struct sock *sk)
 {
+	unsigned char orig_state = sk->state;
+
 	sk->zapped = 1;
 
 	/* We want the right error as BSD sees it (and indeed as we do). */
-	switch (sk->state) {
+	switch (orig_state) {
 		case TCP_SYN_SENT:
 			sk->err = ECONNREFUSED;
 			break;
@@ -284,6 +287,17 @@ static void tcp_reset(struct sock *sk)
 			sk->err = ECONNRESET;
 	};
 	tcp_set_state(sk, TCP_CLOSE);
+	if (orig_state == TCP_SYN_SENT) {
+		/* Back out identity changes done by connect.
+		 * The move to TCP_CLOSE has unhashed us and
+		 * killed the bind bucket reference, making this
+		 * safe. -DaveM
+		 */
+		sk->dport = 0;
+		sk->daddr = 0;
+		sk->num = 0;
+		tcp_clear_xmit_timer(sk, TIME_RETRANS);
+	}
 	sk->shutdown = SHUTDOWN_MASK;
 	if (!sk->dead) 
 		sk->state_change(sk);
@@ -434,9 +448,6 @@ void tcp_parse_options(struct sock *sk, struct tcphdr *th, struct tcp_opt *tp, i
  */
 static __inline__ int tcp_fast_parse_options(struct sock *sk, struct tcphdr *th, struct tcp_opt *tp)
 {
-	/* If we didn't send out any options ignore them all. */
-	if (tp->tcp_header_len == sizeof(struct tcphdr))
-		return 0;
 	if (th->doff == sizeof(struct tcphdr)>>2) {
 		tp->saw_tstamp = 0;
 		return 0;
@@ -766,6 +777,7 @@ static int tcp_ack(struct sock *sk, struct tcphdr *th,
 		   u32 ack_seq, u32 ack, int len)
 {
 	struct tcp_opt *tp = &(sk->tp_pinfo.af_tcp);
+	u32 nwin = ntohs(th->window) << tp->snd_wscale;
 	int flag = 0;
 	u32 seq = 0;
 	u32 seq_rtt = 0;
@@ -796,20 +808,21 @@ static int tcp_ack(struct sock *sk, struct tcphdr *th,
 	 * snd_wl{1,2} are used to prevent unordered
 	 * segments from shrinking the window 
 	 */
-	if (before(tp->snd_wl1, ack_seq) ||
-	    (tp->snd_wl1 == ack_seq && !after(tp->snd_wl2, ack))) {
-		u32 nwin = ntohs(th->window) << tp->snd_wscale;
+	if (after(ack_seq, tp->snd_wl1) ||
+	    (tp->snd_wl1 == ack_seq &&
+	     (after(ack, tp->snd_wl2) ||
+	      (tp->snd_wl2 == ack && nwin > tp->snd_wnd)))) {
+		flag |= FLAG_WIN_UPDATE;
+		tp->snd_wl1 = ack_seq;
+		tp->snd_wl2 = ack;
+		tp->snd_wnd = nwin;
 
-		if ((tp->snd_wl2 != ack) || (nwin > tp->snd_wnd)) {
-			flag |= FLAG_WIN_UPDATE;
-			tp->snd_wnd = nwin;
-
-			tp->snd_wl1 = ack_seq;
-			tp->snd_wl2 = ack;
-
-			if (nwin > tp->max_window)
-				tp->max_window = nwin;
-		}
+		if (nwin > tp->max_window)
+			tp->max_window = nwin;
+	} else if (after(ack, tp->snd_una)) {
+		/* Bad case. Window update is not accepted.
+		 * We will lockup. Break RFC to survive. */
+		tp->snd_wnd -= min(ack-tp->snd_una, tp->snd_wnd);
 	}
 
 	/* We passed data and got it acked, remove any soft error
@@ -988,7 +1001,7 @@ tcp_timewait_state_process(struct tcp_tw_bucket *tw, struct sk_buff *skb,
 	}
 
 	/* Check RST or SYN */
-	if(th->rst || th->syn) {
+	if(th->rst) {
 		/* This is TIME_WAIT assasination, in two flavors.
 		 * Oh well... nobody has a sufficient solution to this
 		 * protocol bug yet.
@@ -997,8 +1010,6 @@ tcp_timewait_state_process(struct tcp_tw_bucket *tw, struct sk_buff *skb,
 			tcp_tw_deschedule(tw);
 			tcp_timewait_kill(tw);
 		}
-		if(!th->rst)
-			return TCP_TW_RST; /* toss a reset back */
 		return 0;
 	} else {
 		/* In this case we must reset the TIMEWAIT timer. */
@@ -1007,7 +1018,7 @@ tcp_timewait_state_process(struct tcp_tw_bucket *tw, struct sk_buff *skb,
 	}
 	/* Ack old packets if necessary */ 
 	if (!after(TCP_SKB_CB(skb)->end_seq, tw->rcv_nxt) &&
-	    (th->doff * 4) > len)
+	    (len > (th->doff * 4) || th->fin))
 		return TCP_TW_ACK; 
 	return 0; 
 }
@@ -1129,11 +1140,6 @@ static void tcp_fin(struct sk_buff *skb, struct sock *sk, struct tcphdr *th)
 
 	tcp_send_ack(sk);
 
-	if (!sk->dead) {
-		sk->state_change(sk);
-		sock_wake_async(sk->socket, 1);
-	}
-
 	switch(sk->state) {
 		case TCP_SYN_RECV:
 		case TCP_ESTABLISHED:
@@ -1177,6 +1183,11 @@ static void tcp_fin(struct sk_buff *skb, struct sock *sk, struct tcphdr *th)
 			printk("tcp_fin: Impossible, sk->state=%d\n", sk->state);
 			break;
 	};
+
+	if (!sk->dead) {
+		sk->state_change(sk);
+		sock_wake_async(sk->socket, 1);
+	}
 }
 
 /* These routines update the SACK block as out-of-order packets arrive or
@@ -2012,10 +2023,10 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 		}
 	
 		sk = tp->af_specific->syn_recv_sock(sk, skb, req, NULL);
-		tcp_dec_slow_timer(TCP_SLT_SYNACK);
 		if (sk == NULL)
 			return NULL;
 		
+		tcp_dec_slow_timer(TCP_SLT_SYNACK);
 		req->expires = 0UL;
 		req->sk = sk;
 	}
@@ -2405,7 +2416,8 @@ step6:
 		 * BSD 4.4 also does reset.
 		 */
 		if ((sk->shutdown & RCV_SHUTDOWN) && sk->dead) {
-			if (after(TCP_SKB_CB(skb)->end_seq - th->fin, tp->rcv_nxt)) {
+			if (TCP_SKB_CB(skb)->end_seq != TCP_SKB_CB(skb)->seq &&
+			    after(TCP_SKB_CB(skb)->end_seq - th->fin, tp->rcv_nxt)) {
 				tcp_reset(sk);
 				return 1;
 			}

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v299"
+#define HIJACK_VERSION	"v300"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -3002,6 +3002,9 @@ userland_display (int firsttime)
 	if (firsttime) {
 		userland_menudata = menu_table[menu_item].userdata;
 		clear_hijack_displaybuf(COLOR0);
+#ifdef EMPEG_KNOB_SUPPORTED
+		ir_knob_down = 0;
+#endif // EMPEG_KNOB_SUPPORTED
 		userland_display_updated = 1;
 	}
 	save_flags_cli(flags);

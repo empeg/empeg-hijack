@@ -1,4 +1,3 @@
-
 /*
  * Device driver for the via-pmu on Apple Powermacs.
  *
@@ -10,6 +9,12 @@
  * and the RTC (real time clock) chip.
  *
  * Copyright (C) 1998 Paul Mackerras and Fabio Riccardi.
+ * 
+ * todo: - Check this driver for smp safety (new Core99 motherboards).
+ *       - Cleanup synchro between VIA interrupt and GPIO-based PMU
+ *         interrupt.
+ *
+ *
  */
 #include <stdarg.h>
 #include <linux/config.h>
@@ -39,7 +44,7 @@
 /* Misc minor number allocated for /dev/pmu */
 #define PMU_MINOR	154
 
-static volatile unsigned char *via;
+static volatile unsigned char *via = 0;
 
 /* VIA registers - spaced 0x200 bytes apart */
 #define RS		0x200		/* skip between registers */
@@ -91,16 +96,18 @@ static unsigned char interrupt_data[32];
 static unsigned char *reply_ptr;
 static int data_index;
 static int data_len;
-static int adb_int_pending;
+static volatile int adb_int_pending;
 static int pmu_adb_flags;
 static int adb_dev_map = 0;
 static struct adb_request bright_req_1, bright_req_2, bright_req_3;
 static struct device_node *vias;
 static int pmu_kind = PMU_UNKNOWN;
 static int pmu_fully_inited = 0;
+static int pmu_has_adb, pmu_has_backlight;
+static unsigned char *gpio_reg = NULL;
+static int gpio_irq = -1;
 
 int asleep;
-struct notifier_block *sleep_notifier_list;
 
 static int init_pmu(void);
 static int pmu_queue_request(struct adb_request *req);
@@ -116,6 +123,7 @@ static void pmu_done(struct adb_request *req);
 static void pmu_handle_data(unsigned char *data, int len,
 			    struct pt_regs *regs);
 static void set_volume(int level);
+static void gpio1_interrupt(int irq, void *arg, struct pt_regs *regs);
 #ifdef CONFIG_PMAC_PBOOK
 static void pmu_pass_intr(unsigned char *data, int len);
 #endif
@@ -186,6 +194,7 @@ static char *pbook_type[] = {
 	"PowerBook 2400/3400/3500(G3)",
 	"PowerBook G3 Series",
 	"1999 PowerBook G3",
+	"Core99"
 };
 
 int __openfirmware
@@ -198,9 +207,6 @@ find_via_pmu()
 		return 0;
 	if (vias->next != 0)
 		printk(KERN_WARNING "Warning: only using 1st via-pmu\n");
-	
-	feature_set(vias, FEATURE_VIA_enable);
-
 #if 0
 	{ int i;
 
@@ -213,12 +219,15 @@ find_via_pmu()
 	printk("\n"); }
 #endif
 
-	if (vias->n_addrs != 1 || vias->n_intrs != 1) {
+	if (vias->n_addrs < 1 || vias->n_intrs < 1) {
 		printk(KERN_ERR "via-pmu: %d addresses, %d interrupts!\n",
 		       vias->n_addrs, vias->n_intrs);
 		if (vias->n_addrs < 1 || vias->n_intrs < 1)
 			return 0;
 	}
+
+	pmu_has_adb = 1;
+	pmu_has_backlight = 1;
 
 	if (vias->parent->name && ((strcmp(vias->parent->name, "ohare") == 0)
 	    || device_is_compatible(vias->parent, "ohare")))
@@ -227,23 +236,39 @@ find_via_pmu()
 		pmu_kind = PMU_PADDINGTON_BASED;
 	else if (device_is_compatible(vias->parent, "heathrow"))
 		pmu_kind = PMU_HEATHROW_BASED;
-	else
+	else if (device_is_compatible(vias->parent, "Keylargo")) {
+		struct device_node *gpio, *gpiop;
+
+		pmu_kind = PMU_KEYLARGO_BASED;
+		pmu_has_adb = (find_type_devices("adb") != NULL);
+		pmu_has_backlight = 0; /* Not driven by PMU */
+
+		gpiop = find_devices("gpio");
+		if (gpiop && gpiop->n_addrs) {
+			gpio_reg = ioremap(gpiop->addrs->address, 0x10);
+			gpio = find_devices("extint-gpio1");
+			if (gpio && gpio->parent == gpiop && gpio->n_intrs)
+				gpio_irq = gpio->intrs[0].line;
+		}
+	} else
 		pmu_kind = PMU_UNKNOWN;
 
 	via = (volatile unsigned char *) ioremap(vias->addrs->address, 0x2000);
 
 	out_8(&via[IER], IER_CLR | 0x7f);	/* disable all intrs */
+	out_8(&via[IFR], 0x7f);			/* clear IFR */
 
 	pmu_state = idle;
 
-	if (!init_pmu())
+	if (!init_pmu()) {
 		via = NULL;
+		return 0;
+	}
 
 	adb_controller = &pmu_controller;
 
-	if (via)
-		printk(KERN_INFO "PMU driver initialized for %s\n",
-		       pbook_type[pmu_kind]);
+	printk(KERN_INFO "PMU driver initialized for %s\n",
+	       pbook_type[pmu_kind]);
 
 	return via != 0;
 }
@@ -265,13 +290,23 @@ via_pmu_init(void)
 		return;
 	}
 
+	if (pmu_kind == PMU_KEYLARGO_BASED && gpio_irq != -1) {
+		if (request_irq(gpio_irq, gpio1_interrupt, 0, "GPIO1/ADB", (void *)0))
+			printk(KERN_ERR "pmu: can't get irq %d (GPIO1)\n", gpio_irq);
+	}
+
 	/* Enable interrupts */
 	out_8(&via[IER], IER_SET | SR_INT | CB1_INT);
 
 	pmu_fully_inited = 1;
-	
+
 	/* Enable backlight */
 	pmu_enable_backlight(1);
+
+	/* Make sure PMU settle down before continuing */
+	do {
+		pmu_poll();
+	} while (pmu_state != idle);
 }
 
 static int __openfirmware
@@ -308,6 +343,13 @@ init_pmu()
 		udelay(10);
 	}
 
+	/* Tell PMU we are ready. Which PMU support this ? */
+	if (pmu_kind == PMU_KEYLARGO_BASED) {
+		pmu_request(&req, NULL, 2, PMU_SYSTEM_READY, 2);
+		while (!req.complete)
+			pmu_poll();
+	}
+
 	return 1;
 }
 
@@ -323,14 +365,13 @@ pmu_adb_send_request(struct adb_request *req, int sync)
 {
     int i, ret;
 
-    if ((vias == NULL) || (!pmu_fully_inited))
-    {
+    if ((vias == NULL) || (!pmu_fully_inited)) {
  	req->complete = 1;
    	return -ENXIO;
-   }
+    }
 
     ret = -EINVAL;
-	
+
     switch (req->data[0]) {
     case PMU_PACKET:
 		for (i = 0; i < req->nbytes - 1; ++i)
@@ -372,6 +413,8 @@ pmu_adb_send_request(struct adb_request *req, int sync)
 		}
 		break;
     case ADB_PACKET:
+	    	if (!pmu_has_adb)
+    			return -ENXIO;
 		for (i = req->nbytes - 1; i > 1; --i)
 			req->data[i+2] = req->data[i];
 		req->data[3] = req->nbytes - 2;
@@ -389,7 +432,7 @@ pmu_adb_send_request(struct adb_request *req, int sync)
     	req->complete = 1;
     	return ret;
     }
-    	
+    
     if (sync) {
 	while (!req->complete)
 		pmu_poll();
@@ -404,7 +447,7 @@ pmu_adb_autopoll(int devs)
 {
 	struct adb_request req;
 
-	if ((vias == NULL) || (!pmu_fully_inited))
+	if ((vias == NULL) || (!pmu_fully_inited) || !pmu_has_adb)
 		return -ENXIO;
 
 	if (devs) {
@@ -426,10 +469,9 @@ static int __openfirmware
 pmu_adb_reset_bus(void)
 {
 	struct adb_request req;
-	long timeout;
 	int save_autopoll = adb_dev_map;
 
-	if ((vias == NULL) || (!pmu_fully_inited))
+	if ((vias == NULL) || (!pmu_fully_inited) || !pmu_has_adb)
 		return -ENXIO;
 
 	/* anyone got a better idea?? */
@@ -439,31 +481,21 @@ pmu_adb_reset_bus(void)
 	req.done = NULL;
 	req.data[0] = PMU_ADB_CMD;
 	req.data[1] = 0;
-	req.data[2] = 3; /* ADB_BUSRESET ??? */
+	req.data[2] = ADB_BUSRESET; /* 3 ??? */
 	req.data[3] = 0;
 	req.data[4] = 0;
 	req.reply_len = 0;
 	req.reply_expected = 1;
-	if (pmu_queue_request(&req) != 0)
-	{
+	if (pmu_queue_request(&req) != 0) {
 		printk(KERN_ERR "pmu_adb_reset_bus: pmu_queue_request failed\n");
 		return -EIO;
 	}
 	while (!req.complete)
 		pmu_poll();
-	timeout = 100000;
-	while (!req.complete) {
-		if (--timeout < 0) {
-			printk(KERN_ERR "pmu_adb_reset_bus (reset): no response from PMU\n");
-			return -EIO;
-		}
-		udelay(10);
-		pmu_poll();
-	}
 
 	if (save_autopoll != 0)
 		pmu_adb_autopoll(save_autopoll);
-		
+
 	return 0;
 }
 
@@ -538,6 +570,21 @@ pmu_queue_request(struct adb_request *req)
 }
 
 static void __openfirmware
+wait_for_ack(void)
+{
+	int timeout = 3200;
+	while ((in_8(&via[B]) & TACK) == 0) {
+		if (--timeout < 0) {
+			printk(KERN_ERR "PMU not responding (!ack)\n");
+			return;
+		}
+		udelay(10);
+	}
+}
+
+/* New PMU seems to be very sensitive to those timings, so we make sure
+ * PCI is flushed immediately */
+static void __openfirmware
 send_byte(int x)
 {
 	volatile unsigned char *v = via;
@@ -545,6 +592,7 @@ send_byte(int x)
 	out_8(&v[ACR], in_8(&v[ACR]) | SR_OUT | SR_EXT);
 	out_8(&v[SR], x);
 	out_8(&v[B], in_8(&v[B]) & ~TREQ);		/* assert TREQ */
+	(void)in_8(&v[B]);
 }
 
 static void __openfirmware
@@ -554,10 +602,11 @@ recv_byte()
 
 	out_8(&v[ACR], (in_8(&v[ACR]) & ~SR_OUT) | SR_EXT);
 	in_8(&v[SR]);		/* resets SR */
-	out_8(&v[B], in_8(&v[B]) & ~0x10);
+	out_8(&v[B], in_8(&v[B]) & ~TREQ);
+	(void)in_8(&v[B]);
 }
 
-static int disable_poll;
+static volatile int disable_poll;
 
 static void __openfirmware
 pmu_start()
@@ -579,6 +628,7 @@ pmu_start()
 
 	/* set the shift register to shift out and send a byte */
 	++disable_poll;
+	wait_for_ack();
 	send_byte(req->data[0]);
 	--disable_poll;
 
@@ -594,9 +644,30 @@ pmu_poll()
 	if (disable_poll)
 		return;
 	ie = _disable_interrupts();
-	if (via[IFR] & (SR_INT | CB1_INT))
+	if ((via[IFR] & (SR_INT | CB1_INT)) ||
+		(gpio_reg && (in_8(gpio_reg + 0x9) & 0x02) == 0))
 		via_pmu_interrupt(0, 0, 0);
 	_enable_interrupts(ie);
+}
+
+/* This function loops until the PMU is idle, to avoid spurrious shutdowns
+ * when prom.c scrollscreen or xmon spends too much time without interupts
+ * while some PMU communication is going on
+ */
+void __openfirmware
+pmu_safe_poll(void)
+{
+	int ie;
+
+	if (!via || disable_poll)
+		return;
+	do {
+		ie = _disable_interrupts();
+		if ((via[IFR] & (SR_INT | CB1_INT)) ||
+			(gpio_reg && (in_8(gpio_reg + 0x9) & 0x02) == 0))
+			via_pmu_interrupt(0, 0, 0);
+		_enable_interrupts(ie);
+	} while (adb_int_pending || pmu_state != idle);
 }
 
 static void __openfirmware
@@ -604,7 +675,12 @@ via_pmu_interrupt(int irq, void *arg, struct pt_regs *regs)
 {
 	int intr;
 	int nloop = 0;
+	unsigned long flags;
 
+	/* Currently, we use brute-force cli() for syncing with GPIO
+	 * interrupt. I'll make this smarter later, along with some
+	 * spinlocks for SMP */
+	save_flags(flags);cli();
 	++disable_poll;
 	while ((intr = in_8(&via[IFR])) != 0) {
 		if (++nloop > 1000) {
@@ -623,9 +699,13 @@ via_pmu_interrupt(int irq, void *arg, struct pt_regs *regs)
 			out_8(&via[IFR], intr);
 		}
 	}
+	if (gpio_reg && (in_8(gpio_reg + 0x9) & 0x02) == 0)
+		adb_int_pending = 1;
+
 	if (pmu_state == idle) {
 		if (adb_int_pending) {
 			pmu_state = intack;
+			wait_for_ack();
 			send_byte(PMU_INT_ACK);
 			adb_int_pending = 0;
 		} else if (current_req) {
@@ -633,37 +713,43 @@ via_pmu_interrupt(int irq, void *arg, struct pt_regs *regs)
 		}
 	}
 	--disable_poll;
+	restore_flags(flags);
+}
+
+
+static void __openfirmware
+gpio1_interrupt(int irq, void *arg, struct pt_regs *regs)
+{
+	via_pmu_interrupt(0, 0, 0);
 }
 
 static void __openfirmware
 pmu_sr_intr(struct pt_regs *regs)
 {
 	struct adb_request *req;
-	int bite, timeout;
+	int bite;
 
 	if (via[B] & TREQ) {
 		printk(KERN_ERR "PMU: spurious SR intr (%x)\n", via[B]);
 		out_8(&via[IFR], SR_INT);
 		return;
 	}
-	if (via[B] & TACK)
-		printk(KERN_ERR "PMU: sr_intr but ack still high! (%x)\n",
-		       via[B]);
+	/* This one seems to appear with PMU99. According to OF methods,
+	 * the protocol didn't change...
+	 */
+	if (via[B] & TACK) {
+		while ((in_8(&via[B]) & TACK) != 0)
+			;
+	}
 
 	/* reset TREQ and wait for TACK to go high */
 	out_8(&via[B], in_8(&via[B]) | TREQ);
-	timeout = 3200;
-	while ((in_8(&via[B]) & TACK) == 0) {
-		if (--timeout < 0) {
-			printk(KERN_ERR "PMU not responding (!ack)\n");
-			return;
-		}
-		udelay(10);
-	}
+	wait_for_ack();
 
 	/* if reading grab the byte, and reset the interrupt */
 	if (pmu_state == reading || pmu_state == reading_intr)
 		bite = in_8(&via[SR]);
+
 	out_8(&via[IFR], SR_INT);
 
 	switch (pmu_state) {
@@ -810,9 +896,9 @@ pmu_enable_backlight(int on)
 {
 	struct adb_request req;
 
-	if (vias == NULL)
+	if ((vias == NULL) || !pmu_has_backlight)
 		return;
-		
+
 	/* first call: get current backlight value */
 	if (on && backlight_level < 0) {
 		switch (pmu_kind) {
@@ -831,6 +917,7 @@ pmu_enable_backlight(int on)
 			printk(KERN_DEBUG "pmu: nvram returned bright: %d\n", backlight_level);
 			break;
 		case PMU_PADDINGTON_BASED:
+		case PMU_KEYLARGO_BASED:
 			/* the G3 PB 1999 has a backlight node
 			   and chrp-structured nvram */
 			/* XXX should read macos's "blkt" property in nvram
@@ -861,7 +948,7 @@ pmu_set_brightness(int level)
 {
 	int bright;
 
-	if (vias == NULL)
+	if ((vias == NULL) || !pmu_has_backlight)
 		return ;
 
 	backlight_level = level;
@@ -890,6 +977,8 @@ pmu_enable_irled(int on)
 
 	if (vias == NULL)
 		return ;
+	if (pmu_kind == PMU_KEYLARGO_BASED)
+		return ;
 
 	pmu_request(&req, NULL, 2, PMU_POWER_CTRL, PMU_POW_IRLED |
 	    (on ? PMU_POW_ON : PMU_POW_OFF));
@@ -908,12 +997,12 @@ pmu_restart(void)
 	struct adb_request req;
 
 	_disable_interrupts();
-	
+
 	pmu_request(&req, NULL, 2, PMU_SET_INTR_MASK, PMU_INT_ADB |
 					PMU_INT_TICK );
 	while(!req.complete)
 		pmu_poll();
-	
+
 	pmu_request(&req, NULL, 1, PMU_RESET);
 	while(!req.complete || (pmu_state != idle))
 		pmu_poll();
@@ -927,7 +1016,7 @@ pmu_shutdown(void)
 	struct adb_request req;
 
 	_disable_interrupts();
-	
+
 	pmu_request(&req, NULL, 2, PMU_SET_INTR_MASK, PMU_INT_ADB |
 					PMU_INT_TICK );
 	while(!req.complete)
@@ -944,7 +1033,7 @@ pmu_shutdown(void)
 int
 pmu_present(void)
 {
-	return (adb_controller && (adb_controller->kind == ADB_VIAPMU) && vias);
+	return via != 0;
 }
 
 #ifdef CONFIG_PMAC_PBOOK
@@ -979,7 +1068,7 @@ pmu_unregister_sleep_notifier(struct pmu_sleep_notifier* n)
 
 /* Sleep is broadcast last-to-first */
 static int
-broadcast_sleep(int when, int can_cancel)
+broadcast_sleep(int when, int fallback)
 {
 	int ret = PBOOK_SLEEP_OK;
 	struct list_head *list;
@@ -989,8 +1078,15 @@ broadcast_sleep(int when, int can_cancel)
 	     list = list->prev) {
 		current = list_entry(list, struct pmu_sleep_notifier, list);
 		ret = current->notifier_call(current, when);
-		if (can_cancel && (ret != PBOOK_SLEEP_OK))
+		if (ret != PBOOK_SLEEP_OK) {
+			printk(KERN_DEBUG "sleep %d rejected by %p (%p)\n",
+			       when, current, current->notifier_call);
+			for (; list != &sleep_notifiers; list = list->next) {
+				current = list_entry(list, struct pmu_sleep_notifier, list);
+				current->notifier_call(current, fallback);
+			}
 			return ret;
+		}
 	}
 	return ret;
 }
@@ -1127,9 +1223,8 @@ int __openfirmware powerbook_sleep_G3(void)
 			ioremap(macio->addrs[0].address, 0x40);
 
 	/* Notify device drivers */
-	ret = broadcast_sleep(PBOOK_SLEEP_REQUEST, 1);
+	ret = broadcast_sleep(PBOOK_SLEEP_REQUEST, PBOOK_SLEEP_REJECT);
 	if (ret != PBOOK_SLEEP_OK) {
-		broadcast_sleep(PBOOK_SLEEP_REJECT, 0);
 		printk("pmu: sleep rejected\n");
 		return -EBUSY;
 	}
@@ -1142,7 +1237,12 @@ int __openfirmware powerbook_sleep_G3(void)
 	 * vmalloc's are done before actual sleep of block drivers */
 	fsync_dev(0);
 
-	broadcast_sleep(PBOOK_SLEEP_NOW, 0);
+	/* Sleep can fail now. May not be very robust but useful for debugging */
+	ret = broadcast_sleep(PBOOK_SLEEP_NOW, PBOOK_WAKE);
+	if (ret != PBOOK_SLEEP_OK) {
+		printk("pmu: sleep failed\n");
+		return -EBUSY;
+	}
 
 	/* Give the disks a little time to actually finish writing */
 	for (wait = jiffies + (HZ/4); time_before(jiffies, wait); )
@@ -1210,7 +1310,7 @@ int __openfirmware powerbook_sleep_G3(void)
 	/* Restore L2 cache */
 	if (save_l2cr)
  		_set_L2CR(save_l2cr | 0x200000); /* set invalidate bit */
-	
+
 	/* reenable interrupts */
 	sleep_restore_intrs();
 
@@ -1231,9 +1331,8 @@ int __openfirmware powerbook_sleep_3400(void)
 	struct adb_request sleep_req;
 
 	/* Notify device drivers */
-	ret = broadcast_sleep(PBOOK_SLEEP_REQUEST, 1);
+	ret = broadcast_sleep(PBOOK_SLEEP_REQUEST, PBOOK_SLEEP_REJECT);
 	if (ret != PBOOK_SLEEP_OK) {
-		broadcast_sleep(PBOOK_SLEEP_REJECT, 0);
 		printk("pmu: sleep rejected\n");
 		return -EBUSY;
 	}
@@ -1246,7 +1345,12 @@ int __openfirmware powerbook_sleep_3400(void)
 	 * vmalloc's are done before actual sleep of block drivers */
 	fsync_dev(0);
 
-	broadcast_sleep(PBOOK_SLEEP_NOW, 0);
+	/* Sleep can fail now. May not be very robust but useful for debugging */
+	ret = broadcast_sleep(PBOOK_SLEEP_NOW, PBOOK_WAKE);
+	if (ret != PBOOK_SLEEP_OK) {
+		printk("pmu: sleep failed\n");
+		return -EBUSY;
+	}
 
 	/* Give the disks a little time to actually finish writing */
 	for (wait = jiffies + (HZ/4); time_before(jiffies, wait); )
@@ -1473,18 +1577,24 @@ static int pmu_ioctl(struct inode * inode, struct file *filp,
 			error = powerbook_sleep_G3();
 			break;
 		default:
-			error = ENOSYS;
+			error = -ENOSYS;
 		}
 		return error;
 	case PMU_IOC_GET_BACKLIGHT:
+		if (!pmu_has_backlight)
+			return -ENOSYS;
 		return put_user(backlight_level, (__u32 *)arg);
 	case PMU_IOC_SET_BACKLIGHT:
+		if (!pmu_has_backlight)
+			return -ENOSYS;
 		error = get_user(value, (__u32 *)arg);
 		if (!error)
 			pmu_set_brightness(value);
 		return error;
 	case PMU_IOC_GET_MODEL:
 	    	return put_user(pmu_kind, (__u32 *)arg);
+	case PMU_IOC_HAS_ADB:
+		return put_user(pmu_has_adb, (__u32 *)arg);
 	}
 	return -EINVAL;
 }
@@ -1526,7 +1636,6 @@ static inline void polled_handshake(volatile unsigned char *via)
 
 static inline void polled_send_byte(volatile unsigned char *via, int x)
 {
-	xmon_printf("s%.2x", x);
 	via[ACR] |= SR_OUT | SR_EXT; eieio();
 	via[SR] = x; eieio();
 	polled_handshake(via);
@@ -1540,7 +1649,6 @@ static inline int polled_recv_byte(volatile unsigned char *via)
 	x = via[SR]; eieio();
 	polled_handshake(via);
 	x = via[SR]; eieio();
-	xmon_printf("r%.2x", x);
 	return x;
 }
 

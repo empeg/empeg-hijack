@@ -72,9 +72,13 @@ __attribute__((section("__ksymtab"))) = {
 };
 #endif
 
+extern void jfs_preclean_buffer_check(struct buffer_head *);
+extern void jfs_prelock_buffer_check(struct buffer_head *);
+
 
 #ifdef CONFIG_KMOD
 EXPORT_SYMBOL(request_module);
+EXPORT_SYMBOL(exec_usermodehelper);
 #endif
 
 #ifdef CONFIG_MODULES
@@ -93,7 +97,7 @@ EXPORT_SYMBOL(exit_sighand);
 /* internal kernel memory management */
 EXPORT_SYMBOL(__get_free_pages);
 EXPORT_SYMBOL(free_pages);
-EXPORT_SYMBOL(__free_page);
+EXPORT_SYMBOL(__free_pages);
 EXPORT_SYMBOL(kmem_find_general_cachep);
 EXPORT_SYMBOL(kmem_cache_create);
 EXPORT_SYMBOL(kmem_cache_shrink);
@@ -116,6 +120,7 @@ EXPORT_SYMBOL(get_unmapped_area);
 
 /* filesystem internal functions */
 EXPORT_SYMBOL(in_group_p);
+EXPORT_SYMBOL(in_egroup_p);
 EXPORT_SYMBOL(update_atime);
 EXPORT_SYMBOL(get_super);
 EXPORT_SYMBOL(get_fs_type);
@@ -196,20 +201,6 @@ EXPORT_SYMBOL(__pollwait);
 EXPORT_SYMBOL(ROOT_DEV);
 EXPORT_SYMBOL(inode_generation_count);
 
-#if !defined(CONFIG_REISERFS_FS) && defined(CONFIG_REISERFS_FS_MODULE)
-EXPORT_SYMBOL(__wait_on_inode);
-EXPORT_SYMBOL(inode_in_use);
-EXPORT_SYMBOL(inode_lock);
-EXPORT_SYMBOL(test_and_wait_on_buffer);
-EXPORT_SYMBOL(reiserfs_get_hash_table);
-EXPORT_SYMBOL(reiserfs_getblk);
-EXPORT_SYMBOL(fixup_reiserfs_buffers);
-EXPORT_SYMBOL(reiserfs_refile_buffer);
-EXPORT_SYMBOL(reiserfs_file_buffer) ;
-EXPORT_SYMBOL(reiserfs_journal_end_io) ;
-EXPORT_SYMBOL(reiserfs_end_buffer_io_sync) ;
-#endif
-
 
 #if !defined(CONFIG_NFSD) && defined(CONFIG_NFSD_MODULE)
 EXPORT_SYMBOL(do_nfsservctl);
@@ -253,6 +244,11 @@ EXPORT_SYMBOL(init_buffer);
 EXPORT_SYMBOL(max_sectors);
 EXPORT_SYMBOL(max_segments);
 EXPORT_SYMBOL(max_readahead);
+EXPORT_SYMBOL(show_buffers);
+
+/* JFS debugging only: */
+EXPORT_SYMBOL(jfs_prelock_buffer_check);
+EXPORT_SYMBOL(jfs_preclean_buffer_check);
 
 /* tty routines */
 EXPORT_SYMBOL(tty_hangup);
@@ -353,6 +349,7 @@ EXPORT_SYMBOL(xtime);
 EXPORT_SYMBOL(do_gettimeofday);
 EXPORT_SYMBOL(loops_per_sec);
 EXPORT_SYMBOL(kstat);
+EXPORT_SYMBOL(pidhash); 
 
 /* misc */
 EXPORT_SYMBOL(panic);
@@ -419,9 +416,7 @@ EXPORT_SYMBOL(brw_page);
 EXPORT_SYMBOL(add_mouse_randomness);
 EXPORT_SYMBOL(fasync_helper);
 
-#ifdef CONFIG_BLK_DEV_MD
-EXPORT_SYMBOL(disk_name);	/* for md.c */
-#endif
+EXPORT_SYMBOL(disk_name);	/* for md.c and others */
 
 /* binfmt_aout */
 EXPORT_SYMBOL(get_write_access);
@@ -439,3 +434,11 @@ EXPORT_SYMBOL(strnicmp);
 
 /* init task, for moving kthread roots - ought to export a function ?? */
 EXPORT_SYMBOL(init_task_union);
+
+/* Support for external backtracer */ 
+extern char _stext[], _etext[];
+EXPORT_SYMBOL(_stext);
+EXPORT_SYMBOL(_etext); 
+EXPORT_SYMBOL(module_list); 
+
+

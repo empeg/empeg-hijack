@@ -1,4 +1,4 @@
-/* $Id: pbm.h,v 1.16 1999/03/14 18:13:03 davem Exp $
+/* $Id: pbm.h,v 1.16.2.1 2000/06/14 07:41:19 davem Exp $
  * pbm.h: U2P PCI bus module pseudo driver software state.
  *
  * Copyright (C) 1997 David S. Miller (davem@caip.rutgers.edu)
@@ -13,6 +13,8 @@
 #include <asm/oplib.h>
 
 struct linux_pbm_info;
+
+extern volatile u64 *pci_dma_wsync;
 
 /* This is what we use to determine what the PROM has assigned so
  * far, so that we can perform assignments for addresses which

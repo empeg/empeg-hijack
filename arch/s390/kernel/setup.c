@@ -2,7 +2,7 @@
  *  arch/s390/kernel/setup.c
  *
  *  S390 version
- *    Copyright (C) 1999 IBM Deutschland Entwicklung GmbH, IBM Corporation
+ *    Copyright (C) 1999,2000 IBM Deutschland Entwicklung GmbH, IBM Corporation
  *    Author(s): Hartmut Penner (hp@de.ibm.com),
  *               Martin Schwidefsky (schwidefsky@de.ibm.com)
  *
@@ -43,6 +43,7 @@
 __u16 boot_cpu_addr;
 int cpus_initialized = 0;
 unsigned long cpu_initialized = 0;
+volatile int __cpu_logical_map[NR_CPUS]; /* logical cpu to cpu address */
 
 /*
  * Setup options
@@ -75,6 +76,7 @@ static char command_line[COMMAND_LINE_SIZE] = { 0, };
 void cpu_init (void)
 {
         int nr = smp_processor_id();
+        int addr = hard_smp_processor_id();
 
         if (test_and_set_bit(nr,&cpu_initialized)) {
                 printk("CPU#%d ALREADY INITIALIZED!!!!!!!!!\n", nr);
@@ -86,7 +88,7 @@ void cpu_init (void)
          * Store processor id in lowcore (used e.g. in timer_interrupt)
          */
         asm volatile ("stidp %0": "=m" (S390_lowcore.cpu_data.cpu_id));
-        S390_lowcore.cpu_data.cpu_addr = hard_smp_processor_id();
+        S390_lowcore.cpu_data.cpu_addr = addr;
         S390_lowcore.cpu_data.cpu_nr = nr;
 
         /*
@@ -97,36 +99,60 @@ void cpu_init (void)
 }
 
 /*
+ * VM halt and poweroff setup routines
+ */
+char vmhalt_cmd[128] = "";
+char vmpoff_cmd[128] = "";
+
+static inline void strncpy_skip_quote(char *dst, char *src, int n)
+{
+        int sx, dx;
+
+        dx = 0;
+        for (sx = 0; src[sx] != 0; sx++) {
+                if (src[sx] == '"') continue;
+                dst[dx++] = src[sx];
+                if (dx >= n) break;
+        }
+}
+
+__initfunc(void vmhalt_setup(char *str, char *ints))
+{
+        strncpy_skip_quote(vmhalt_cmd, str, 127);
+        vmhalt_cmd[127] = 0;
+        return;
+}
+
+__initfunc(void vmpoff_setup(char *str, char *ints))
+{
+        strncpy_skip_quote(vmpoff_cmd, str, 127);
+        vmpoff_cmd[127] = 0;
+        return;
+}
+
+/*
  * Reboot, halt and power_off routines for non SMP.
  */
-#ifndef __SMP__
+
+#ifndef CONFIG_SMP
 void machine_restart(char * __unused)
 {
-        if (MACHINE_IS_VM) {
-                cpcmd("IPL", NULL, 0);
-        } else {
-                /* FIXME: how to reipl ? */
-                disabled_wait(2);
-        }
+  reipl(S390_lowcore.ipl_device); 
 }
 
 void machine_halt(void)
 {
-        if (MACHINE_IS_VM) {
-                cpcmd("IPL 200 STOP", NULL, 0);
-        } else {
-                disabled_wait(0);
+        if (MACHINE_IS_VM && strlen(vmhalt_cmd) > 0) 
+                cpcmd(vmhalt_cmd, NULL, 0);
+        signal_processor(smp_processor_id(), sigp_stop_and_store_status);
         }
-}
 
 void machine_power_off(void)
 {
-        if (MACHINE_IS_VM) {
-                cpcmd("IPL CMS", NULL, 0);
-        } else {
-                disabled_wait(0);
+        if (MACHINE_IS_VM && strlen(vmpoff_cmd) > 0)
+                cpcmd(vmpoff_cmd, NULL, 0);
+        signal_processor(smp_processor_id(), sigp_stop_and_store_status);
         }
-}
 #endif
 
 /*
@@ -151,11 +177,9 @@ void tod_wait(unsigned long delay)
 __initfunc(void setup_arch(char **cmdline_p,
         unsigned long * memory_start_p, unsigned long * memory_end_p))
 {
-        unsigned long memory_start, memory_end;
-        char c = ' ', *to = command_line, *from = COMMAND_LINE;
         static unsigned int smptrap=0;
-        unsigned long delay = 0;
-        int len = 0;
+        unsigned long memory_start, memory_end;
+        char c, cn, *to, *from;
 
         if (smptrap)
                 return;
@@ -168,6 +192,7 @@ __initfunc(void setup_arch(char **cmdline_p,
          */
         cpu_init();
         boot_cpu_addr = S390_lowcore.cpu_data.cpu_addr;
+        __cpu_logical_map[0] = boot_cpu_addr;
 
         /*
          * print what head.S has found out about the machine 
@@ -187,12 +212,15 @@ __initfunc(void setup_arch(char **cmdline_p,
         rd_prompt = ((RAMDISK_FLAGS & RAMDISK_PROMPT_FLAG) != 0);
         rd_doload = ((RAMDISK_FLAGS & RAMDISK_LOAD_FLAG) != 0);
 #endif
-	/* nasty stuff with PARMAREAs. we use head.S or parameterline
-	  if (!MOUNT_ROOT_RDONLY)
-	  root_mountflags &= ~MS_RDONLY;
-	*/
         memory_start = (unsigned long) &_end;    /* fixit if use $CODELO etc*/
 	memory_end = MEMORY_SIZE;
+        /*
+         * We need some free virtual space to be able to do vmalloc.
+         * On a machine with 2GB memory we make sure that we have at
+         * least 128 MB free space for vmalloc.
+         */
+        if (memory_end > 1920*1024*1024)
+                memory_end = 1920*1024*1024;
         init_task.mm->start_code = PAGE_OFFSET;
         init_task.mm->end_code = (unsigned long) &_etext;
         init_task.mm->end_data = (unsigned long) &_edata;
@@ -202,13 +230,15 @@ __initfunc(void setup_arch(char **cmdline_p,
         memcpy(saved_command_line, COMMAND_LINE, COMMAND_LINE_SIZE);
         saved_command_line[COMMAND_LINE_SIZE-1] = '\0';
 
+        c = ' ';
+        from = COMMAND_LINE;
+        to = command_line;
         for (;;) {
                 /*
                  * "mem=XXX[kKmM]" sets memsize != 32M
                  * memory size
                  */
                 if (c == ' ' && strncmp(from, "mem=", 4) == 0) {
-                        if (to != command_line) to--;
                         memory_end = simple_strtoul(from+4, &from, 0);
                         if ( *from == 'K' || *from == 'k' ) {
                                 memory_end = memory_end << 10;
@@ -218,8 +248,12 @@ __initfunc(void setup_arch(char **cmdline_p,
                                 from++;
                         }
                 }
+                /*
+                 * "ipldelay=XXX[sSmM]" waits for the specified time
+                 */
                 if (c == ' ' && strncmp(from, "ipldelay=", 9) == 0) {
-			if (to != command_line) to--;
+                        unsigned long delay;
+
                         delay = simple_strtoul(from+9, &from, 0);
 			if (*from == 's' || *from == 'S') {
 				delay = delay*1000000;
@@ -228,15 +262,22 @@ __initfunc(void setup_arch(char **cmdline_p,
 				delay = delay*60*1000000;
 				from++;
 			}
-			tod_wait(delay);
+			/* now wait for the requested amount of time */
+			udelay(delay);
                 }
-                c = *(from++);
-                if (!c)
+                cn = *(from++);
+                if (!cn)
                         break;
-                if (COMMAND_LINE_SIZE <= ++len)
+                if (cn == '\n')
+                        cn = ' ';  /* replace newlines with space */
+                if (cn == ' ' && c == ' ')
+                        continue;  /* remove additional spaces */
+                c = cn;
+                if (to - command_line >= COMMAND_LINE_SIZE)
                         break;
                 *(to++) = c;
         }
+        if (c == ' ' && to > command_line) to--;
         *to = '\0';
         *cmdline_p = command_line;
         memory_end += PAGE_OFFSET;
@@ -264,12 +305,12 @@ __initfunc(void setup_arch(char **cmdline_p,
 void print_cpu_info(struct cpuinfo_S390 *cpuinfo)
 {
    printk("cpu %d "
-#ifdef __SMP__
+#ifdef CONFIG_SMP
            "phys_idx=%d "
 #endif
            "vers=%02X ident=%06X machine=%04X unused=%04X\n",
            cpuinfo->cpu_nr,
-#ifdef __SMP__
+#ifdef CONFIG_SMP
            cpuinfo->cpu_addr,
 #endif
            cpuinfo->cpu_id.version,

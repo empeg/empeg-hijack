@@ -79,6 +79,11 @@ extern int udp_port_rover;
 #include "../drivers/net/8390.h"
 #endif
 
+#if defined(CONFIG_HDLC)
+#include "../drivers/net/syncppp.h"
+#include <linux/hdlc.h>
+#endif
+
 extern int (*rarp_ioctl_hook)(int,void*);
 
 #ifdef CONFIG_IPX_MODULE
@@ -435,9 +440,19 @@ EXPORT_SYMBOL(init_fcdev);
 EXPORT_SYMBOL(fc_freedev);
 #endif
 
+#ifdef CONFIG_HDLC
+EXPORT_SYMBOL(hdlc_netif_rx);
+EXPORT_SYMBOL(register_hdlc_device);
+EXPORT_SYMBOL(unregister_hdlc_device);
+#endif
+
 /* Device callback registration */
 EXPORT_SYMBOL(register_netdevice_notifier);
 EXPORT_SYMBOL(unregister_netdevice_notifier);
+#ifdef CONFIG_INET
+EXPORT_SYMBOL(register_inetaddr_notifier);
+EXPORT_SYMBOL(unregister_inetaddr_notifier);
+#endif
 
 /* support for loadable net drivers */
 #ifdef CONFIG_NET

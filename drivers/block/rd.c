@@ -112,11 +112,7 @@ static int rd_kbsize[NUM_RAMDISKS];		/* Size in blocks of 1024 bytes */
  * architecture-specific setup routine (from the stored boot sector
  * information). 
  */
-#ifdef CONFIG_ARCH_S390
-int rd_size = 8192;		/* Size of the RAM disks */
-#else
-int rd_size = 4096;		/* Size of the RAM disks */
-#endif
+int rd_size = CONFIG_BLK_DEV_RAM_SIZE;	/* Size of the RAM disks */
 
 #ifndef MODULE
 int rd_doload = 0;		/* 1 = load RAM disk, 0 = don't load */
@@ -591,6 +587,9 @@ done:
 	set_fs(fs);
 }
 
+#ifdef CONFIG_MAC_FLOPPY
+int swim3_fd_eject(int devnum);
+#endif
 
 __initfunc(static void rd_load_disk(int n))
 {
@@ -611,6 +610,12 @@ __initfunc(static void rd_load_disk(int n))
 	if (rd_prompt) {
 #ifdef CONFIG_BLK_DEV_FD
 		floppy_eject();
+#endif
+#ifdef CONFIG_MAC_FLOPPY
+		if(MAJOR(ROOT_DEV) == FLOPPY_MAJOR)
+			swim3_fd_eject(MINOR(ROOT_DEV));
+		else if(MAJOR(real_root_dev) == FLOPPY_MAJOR)
+			swim3_fd_eject(MINOR(real_root_dev));
 #endif
 		printk(KERN_NOTICE
 		       "VFS: Insert root floppy disk to be loaded into RAM disk and press ENTER\n");

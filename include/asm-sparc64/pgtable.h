@@ -1,4 +1,4 @@
-/* $Id: pgtable.h,v 1.103.2.2 1999/12/05 07:24:45 davem Exp $
+/* $Id: pgtable.h,v 1.103.2.3 2000/02/27 04:44:47 davem Exp $
  * pgtable.h: SpitFire page table operations.
  *
  * Copyright 1996,1997 David S. Miller (davem@caip.rutgers.edu)
@@ -174,6 +174,7 @@ extern void *sparc_init_alloc(unsigned long *kbrk, unsigned long size);
 /* These operations are unnecessary on the SpitFire since D-CACHE is write-through. */
 #define flush_icache_range(start, end)		do { } while (0)
 #define flush_page_to_ram(page)			do { } while (0)
+extern void flush_dcache_page(unsigned long page);
 
 extern void __flush_dcache_range(unsigned long start, unsigned long end);
 

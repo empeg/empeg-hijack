@@ -154,6 +154,10 @@ extern int max_super_blocks, nr_super_blocks;
 #define BLKSECTSET _IO(0x12,102)/* set max sectors per request (ll_rw_blk.c) */
 #define BLKSECTGET _IO(0x12,103)/* get max sectors per request (ll_rw_blk.c) */
 #define BLKSSZGET  _IO(0x12,104) /* get block device sector size */
+#if 0
+#define BLKELVGET  _IOR(0x12,106,sizeof(blkelv_ioctl_arg_t))/* elevator get */
+#define BLKELVSET  _IOW(0x12,107,sizeof(blkelv_ioctl_arg_t))/* elevator set */
+#endif
 
 #define BMAP_IOCTL 1		/* obsolete - kept for compatibility */
 #define FIBMAP	   _IO(0x00,1)	/* bmap access */
@@ -173,6 +177,12 @@ extern void inode_init(void);
 extern void file_table_init(void);
 extern void dcache_init(void);
 
+/* We declare a few opaque types for use by the journaling code. */
+typedef unsigned int		tid_t;		/* Unique transaction ID */
+typedef struct transaction_s	transaction_t;	/* Compound transaction type */
+typedef struct handle_s		handle_t;	/* Atomic operation type */
+typedef struct journal_s	journal_t;	/* Journal control structure */
+
 typedef char buffer_block[BLOCK_SIZE];
 
 /* bh state bits */
@@ -181,6 +191,25 @@ typedef char buffer_block[BLOCK_SIZE];
 #define BH_Lock		2	/* 1 if the buffer is locked */
 #define BH_Req		3	/* 0 if the buffer has been invalidated */
 #define BH_Protected	6	/* 1 if the buffer is protected */
+#define BH_Temp		8	/* 1 if the buffer is temporary (unlinked) */
+#define BH_JWrite	9	/* 1 if being written to log (@@@ DEBUGGING) */
+#define BH_QuickFree	10	/* 1 if alloced and freed quickly (see below)*/
+#define BH_Alloced	11	/* 1 if buffer has been allocated */
+#define BH_Freed	12	/* 1 if buffer has been freed (truncated) */
+#define BH_Revoked	13	/* 1 if buffer has been revoked from the log */
+#define BH_RevokeValid	14	/* 1 if buffer revoked flag is valid */
+#define BH_JDirty	15	/* 1 if buffer is dirty but journaled */
+
+/* journaling buffer types */
+#define BJ_None		0	/* Not journaled */
+#define BJ_Data		1	/* Normal data: flush before commit */
+#define BJ_Metadata	2	/* Normal journaled metadata */
+#define BJ_Forget	3	/* Buffer superceded by this transaction */
+#define BJ_IO		4	/* Buffer is for temporary IO use */
+#define BJ_Shadow	5	/* Buffer contents being shadowed to the log */
+#define BJ_LogCtl	6	/* Buffer contains log descriptors */
+#define BJ_Reserved	7	/* Buffer is reserved for access by journal */
+#define BJ_Types	8
 
 /*
  * Try to keep the most commonly used fields in single cache lines (16
@@ -209,7 +238,8 @@ struct buffer_head {
 
 	/* Non-performance-critical data follows. */
 	char * b_data;			/* pointer to data block (1024 bytes) */
-	unsigned int b_list;		/* List that this buffer appears */
+	unsigned char b_list;		/* List that this buffer appears */
+	unsigned char b_jlist;		/* Journaling list for this buffer */
 	unsigned long b_flushtime;      /* Time when this (dirty) buffer
 					 * should be written */
 	struct wait_queue * b_wait;
@@ -222,6 +252,72 @@ struct buffer_head {
 	 */
 	void (*b_end_io)(struct buffer_head *bh, int uptodate);
 	void *b_dev_id;
+
+	/* Journaling-related fields */
+
+	/* Copy of the buffer data frozen for writing to the log. */
+	char * b_frozen_data;
+
+	/* Pointer to a saved copy of the buffer containing no
+           uncommitted deallocation references, so that allocations can
+           avoid overwriting uncommitted deletes. */
+	char * b_committed_data;
+	
+	/* Pointer to the compound transaction which owns this buffer's
+           metadata: either the running transaction or the committing
+           transaction (if there is one).  Only applies to buffers on a
+           transaction's data or metadata journaling list. */
+	transaction_t * b_transaction;
+	
+	/* Pointer to the running compound transaction which is
+           currently modifying the buffer's metadata, if there was
+           already a transaction committing it when the new transaction
+           touched it. */
+	transaction_t * b_next_transaction;
+	
+	/* @@@ DEBUG
+	   Pointer to the transaction which allocated this buffer,
+	   as a debugging aid only.  
+
+	   Strange exceptions to the transaction state machine happen
+	   when a buffer is allocated and deallocated within a single
+	   transaction --- this is basically the only case where a
+	   buffer can be metadata in one transaction and data in the
+	   next, or at different stages in the same transaction.  By
+	   catching alloc+forget from a single transaction, we allow the
+	   debugging code to catch violations of the
+	   don't-reallocate-metadata-as-data rules while avoiding
+	   falling foul of this exception.
+	   
+	   See also the BH_QuickFree buffer flag which marks buffers
+	   which have been allocated and freed rapidly in this
+	   mannner.
+
+	   b_alloc_transaction is currently set by ext3 in
+	   ext3_new_block(), and checked on buffer free by
+	   journal_forget(), which sets the QuickFree bit.
+	   
+	   The QuickFree bit is tested, and cleared, whenever a buffer
+	   is queued for write in journal_dirty_*().
+	*/
+	tid_t b_alloc_transaction;
+	tid_t b_alloc2_transaction;
+
+	tid_t b_free_transaction;
+	tid_t b_free2_transaction;
+
+	/* Doubly-linked list of buffers on a transaction's data,
+           metadata or forget queue. */
+	struct buffer_head *b_tnext, *b_tprev;
+
+	/* Pointer to the compound transaction against which this buffer
+           is checkpointed.  Only dirty buffers can be checkpointed. */
+	transaction_t * b_cp_transaction;
+	
+	/* Doubly-linked list of buffers still remaining to be flushed
+           before an old transaction can be checkpointed. */
+	struct buffer_head *b_cpnext, *b_cpprev;
+
 };
 
 typedef void (bh_end_io_t)(struct buffer_head *bh, int uptodate);
@@ -236,6 +332,11 @@ static inline int buffer_uptodate(struct buffer_head * bh)
 static inline int buffer_dirty(struct buffer_head * bh)
 {
 	return test_bit(BH_Dirty, &bh->b_state);
+}
+
+static inline int buffer_jdirty(struct buffer_head * bh)
+{
+	return test_bit(BH_JDirty, &bh->b_state);
 }
 
 static inline int buffer_locked(struct buffer_head * bh)
@@ -253,12 +354,18 @@ static inline int buffer_protected(struct buffer_head * bh)
 	return test_bit(BH_Protected, &bh->b_state);
 }
 
+static inline int buffer_journaled(struct buffer_head * bh)
+{
+	return (bh->b_jlist != BJ_None || bh->b_cp_transaction != NULL);
+}
+
 #define buffer_page(bh)		(mem_map + MAP_NR((bh)->b_data))
 #define touch_buffer(bh)	set_bit(PG_referenced, &buffer_page(bh)->flags)
 
 #include <linux/pipe_fs_i.h>
 #include <linux/minix_fs_i.h>
 #include <linux/ext2_fs_i.h>
+#include <linux/ext3_fs_i.h>
 #include <linux/hpfs_fs_i.h>
 #include <linux/ntfs_fs_i.h>
 #include <linux/msdos_fs_i.h>
@@ -275,7 +382,6 @@ static inline int buffer_protected(struct buffer_head * bh)
 #include <linux/hfs_fs_i.h>
 #include <linux/adfs_fs_i.h>
 #include <linux/qnx4_fs_i.h>
-#include <linux/reiserfs_fs_i.h>
 
 /*
  * Attribute flags.  These should be or-ed together to figure out what
@@ -369,10 +475,26 @@ struct inode {
 	int			i_writecount;
 	unsigned int		i_attr_flags;
 	__u32			i_generation;
+
+	/* Journaling support fields */
+
+	/* Transaction which owns the latest modifications in this inode */
+	transaction_t	      * i_transaction;
+	
+	/* Doubly-linked list of inodes which have been modified by that
+           transaction */
+	struct inode	      * i_tnext, ** i_tprev;
+	
+	/* Pointer to the buffer which backs this inode, to save massive
+           repeated getblk()s when modifying files */
+	struct buffer_head    * i_ibuf;
+	
+	/* Filesystem-specific data: */
 	union {
 		struct pipe_inode_info		pipe_i;
 		struct minix_inode_info		minix_i;
 		struct ext2_inode_info		ext2_i;
+		struct ext3_inode_info		ext3_i;
 		struct hpfs_inode_info		hpfs_i;
 		struct ntfs_inode_info          ntfs_i;
 		struct msdos_inode_info		msdos_i;
@@ -389,7 +511,6 @@ struct inode {
 		struct hfs_inode_info		hfs_i;
 		struct adfs_inode_info		adfs_i;
 		struct qnx4_inode_info		qnx4_i;	   
-		struct reiserfs_inode_info	reiserfs_i;
 		struct socket			socket_i;
 		void				*generic_ip;
 	} u;
@@ -498,6 +619,7 @@ extern int fasync_helper(int, struct file *, int, struct fasync_struct **);
 
 #include <linux/minix_fs_sb.h>
 #include <linux/ext2_fs_sb.h>
+#include <linux/ext3_fs_sb.h>
 #include <linux/hpfs_fs_sb.h>
 #include <linux/ntfs_fs_sb.h>
 #include <linux/msdos_fs_sb.h>
@@ -512,7 +634,6 @@ extern int fasync_helper(int, struct file *, int, struct fasync_struct **);
 #include <linux/hfs_fs_sb.h>
 #include <linux/adfs_fs_sb.h>
 #include <linux/qnx4_fs_sb.h>
-#include <linux/reiserfs_fs_sb.h>
 
 extern struct list_head super_blocks;
 
@@ -539,9 +660,11 @@ struct super_block {
 	short int		s_ibasket_max;
 	struct list_head	s_dirty;	/* dirty inodes */
 
+	/* Filesystem-specific data: */
 	union {
 		struct minix_sb_info	minix_sb;
 		struct ext2_sb_info	ext2_sb;
+		struct ext3_sb_info	ext3_sb;
 		struct hpfs_sb_info	hpfs_sb;
 		struct ntfs_sb_info     ntfs_sb;
 		struct msdos_sb_info	msdos_sb;
@@ -556,7 +679,6 @@ struct super_block {
 		struct hfs_sb_info	hfs_sb;
 		struct adfs_sb_info	adfs_sb;
 		struct qnx4_sb_info	qnx4_sb;
-	        struct reiserfs_sb_info reiserfs_sb;
 		void			*generic_sbp;
 	} u;
 	/*
@@ -635,6 +757,7 @@ struct super_operations {
 	int (*remount_fs) (struct super_block *, int *, char *);
 	void (*clear_inode) (struct inode *);
 	void (*umount_begin) (struct super_block *);
+	void (*init_dquot) (struct vfsmount *);
 };
 
 struct dquot_operations {
@@ -754,7 +877,7 @@ extern struct file *inuse_filps;
 
 extern void refile_buffer(struct buffer_head * buf);
 extern void set_writetime(struct buffer_head * buf, int flag);
-extern int try_to_free_buffers(struct page *);
+extern int try_to_free_buffers(struct page *, int wait);
 
 extern int nr_buffers;
 extern long buffermem;
@@ -762,13 +885,16 @@ extern int nr_buffer_heads;
 
 #define BUF_CLEAN	0
 #define BUF_LOCKED	1	/* Buffers scheduled for write */
-#define BUF_DIRTY	2	/* Dirty buffers, not yet scheduled for write */
-#define NR_LIST		3
+#define BUF_DIRTY	2	/* Dirty buffers, not yet scheduled for write*/
+#define BUF_JOURNAL	3
+#define NR_LIST		4
 
 void mark_buffer_uptodate(struct buffer_head * bh, int on);
 
 extern inline void mark_buffer_clean(struct buffer_head * bh)
 {
+	extern void jfs_preclean_buffer_check(struct buffer_head *);
+	jfs_preclean_buffer_check(bh); /* @@@ Expensive debugging */
 	if (test_and_clear_bit(BH_Dirty, &bh->b_state)) {
 		if (bh->b_list == BUF_DIRTY)
 			refile_buffer(bh);

@@ -11,7 +11,7 @@
 
 SUB_DIRS     := 
 MOD_SUB_DIRS := $(SUB_DIRS)
-ALL_SUB_DIRS := $(SUB_DIRS) ftape joystick
+ALL_SUB_DIRS := $(SUB_DIRS) rio ftape joystick
 
 #
 # This file contains the font map for the default (hardware) font
@@ -222,7 +222,18 @@ ifeq ($(CONFIG_SX),y)
 L_OBJS += sx.o generic_serial.o
 else
   ifeq ($(CONFIG_SX),m)
-  M_OBJS += sx.o
+  M_OBJS += sx.o  generic_serial.o
+  endif
+endif
+
+ifeq ($(CONFIG_RIO),y)
+L_OBJS += rio/rio.o  generic_serial.o
+SUB_DIRS += rio
+MOD_SUB_DIRS += rio
+else
+  ifeq ($(CONFIG_RIO),m)
+  M_OBJS += generic_serial.o
+  MOD_SUB_DIRS += rio
   endif
 endif
 
@@ -315,6 +326,14 @@ L_OBJS += acquirewdt.o
 else
   ifeq ($(CONFIG_ACQUIRE_WDT),m)
   M_OBJS += acquirewdt.o
+  endif
+endif
+
+ifeq ($(CONFIG_60XX_WDT),y)
+L_OBJS += sbc60xxwdt.o
+else
+  ifeq ($(CONFIG_60XX_WDT),m)
+  M_OBJS += sbc60xxwdt.o
   endif
 endif
 
@@ -510,6 +529,22 @@ else
   endif
 endif
 
+ifeq ($(CONFIG_VIDEO_CPIA),y)
+LX_OBJS += cpia.o
+else
+  ifeq ($(CONFIG_VIDEO_CPIA),m)
+    MX_OBJS += cpia.o
+  endif
+endif
+
+ifeq ($(CONFIG_VIDEO_CPIA_PP),y)
+L_OBJS += cpia_pp.o
+else
+  ifeq ($(CONFIG_VIDEO_CPIA_PP),m)
+    M_OBJS += cpia_pp.o
+  endif
+endif
+
 ifeq ($(CONFIG_RADIO_AZTECH),y)
 L_OBJS += radio-aztech.o
 else
@@ -661,6 +696,16 @@ else
   M_OBJS += nwflash.o
   endif
 endif
+
+
+ifeq ($(CONFIG_TOSHIBA),y)
+L_OBJS += toshiba.o
+else
+  ifeq ($(CONFIG_TOSHIBA),m)
+  M_OBJS += toshiba.o
+  endif
+endif
+
 
 include $(TOPDIR)/Rules.make
 

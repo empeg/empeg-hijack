@@ -1,0 +1,150 @@
+#! /bin/sh
+
+function make_oldconfig () {
+	rm -f .config 2>/dev/null
+	cp -f arch/arm/def-configs/$1 arch/arm/defconfig \
+	&& ( echo | make oldconfig )
+}
+
+function make_diffs () {
+	make mrproper \
+	&& cd .. \
+	&& echo "Running diff.." \
+	&& diff -u --recursive --new-file --exclude=zImage --exclude=config.ini --exclude=.\* --exclude=\*.patch --exclude=${0##*/} --exclude=defconfig $FROMDIFF $KDIR/ >$KDIR/${1}$PATCH
+	cd -
+	echo "Created ${1}$PATCH"
+}
+
+ZIMAGE=arch/arm/boot/zImage
+export PATH="/usr/local/armtools-empeg/bin:$PATH"
+KDIR=${PWD##*/}
+KVERS=v200b13
+PATCH=hijack.${KVERS}.patch
+FROMDIFF="linux"
+
+if [ "$1" = "install" ]; then
+	REL=$2
+	if [ "$REL" = "" ]; then
+		echo "You forgot to specify a release name; eg. v15"
+		exit 1
+	fi
+	if [ ! -d /windy/html ]; then
+		mount /windy
+	fi
+	mv -f $REL.* /windy/html/empeg.hidden/ 2>/dev/null
+	chown httpd:httpd /windy/html/empeg.hidden/$REL.*
+	chmod a-x /windy/html/empeg.hidden/$REL.*
+	cd /windy/html/empeg.hidden/ \
+	&& awk -v REL=$REL -v PATCH=$REL.$PATCH -vKVERS=$KVERS '
+		function dosub(pattern,file,line  ,ls,t,f) {
+			if (line ~ pattern) {
+				gsub(pattern,file,line);
+				ls = "/bin/ls -l "file " 2>/dev/null";
+				ls | getline t;
+				close(ls);
+				if (split(t,f) >= 9) {
+					sub("[<]/[aA][>].*","</A><TD>"f[5]" bytes<TD><FONT SIZE=-1>"f[6]" "f[7]" "f[8]"</FONT>",line);
+				}
+			}
+			return line;
+		}
+		#main()
+		{
+			line = dosub("v[0-9]*[.][^\"]*[.]mk1[.]zImage",REL".hijack."KVERS".mk1.zImage",$0);
+			line = dosub("v[0-9]*[.][^\"]*[.]mk2[.]zImage",REL".hijack."KVERS".mk2.zImage",line);
+			line = dosub("v[0-9]*[.][^\"]*[.]patch",PATCH,line);
+			print line;
+		}' < index.html >index.html.new \
+	&& mv index.html.new index.html \
+	&& echo "## newest version for auto-update installers" >NEWEST_VERSION.tmp \
+	&& echo "${REL}.hijack.${KVERS}.mk1.zImage" >>NEWEST_VERSION.tmp \
+	&& echo "${REL}.hijack.${KVERS}.mk2.zImage" >>NEWEST_VERSION.tmp \
+	&& mv NEWEST_VERSION.tmp NEWEST_VERSION \
+	&& cd - \
+	&& echo 'All Done.  Success!'
+elif [ "$1" = "release" ]; then
+	REL=$2
+	if [ "$REL" = "" ]; then
+		echo "You forgot to specify a release name; eg. v15"
+		exit 1
+	fi
+	rm -f $REL.*.zImage $REL.*.map $REL.*.patch >/dev/null 2>&1
+	sed -e "/^EXTRAVERSION/s/-hijack.*/-hijack-$REL/" <Makefile >Makefile.tmp && mv -f Makefile.tmp Makefile
+	make_diffs $REL.
+	make_oldconfig empeg-car1 && make dep && make clean && make -j3 zImage && make zImage \
+	&& mv -f $ZIMAGE $REL.hijack.${KVERS}.mk1.zImage \
+	&& mv -f System.map $REL.hijack.${KVERS}.mk1.map \
+	&& make mrproper \
+	&& make_oldconfig empeg-car2 && make dep && make clean && make -j3 zImage && make zImage \
+	&& cp -f $ZIMAGE $REL.hijack.${KVERS}.mk2.zImage \
+	&& mv -f System.map $REL.hijack.${KVERS}.mk2.map \
+	&& echo 'All Done.  Success!'
+elif [ "$1" = "diffs" ]; then
+	REL=$2
+	if [ "$REL" = "" ]; then
+		REL=""
+	else
+		REL="${REL}."
+	fi
+	make_diffs $REL
+elif [ "$1" = "download" ]; then
+	image=""
+	if [ -f $ZIMAGE ]; then
+		image=$ZIMAGE
+	elif [ -f "v[0-9]*.hijack.${KVERS}.mk2.zImage" ]; then
+		image="v[0-9]*.hijack.${KVERS}.mk2.zImage"
+	fi
+	if [ "$image" = "" ]; then
+		echo "zImage not found"
+		exit 1
+	fi
+	../../download ${image} 10000 && echo "r" >/dev/ttyS0
+elif [ "$1" = "flash" ]; then
+	image=""
+	IP="$2"
+	if [ "$IP" = "" ]; then
+		IP=10.0.0.26
+	fi
+		
+	if [ -f $ZIMAGE ]; then
+		image=$ZIMAGE
+	elif [ -f "v[0-9]*.hijack.*.mk2.zImage" ]; then
+		image="v[0-9]*.hijack.*.mk2.zImage"
+	fi
+	if [ "$image" = "" ]; then
+		echo "zImage not found"
+		exit 1
+	fi
+	rm -f /tmp/junk 2>/dev/null
+	echo "Sending kernel.."
+	/usr/bin/ftp >/dev/null <<-EOF
+		open $IP
+
+		site popup 99 Downloading kernel..
+		put $ZIMAGE /proc/empeg_kernel
+		site popup 99 Waiting for readback..
+		get /proc/empeg_kernel /tmp/junk
+		site popup 0 Done.
+		quit
+		EOF
+	bytes=`ls -l $ZIMAGE|awk '{print $5}'`
+	dd if=/tmp/junk bs=$bytes count=1 2>/dev/null | diff $ZIMAGE -
+	if [ "$?" = "0" ]; then
+		echo "Success!"
+	else
+		echo "FAILED -- try again!"
+		exit 1
+	fi
+	rm -f /tmp/junk 2>/dev/null
+	echo "Rebooting.."
+	/usr/bin/ftp >/dev/null <<-EOF
+		open $IP
+
+		site reboot
+		EOF
+
+elif [ -f .config ]; then
+	exec make zImage
+else
+	make mrproper && make_oldconfig empeg-car2 && make dep && make clean && make -j3 zImage && make zImage
+fi

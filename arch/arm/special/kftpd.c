@@ -1226,8 +1226,11 @@ send_playlist (server_parms_t *parms, char *path)
 				"<TR><TD> <A HREF=\"/", parms->hostname, artist_title);
 			used += encode_url(xfer.buf+used, artist_title, 1);
 			used += sprintf(xfer.buf+used,".m3u?FID=%x&EXT=.m3u\"><B>Stream</B></A> ", pfid);
-			if (hijack_khttpd_commands)
+			if (hijack_khttpd_commands) {
 				used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?NODATA&SERIAL=%%23%x\"><B>Play</B></A> ", pfid^1);
+				used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?NODATA&SERIAL=%%23%x-\"><B>Insert</B></A> ", pfid^1);
+				used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?NODATA&SERIAL=%%23%x%%2B\"><B>Append</B></A> ", pfid^1);
+			}
 			if (hijack_khttpd_files)
 				used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?FID=%x\"><B>Tags</B></A> ", pfid);
 			used += sprintf(xfer.buf+used, "<TD ALIGN=CENTER> <FONT SIZE=+2><B><EM>%s</EM></B></FONT> <TD> <B>Length</B> "
@@ -1345,8 +1348,11 @@ open_fidfile:
 					used += sprintf(xfer.buf+used, "<TR><TD> <A HREF=\"/");
 					used += encode_url(xfer.buf+used, artist_title, 1);
 					used += sprintf(xfer.buf+used, ".m3u?FID=%x&EXT=.m3u\"><em>Stream</em></A> ", fid);
-					if (hijack_khttpd_commands)
+					if (hijack_khttpd_commands) {
 						used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?NODATA&SERIAL=%%23%x\"><em>Play</em></A> ", fid^1);
+						used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?NODATA&SERIAL=%%23%x-\"><em>Insert</em></A> ", fid^1);
+						used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?NODATA&SERIAL=%%23%x%%2B\"><em>Append</em></A> ", fid^1);
+					}
 					if (hijack_khttpd_files)
 						used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?FID=%x\"><EM>Tags</EM></A> ", fid);
 					if (fidtype == 'T') {

@@ -123,7 +123,6 @@ static const char RCSid[] = "$Header: /vger/u4/cvs/linux/drivers/scsi/scsi.c,v 1
 #define BLIST_MAX5LUN	0x080
 #define BLIST_ISDISK	0x100
 #define BLIST_ISROM	0x200
-#define BLIST_GHOST	0x400
 
 /*
  * Data declarations.
@@ -279,6 +278,7 @@ static struct dev_info device_list[] =
 						 * SCSI code to reset bus.*/
 {"QUANTUM","LPS525S","3110", BLIST_NOLUN},      /* Locks sometimes if polled for lun != 0 */
 {"QUANTUM","PD1225S","3110", BLIST_NOLUN},      /* Locks sometimes if polled for lun != 0 */
+{"QUANTUM","FIREBALL ST4.3S","0F0C",BLIST_NOLUN},/* Locks sometimes if polled for lun != 0 */
 {"MEDIAVIS","CDR-H93MV","1.31", BLIST_NOLUN},   /* Locks up if polled for lun != 0 */
 {"SANKYO", "CP525","6.64", BLIST_NOLUN},        /* causes failed REQ SENSE, extra reset */
 {"HP", "C1750A", "3226", BLIST_NOLUN},          /* scanjet iic */
@@ -286,7 +286,11 @@ static struct dev_info device_list[] =
 {"HP", "C2500A", "", BLIST_NOLUN},              /* scanjet iicx */
 {"YAMAHA","CDR100","1.00", BLIST_NOLUN},	/* Locks up if polled for lun != 0 */
 {"YAMAHA","CDR102","1.00", BLIST_NOLUN},	/* Locks up if polled for lun != 0 */
+{"YAMAHA","CRW8424S","1.0", BLIST_NOLUN},	/* Locks up if polled for lun != 0 */
+{"YAMAHA","CRW6416S","1.0c", BLIST_NOLUN},	/* Locks up if polled for lun != 0 */
+{"MITSUMI", "CD-R CR-2201CS", "6119", BLIST_NOLUN}, /* Locks up if polled for lun != 0 */
 {"RELISYS", "Scorpio", "*", BLIST_NOLUN},	/* responds to all LUN */
+{"MICROTEK", "ScanMaker II", "5.61", BLIST_NOLUN}, /* responds to all LUN */
 
 /*
  * Other types of devices that have special flags.
@@ -299,6 +303,7 @@ static struct dev_info device_list[] =
 {"NRC","MBR-7","*", BLIST_FORCELUN | BLIST_SINGLELUN},
 {"NRC","MBR-7.4","*", BLIST_FORCELUN | BLIST_SINGLELUN},
 {"REGAL","CDC-4X","*", BLIST_MAX5LUN | BLIST_SINGLELUN},
+{"LASOUND","CDX7405","3.10", BLIST_MAX5LUN | BLIST_SINGLELUN},
 {"NAKAMICH","MJ-4.8S","*", BLIST_FORCELUN | BLIST_SINGLELUN},
 {"NAKAMICH","MJ-5.16S","*", BLIST_FORCELUN | BLIST_SINGLELUN},
 {"PIONEER","CD-ROM DRM-600","*", BLIST_FORCELUN | BLIST_SINGLELUN},
@@ -310,12 +315,12 @@ static struct dev_info device_list[] =
 {"NEC","PD-1 ODX654P","*", BLIST_FORCELUN | BLIST_SINGLELUN},
 {"MATSHITA","PD-1","*", BLIST_FORCELUN | BLIST_SINGLELUN},
 {"iomega","jaz 1GB","J.86", BLIST_NOTQ | BLIST_NOLUN},
-{"CREATIVE","DVD-RAM RAM","*", BLIST_GHOST},
-{"MATSHITA","PD-2 LF-D100","*", BLIST_GHOST},
-{"HITACHI","GF-1050","*", BLIST_GHOST},        /* Hitachi SCSI DVD-RAM */
 {"TOSHIBA","CDROM","*", BLIST_ISROM},
-{"TOSHIBA","DVD-RAM SD-W1101","*", BLIST_GHOST},
-{"TOSHIBA","DVD-RAM SD-W1111","*", BLIST_GHOST},
+{"MegaRAID", "LD", "*", BLIST_FORCELUN},     /* Multiple luns always safe (logical raid vols) */
+{"DGC",  "RAID",      "*", BLIST_SPARSELUN}, /* Dell PV 650F (tgt @ LUN 0) */
+{"DGC",  "DISK",      "*", BLIST_SPARSELUN}, /* Dell PV 650F (no tgt @ LUN 0) */
+{"DELL", "PV530F",    "*", BLIST_SPARSELUN}, /* Dell PV 530F */
+{"SONY", "TSL",       "*", BLIST_FORCELUN},  /* DDS3 & DDS4 autoloaders */
 /*
  * Must be at end of list...
  */
@@ -678,20 +683,12 @@ int scan_scsis_single (int channel, int dev, int lun, int *max_dev_lun,
   struct Scsi_Device_Template *sdtpnt;
   Scsi_Device * SDtail, *SDpnt=*SDpnt2;
   int bflags, type=-1;
-  static int ghost_channel=-1, ghost_dev=-1;
-  int org_lun = lun;
 
   SDpnt->host = shpnt;
   SDpnt->id = dev;
   SDpnt->lun = lun;
   SDpnt->channel = channel;
   SDpnt->online = TRUE;
-
-  if ((channel == ghost_channel) && (dev == ghost_dev) && (lun == 1)) {
-    SDpnt->lun = 0;
-  } else {
-    ghost_channel = ghost_dev = -1;
-  }
 
   /* Some low level driver could use device->type (DB) */
   SDpnt->type = -1;
@@ -803,17 +800,6 @@ int scan_scsis_single (int channel, int dev, int lun, int *max_dev_lun,
   if (bflags & BLIST_ISROM) {
     scsi_result[0] = TYPE_ROM;
     scsi_result[1] |= 0x80;     /* removable */
-  }
-
-  if (bflags & BLIST_GHOST) {
-    if ((ghost_channel == channel) && (ghost_dev == dev) && (org_lun == 1)) {
-      lun=1;
-    } else {
-      ghost_channel = channel;
-      ghost_dev = dev;
-      scsi_result[0] = TYPE_MOD;
-      scsi_result[1] |= 0x80;     /* removable */
-    }
   }
 
   memcpy (SDpnt->vendor, scsi_result + 8, 8);
@@ -1000,15 +986,6 @@ int scan_scsis_single (int channel, int dev, int lun, int *max_dev_lun,
    */
   if (bflags & BLIST_FORCELUN) {
     *max_dev_lun = 8;
-    return 1;
-  }
-
-  /*
-   * If this device is Ghosted, scan upto two luns. (It physically only
-   * has one). -- REW
-   */
-  if (bflags & BLIST_GHOST) {
-    *max_dev_lun = 2;
     return 1;
   }
 
@@ -2588,6 +2565,8 @@ int scsi_proc_info(char *buffer, char **start, off_t offset, int length,
              * Nobody is using this device any more.
              * Free all of the command structures.
              */
+	    if (HBA_ptr->hostt->revoke)
+		    HBA_ptr->hostt->revoke(scd);
             for(SCpnt=scd->device_queue; SCpnt; SCpnt = scd->device_queue)
             {
                 scd->device_queue = SCpnt->next;
@@ -3548,6 +3527,8 @@ scsi_dump_status(int level)
 }
 
 #ifdef MODULE
+
+MODULE_PARM(max_scsi_luns, "i");
 
 int init_module(void) 
 {

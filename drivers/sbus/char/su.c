@@ -1,4 +1,4 @@
-/* $Id: su.c,v 1.18.2.5 1999/10/14 08:44:35 davem Exp $
+/* $Id: su.c,v 1.18.2.7 2000/05/27 04:46:34 davem Exp $
  * su.c: Small serial driver for keyboard/mouse interface on sparc32/PCI
  *
  * Copyright (C) 1997  Eddie C. Dost  (ecd@skynet.be)
@@ -694,6 +694,7 @@ static void do_softint(void *private_)
 		    tty->ldisc.write_wakeup)
 			(tty->ldisc.write_wakeup)(tty);
 		wake_up_interruptible(&tty->write_wait);
+		wake_up_interruptible(&tty->poll_wait);
 	}
 }
 
@@ -1312,6 +1313,7 @@ su_flush_buffer(struct tty_struct *tty)
 	info->xmit_cnt = info->xmit_head = info->xmit_tail = 0;
 	restore_flags(flags);
 	wake_up_interruptible(&tty->write_wait);
+	wake_up_interruptible(&tty->poll_wait);
 	if ((tty->flags & (1 << TTY_DO_WRITE_WAKEUP)) &&
 	    tty->ldisc.write_wakeup)
 		(tty->ldisc.write_wakeup)(tty);
@@ -2205,7 +2207,7 @@ int su_read_proc(char *page, char **start, off_t off, int count,
 done:
 	if (off >= len+begin)
 		return 0;
-	*start = page + (begin-off);
+	*start = page + (off-begin);
 	return ((count < begin+len-off) ? count : begin+len-off);
 }
 
@@ -2224,7 +2226,7 @@ done:
  */
 __initfunc(static __inline__ void show_su_version(void))
 {
-	char *revision = "$Revision: 1.18.2.5 $";
+	char *revision = "$Revision: 1.18.2.7 $";
 	char *version, *p;
 
 	version = strchr(revision, ' ');

@@ -141,9 +141,12 @@ int shrink_mmap(int priority, int gfp_mask)
 	unsigned long limit = num_physpages;
 	struct page * page;
 	int count;
+	int nr_dirty = 0;
+	
+	/* Make sure we scan all pages twice at priority 0. */
+	count = (limit << 1) >> priority;
 
-	count = limit >> priority;
-
+ refresh_clock:
 	page = mem_map + clock;
 	do {
 		int referenced;
@@ -164,6 +167,10 @@ int shrink_mmap(int priority, int gfp_mask)
 			clock = page - mem_map;
 		}
 		
+		/* We can't free pages unless there's just one user */
+		if (atomic_read(&page->count) != 1)
+			continue;
+
 		referenced = test_and_clear_bit(PG_referenced, &page->flags);
 
 		if (PageLocked(page))
@@ -171,12 +178,6 @@ int shrink_mmap(int priority, int gfp_mask)
 
 		if ((gfp_mask & __GFP_DMA) && !PageDMA(page))
 			continue;
-
-		/* We can't free pages unless there's just one user */
-		if (atomic_read(&page->count) != 1)
-			continue;
-
-		count--;
 
 		/*
 		 * Is it a page swap page? If so, we want to
@@ -195,10 +196,23 @@ int shrink_mmap(int priority, int gfp_mask)
 
 		/* Is it a buffer page? */
 		if (page->buffers) {
+			/*
+			 * Wait for async IO to complete
+			 * at each 64 buffers
+			 */ 
+
+			int wait = ((gfp_mask & __GFP_IO) 
+				&& (!(nr_dirty++ % 64)));
+
 			if (buffer_under_min())
 				continue;
-			if (!try_to_free_buffers(page))
-				continue;
+			/*
+			 * We can sleep if we need to do some write
+			 * throttling.
+			 */
+
+			if (!try_to_free_buffers(page, wait))
+				goto refresh_clock;
 			return 1;
 		}
 
@@ -210,7 +224,7 @@ int shrink_mmap(int priority, int gfp_mask)
 			return 1;
 		}
 
-	} while (count > 0);
+	} while (--count > 0);
 	return 0;
 }
 
@@ -254,6 +268,7 @@ void update_vm_cache_conditional(struct inode * inode, unsigned long pos, const 
 			if ((unsigned long)dest != source_address) {
 				wait_on_page(page);
 				memcpy(dest, buf, len);
+				flush_dcache_page(page_address(page));
 			}
 			page_cache_release(page);
 		}
@@ -1554,8 +1569,10 @@ generic_file_write(struct file *file, const char *buf,
 		 * is done with the page.
 		 */
 		dest = (char *) page_address(page) + offset;
-		if (dest != buf) /* See comment in update_vm_cache_cond. */
+		if (dest != buf) { /* See comment in update_vm_cache_cond. */
 			bytes -= copy_from_user(dest, buf, bytes);
+			flush_dcache_page(page_address(page));
+		}
 		status = -EFAULT;
 		if (bytes)
 			status = inode->i_op->updatepage(file, page, offset, bytes, sync);

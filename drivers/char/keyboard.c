@@ -47,6 +47,9 @@
 #include <linux/vt_kern.h>
 #include <linux/kbd_ll.h>
 #include <linux/sysrq.h>
+#if defined(CONFIG_KDB)
+#include <linux/kdb.h>
+#endif
 
 #define SIZE(x) (sizeof(x)/sizeof((x)[0]))
 
@@ -277,6 +280,11 @@ kbd_processkeycode(unsigned char keycode, char up_flag, int autorepeat)
 		    up_flag = kbd_unexpected_up(keycode);
 	} else {
 		rep = test_and_set_bit(keycode, key_down);
+#if defined(CONFIG_KDB)
+ 	if (!up_flag && (keycode == E1_PAUSE)) {
+		kdb(KDB_REASON_KEYBOARD, 0, kbd_pt_regs);
+ 	}
+#endif
 		/* If the keyboard autorepeated for us, ignore it.
 		 * We do our own autorepeat processing.
 		 */

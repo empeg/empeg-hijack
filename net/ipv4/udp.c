@@ -5,7 +5,7 @@
  *
  *		The User Datagram Protocol (UDP).
  *
- * Version:	$Id: udp.c,v 1.66.2.3 1999/08/07 10:56:36 davem Exp $
+ * Version:	$Id: udp.c,v 1.66.2.4 2000/03/10 00:16:05 davem Exp $
  *
  * Authors:	Ross Biro, <bir7@leland.Stanford.Edu>
  *		Fred N. van Kempen, <waltje@uWalt.NL.Mugnet.ORG>
@@ -857,6 +857,7 @@ int udp_recvmsg(struct sock *sk, struct msghdr *msg, int len,
 		sin->sin_family = AF_INET;
 		sin->sin_port = skb->h.uh->source;
 		sin->sin_addr.s_addr = skb->nh.iph->saddr;
+		memset(sin->sin_zero, 0, sizeof(sin->sin_zero));
 #ifdef CONFIG_IP_TRANSPARENT_PROXY
 		if (flags&MSG_PROXY)
 		{

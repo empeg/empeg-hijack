@@ -137,8 +137,6 @@ static int usb_txidle=1;
 
 /* ...and for receive */
 #define MAXRXPACKET 32
-static unsigned char usb_rx[MAXRXPACKET+64]; /* So we can overrun on reads */
-static int usb_rxsize;
 static int usb_rxoverruns=0;
 
 /* DMA flags */
@@ -1324,7 +1322,6 @@ void __init empeg_usb_init(void)
 
 	/* Got it ok? */
 	if (result==0) {
-                struct pt_regs regs;
 
 		/* Enable IRQs on falling edge only (there's an inverter
 		   between the 9602 and the SA) */

@@ -1,4 +1,4 @@
-/* $Id: zs.c,v 1.41.2.4 1999/10/14 08:44:40 davem Exp $
+/* $Id: zs.c,v 1.41.2.6 2000/04/17 05:46:05 davem Exp $
  * zs.c: Zilog serial port driver for the Sparc.
  *
  * Copyright (C) 1995 David S. Miller (davem@caip.rutgers.edu)
@@ -737,6 +737,7 @@ static void do_softint(void *private_)
 		    tty->ldisc.write_wakeup)
 			(tty->ldisc.write_wakeup)(tty);
 		wake_up_interruptible(&tty->write_wait);
+		wake_up_interruptible(&tty->poll_wait);
 	}
 }
 
@@ -1184,6 +1185,7 @@ static void zs_flush_buffer(struct tty_struct *tty)
 	info->xmit_cnt = info->xmit_head = info->xmit_tail = 0;
 	sti();
 	wake_up_interruptible(&tty->write_wait);
+	wake_up_interruptible(&tty->poll_wait);
 	if ((tty->flags & (1 << TTY_DO_WRITE_WAKEUP)) &&
 	    tty->ldisc.write_wakeup)
 		(tty->ldisc.write_wakeup)(tty);
@@ -1855,7 +1857,7 @@ int zs_open(struct tty_struct *tty, struct file * filp)
 
 static void show_serial_version(void)
 {
-	char *revision = "$Revision: 1.41.2.4 $";
+	char *revision = "$Revision: 1.41.2.6 $";
 	char *version, *p;
 
 	version = strchr(revision, ' ');
@@ -2023,9 +2025,8 @@ get_zs(int chip))
 		/* Can use the prom for other machine types */
 		zsnode = prom_getchild(prom_root_node);
 		if (sparc_cpu_model == sun4d) {
-			int node;
 			int no = 0;
-			
+
 			tmpnode = zsnode;
 			zsnode = 0;
 			bbnode = 0;

@@ -128,6 +128,5 @@
 
 #define	ENOMEDIUM	123	/* No medium found */
 #define	EMEDIUMTYPE	124	/* Wrong medium type */
-#define EHASHCOLLISION  125     /* ReiserFS too many hash collisions */
 
 #endif

@@ -343,7 +343,6 @@ is_disk1:
 	mov ax,cs		! aka #SETUPSEG
 	sub ax,#DELTA_INITSEG	! aka #INITSEG
 	mov ds,ax
-	mov ds,ax
 	xor ax,ax
 	mov [0xa0], ax		! set table length to 0
 	mov ah, #0xc0
@@ -404,7 +403,11 @@ no_psmouse:
 	int	0x15		! ignore return code
 
 	mov	ax,#0x05303	! 32 bit connect
-	xor	bx,bx
+	xor	ebx,ebx
+	xor	cx,cx		! paranoia
+	xor	dx,dx		!   ...
+	xor	esi,esi		!   ...
+	xor	di,di		!   ...
 	int	0x15
 	jc	no_32_apm_bios	! error
 
@@ -420,6 +423,7 @@ no_psmouse:
 !
 	mov	ax,#0x05300	! APM BIOS installation check
 	xor	bx,bx
+	xor	cx,cx		! paranoia
 	int	0x15
 	jc	apm_disconnect	! error -> should not happen, tidy up
 

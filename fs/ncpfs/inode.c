@@ -105,8 +105,7 @@ void ncp_update_inode2(struct inode* inode, struct nw_file_info *nwinfo)
 				switch (nwi->attributes & (aHIDDEN|aSYSTEM)) {
 					case aHIDDEN:
 						if (server->m.flags & NCP_MOUNT_SYMLINKS) {
-							if ((inode->i_size >= NCP_MIN_SYMLINK_SIZE)
-							 && (inode->i_size <= NCP_MAX_SYMLINK_SIZE)) {
+							if (inode->i_size <= NCP_MAX_SYMLINK_SIZE) {
 								inode->i_mode = (inode->i_mode & ~S_IFMT) | S_IFLNK;
 								break;
 							}
@@ -168,8 +167,7 @@ static void ncp_set_attr(struct inode *inode, struct nw_file_info *nwinfo)
 			switch (nwi->attributes & (aHIDDEN|aSYSTEM)) {
 				case aHIDDEN:
 					if (server->m.flags & NCP_MOUNT_SYMLINKS) {
-						if ((inode->i_size >= NCP_MIN_SYMLINK_SIZE)
-						 && (inode->i_size <= NCP_MAX_SYMLINK_SIZE)) {
+						if (inode->i_size <= NCP_MAX_SYMLINK_SIZE) {
 							inode->i_mode = (inode->i_mode & ~S_IFMT) | S_IFLNK;
 							break;
 						}
@@ -691,7 +689,7 @@ int ncp_notify_change(struct dentry *dentry, struct iattr *attr)
 		DPRINTK(KERN_DEBUG "ncpfs: trying to change size to %ld\n",
 			attr->ia_size);
 
-		if ((result = ncp_make_open(inode, O_RDWR)) < 0) {
+		if ((result = ncp_make_open(inode, O_WRONLY)) < 0) {
 			return -EACCES;
 		}
 		ncp_write_kernel(NCP_SERVER(inode), NCP_FINFO(inode)->file_handle,

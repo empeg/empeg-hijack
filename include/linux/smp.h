@@ -54,6 +54,10 @@ extern int smp_threads_ready;
 
 extern int smp_num_cpus;
 
+#if defined(CONFIG_KDB)
+extern volatile unsigned long smp_kdb_wait;
+extern void smp_kdb_stop(int);
+#endif	/* CONFIG_KDB */
 extern volatile unsigned long smp_msg_data;
 extern volatile int smp_src_cpu;
 extern volatile int smp_msg_id;

@@ -147,6 +147,19 @@ _GLOBAL(_tlbie)
 	blr
 
 /*
+ * The atomic operations here generally act as memory barriers too on SMP.
+ * The general usage of them assumes this since x86 processors won't
+ * move a load past a lock instruction and don't reorder stores.
+ */
+#ifdef __SMP__
+#define SMP_WMB	eieio
+#define SMP_MB	sync
+#else
+#define SMP_WMB
+#define SMP_MB
+#endif /* CONFIG_SMP */
+
+/*
  * Atomic [test&set] exchange
  *
  *	unsigned long xchg_u32(void *ptr, unsigned long val)
@@ -155,9 +168,11 @@ _GLOBAL(_tlbie)
  */
 _GLOBAL(xchg_u32)
 	mr	r5,r3		/* Save pointer */
+	SMP_WMB
 10:	lwarx	r3,0,r5		/* Fetch old value & reserve */
 	stwcx.	r4,0,r5		/* Update with new value */
 	bne-	10b		/* Retry if "reservation" (i.e. lock) lost */
+	SMP_MB
 	blr
 
 /*
@@ -169,14 +184,14 @@ _GLOBAL(xchg_u32)
  */
 _GLOBAL(__spin_trylock)
 	mr	r4,r3
-	eieio			/* prevent reordering of stores */
+	SMP_WMB			/* prevent reordering of stores */
 	li	r5,-1
 	lwarx	r3,0,r4		/* fetch old value, establish reservation */
 	cmpwi	0,r3,0		/* is it 0? */
 	bnelr-			/* return failure if not */
 	stwcx.	r5,0,r4		/* try to update with new value */
 	bne-	1f		/* if we failed */
-	eieio			/* prevent reordering of stores */
+	SMP_WMB			/* prevent reordering of stores */
 	blr
 1:	li	r3,1		/* return non-zero for failure */
 	blr
@@ -195,71 +210,89 @@ _GLOBAL(__spin_trylock)
  * void atomic_set_mask(atomic_t mask, atomic_t *addr);
  */
 _GLOBAL(atomic_add)
+	SMP_WMB			/* wmb() */
 10:	lwarx	r5,0,r4		/* Fetch old value & reserve */
 	add	r5,r5,r3	/* Perform 'add' operation */
 	stwcx.	r5,0,r4		/* Update with new value */
 	bne-	10b		/* Retry if "reservation" (i.e. lock) lost */
+	SMP_MB
 	blr
 _GLOBAL(atomic_add_return)
+	SMP_WMB			/* wmb() */
 10:	lwarx	r5,0,r4		/* Fetch old value & reserve */
 	add	r5,r5,r3	/* Perform 'add' operation */
 	stwcx.	r5,0,r4		/* Update with new value */
 	bne-	10b		/* Retry if "reservation" (i.e. lock) lost */
 	mr	r3,r5
+	SMP_MB
 	blr
 _GLOBAL(atomic_sub)
+	SMP_WMB			/* wmb() */
 10:	lwarx	r5,0,r4		/* Fetch old value & reserve */
 	sub	r5,r5,r3	/* Perform 'add' operation */
 	stwcx.	r5,0,r4		/* Update with new value */
 	bne-	10b		/* Retry if "reservation" (i.e. lock) lost */
+	SMP_MB
 	blr
 _GLOBAL(atomic_inc)
+	SMP_WMB			/* wmb() */
 10:	lwarx	r5,0,r3		/* Fetch old value & reserve */
 	addi	r5,r5,1		/* Perform 'add' operation */
 	stwcx.	r5,0,r3		/* Update with new value */
 	bne-	10b		/* Retry if "reservation" (i.e. lock) lost */
+	SMP_MB
 	blr
 _GLOBAL(atomic_inc_return)
+	SMP_WMB			/* wmb() */
 10:	lwarx	r5,0,r3		/* Fetch old value & reserve */
 	addi	r5,r5,1		/* Perform 'add' operation */
 	stwcx.	r5,0,r3		/* Update with new value */
 	bne-	10b		/* Retry if "reservation" (i.e. lock) lost */
 	mr	r3,r5		/* Return new value */
+	SMP_MB
 	blr
 _GLOBAL(atomic_dec)
+	SMP_WMB			/* wmb() */
 10:	lwarx	r5,0,r3		/* Fetch old value & reserve */
 	subi	r5,r5,1		/* Perform 'add' operation */
 	stwcx.	r5,0,r3		/* Update with new value */
 	bne-	10b		/* Retry if "reservation" (i.e. lock) lost */
+	SMP_MB
 	blr
 _GLOBAL(atomic_dec_return)
+	SMP_WMB			/* wmb() */
 10:	lwarx	r5,0,r3		/* Fetch old value & reserve */
 	subi	r5,r5,1		/* Perform 'add' operation */
 	stwcx.	r5,0,r3		/* Update with new value */
 	bne-	10b		/* Retry if "reservation" (i.e. lock) lost */
 	mr	r3,r5		/* Return new value */
+	SMP_MB
 	blr
 _GLOBAL(atomic_dec_and_test)
+	SMP_WMB			/* wmb() */
 10:	lwarx	r5,0,r3		/* Fetch old value & reserve */
 	subi	r5,r5,1		/* Perform 'add' operation */
 	stwcx.	r5,0,r3		/* Update with new value */
 	bne-	10b		/* Retry if "reservation" (i.e. lock) lost */
-	cmpi	0,r5,0		/* Return 'true' IFF 0 */
-	li	r3,1
-	beqlr
-	li	r3,0
+	SMP_MB
+	cntlzw	r3,r5
+	srwi	r3,r3,5
 	blr
 _GLOBAL(atomic_clear_mask)
+	SMP_WMB			/* wmb() */
 10:	lwarx	r5,0,r4
 	andc	r5,r5,r3
 	stwcx.	r5,0,r4
 	bne-	10b
+	SMP_MB
 	blr
 _GLOBAL(atomic_set_mask)
+	SMP_WMB			/* wmb() */
 10:	lwarx	r5,0,r4
 	or	r5,r5,r3
 	stwcx.	r5,0,r4
 	bne-	10b
+	SMP_MB
 	blr
 
 /*
@@ -371,48 +404,59 @@ _GLOBAL(_outsl_ns)
 	blr	
 
 /*
- * Extended precision shifts
+ * Extended precision shifts.
+ * 
+ * Updated to be valid for shift counts from 0 to 63 inclusive.
+ * -- Gabriel
  *
  * R3/R4 has 64 bit value
  * R5    has shift count
  * result in R3/R4
  *
- *  ashrdi3:     XXXYYY/ZZZAAA -> SSSXXX/YYYZZZ
- *  ashldi3:     XXXYYY/ZZZAAA -> YYYZZZ/AAA000
- *  lshrdi3:     XXXYYY/ZZZAAA -> 000XXX/YYYZZZ
+ *  ashrdi3: arithmetic right shift (sign propagation)	    
+ *  lshrdi3: logical right shift	
+ *  ashldi3: left shift
  */
 _GLOBAL(__ashrdi3)
-	li	r6,32
-	sub	r6,r6,r5
-	slw	r7,r3,r6	/* isolate YYY */
-	srw	r4,r4,r5	/* isolate ZZZ */
-	or	r4,r4,r7	/* YYYZZZ */
-	sraw	r3,r3,r5	/* SSSXXX */
+	subfic	r6,r5,32	
+	srw	r4,r4,r5	# LSW = count > 31 ? 0 : LSW >> count
+	addi	r7,r5,32	# could be xori, or addi with -32
+	slw	r6,r3,r6	# t1 = count > 31 ? 0 : MSW << (32-count)
+	rlwinm	r8,r7,0,32	# t3 = (count < 32) ? 32 : 0
+	sraw	r7,r3,r7	# t2 = MSW >> (count-32)
+	or	r4,r4,r6	# LSW |= t1
+	slw	r7,r7,r8	# t2 = (count < 32) ? 0 : t2
+	sraw	r3,r3,r5	# MSW = MSW >> count
+	or	r4,r4,r7	# LSW |= t2
 	blr
 
 _GLOBAL(__ashldi3)
-	li	r6,32
-	sub	r6,r6,r5
-	srw	r7,r4,r6	/* isolate ZZZ */
-	slw	r4,r4,r5	/* AAA000 */
-	slw	r3,r3,r5	/* YYY--- */
-	or	r3,r3,r7	/* YYYZZZ */
+	subfic	r6,r5,32	
+	slw	r3,r3,r5	# MSW = count > 31 ? 0 : MSW << count
+	addi	r7,r5,32	# could be xori, or addi with -32
+	srw	r6,r4,r6	# t1 = count > 31 ? 0 : LSW >> (32-count)
+	slw	r7,r4,r7	# t2 = count < 32 ? 0 : LSW << (count-32)
+	or	r3,r3,r6	# MSW |= t1
+	slw	r4,r4,r5	# LSW = LSW << count
+	or	r3,r3,r7	# MSW |= t2
 	blr
 
 _GLOBAL(__lshrdi3)
-	li	r6,32
-	sub	r6,r6,r5
-	slw	r7,r3,r6        /* isolate YYY */
-	srw	r4,r4,r5        /* isolate ZZZ */
-	or	r4,r4,r7        /* YYYZZZ */
-	srw	r3,r3,r5        /* 000XXX */
+	subfic	r6,r5,32	
+	srw	r4,r4,r5	# LSW = count > 31 ? 0 : LSW >> count
+	addi	r7,r5,32	# could be xori, or addi with -32
+	slw	r6,r3,r6	# t1 = count > 31 ? 0 : MSW << (32-count)
+	srw	r7,r3,r7	# t2 = count < 32 ? 0 : MSW >> (count-32)
+	or	r4,r4,r6	# LSW |= t1
+	srw	r3,r3,r5	# MSW = MSW >> count
+	or	r4,r4,r7	# LSW |= t2 
 	blr
 
 _GLOBAL(abs)
-	cmpi	0,r3,0
-	bge	10f
-	neg	r3,r3
-10:	blr
+	srawi	r4,r3,31
+	xor	r3,r3,r4
+	sub	r3,r3,r4
+	blr
 
 _GLOBAL(_get_SP)
 	mr	r3,r1		/* Close enough */
@@ -445,6 +489,20 @@ _GLOBAL(_set_THRM3)
 _GLOBAL(_get_PVR)
 	mfspr	r3,PVR
 	blr
+	
+_GLOBAL(_get_HID0)
+	mfspr	r3,HID0
+	blr
+
+_GLOBAL(_get_ICTC)
+	mfspr	r3,ICTC
+	blr
+
+_GLOBAL(_set_ICTC)
+	mtspr	ICTC,r3
+	blr
+
+	
 /*
 	L2CR functions
 	Copyright © 1997-1998 by PowerLogix R & D, Inc.
@@ -511,6 +569,8 @@ _GLOBAL(_set_L2CR)
 	rlwinm	r4,r4,16,16,31
 	cmplwi	r4,0x0008
 	beq	thisIs750
+	cmplwi	r4,0x000c
+	beq thisIs750
 	li	r3,-1
 	blr
 	
@@ -605,9 +665,11 @@ _GLOBAL(_get_L2CR)
 	mfspr	r3,PVR
 	rlwinm	r3,r3,16,16,31
 	cmplwi	r3,0x0008
+	beq	1f
+	cmplwi	r3,0x000c
 	li	r3,0
 	bnelr
-	
+1:	
 	/* Return the L2CR contents */
 	mfspr	r3,L2CR
 	blr

@@ -2,8 +2,8 @@
  *
  * Name:      	skge.c
  * Project:	GEnesis, PCI Gigabit Ethernet Adapter
- * Version:	$Revision: 1.27 $
- * Date:       	$Date: 1999/11/25 09:06:28 $
+ * Version:	$Revision: 1.29 $
+ * Date:       	$Date: 2000/02/21 13:31:56 $
  * Purpose:	The main driver source module
  *
  ******************************************************************************/
@@ -46,6 +46,16 @@
  * History:
  *
  *	$Log: skge.c,v $
+ *	Revision 1.29  2000/02/21 13:31:56  cgoos
+ *	Fixed "unused" warning for UltraSPARC change.
+ *	
+ *	Revision 1.28  2000/02/21 10:32:36  cgoos
+ *	Added fixes for UltraSPARC.
+ *	Now printing RlmtMode and PrefPort setting at startup.
+ *	Changed XmitFrame return value.
+ *	Fixed rx checksum calculation for BIG ENDIAN systems.
+ *	Fixed rx jumbo frames counted as ierrors.
+ *	
  *	Revision 1.27  1999/11/25 09:06:28  cgoos
  *	Changed base_addr to unsigned long.
  *	
@@ -225,7 +235,7 @@
 
 static const char SysKonnectFileId[] = "@(#)" __FILE__ " (C) SysKonnect.";
 static const char SysKonnectBuildNumber[] =
-	"@(#)SK-BUILD: 3.02 (19991111) PL: 01"; 
+	"@(#)SK-BUILD: 3.04 (19991111) PL: 01"; 
 
 #include	<linux/module.h>
 
@@ -234,10 +244,10 @@ static const char SysKonnectBuildNumber[] =
 
 /* defines ******************************************************************/
 
-#define BOOT_STRING	"sk98lin: Network Device Driver v3.02\n" \
+#define BOOT_STRING	"sk98lin: Network Device Driver v3.04\n" \
 			"Copyright (C) 1999 SysKonnect"
 
-#define VER_STRING	"3.02"
+#define VER_STRING	"3.04"
 
 
 /* for debuging on x86 only */
@@ -348,6 +358,9 @@ int		version_disp = 0;
 SK_AC		*pAC;
 struct pci_dev	*pdev = NULL;
 unsigned long	base_address;
+#ifdef __sparc_v9__
+unsigned short	tmp;
+#endif
 
 	if (probed)
 		return -ENODEV;
@@ -419,6 +432,15 @@ unsigned long	base_address;
 
 		base_address = pdev->base_address[0];
 
+#ifdef __sparc_v9__
+		/* SPARC machines do not initialize the chache line size */
+                pci_write_config_byte(pdev, PCI_CACHE_LINE_SIZE, 64);
+		/* SPARC machines do not set "Memory write and invalidate" */
+                pci_read_config_word(pdev, PCI_COMMAND, &tmp);
+		tmp |= PCI_COMMAND_INVALIDATE;
+                pci_write_config_word(pdev, PCI_COMMAND, tmp);
+#endif 
+
 #ifdef SK_BIG_ENDIAN
 		/*
 		 * On big endian machines, we use the adapter's aibility of
@@ -437,7 +459,12 @@ unsigned long	base_address;
 		 */
 
 
+#ifndef __sparc_v9__
 		pAC->IoBase = (char*)ioremap(base_address, 0x4000);
+#else
+		/* workaround for bug in 2.2 kernel for sparcv9 */
+		pAC->IoBase = (char*)base_address;
+#endif
 		if (!pAC->IoBase){
 			printk(KERN_ERR "%s:  Unable to map I/O register, "
 			       "SK 98xx No. %i will be disabled.\n",
@@ -807,6 +834,14 @@ int	Ret;			/* return code of request_irq */
 	/* Print adapter specific string from vpd */
 	ProductStr(pAC);
 	printk("%s: %s\n", dev->name, pAC->DeviceStr);
+
+	/* Print configuration settings */
+	printk("      PrefPort:%c  RlmtMode:%s\n",
+		'A' + pAC->Rlmt.PrefPort,
+		(pAC->RlmtMode==0)  ? "ChkLink" :
+		((pAC->RlmtMode==1) ? "ChkLink" : 
+		((pAC->RlmtMode==3) ? "ChkOth" : 
+		((pAC->RlmtMode==7) ? "ChkSeg" : "Error"))));
 
 	SkGeYellowLED(pAC, pAC->IoBase, 1);
 
@@ -1527,10 +1562,13 @@ int		Rc;	/* return code of XmitFrame */
 
 	Rc = XmitFrame(pAC, &pAC->TxPort[pAC->ActivePort][TX_PRIO_LOW], skb);
 
-	if (Rc == 0) {
+	if (Rc <= 0) {
 		/* transmitter out of resources */
 		set_bit(0, (void*) &dev->tbusy);
-		return (0);
+		if (Rc == 0)
+			return (0);
+		else
+			return (-EBUSY);
 	} 
 	dev->trans_start = jiffies;
 	return (0);
@@ -1555,9 +1593,9 @@ int		Rc;	/* return code of XmitFrame */
  *
  * Returns:
  *	> 0 - on succes: the number of bytes in the message
- *	= 0 - on resource shortage: this frame sent or dropped, now
+ *	= 0 - on resource shortage: this frame was sent, now
  *        the ring is full ( -> set tbusy)
- *	< 0 - on failure: other problems (not used)
+ *	< 0 - on resource shortage: this frame could not be sent
  */
 static int XmitFrame(
 SK_AC 		*pAC,		/* pointer to adapter context */
@@ -1585,7 +1623,7 @@ int		BytesSend;
 				("XmitFrame failed\n"));
 			/* this message can not be sent now */
 			DEV_KFREE_SKB(pMessage);
-			return (0);
+			return (-1);
 		}
 	}
 	/* advance head counter behind descriptor needed for this frame */
@@ -1900,8 +1938,10 @@ rx_start:
 			/* hardware checksum */
 			Type = ntohs(*((short*)&pMsg->data[12]));
 			if (Type == 0x800) {
-				Csum1= pRxd->TcpSums & 0xffff;
-				Csum2=(pRxd->TcpSums >> 16) & 0xffff;
+				/* the hardware calculates the checksums in LITTLE ENDIAN */
+				/* so turn them around for BIG ENDIAN machines */
+				Csum1= le16_to_cpu(pRxd->TcpSums & 0xffff);
+				Csum2= le16_to_cpu((pRxd->TcpSums >> 16) & 0xffff);
 				if ((Csum1 & 0xfffe) && (Csum2 & 0xfffe)) {
 					Result = SkCsGetReceiveInfo(pAC,
 						&pMsg->data[14], 
@@ -2414,6 +2454,7 @@ SK_EVPARA 	EvPara;
 	 * enable/disable hardware support for long frames
 	 */
 	if (NewMtu > 1500) {
+		pAC->JumboActivated = SK_TRUE; // is never set back !!!
 		pAC->GIni.GIPortUsage = SK_JUMBO_LINK;
 		for (i=0; i<pAC->GIni.GIMacsFound; i++) {
 			pAC->GIni.GP[i].PRxCmd = 
@@ -2523,7 +2564,13 @@ unsigned int	Flags;			/* for spin lock */
 	pAC->stats.tx_packets = (SK_U32) pPnmiStat->StatTxOkCts & 0xFFFFFFFF;
 	pAC->stats.rx_bytes = (SK_U32) pPnmiStruct->RxOctetsDeliveredCts;
 	pAC->stats.tx_bytes = (SK_U32) pPnmiStat->StatTxOctetsOkCts;
-	pAC->stats.rx_errors = (SK_U32) pPnmiStruct->InErrorsCts & 0xFFFFFFFF;
+	if (!pAC->JumboActivated) {
+		pAC->stats.rx_errors = (SK_U32) pPnmiStruct->InErrorsCts & 0xFFFFFFFF;
+	}
+	else {
+		pAC->stats.rx_errors = (SK_U32) ((pPnmiStruct->InErrorsCts -
+			pPnmiStat->StatRxTooLongCts) & 0xFFFFFFFF);
+	}
 	pAC->stats.tx_errors = (SK_U32) pPnmiStat->StatTxSingleCollisionCts & 0xFFFFFFFF;
 	pAC->stats.rx_dropped = (SK_U32) pPnmiStruct->RxNoBufCts & 0xFFFFFFFF;
 	pAC->stats.tx_dropped = (SK_U32) pPnmiStruct->TxNoBufCts & 0xFFFFFFFF;
@@ -3467,8 +3514,10 @@ unsigned int	Flags;
 		pRlmtMbuf = (SK_MBUF*) Param.pParaPtr;
 		pMsg = (struct sk_buff*) pRlmtMbuf->pOs;
 		skb_put(pMsg, pRlmtMbuf->Length);
-		XmitFrame(pAC, &pAC->TxPort[pRlmtMbuf->PortIdx][TX_PRIO_LOW],
-			pMsg);
+		if (XmitFrame(pAC, &pAC->TxPort[pRlmtMbuf->PortIdx][TX_PRIO_LOW],
+			pMsg) < 0) {
+			dev_kfree_skb(pMsg);
+		}
 		break;
 	default:
 		break;

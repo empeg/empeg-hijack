@@ -1,6 +1,6 @@
 # $Id: config.in,v 1.68.2.1 1999/09/22 11:37:34 jj Exp $
 # For a description of the syntax of this configuration file,
-# see the Configure script.
+# see Documentation/kbuild/config-language.txt.
 #
 mainmenu_name "Linux/SPARC Kernel Configuration"
 
@@ -92,6 +92,9 @@ if [ "$CONFIG_BLK_DEV_MD" = "y" ]; then
 fi
 
 tristate 'RAM disk support' CONFIG_BLK_DEV_RAM
+if [ "$CONFIG_BLK_DEV_RAM" = "y" -o "$CONFIG_BLK_DEV_RAM" = "m" ]; then
+  int '   Default RAM disk size' CONFIG_BLK_DEV_RAM_SIZE 4096
+fi
 if [ "$CONFIG_BLK_DEV_RAM" = "y" ]; then
   bool '   Initial RAM disk (initrd) support' CONFIG_BLK_DEV_INITRD
 fi
@@ -103,6 +106,25 @@ endmenu
 
 if [ "$CONFIG_NET" = "y" ]; then
 	source net/Config.in
+	mainmenu_option next_comment
+	comment 'Amateur Radio support'
+	bool 'Amateur Radio support' CONFIG_HAMRADIO
+	if [ "$CONFIG_HAMRADIO" != "n" ] ; then
+		comment 'Packet Radio protocols'
+		tristate 'Amateur Radio AX.25 Level 2 protocol' CONFIG_AX25
+		if [ "$CONFIG_AX25" != "n" ]; then
+			bool '   AX.25 DAMA Slave support' CONFIG_AX25_DAMA_SLAVE
+#			bool '   AX.25 DAMA Master support' CONFIG_AX25_DAMA_MASTER
+			dep_tristate '   Amateur Radio NET/ROM protocol' CONFIG_NETROM $CONFIG_AX25
+			dep_tristate '   Amateur Radio X.25 PLP (Rose)' CONFIG_ROSE $CONFIG_AX25
+
+			comment 'AX.25 network device drivers'
+			dep_tristate 'Serial port KISS driver' CONFIG_MKISS $CONFIG_AX25
+			dep_tristate 'Serial port 6PACK driver' CONFIG_6PACK $CONFIG_AX25
+		fi
+	fi
+
+	endmenu
 fi
 
 mainmenu_option next_comment
@@ -139,7 +161,7 @@ if [ "$CONFIG_SCSI" != "n" ]; then
 	mainmenu_option next_comment
 	comment 'SCSI low-level drivers'
 
-	bool 'Sparc ESP Scsi Driver' CONFIG_SCSI_SUNESP $CONFIG_SCSI
+	tristate 'Sparc ESP Scsi Driver' CONFIG_SCSI_SUNESP $CONFIG_SCSI
 	tristate 'PTI Qlogic,ISP Driver' CONFIG_SCSI_QLOGICPTI $CONFIG_SCSI
 	endmenu
 fi
@@ -154,6 +176,7 @@ if [ "$CONFIG_NET" = "y" ]; then
 	bool 'Network device support' CONFIG_NETDEVICES
 	if [ "$CONFIG_NETDEVICES" = "y" ]; then
 		tristate 'Dummy net driver support' CONFIG_DUMMY
+		tristate 'Bonding driver support' CONFIG_BONDING
 		tristate 'PPP (point-to-point) support' CONFIG_PPP
 		if [ ! "$CONFIG_PPP" = "n" ]; then
 		   comment 'CCP compressors for PPP are only built as modules.'

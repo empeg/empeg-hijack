@@ -4,7 +4,7 @@
  *	The RightSwitch is a 4 (EISA) or 6 (PCI) port etherswitch and
  *	a NIC on an internal board.
  *
- *	Author: Rick Richardson, rick@dgii.com, rick_richardson@dgii.com
+ *	Author: Rick Richardson, rick@remotepoint.com
  *	Derived from the SVR4.2 (UnixWare) driver for the same card.
  *
  *	Copyright 1995-1996 Digi International Inc.
@@ -73,7 +73,7 @@
  *
  */
 
-static char *version = "$Id: dgrs.c,v 1.12 1996/12/21 13:43:58 rick Exp $";
+static char *version = "$Id: dgrs.c,v 1.13 2000/06/06 04:07:00 rick Exp $";
 
 #include <linux/version.h>
 #include <linux/module.h>
@@ -209,7 +209,7 @@ typedef struct
         I596_RFD        *rfdp;          /* Current RFD list */
         I596_RBD        *rbdp;          /* Current RBD list */
 
-        int             intrcnt;        /* Count of interrupts */
+        volatile int    intrcnt;        /* Count of interrupts */
 
         /*
          *      SE-4 (EISA) board variables
@@ -861,6 +861,8 @@ static int dgrs_ioctl(struct device *devN, struct ifreq *ifr, int cmd)
 				return -EFAULT;
 			return (0);
 		case DGRS_SETFILTER:
+			if (!suser())
+				return -EPERM;
 			if (ioc.port > privN->bcomm->bc_nports)
 				return -EINVAL;
 			if (ioc.filter >= NFILTERS)
@@ -1191,14 +1193,17 @@ dgrs_probe1(struct device *dev))
 	 */
 	if (priv->plxreg)
 		OUTL(dev->base_addr + PLX_LCL2PCI_DOORBELL, 1);
-	rc = request_irq(dev->irq, &dgrs_intr, 0, "RightSwitch", dev);
+	rc = request_irq(dev->irq, &dgrs_intr, SA_SHIRQ, "RightSwitch", dev);
 	if (rc)
 		return (rc);
 
 	priv->intrcnt = 0;
 	for (i = jiffies + 2*HZ + HZ/2; time_after(i, jiffies); )
+	{
+		barrier();		/* gcc 2.95 needs this */
 		if (priv->intrcnt >= 2)
 			break;
+	}
 	if (priv->intrcnt < 2)
 	{
 		printk("%s: Not interrupting on IRQ %d (%d)\n",

@@ -287,6 +287,7 @@ int drive_is_flashcard (ide_drive_t *drive)
 		if (!strncmp(id->model, "KODAK ATA_FLASH", 15)	/* Kodak */
 		 || !strncmp(id->model, "Hitachi CV", 10)		/* Hitachi */
 		 || !strncmp(id->model, "SunDisk SDCFB", 13)	/* SunDisk */
+		 || !strncmp(id->model, "ATA_FLASH", 9)	/* Simple Tech */
 		 || !strncmp(id->model, "HAGIWARA HPC", 12))	/* Hagiwara */
 		{
 			return 1;	/* yes, it is a flash memory card */
@@ -483,7 +484,8 @@ void ide_end_request(byte uptodate, ide_hwgroup_t *hwgroup)
  * timer is started to prevent us from waiting forever in case
  * something goes wrong (see the ide_timer_expiry() handler later on).
  */
-void ide_set_handler (ide_drive_t *drive, ide_handler_t *handler, unsigned int timeout)
+void ide_set_handler (ide_drive_t *drive, ide_handler_t *handler,
+		      unsigned int timeout, ide_expiry_t *expiry)
 {
 	unsigned long flags;
 	ide_hwgroup_t *hwgroup = HWGROUP(drive);
@@ -493,8 +495,9 @@ void ide_set_handler (ide_drive_t *drive, ide_handler_t *handler, unsigned int t
 		printk("%s: ide_set_handler: handler not null; old=%p, new=%p\n",
 			drive->name, hwgroup->handler, handler);
 	}
-	hwgroup->handler       = handler;
-	hwgroup->timer.expires = jiffies + timeout;
+	hwgroup->handler	= handler;
+	hwgroup->expiry		= expiry;
+	hwgroup->timer.expires	= jiffies + timeout;
 	add_timer(&hwgroup->timer);
 	spin_unlock_irqrestore(&io_request_lock, flags);
 }
@@ -552,7 +555,7 @@ static ide_startstop_t atapi_reset_pollfunc (ide_drive_t *drive)
 		printk("%s: ATAPI reset complete\n", drive->name);
 	} else {
 		if (0 < (signed long)(hwgroup->poll_timeout - jiffies)) {
-			ide_set_handler (drive, &atapi_reset_pollfunc, HZ/20);
+			ide_set_handler (drive, &atapi_reset_pollfunc, HZ/20, NULL);
 			return ide_started;	/* continue polling */
 		}
 		hwgroup->poll_timeout = 0;	/* end of polling */
@@ -578,7 +581,7 @@ static ide_startstop_t reset_pollfunc (ide_drive_t *drive)
 
 	if (!OK_STAT(tmp=GET_STAT(), 0, BUSY_STAT)) {
 		if (0 < (signed long)(hwgroup->poll_timeout - jiffies)) {
-			ide_set_handler (drive, &reset_pollfunc, HZ/20);
+			ide_set_handler (drive, &reset_pollfunc, HZ/20, NULL);
 			return ide_started;	/* continue polling */
 		}
 		printk("%s: reset timed-out, status=0x%02x\n", hwif->name, tmp);
@@ -616,20 +619,21 @@ static ide_startstop_t reset_pollfunc (ide_drive_t *drive)
 
 static void pre_reset (ide_drive_t *drive)
 {
-	if (!drive->keep_settings) {
-	        // we want irq ALWAYS unmasked from start
-#if defined( CONFIG_SA1100_EMPEG )
-		drive->unmask = 1;
-		drive->keep_settings = 1;
-#else
-		drive->unmask = 0;
-#endif
-		drive->io_32bit = 0;
-		if (drive->using_dma)
-			(void) HWIF(drive)->dmaproc(ide_dma_off, drive);
-	}
 	if (drive->driver != NULL)
 		DRIVER(drive)->pre_reset(drive);
+	if (!drive->keep_settings) {
+              // we want irq ALWAYS unmasked from start
+#if defined( CONFIG_SA1100_EMPEG )
+              drive->unmask = 1;
+              drive->keep_settings = 1;
+#endif
+		if (drive->using_dma) {
+			(void) HWIF(drive)->dmaproc(ide_dma_off, drive);
+		} else {
+			drive->unmask = 0;
+			drive->io_32bit = 0;
+		}
+	}
 }
 
 /*
@@ -665,7 +669,7 @@ static ide_startstop_t do_reset1 (ide_drive_t *drive, int  do_not_try_atapi)
 		udelay (20);
 		OUT_BYTE (WIN_SRST, IDE_COMMAND_REG);
 		hwgroup->poll_timeout = jiffies + WAIT_WORSTCASE;
-		ide_set_handler (drive, &atapi_reset_pollfunc, HZ/20);
+		ide_set_handler (drive, &atapi_reset_pollfunc, HZ/20, NULL);
 		__restore_flags (flags);	/* local CPU only */
 		return ide_started;
 	}
@@ -696,7 +700,7 @@ static ide_startstop_t do_reset1 (ide_drive_t *drive, int  do_not_try_atapi)
 	OUT_BYTE(drive->ctl|2,IDE_CONTROL_REG);	/* clear SRST, leave nIEN */
 	udelay(10);			/* more than enough time */
 	hwgroup->poll_timeout = jiffies + WAIT_WORSTCASE;
-	ide_set_handler (drive, &reset_pollfunc, HZ/20);
+	ide_set_handler (drive, &reset_pollfunc, HZ/20, NULL);
 #endif	/* OK_TO_RESET_CONTROLLER */
 
 	__restore_flags (flags);	/* local CPU only */
@@ -860,8 +864,8 @@ ide_startstop_t ide_error (ide_drive_t *drive, const char *msg, byte stat)
 		if ((stat & DRQ_STAT) && rq->cmd != WRITE)
 			try_to_flush_leftover_data(drive);
 	}
-	if (GET_STAT() & (BUSY_STAT|DRQ_STAT))
-		rq->errors |= ERROR_RESET;	/* Mmmm.. timing problem */
+	if (GET_STAT() & (BUSY_STAT|DRQ_STAT))	/* possible timing problem? */
+		OUT_BYTE(WIN_IDLEIMMEDIATE,IDE_COMMAND_REG); /* force an abort */
 
 	if (rq->errors >= ERROR_MAX) {
 		if (drive->driver != NULL)
@@ -886,7 +890,7 @@ ide_startstop_t ide_error (ide_drive_t *drive, const char *msg, byte stat)
  */
 void ide_cmd(ide_drive_t *drive, byte cmd, byte nsect, ide_handler_t *handler)
 {
-	ide_set_handler (drive, handler, WAIT_CMD);
+	ide_set_handler (drive, handler, WAIT_CMD, NULL);
 	if (IDE_CONTROL_REG)
 		OUT_BYTE(drive->ctl,IDE_CONTROL_REG);	/* clear nIEN */
 	OUT_BYTE(nsect,IDE_NSECTOR_REG);
@@ -1316,7 +1320,9 @@ void ide_timer_expiry (unsigned long data)
 {
 	ide_hwgroup_t	*hwgroup = (ide_hwgroup_t *) data;
 	ide_handler_t	*handler;
+	ide_expiry_t	*expiry;
 	unsigned long	flags;
+	unsigned long	wait;
 
 	spin_lock_irqsave(&io_request_lock, flags);
 	del_timer(&hwgroup->timer);
@@ -1335,6 +1341,7 @@ void ide_timer_expiry (unsigned long data)
 		hwgroup->handler = NULL;
 		if (!drive) {
 			printk("ide_timer_expiry: hwgroup->drive was NULL\n");
+			hwgroup->handler = NULL;
 		} else {
 			ide_hwif_t *hwif;
 			ide_startstop_t startstop;
@@ -1342,6 +1349,17 @@ void ide_timer_expiry (unsigned long data)
 				hwgroup->busy = 1;	/* paranoia */
 				printk("%s: ide_timer_expiry: hwgroup->busy was 0 ??\n", drive->name);
 			}
+			if ((expiry = hwgroup->expiry) != NULL) {
+				/* continue */
+				if ((wait = expiry(drive)) != 0) {
+					/* reset timer */
+					hwgroup->timer.expires  = jiffies + wait;
+					add_timer(&hwgroup->timer);
+					spin_unlock_irqrestore(&io_request_lock, flags);
+					return;
+				}
+			}
+			hwgroup->handler = NULL;
 			/*
 			 * We need to simulate a real interrupt when invoking the handler()
 			 * function, which means we need to globally mask the specific IRQ:
@@ -2329,7 +2347,7 @@ static int ide_ioctl (struct inode *inode, struct file *file,
 		{
 			byte args[4], *argbuf = args;
 			int argsize = 4;
-			if (!capable(CAP_SYS_ADMIN)) return -EACCES;
+			if (!capable(CAP_SYS_ADMIN) || !capable(CAP_SYS_RAWIO)) return -EACCES;
 			if (NULL == (void *) arg)
 				return ide_do_drive_cmd(drive, &rq, ide_wait);
 			if (copy_from_user(args, (void *)arg, 4))
@@ -2352,7 +2370,7 @@ static int ide_ioctl (struct inode *inode, struct file *file,
 		case HDIO_SCAN_HWIF:
 		{
 			int args[3];
-			if (!capable(CAP_SYS_ADMIN)) return -EACCES;
+			if (!capable(CAP_SYS_ADMIN) || !capable(CAP_SYS_RAWIO)) return -EACCES;
 			if (copy_from_user(args, (void *)arg, 3 * sizeof(int)))
 				return -EFAULT;
 			if (ide_register(args[0], args[1], args[2]) == -1)
@@ -2378,6 +2396,10 @@ static int ide_ioctl (struct inode *inode, struct file *file,
 			}
 			drive->nice1 = (arg >> IDE_NICE_1) & 1;
 			return 0;
+
+		case BLKELVGET:
+		case BLKELVSET:
+ 			return blkelv_ioctl(inode->i_rdev, cmd, arg);
 
 		RO_IOCTLS(inode->i_rdev, arg);
 
@@ -3243,6 +3265,8 @@ EXPORT_SYMBOL(ide_stall_queue);
 EXPORT_SYMBOL(ide_add_proc_entries);
 EXPORT_SYMBOL(ide_remove_proc_entries);
 EXPORT_SYMBOL(proc_ide_read_geometry);
+EXPORT_SYMBOL(proc_ide_create);
+EXPORT_SYMBOL(proc_ide_destroy);
 #endif
 EXPORT_SYMBOL(ide_add_setting);
 EXPORT_SYMBOL(ide_remove_setting);

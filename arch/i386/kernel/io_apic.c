@@ -684,7 +684,7 @@ void __init setup_ExtINT_pin(unsigned int apic, unsigned int pin, int irq)
 void __init UNEXPECTED_IO_APIC(void)
 {
 	printk(" WARNING: unexpected IO-APIC, please mail\n");
-	printk("          to linux-smp@vger.rutgers.edu\n");
+	printk("          to linux-smp@vger.kernel.org\n");
 }
 
 void __init print_IO_APIC(void)
@@ -1277,6 +1277,45 @@ static inline void check_timer(void)
 	}
 }
 
+/* Patch to set the IO-APIC physical IDs based on the values stored in the MPC table */
+/* by Matt Domsch <Matt_Domsch@dell.com>  Tue Dec 21 12:25:05 CST 1999 */
+/* Hacked by Alan Cox to ignore drug induced BIOS tables */
+
+static void __init setup_ioapic_ids_from_mpc(void)
+{
+	struct IO_APIC_reg_00 reg_00;
+	/*
+	 * Set the IOAPIC ID to the value stored in the MPC table.
+	 */
+	int apic;
+	for (apic = 0; apic < mp_apic_entries; apic++) {
+		/* Read the register 0 value */
+		*(int *)&reg_00 = io_apic_read(apic, 0);
+		
+		if(reg_00.ID != mp_apics[apic].mpc_apicid)
+		{
+			if(mp_apics[apic].mpc_apicid>15)
+				printk(KERN_ERR "BIOS wants to set APIC ID to %d, ignoring and praying the BIOS setup is ok\n",
+					mp_apics[apic].mpc_apicid);
+			else
+			{
+				/* Change the value */			
+				printk("...changing IO-APIC physical APIC ID to %d\n", mp_apics[apic].mpc_apicid);
+				reg_00.ID = mp_apics[apic].mpc_apicid;
+				io_apic_write(apic, 0, *(int *)&reg_00);
+
+				/*
+				 * Sanity check
+				 */
+				*(int *)&reg_00 = io_apic_read(apic, 0);
+				if (reg_00.ID != mp_apics[apic].mpc_apicid)
+					panic("could not set ID");
+			}
+		}
+	}
+}
+
+
 /*
  *
  * IRQ's that are handled by the old PIC in all cases:
@@ -1336,9 +1375,11 @@ void __init setup_IO_APIC(void)
 	 * Set up the IO-APIC IRQ routing table by parsing the MP-BIOS
 	 * mptable:
 	 */
+	setup_ioapic_ids_from_mpc();
 	setup_IO_APIC_irqs();
 	init_IO_APIC_traps();
 	check_timer();
 
 	print_IO_APIC();
 }
+

@@ -18,6 +18,7 @@ fi
 endmenu
 
 tristate 'Dummy net driver support' CONFIG_DUMMY
+tristate 'Bonding driver support' CONFIG_BONDING
 tristate 'EQL (serial line load balancing) support' CONFIG_EQUALIZER
 if [ "$CONFIG_EXPERIMENTAL" = "y" ]; then
   if [ "$CONFIG_NETLINK" = "y" ]; then
@@ -45,7 +46,11 @@ if [ "$CONFIG_NET_ETHERNET" = "y" ]; then
   fi
   if [ "$CONFIG_PPC" = "y" ]; then
     tristate 'MACE (Power Mac ethernet) support' CONFIG_MACE
+    if [ "$CONFIG_MACE" != "n" ]; then
+      bool 'Use AAUI port instead of TP by default' CONFIG_MACE_AAUI_PORT
+    fi
     tristate 'BMAC (G3 ethernet) support' CONFIG_BMAC
+    tristate 'GMAC (G4/iBook ethernet) support' CONFIG_GMAC
     tristate 'Symbios 53c885 (Synergy ethernet) support' CONFIG_NCR885E
   fi
   if [ "$CONFIG_ZORRO" = "y" ]; then
@@ -103,7 +108,7 @@ if [ "$CONFIG_NET_ETHERNET" = "y" ]; then
     tristate 'DEPCA, DE10x, DE200, DE201, DE202, DE422 support' CONFIG_DEPCA
     tristate 'EtherWORKS 3 (DE203, DE204, DE205) support' CONFIG_EWRK3
     tristate 'EtherExpress 16 support' CONFIG_EEXPRESS
-    tristate 'EtherExpressPro support' CONFIG_EEXPRESS_PRO
+    tristate 'EtherExpressPro/EtherExpress 10 (i82595) support' CONFIG_EEXPRESS_PRO
     tristate 'FMV-181/182/183/184 support' CONFIG_FMV18X
     tristate 'HP PCLAN+ (27247B and 27252A) support' CONFIG_HPLAN_PLUS
     tristate 'HP PCLAN (27245 and other 27xxx series) support' CONFIG_HPLAN
@@ -129,7 +134,9 @@ if [ "$CONFIG_NET_ETHERNET" = "y" ]; then
     fi
     tristate 'Apricot Xen-II on board Ethernet' CONFIG_APRICOT
     tristate 'CS89x0 support' CONFIG_CS89x0
-    tristate 'DM9102 PCI Fast Ethernet Adapter support (EXPERIMENTAL)' CONFIG_DM9102
+    if [ "$CONFIG_EXPERIMENTAL" = "y" ]; then
+      tristate 'DM9102 PCI Fast Ethernet Adapter support (EXPERIMENTAL)' CONFIG_DM9102
+    fi
     tristate 'Generic DECchip & DIGITAL EtherWORKS PCI/EISA' CONFIG_DE4X5
     tristate 'DECchip Tulip (dc21x4x) PCI support' CONFIG_DEC_ELCP
     if [ "$CONFIG_DEC_ELCP" != "y" ]; then
@@ -170,6 +177,7 @@ comment 'Ethernet (1000 Mbit)'
 
     if [ "$CONFIG_EXPERIMENTAL" = "y" ]; then
       tristate 'Alteon AceNIC/3Com 3C985/NetGear GA620 Gigabit support' CONFIG_ACENIC
+      tristate 'Packet Engines GNIC-II (Hamachi) support' CONFIG_HAMACHI
       tristate 'Packet Engines Yellowfin Gigabit-NIC support' CONFIG_YELLOWFIN
     fi
     tristate 'SysKonnect SK-98xx support' CONFIG_SK98LIN
@@ -218,8 +226,8 @@ if [ ! "$CONFIG_PARPORT" = "n" ]; then
 fi
 
 tristate 'PPP (point-to-point) support' CONFIG_PPP
-if [ ! "$CONFIG_PPP" = "n" ]; then
-  comment 'CCP compressors for PPP are only built as modules.'
+if [ "$CONFIG_PPP" = "y" ]; then
+  comment 'CCP compressors for PPP will also be built in.'
 fi
 
 tristate 'SLIP (serial line) support' CONFIG_SLIP
@@ -243,7 +251,7 @@ comment 'Token ring devices'
 bool 'Token Ring driver support' CONFIG_TR
 if [ "$CONFIG_TR" = "y" ]; then
   tristate 'IBM Tropic chipset based adaptor support' CONFIG_IBMTR
-#  tristate 'IBM Lanstreamer PCI adaptor support' CONFIG_IBMLS
+  tristate 'IBM Lanstreamer PCI adaptor support' CONFIG_IBMLS
   tristate 'IBM Olympic chipset PCI adapter support' CONFIG_IBMOL
   tristate 'SysKonnect adapter support' CONFIG_SKTR
 fi
@@ -279,6 +287,15 @@ dep_tristate 'COSA/SRP sync serial boards support' CONFIG_COSA m
 # There is no way to detect a Sealevel board. Force it modular
 #
 dep_tristate 'Sealevel Systems 4021 support' CONFIG_SEALEVEL_4021 m
+#
+# Microgate Synclink HDLC/SYNCPPP support
+#
+dep_tristate 'SyncLink HDLC/SYNCPPP support' CONFIG_SYNCLINK_SYNCPPP m
+
+#
+# Lan Media's board. Currently 1000, 1200, 5200, 5245
+#
+tristate 'LanMedia Corp. SSI/V.35, T1/E1, HSSI, T3 boards' CONFIG_LANMEDIA
 
 #
 # COMX drivers
@@ -286,9 +303,7 @@ dep_tristate 'Sealevel Systems 4021 support' CONFIG_SEALEVEL_4021 m
 
 tristate 'MultiGate (COMX) synchronous serial boards support' CONFIG_COMX
    if [ "$CONFIG_COMX" != "n" ]; then
-   if [ "$CONFIG_EXPERIMENTAL" = "y" ]; then
-      dep_tristate '  Support for COMX/CMX/HiCOMX boards' CONFIG_COMX_HW_COMX $CONFIG_COMX
-   fi
+   dep_tristate '  Support for COMX/CMX/HiCOMX boards' CONFIG_COMX_HW_COMX $CONFIG_COMX
    dep_tristate '  Support for LoCOMX board' CONFIG_COMX_HW_LOCOMX $CONFIG_COMX
    dep_tristate '  Support for MixCOM board' CONFIG_COMX_HW_MIXCOM $CONFIG_COMX
    dep_tristate '  Support for HDLC and syncPPP protocols on MultiGate boards' CONFIG_COMX_PROTO_PPP $CONFIG_COMX
@@ -299,6 +314,22 @@ tristate 'MultiGate (COMX) synchronous serial boards support' CONFIG_COMX
       dep_tristate '  Support for LAPB protocol on MultiGate boards' CONFIG_COMX_PROTO_LAPB $CONFIG_LAPB
    fi
    dep_tristate '  Support for Frame Relay on MultiGate boards' CONFIG_COMX_PROTO_FR $CONFIG_COMX
+fi
+
+if [ "$CONFIG_EXPERIMENTAL" = "y" ]; then
+  tristate 'Generic HDLC driver (EXPERIMENTAL)' CONFIG_HDLC
+  if [ "$CONFIG_HDLC" != "n" ]; then
+    dep_tristate '  SDL RISCom/N2 support' CONFIG_N2 $CONFIG_HDLC
+    dep_tristate '  Moxa C101 support' CONFIG_C101 $CONFIG_HDLC
+
+    if [ "$CONFIG_PCI" != "n" ]; then
+      dep_tristate '  SBE wanXL support' CONFIG_WANXL $CONFIG_HDLC
+      dep_tristate '  Cyclades-PC300 support' CONFIG_PC300 $CONFIG_HDLC
+      if [ "$CONFIG_PC300" != "n" ]; then
+        bool '    Cyclades-PC300 X.25 support (please read help)' CONFIG_PC300_X25
+      fi
+    fi
+  fi
 fi
 
 tristate 'Frame relay DLCI support' CONFIG_DLCI
@@ -315,14 +346,16 @@ fi
 if [ "$CONFIG_WAN_ROUTER" != "n" ]; then
   bool 'WAN drivers' CONFIG_WAN_DRIVERS 
   if [ "$CONFIG_WAN_DRIVERS" = "y" ]; then
-    dep_tristate 'Sangoma WANPIPE(tm) multi-prot cards: (select M not Y !)' CONFIG_VENDOR_SANGOMA $CONFIG_WAN_DRIVERS 
+    dep_tristate 'Sangoma WANPIPE(tm) multi-port cards: (select M not Y !)' CONFIG_VENDOR_SANGOMA $CONFIG_WAN_DRIVERS 
+    if [ "$CONFIG_INET" != "n" ]; then
     if [ "$CONFIG_VENDOR_SANGOMA" != "n" ]; then
-      int  '  Maximum number of cards' CONFIG_WANPIPE_CARDS 1
-      #bool '  WANPIPE X.25 support' CONFIG_WANPIPE_X25
-      bool '  WANPIPE Frame Relay support' CONFIG_WANPIPE_FR
-      bool '  WANPIPE PPP support' CONFIG_WANPIPE_PPP
-      bool '  WANPIPE Cisco HDLC support' CONFIG_WANPIPE_CHDLC
-    fi
+        int  '  Maximum number of cards' CONFIG_WANPIPE_CARDS 1
+        #bool '  WANPIPE X.25 support' CONFIG_WANPIPE_X25
+        bool '  WANPIPE Frame Relay support' CONFIG_WANPIPE_FR
+        bool '  WANPIPE PPP support' CONFIG_WANPIPE_PPP
+        bool '  WANPIPE Cisco HDLC support' CONFIG_WANPIPE_CHDLC
+      fi
+    fi 
   fi
 fi
 

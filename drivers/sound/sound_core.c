@@ -58,6 +58,12 @@ extern int init_sonicvibes(void);
 #ifdef CONFIG_SOUND_MAESTRO
 extern int init_maestro(void);
 #endif
+#ifdef CONFIG_SOUND_TRIDENT
+extern int init_trident(void);
+#endif
+#ifdef CONFIG_SOUND_ICH
+extern int i810_probe(void);
+#endif
 #ifdef CONFIG_SOUND_ES1370
 extern int init_es1370(void);
 #endif
@@ -72,6 +78,15 @@ extern int msnd_pinnacle_init(void);
 #endif
 #ifdef CONFIG_SOUND_ESSSOLO1
 extern int init_solo1(void);
+#endif
+#ifdef CONFIG_SOUND_YMPCI
+extern int init_ymf7xxsb_module(void);
+#endif
+#ifdef CONFIG_SOUND_FUSION
+extern int cs_probe(void);
+#endif
+#ifdef CONFIG_SOUND_EMU10K1
+extern int init_emu10k1(void);
 #endif
 
 /*
@@ -416,6 +431,9 @@ int soundcore_init(void)
 #ifdef CONFIG_SOUND_MAESTRO
 	init_maestro();
 #endif
+#ifdef CONFIG_SOUND_TRIDENT
+	init_trident();
+#endif
 #ifdef CONFIG_SOUND_MSNDCLAS
 	msnd_classic_init();
 #endif
@@ -424,6 +442,21 @@ int soundcore_init(void)
 #endif
 #ifdef CONFIG_SOUND_ESSSOLO1
 	init_solo1();
+#endif
+#ifdef CONFIG_SOUND_ICH
+	i810_probe();
+#endif
+#ifdef CONFIG_SOUND_YMPCI
+	init_ymf7xxsb_module();
+#endif
+#ifdef CONFIG_SOUND_FUSION
+	cs_probe();
+#endif
+#ifdef CONFIG_SOUND_CS4281
+	cs4281_probe();
+#endif
+#ifdef CONFIG_SOUND_EMU10K1
+	init_emu10k1();
 #endif
 	return 0;
 }

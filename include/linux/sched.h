@@ -118,6 +118,7 @@ extern void trap_init(void);
 #define	MAX_SCHEDULE_TIMEOUT	LONG_MAX
 extern signed long FASTCALL(schedule_timeout(signed long timeout));
 asmlinkage void schedule(void);
+asmlinkage int sys_sched_yield(void);
 
 /*
  * The default fd array needs to be at least BITS_PER_LONG,
@@ -328,6 +329,12 @@ struct task_struct {
 /* Thread group tracking */
    	u32 parent_exec_id;
    	u32 self_exec_id;
+
+/* oom handling */
+	int oom_kill_try;
+
+/* local vfs journaling data */
+	struct handle_s *j_handle;
 };
 
 /*
@@ -395,6 +402,8 @@ struct task_struct {
 /* mm */	&init_mm, \
 /* signals */	SPIN_LOCK_UNLOCKED, &init_signals, {{0}}, {{0}}, NULL, &init_task.sigqueue, 0, 0, \
 /* exec cts */	0,0, \
+/* oom */	0, \
+/* jfs */	NULL, \
 }
 
 union task_union {
@@ -494,6 +503,7 @@ extern void FASTCALL(wake_up_process(struct task_struct * tsk));
 #define wake_up_interruptible(x)	__wake_up((x),TASK_INTERRUPTIBLE)
 
 extern int in_group_p(gid_t grp);
+extern int in_egroup_p(gid_t grp);
 
 extern void flush_signals(struct task_struct *);
 extern void flush_signal_handlers(struct task_struct *);

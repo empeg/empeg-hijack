@@ -2,7 +2,7 @@
  *  arch/s390/kernel/smp.c
  *
  *  S390 version
- *    Copyright (C) 1999 IBM Deutschland Entwicklung GmbH, IBM Corporation
+ *    Copyright (C) 1999,2000 IBM Deutschland Entwicklung GmbH, IBM Corporation
  *    Author(s): Denis Joseph Barrow (djbarrow@de.ibm.com,barrow_dj@yahoo.com),
  *               Martin Schwidefsky (schwidefsky@de.ibm.com)
  *
@@ -31,9 +31,10 @@
 #include <linux/mm.h>
 #include <asm/pgtable.h>
 #include <asm/string.h>
+#include <asm/s390_ext.h>
 
 #include "cpcmd.h"
-#include "irq.h"
+#include <asm/irq.h>
 
 /* prototypes */
 extern void update_one_process( struct task_struct *p,
@@ -42,6 +43,7 @@ extern void update_one_process( struct task_struct *p,
 extern int cpu_idle(void * unused);
 
 extern __u16 boot_cpu_addr;
+extern volatile int __cpu_logical_map[];
 
 /*
  * An array with a pointer the lowcore of every CPU.
@@ -52,7 +54,6 @@ struct _lowcore *lowcore_ptr[NR_CPUS];
 unsigned int     prof_multiplier[NR_CPUS];
 unsigned int     prof_counter[NR_CPUS];
 volatile int     cpu_number_map[NR_CPUS];
-volatile int     __cpu_logical_map[NR_CPUS]; /* logical cpu to cpu address */
 cycles_t         cacheflush_time=0;
 int              smp_threads_ready=0;      /* Set when the idlers are all forked. */
 unsigned long    ipi_count=0;              /* Number of IPIs delivered. */
@@ -82,15 +83,14 @@ void __init smp_setup(char *str, int *ints)
 /*
  * Reboot, halt and power_off routines for SMP.
  */
+extern char vmhalt_cmd[];
+extern char vmpoff_cmd[];
+extern void reipl(int ipl_device);
+
 void do_machine_restart(void)
 {
         smp_send_stop();
-        if (MACHINE_IS_VM) {
-                cpcmd("IPL", NULL, 0);
-        } else {
-                /* FIXME: how to reipl ? */
-                disabled_wait(2);
-        }
+	reipl(S390_lowcore.ipl_device); 
 }
 
 void machine_restart(char * __unused) 
@@ -105,12 +105,10 @@ void machine_restart(char * __unused)
 void do_machine_halt(void)
 {
         smp_send_stop();
-        if (MACHINE_IS_VM) {
-                cpcmd("IPL CMS", NULL, 0);
-        } else {
-                disabled_wait(0);
+        if (MACHINE_IS_VM && strlen(vmhalt_cmd) > 0) 
+                cpcmd(vmhalt_cmd, NULL, 0);
+        signal_processor(smp_processor_id(), sigp_stop_and_store_status);
         }
-}
 
 void machine_halt(void)
 {
@@ -124,12 +122,10 @@ void machine_halt(void)
 void do_machine_power_off(void)
 {
         smp_send_stop();
-        if (MACHINE_IS_VM) {
-                cpcmd("IPL CMS", NULL, 0);
-        } else {
-                disabled_wait(0);
+        if (MACHINE_IS_VM && strlen(vmpoff_cmd) > 0)
+                cpcmd(vmpoff_cmd, NULL, 0);
+        signal_processor(smp_processor_id(), sigp_stop_and_store_status);
         }
-}
 
 void machine_power_off(void)
 {
@@ -145,7 +141,7 @@ void machine_power_off(void)
  * cpus are handled.
  */
 
-void do_ext_call_interrupt(__u16 source_cpu_addr)
+void do_ext_call_interrupt(struct pt_regs *regs, __u16 source_cpu_addr)
 {
         ec_ext_call *ec, *next;
         int bits;
@@ -180,7 +176,7 @@ void do_ext_call_interrupt(__u16 source_cpu_addr)
                 return;   /* no command signals */
 
         /* Make a fifo out of the lifo */
-        next = ec;
+        next = ec->next;
         ec->next = NULL;
         while (next != NULL) {
                 ec_ext_call *tmp = next->next;
@@ -247,6 +243,11 @@ void do_ext_call_interrupt(__u16 source_cpu_addr)
                         atomic_set(&ec->status,ec_done);
                         return;
                 }
+		case ec_ptlb:
+			atomic_set(&ec->status, ec_executing);
+			__flush_tlb();
+			atomic_set(&ec->status, ec_done);
+		        return;
                 default:
                 }
                 ec = ec->next;
@@ -416,7 +417,7 @@ int smp_signal_others(sigp_order_code order_code, u32 parameter,
 
 void smp_send_stop(void)
 {
-        smp_signal_others(sigp_stop, 0, TRUE, NULL);
+        smp_signal_others(sigp_stop_and_store_status, 0, TRUE, NULL);
 }
 
 /*
@@ -471,7 +472,6 @@ void smp_count_cpus(void)
 {
         int curr_cpu;
 
-        __cpu_logical_map[0] = boot_cpu_addr;
         current->processor = 0;
         smp_num_cpus = 1;
         for (curr_cpu = 0;
@@ -493,14 +493,20 @@ void smp_count_cpus(void)
  *      Activate a secondary processor.
  */
 extern void init_100hz_timer(void);
+extern void cpu_init (void);
 
 int __init start_secondary(void *cpuvoid)
 {
+        /* Setup the cpu */
         cpu_init();
+        /* Print info about this processor */
         print_cpu_info(&safe_get_cpu_lowcore(smp_processor_id()).cpu_data);
+        /* Wait for completion of smp startup */
         while (!atomic_read(&smp_commenced))
                 /* nothing */ ;
+        /* init per CPU 100 hz timer */
         init_100hz_timer();
+        /* cpu_idle will call schedule for us */
         return cpu_idle(NULL);
 }
 
@@ -568,6 +574,9 @@ void __init smp_boot_cpus(void)
         int curr_cpu;
         int i;
         
+        /* request the 0x1202 external interrupt */
+        if (register_external_interrupt(0x1202, do_ext_call_interrupt) != 0)
+                panic("Couldn't request external interrupt 0x1202");
         smp_count_cpus();
         memset(lowcore_ptr,0,sizeof(lowcore_ptr));  
         

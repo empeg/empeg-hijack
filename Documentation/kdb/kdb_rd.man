@@ -1,0 +1,54 @@
+.TH RD 1 "09 March 1999"
+.SH NAME
+rd, rm\- Register manipulation commands
+.SH SYNOPSIS
+rd [c|d|u]
+.LP
+rm \fIregister-name\fP \fInew-contents\fP
+.SH DESCRIPTION
+The
+.B rd 
+command is used to display the contents of processor registers.
+Without any arguments, the rd command displays the contents of
+the general register set at the point at which the kernel debugger
+was entered.  With the 'c' argument, the processor control registers
+%cr0, %cr1, %cr2 and %cr4 are displayed, while with the 'd' argument
+the processor debug registers are displayed.  If the 'u' argument
+is supplied, the registers for the current task as of the last
+time the current task entered the kernel are displayed.
+.P
+The
+.B rm
+command allows modification of a register.  The following 
+register names are valid:  \fB%eax\fP, \fB%ebx\fP, \fB%ecx\fP,
+\fB%edx\fP, \fB%esi\fP, \fB%edi\fP, \fB%esp\fP, \fB%eip\fP, 
+and \fB%ebp\fP.   Note that if two '%' symbols are used 
+consecutively, the register set displayed by the 'u' argument
+to the \fBrd\fP command is modified.
+.SH LIMITATIONS
+Currently the 'rm' command will not allow modification of the
+control or debug registers.
+.P
+Currently neither the 'rd' command nor the 'rm' command will
+display or modify the model specific registers on the Pentium
+and Pentium Pro families.
+.SH ENVIRONMENT
+None.
+.SH SMP CONSIDERATIONS
+None.
+.SH EXAMPLES
+.TP 8
+rd
+Display general register set.
+
+.TP 8
+rm %eax 0
+Set the contents of \fB%eax\fP to zero.  This will be the
+value of %eax when kdb returns from the condition which 
+invoked it.
+
+.TP 8
+rm %%eax 0
+Set the value of the \fB%eax\fP register to zero.  This will
+be the value the user-mode application will see upon returning
+from the kernel.

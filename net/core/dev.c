@@ -81,7 +81,6 @@
 #include <linux/skbuff.h>
 #include <net/sock.h>
 #include <linux/rtnetlink.h>
-#include <net/slhc.h>
 #include <linux/proc_fs.h>
 #include <linux/stat.h>
 #include <net/br.h>
@@ -96,6 +95,11 @@
 #ifdef CONFIG_PLIP
 extern int plip_init(void);
 #endif
+extern void n2_init(void);
+extern void c101_init(void);
+extern int wanxl_init(void);
+extern int cpc_init(void);
+extern void sync_ppp_init(void);
 
 NET_PROFILE_DEFINE(dev_queue_xmit)
 NET_PROFILE_DEFINE(net_bh)
@@ -456,6 +460,10 @@ int dev_close(struct device *dev)
 	if (!(dev->flags&IFF_UP))
 		return 0;
 
+	/* If the device is a slave we should not touch it*/
+	if(dev->flags&IFF_SLAVE)
+		return -EBUSY;
+                                
 	dev_deactivate(dev);
 
 	dev_lock_wait();
@@ -770,6 +778,10 @@ void netif_rx(struct sk_buff *skb)
 	if (backlog.qlen <= netdev_max_backlog) {
 		if (backlog.qlen) {
 			if (netdev_dropping == 0) {
+				if (skb->dev->flags & IFF_SLAVE  && 
+				    skb->dev->slave) {
+					skb->dev = skb->dev->slave;
+				}
 				skb_queue_tail(&backlog,skb);
 				mark_bh(NET_BH);
 				return;
@@ -784,6 +796,9 @@ void netif_rx(struct sk_buff *skb)
 #else
 		netdev_dropping = 0;
 #endif
+		if (skb->dev->flags & IFF_SLAVE  &&  skb->dev->slave) {
+			skb->dev = skb->dev->slave;
+		}
 		skb_queue_tail(&backlog,skb);
 		mark_bh(NET_BH);
 		return;
@@ -1960,18 +1975,6 @@ __initfunc(int net_dev_init(void))
 #if defined(CONFIG_COMX)
 	comx_init();
 #endif
-	/*
-	 *	SLHC if present needs attaching so other people see it
-	 *	even if not opened.
-	 */
-	 
-#ifdef CONFIG_INET	 
-#if (defined(CONFIG_SLIP) && defined(CONFIG_SLIP_COMPRESSED)) \
-	 || defined(CONFIG_PPP) \
-    || (defined(CONFIG_ISDN) && defined(CONFIG_ISDN_PPP))
-	slhc_install();
-#endif	
-#endif
 
 #ifdef CONFIG_NET_PROFILE
 	net_profile_init();
@@ -2035,6 +2038,22 @@ __initfunc(int net_dev_init(void))
 	 * Register any statically linked ethernet devices with the bridge
 	 */
 	br_spacedevice_register();
+#endif
+
+#ifdef CONFIG_N2
+	n2_init();
+#endif
+#ifdef CONFIG_C101
+	c101_init();
+#endif
+#ifdef CONFIG_WANXL
+	wanxl_init();
+#endif
+#ifdef CONFIG_PC300
+	cpc_init();
+#endif
+#ifdef CONFIG_HDLC
+	sync_ppp_init();
 #endif
 
 #ifdef CONFIG_IP_PNP

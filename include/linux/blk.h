@@ -67,6 +67,7 @@ extern int ps2esdi_init(void);
 #ifdef CONFIG_ARCH_S390
 extern int mdisk_init(void);
 extern int dasd_init(void);
+extern int xpram_init(void);
 #endif /* CONFIG_ARCH_S390 */
 
 extern void set_device_ro(kdev_t dev,int flag);
@@ -394,6 +395,7 @@ static void floppy_off(unsigned int nr);
 
 #elif (MAJOR_NR == DASD_MAJOR)
 
+#define LOCAL_END_REQUEST
 #define DEVICE_NAME "dasd"
 #define DEVICE_REQUEST do_dasd_request
 #define DEVICE_NR(device) (MINOR(device) >> PARTN_BITS)
@@ -407,6 +409,14 @@ static void floppy_off(unsigned int nr);
 #define DEVICE_REQUEST do_ida_request0
 #define DEVICE_NR(device) (MINOR(device) >> 4)
 #define DEVICE_ON(device)
+#define DEVICE_OFF(device)
+
+#elif (MAJOR_NR == I2O_MAJOR)
+
+#define DEVICE_NAME "I2O block"
+#define DEVICE_REQUEST do_i2ob_request
+#define DEVICE_NR(device) (MINOR(device)>>4)
+#define DEVICE_ON(device) 
 #define DEVICE_OFF(device)
 
 #endif /* MAJOR_NR == whatever */

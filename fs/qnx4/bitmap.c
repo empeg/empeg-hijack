@@ -1,7 +1,7 @@
 /* 
  * QNX4 file system, Linux implementation.
  * 
- * Version : 0.1
+ * Version : 0.2.1
  * 
  * Using parts of the xiafs filesystem.
  * 
@@ -61,11 +61,11 @@ void count_bits(const register char *bmPart, register int size,
 
 unsigned long qnx4_count_free_blocks(struct super_block *sb)
 {
-	int start = sb->u.qnx4_sb.BitMap->di_first_xtnt.xtnt_blk - 1;
+	int start = le32_to_cpu(sb->u.qnx4_sb.BitMap->di_first_xtnt.xtnt_blk) - 1;
 	int total = 0;
 	int total_free = 0;
 	int offset = 0;
-	int size = sb->u.qnx4_sb.BitMap->di_size;
+	int size = le32_to_cpu(sb->u.qnx4_sb.BitMap->di_size);
 	struct buffer_head *bh;
 
 	while (total < size) {
@@ -76,20 +76,23 @@ unsigned long qnx4_count_free_blocks(struct super_block *sb)
 		count_bits(bh->b_data, size - total, &total_free);
 		brelse(bh);
 		total += QNX4_BLOCK_SIZE;
+		offset++;
 	}
 
 	return total_free;
 }
 
-unsigned long qnx4_count_free_inodes(struct super_block *sb)
+int qnx4_bmap(struct inode *inode, int block)
 {
-	return qnx4_count_free_blocks(sb) * QNX4_INODES_PER_BLOCK;	/* FIXME */
+   return qnx4_block_map( inode, block );
 }
 
-int qnx4_is_free(struct super_block *sb, int block)
+#ifdef CONFIG_QNX4FS_RW
+
+int qnx4_is_free(struct super_block *sb, long block)
 {
-	int start = sb->u.qnx4_sb.BitMap->di_first_xtnt.xtnt_blk - 1;
-	int size = sb->u.qnx4_sb.BitMap->di_size;
+	int start = le32_to_cpu(sb->u.qnx4_sb.BitMap->di_first_xtnt.xtnt_blk) - 1;
+	int size = le32_to_cpu(sb->u.qnx4_sb.BitMap->di_size);
 	struct buffer_head *bh;
 	const char *g;
 	int ret = -EIO;
@@ -115,21 +118,10 @@ int qnx4_is_free(struct super_block *sb, int block)
 	return ret;
 }
 
-int qnx4_bmap(struct inode *inode, int block)
+int qnx4_set_bitmap(struct super_block *sb, long block, int busy)
 {
-   QNX4DEBUG(("qnx4: bmap on block [%d]\n", block));
-   if (block < 0) {
-      return 0;
-   }
-   return !qnx4_is_free(inode->i_sb, block);
-}
-
-#ifdef CONFIG_QNX4FS_RW
-
-int qnx4_set_bitmap(struct super_block *sb, int block, int busy)
-{
-	int start = sb->u.qnx4_sb.BitMap->di_first_xtnt.xtnt_blk - 1;
-	int size = sb->u.qnx4_sb.BitMap->di_size;
+	int start = le32_to_cpu(sb->u.qnx4_sb.BitMap->di_first_xtnt.xtnt_blk) - 1;
+	int size = le32_to_cpu(sb->u.qnx4_sb.BitMap->di_size);
 	struct buffer_head *bh;
 	char *g;
 

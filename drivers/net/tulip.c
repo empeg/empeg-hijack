@@ -15,6 +15,10 @@
 
 	Support and updates available at
 	http://cesdis.gsfc.nasa.gov/linux/drivers/tulip.html
+	
+	This driver also contains updates by Wolfgang Walter and others.
+	For this specific driver variant please use linux-kernel for 
+	bug reports.
 */
 
 #define SMP_CHECK
@@ -416,7 +420,7 @@ static const char media_cap[] =
 {0,0,0,16,  3,19,16,24,  27,4,7,5, 0,20,23,20 };
 static u8 t21040_csr13[] = {2,0x0C,8,4,  4,0,0,0, 0,0,0,0, 4,0,0,0};
 /* 21041 transceiver register settings: 10-T, 10-2, AUI, 10-T, 10T-FD*/
-static u16 t21041_csr13[] = { 0xEF01, 0xEF09, 0xEF09, 0xEF01, 0xEF09, };
+static u16 t21041_csr13[] = { 0xEF05, 0xEF0D, 0xEF0D, 0xEF05, 0xEF05, };
 static u16 t21041_csr14[] = { 0xFFFF, 0xF7FD, 0xF7FD, 0x7F3F, 0x7F3D, };
 static u16 t21041_csr15[] = { 0x0008, 0x0006, 0x000E, 0x0008, 0x0008, };
 
@@ -577,7 +581,7 @@ int tulip_probe(struct device *dev)
 		return -ENODEV;
 
 	for (;pci_index < 0xff; pci_index++) {
-		u16 vendor, device, pci_command, new_command;
+		u16 vendor, device, pci_command, new_command, subvendor;
 		int chip_idx;
 		int irq;
 		long ioaddr;
@@ -595,6 +599,13 @@ int tulip_probe(struct device *dev)
 								 PCI_VENDOR_ID, &vendor);
 		pcibios_read_config_word(pci_bus, pci_device_fn,
 								 PCI_DEVICE_ID, &device);
+		pcibios_read_config_word(pci_bus, pci_device_fn,
+								 PCI_SUBSYSTEM_VENDOR_ID, &subvendor);
+		
+	        if( subvendor == 0x1376 ){
+			printk("tulip: skipping LMC card.\n");
+			continue;
+		}	
 
 		for (chip_idx = 0; pci_tbl[chip_idx].vendor_id; chip_idx++)
 			if (vendor == pci_tbl[chip_idx].vendor_id

@@ -8,6 +8,9 @@
  *
  * Copyright (C) 1998-1999 ITConsult-Pro Co. <info@itc.hu>
  *
+ * Contributors:
+ * Arnaldo Carvalho de Melo <acme@conectiva.com.br> (0.65)
+ *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
  * as published by the Free Software Foundation; either version
@@ -26,9 +29,15 @@
  *
  * Version 0.63 (99/09/21):
  *		- line status report fixes
+ *
+ * Version 0.64 (99/12/01):
+ *		- some more cosmetical fixes
+ *
+ * Version 0.65 (00/08/15)
+ *		- resource release on failure at MIXCOM_init
  */
 
-#define VERSION "0.63"
+#define VERSION "0.65"
 
 #include <linux/config.h>
 #include <linux/module.h>
@@ -167,7 +176,7 @@ static int mixcom_probe(struct device *dev)
 
 	save_flags(flags); cli();
 
-	id=inb_p(MIXCOM_BOARD_BASE(dev) + MIXCOM_ID_OFFSET);
+	id=inb_p(MIXCOM_BOARD_BASE(dev) + MIXCOM_ID_OFFSET) & 0x7f;
 
  	if (id != MIXCOM_ID ) {
 		ret=-ENODEV;
@@ -522,7 +531,6 @@ static int MIXCOM_open(struct device *dev)
 
 	mixcom_on(dev);
 
-	restore_flags(flags);
 
 	hw->status=inb(MIXCOM_BOARD_BASE(dev) + MIXCOM_STATUS_OFFSET);
 	if(hw->status != 0xff) {
@@ -538,6 +546,8 @@ static int MIXCOM_open(struct device *dev)
 	} else {
 		ch->line_status &= ~LINE_UP;
 	}
+
+	restore_flags(flags);
 
 	ch->LINE_status(dev, ch->line_status);
 
@@ -821,8 +831,9 @@ static int MIXCOM_init(struct device *dev) {
 
 	if ((new_file = create_proc_entry(FILENAME_IO, S_IFREG | 0644, 
 	    ch->procdir)) == NULL) {
-		return -EIO;
+		goto cleanup_HW_privdata;
 	}
+
 	new_file->data = (void *)new_file;
 	new_file->read_proc = &mixcom_read_proc;
 	new_file->write_proc = &mixcom_write_proc;
@@ -831,8 +842,9 @@ static int MIXCOM_init(struct device *dev) {
 
 	if ((new_file = create_proc_entry(FILENAME_IRQ, S_IFREG | 0644, 
 	    ch->procdir)) == NULL) {
-	    	return -EIO;
+	    	goto cleanup_filename_io;
 	}
+
 	new_file->data = (void *)new_file;
 	new_file->read_proc = &mixcom_read_proc;
 	new_file->write_proc = &mixcom_write_proc;
@@ -853,8 +865,9 @@ static int MIXCOM_init(struct device *dev) {
 
 	if ((new_file = create_proc_entry(FILENAME_CHANNEL, S_IFREG | 0644, 
 	    ch->procdir)) == NULL) {
-	    	return -EIO;
+	    	goto cleanup_filename_irq;
 	}
+
 	new_file->data = (void *)new_file;
 	new_file->read_proc = &mixcom_read_proc;
 	new_file->write_proc = &mixcom_write_proc;
@@ -863,8 +876,9 @@ static int MIXCOM_init(struct device *dev) {
 
 	if ((new_file = create_proc_entry(FILENAME_TWIN, S_IFREG | 0444, 
 	    ch->procdir)) == NULL) {
-	    	return -EIO;
+	    	goto cleanup_filename_channel;
 	}
+
 	new_file->data = (void *)new_file;
 	new_file->read_proc = &mixcom_read_proc;
 	new_file->write_proc = &mixcom_write_proc;
@@ -888,6 +902,15 @@ static int MIXCOM_init(struct device *dev) {
 
 	MOD_INC_USE_COUNT;
 	return 0;
+cleanup_filename_channel:
+	remove_proc_entry(FILENAME_CHANNEL, ch->procdir);
+cleanup_filename_irq:
+	remove_proc_entry(FILENAME_IRQ, ch->procdir);
+cleanup_filename_io:
+	remove_proc_entry(FILENAME_IO, ch->procdir);
+cleanup_HW_privdata:
+	kfree(ch->HW_privdata);
+	return -EIO;
 }
 
 static int MIXCOM_exit(struct device *dev)

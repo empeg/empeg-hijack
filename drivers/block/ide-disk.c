@@ -107,8 +107,11 @@ static int lba_capacity_is_ok (ide_drive_t *drive)
 	 * The ATA spec tells large drives to return
 	 * C/H/S = 16383/16/63 independent of their size.
 	 * Some drives can be jumpered to use 15 heads instead of 16.
+	 * Some drives can be jumpered to use 4092 cyls instead of 16383.
 	 */
-	if (id->cyls == 16383 && id->sectors == 63 &&
+	if ((id->cyls == 16383
+	     || (id->cyls == 4092 && id->cur_cyls == 16383)) &&
+	    id->sectors == 63 &&
 	    (id->heads == 15 || id->heads == 16) &&
 	    id->lba_capacity >= 16383*63*id->heads)
 		return 1;
@@ -151,7 +154,7 @@ static ide_startstop_t read_intr (ide_drive_t *drive)
 			return ide_error(drive, "read_intr", stat);
 		}
 		/* no data yet, so wait for another interrupt */
-		ide_set_handler(drive, &read_intr, WAIT_CMD);
+		ide_set_handler(drive, &read_intr, WAIT_CMD, NULL);
 		return ide_started;
 	}
 #endif
@@ -180,7 +183,7 @@ read_next:
 	if (i > 0) {
 		if (msect)
 			goto read_next;
-		ide_set_handler (drive, &read_intr, WAIT_CMD);
+		ide_set_handler (drive, &read_intr, WAIT_CMD, NULL);
 		return ide_started;
 	}
 	return ide_stopped;
@@ -214,7 +217,7 @@ static ide_startstop_t write_intr (ide_drive_t *drive)
 				ide_end_request(1, hwgroup);
 			if (i > 0) {
 				idedisk_output_data (drive, rq->buffer, SECTOR_WORDS);
-				ide_set_handler (drive, &write_intr, WAIT_CMD);
+				ide_set_handler (drive, &write_intr, WAIT_CMD, NULL);
 				return ide_started;
 			}
 			return ide_stopped;
@@ -322,7 +325,7 @@ static ide_startstop_t multwrite_intr (ide_drive_t *drive)
 			if (rq->nr_sectors) {
 				if (ide_multwrite(drive, drive->mult_count))
 					return ide_stopped;
-				ide_set_handler (drive, &multwrite_intr, WAIT_CMD);
+				ide_set_handler (drive, &multwrite_intr, WAIT_CMD, NULL);
 				return ide_started;
 			}
 		} else {
@@ -455,7 +458,7 @@ static ide_startstop_t do_rw_disk (ide_drive_t *drive, struct request *rq, unsig
 		if (drive->using_dma && !(HWIF(drive)->dmaproc(lba48 ? ide_dma_read48 : ide_dma_read, drive)))
 			return ide_started;
 #endif /* CONFIG_BLK_DEV_IDEDMA */
-		ide_set_handler(drive, &read_intr, WAIT_CMD);
+		ide_set_handler(drive, &read_intr, WAIT_CMD, NULL);
 		if (lba48)
 			OUT_BYTE(drive->mult_count ? WIN_MULTREAD_EXT : WIN_READ_EXT, IDE_COMMAND_REG);
 		else
@@ -491,7 +494,7 @@ static ide_startstop_t do_rw_disk (ide_drive_t *drive, struct request *rq, unsig
 			 * Except when you get an error it seems...
 			 */
 			hwgroup->wrq = *rq; /* scratchpad */
-			ide_set_handler (drive, &multwrite_intr, WAIT_CMD);
+			ide_set_handler (drive, &multwrite_intr, WAIT_CMD, NULL);
 			if (ide_multwrite(drive, drive->mult_count)) {
 				unsigned long flags;
 				spin_lock_irqsave(&io_request_lock, flags);
@@ -501,7 +504,7 @@ static ide_startstop_t do_rw_disk (ide_drive_t *drive, struct request *rq, unsig
 				return ide_stopped;
 			}
 		} else {
-			ide_set_handler (drive, &write_intr, WAIT_CMD);
+			ide_set_handler (drive, &write_intr, WAIT_CMD, NULL);
 			idedisk_output_data(drive, rq->buffer, SECTOR_WORDS);
 		}
 		return ide_started;
@@ -602,7 +605,7 @@ static void idedisk_pre_reset (ide_drive_t *drive)
 	}
 	if (OK_TO_RESET_CONTROLLER)
 		drive->mult_count = 0;
-	if (!drive->keep_settings)
+	if (!drive->keep_settings && !drive->using_dma)
 		drive->mult_req = 0;
 	if (drive->mult_req != drive->mult_count)
 		drive->special.b.set_multmode = 1;
@@ -830,9 +833,6 @@ static void idedisk_setup (ide_drive_t *drive)
 	/* Use physical geometry if what we have still makes no sense */
 	if ((!drive->head || drive->head > 16) &&
 	    id->heads && id->heads <= 16) {
-		if ((id->lba_capacity > 16514064) || (id->cyls == 0x3fff)) {
-			id->cyls = ((int)(id->lba_capacity/(id->heads * id->sectors)));
-		}
 		drive->cyl  = id->cyls;
 		drive->head = id->heads;
 		drive->sect = id->sectors;

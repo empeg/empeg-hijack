@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v324"
+#define HIJACK_VERSION	"v325"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -128,6 +128,7 @@ static const unsigned int stalk_buttons[] = {
 	IR_KNEXT_PRESSED,
 	IR_KPREV_PRESSED,
 	IR_KVOLUP_PRESSED,
+	IR_KVOLDOWN_PRESSED,
 	IR_KREAR_PRESSED,
 	IR_KBOTTOM_PRESSED,
 	IR_NULL_BUTTON};

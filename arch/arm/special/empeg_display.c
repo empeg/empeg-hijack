@@ -674,11 +674,11 @@ static void handle_splash(struct display_dev *dev)
 	if ((logo_type & LOGO_MASK) == LOGO_RIO) {
 		display_animation((unsigned long)rio_ani);
 		ani_ptr=(unsigned long*)rio_ani;
-		game_animbase = (unsigned long)empeg_ani;
+		game_animptr = (unsigned int *)empeg_ani;
 	} else {
 		display_animation((unsigned long)empeg_ani);
 		ani_ptr=(unsigned long*)empeg_ani;
-		game_animbase = (unsigned long)rio_ani;
+		game_animptr = (unsigned int *)rio_ani;
 	}
 
 	/* Work out time to play animation: 1s (0.5 start & end) + frames */

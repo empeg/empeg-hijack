@@ -174,6 +174,11 @@ static unsigned int powerontime=0;
 static void powerfail_disabled_timeout(unsigned long);
 static void powerfail_reenabled_timeout(unsigned long);
 
+/* save/restore hijack savearea for user-defined-menu settings */
+void hijack_save_settings (unsigned char *buf);
+void hijack_restore_settings (const unsigned char *buf);
+#define HIJACK_SAVEAREA_OFFSET (STATE_BLOCK_SIZE - 2 - 8)
+
 void enable_powerfail(int enable)
 {
 	unsigned long flags;
@@ -238,9 +243,6 @@ static void state_getflashtype(void)
 	state_disablewrite();
 }
 
-extern int voladj_enabled;  // 2-bits
-extern int screen_blanker_timeout;  // 6-bits
-
 static int state_fetch(unsigned char *buffer)
 {
 	/* EMPEG_FLASHBASE+0x4000 to +0x5fff is the space used for
@@ -249,7 +251,6 @@ static int state_fetch(unsigned char *buffer)
 	   the one we use */
 	int a,calculated_crc,stored_crc;
 	struct timeval t;
-	unsigned int ttime;
 
 	/* Nowhere to save, yet */
 	savebase=NULL;
@@ -323,24 +324,19 @@ static int state_fetch(unsigned char *buffer)
 	}
 
 	/* Later empegs have an RTC */
-	// We steal the two least-significant bits for voladj state
-	ttime = *((unsigned int*)buffer);
-	voladj_enabled = (ttime & 3);
-	ttime &= ~3;
-	
 	if (empeg_hardwarerevision()<6) {
 		/* Before we go: the first 4 bytes of the block are the elapsed
 		   unixtime: set it */
-		unixtime=t.tv_sec=ttime;
+		unixtime=t.tv_sec=*((unsigned int*)buffer);
 		t.tv_usec=0;
 		do_settimeofday(&t);
-	} else {
-		// On newer models, we steal another 6 bits for the screen blanker timeout
-		screen_blanker_timeout = (ttime >> 2) & 0x3f;
 	}
 
 	/* Get power-on time */
 	powerontime=*((unsigned int*)(buffer+4));
+
+	/* Restore hijack_savearea */
+	hijack_restore_settings(buffer+HIJACK_SAVEAREA_OFFSET);
 
 	return(0);
 }
@@ -352,16 +348,13 @@ static inline int state_store(void)
 	volatile unsigned short *from=(volatile unsigned short*)state_devices[0].read_buffer;
 	
 	/* Store current unixtime */
-	if (empeg_hardwarerevision()<6) {
-		// We steal the two least-significant bits for voladj state
-		*((unsigned int*)from)=(xtime.tv_sec & ~3) | (voladj_enabled & 3);
-	} else {
-		// On newer models, we steal another 6 bits for the screen blanker timeout
-		*((unsigned int*)from)=(xtime.tv_sec & ~0xff) | (voladj_enabled & 3) | ((screen_blanker_timeout & 0x3f) << 2);
-	}
+	*((unsigned int*)from)=xtime.tv_sec;
 
 	/* Store current power-on time */
 	*((unsigned int*)(from+2))=(xtime.tv_sec-unixtime)+powerontime;
+
+	/* Store hijack_savearea */
+	hijack_save_settings(((unsigned char *)from)+HIJACK_SAVEAREA_OFFSET);
 
 	/* Enable writes to flash chip */
 	state_enablewrite();

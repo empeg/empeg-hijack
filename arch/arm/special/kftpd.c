@@ -848,6 +848,7 @@ static const mime_type_t mime_types[] = {
 	{"/proc/*",		 text_plain,		0},
 	{"/drive?/fids/*1",	 text_plain,		0},
 	{"*bin/*",		 application_octet,	0},
+	{"/proc/version",	 text_plain,		1},
 	{NULL,			NULL,			0}};
 
 static int

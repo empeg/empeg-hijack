@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v246"
+#define HIJACK_VERSION	"v247"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -204,8 +204,8 @@ static ir_flags_t ir_flags[] = {
 	{0,0,0 } };
 
 typedef struct button_name_s {
-	unsigned long	code;
 	char		name[12];
+	unsigned long	code;
 } button_name_t;
 
 #define IR_FAKE_INITIAL		(IR_NULL_BUTTON-1)
@@ -252,117 +252,120 @@ static unsigned int *ir_translate_table = NULL;
 // Fixme (someday): serial-port-"w" == "pause" (not pause/play): create a fake button for this.
 
 static button_name_t button_names[] = {
-	{IR_FAKE_POPUP0,		"PopUp0"},	// index 0 assumed later in hijack_option_table[]
-	{IR_FAKE_POPUP1,		"PopUp1"},	// index 1 assumed later in hijack_option_table[]
-	{IR_FAKE_POPUP2,		"PopUp2"},	// index 2 assumed later in hijack_option_table[]
-	{IR_FAKE_POPUP3,		"PopUp3"},	// index 3 assumed later in hijack_option_table[]
-	{IR_FAKE_VOLADJ1,		"VolAdjLow"},	// index 4 assumed later in hijack_option_table[]
-	{IR_FAKE_VOLADJ2,		"VolAdjMed"},	// index 5 assumed later in hijack_option_table[]
-	{IR_FAKE_VOLADJ3,		"VolAdjHigh"},	// index 6 assumed later in hijack_option_table[]
-	{IR_FAKE_BASSADJ,		"BassAdj"},
-	{IR_FAKE_TREBLEADJ,		"TrebleAdj"},
-	{IR_FAKE_VOLADJOFF,		"VolAdjOff"},
-	{IR_FAKE_KNOBSEEK,		"KnobSeek"},
-	{IR_FAKE_CLOCK,			"Clock"},
-	{IR_FAKE_NEXTSRC,		"NextSrc"},
-	{IR_FAKE_VOLADJMENU,		"VolAdj"},
-	{IR_FAKE_HIJACKMENU,		"HijackMenu"},
+	{"PopUp0",	IR_FAKE_POPUP0},	// index 0 assumed later in hijack_option_table[]
+	{"PopUp1",	IR_FAKE_POPUP1},	// index 1 assumed later in hijack_option_table[]
+	{"PopUp2",	IR_FAKE_POPUP2},	// index 2 assumed later in hijack_option_table[]
+	{"PopUp3",	IR_FAKE_POPUP3},	// index 3 assumed later in hijack_option_table[]
+	{"VolAdjLow",	IR_FAKE_VOLADJ1},	// index 4 assumed later in hijack_option_table[]
+	{"VolAdjMed",	IR_FAKE_VOLADJ2},	// index 5 assumed later in hijack_option_table[]
+	{"VolAdjHigh",	IR_FAKE_VOLADJ3},	// index 6 assumed later in hijack_option_table[]
+	{"BassAdj",	IR_FAKE_BASSADJ},
+	{"TrebleAdj",	IR_FAKE_TREBLEADJ},
+	{"VolAdjOff",	IR_FAKE_VOLADJOFF},
+	{"KnobSeek",	IR_FAKE_KNOBSEEK},
+	{"Clock",	IR_FAKE_CLOCK},
+	{"NextSrc",	IR_FAKE_NEXTSRC},
+	{"VolAdj",	IR_FAKE_VOLADJMENU},
+	{"HijackMenu",	IR_FAKE_HIJACKMENU},
 
-	{IR_FAKE_INITIAL,		"Initial"},
-	{IR_NULL_BUTTON,		"null"},
-	{IR_RIO_SOURCE_PRESSED,		"Source"},
-	{IR_RIO_1_PRESSED|ALT,		"Time"},
-	{IR_RIO_1_PRESSED,		"One"},
-	{IR_RIO_2_PRESSED|ALT,		"Artist"},
-	{IR_RIO_2_PRESSED,		"Two"},
-	{IR_RIO_3_PRESSED|ALT,		"Album"},	// "Source"
-	{IR_RIO_3_PRESSED,		"Three"},
-	{IR_RIO_4_PRESSED,		"Four"},
-	{IR_RIO_5_PRESSED|ALT,		"Genre"},
-	{IR_RIO_5_PRESSED,		"Five"},
-	{IR_RIO_6_PRESSED|ALT,		"Year"},
-	{IR_RIO_6_PRESSED,		"Six"},
-	{IR_RIO_7_PRESSED|ALT,		"Repeat"},
-	{IR_RIO_7_PRESSED,		"Seven"},
-	{IR_RIO_8_PRESSED|ALT,		"Swap"},
-	{IR_RIO_8_PRESSED,		"Eight"},
-	{IR_RIO_9_PRESSED|ALT,		"Title"},
-	{IR_RIO_9_PRESSED,		"Nine"},
-	{IR_RIO_0_PRESSED|ALT,		"Shuffle"},
-	{IR_RIO_0_PRESSED,		"Zero"},
-	{IR_RIO_TUNER_PRESSED,		"Tuner"},
-	{IR_RIO_SELECTMODE_PRESSED,	"SelMode"},	// no "ALT" on this one!!
-	{IR_RIO_SELECTMODE_PRESSED,	"SelectMode"},
-	{IR_RIO_CANCEL_PRESSED,		"Cancel"},
-	{IR_RIO_MARK_PRESSED|ALT,	"Mark"},
-	{IR_RIO_SEARCH_PRESSED,		"Search"},
-	{IR_RIO_SOUND_PRESSED,		"Sound"},
-	{IR_RIO_PREVTRACK_PRESSED,	"PrevTrack"},
-	{IR_RIO_PREVTRACK_PRESSED|ALT,	"Prev"},
-	{IR_RIO_PREVTRACK_PRESSED,	"Track-"},
-	{IR_RIO_NEXTTRACK_PRESSED,	"NextTrack"},
-	{IR_RIO_NEXTTRACK_PRESSED|ALT,	"Next"},
-	{IR_RIO_NEXTTRACK_PRESSED,	"Track+"},
-	{IR_RIO_MENU_PRESSED|ALT,	"Ok"},
-	{IR_RIO_MENU_PRESSED,		"Menu"},
-	{IR_RIO_VOLMINUS_PRESSED|ALT,	"VolDown"},
-	{IR_RIO_VOLMINUS_PRESSED,	"Vol-"},
-	{IR_RIO_VOLPLUS_PRESSED|ALT,	"VolUp"},
-	{IR_RIO_VOLPLUS_PRESSED,	"Vol+"},
-	{IR_RIO_VOLPLUS_PRESSED,	"Vol "},	// for http "button=vol+", where '+' becomes a space..
-	{IR_RIO_INFO_PRESSED|ALT,	"Detail"},
-	{IR_RIO_INFO_PRESSED,		"Info"},
-	{IR_RIO_PLAY_PRESSED|ALT,	"Pause"},
-	{IR_RIO_PLAY_PRESSED,		"Play"},
+	{"Initial",	IR_FAKE_INITIAL},
+	{"null",	IR_NULL_BUTTON},
+	{"Source",	IR_RIO_SOURCE_PRESSED},
+	{"Power",	IR_RIO_SOURCE_PRESSED|ALT|BUTTON_FLAGS_LONGPRESS},
+	{"Time",	IR_RIO_1_PRESSED|ALT},
+	{"One",		IR_RIO_1_PRESSED},
+	{"Artist",	IR_RIO_2_PRESSED|ALT},
+	{"Two",		IR_RIO_2_PRESSED},
+	{"Album",	IR_RIO_3_PRESSED|ALT},	// "Source"
+	{"Three",	IR_RIO_3_PRESSED},
+	{"Four",	IR_RIO_4_PRESSED},
+	{"Genre",	IR_RIO_5_PRESSED|ALT},
+	{"Five",	IR_RIO_5_PRESSED},
+	{"Year",	IR_RIO_6_PRESSED|ALT},
+	{"Six",		IR_RIO_6_PRESSED},
+	{"Repeat",	IR_RIO_7_PRESSED|ALT},
+	{"Seven",	IR_RIO_7_PRESSED},
+	{"Swap",	IR_RIO_8_PRESSED|ALT},
+	{"Eight",	IR_RIO_8_PRESSED},
+	{"Title",	IR_RIO_9_PRESSED|ALT},
+	{"Nine",	IR_RIO_9_PRESSED},
+	{"Shuffle",	IR_RIO_0_PRESSED|ALT},
+	{"Zero",	IR_RIO_0_PRESSED},
+	{"Tuner",	IR_RIO_TUNER_PRESSED},
+	{"SelMode",	IR_RIO_SELECTMODE_PRESSED},	// no "ALT" on this one!!
+	{"SelectMode",	IR_RIO_SELECTMODE_PRESSED},
+	{"Cancel",	IR_RIO_CANCEL_PRESSED},
+	{"Mark",	IR_RIO_MARK_PRESSED|ALT},
+	{"Search",	IR_RIO_SEARCH_PRESSED},
+	{"Sound",	IR_RIO_SOUND_PRESSED},
+	{"Equalizer",	IR_RIO_SOUND_PRESSED|ALT|BUTTON_FLAGS_LONGPRESS},
+	{"PrevTrack",	IR_RIO_PREVTRACK_PRESSED},
+	{"Prev",	IR_RIO_PREVTRACK_PRESSED|ALT},
+	{"Track-",	IR_RIO_PREVTRACK_PRESSED},
+	{"NextTrack",	IR_RIO_NEXTTRACK_PRESSED},
+	{"Next",	IR_RIO_NEXTTRACK_PRESSED|ALT},
+	{"Track+",	IR_RIO_NEXTTRACK_PRESSED},
+	{"Ok",		IR_RIO_MENU_PRESSED|ALT},
+	{"Menu",	IR_RIO_MENU_PRESSED},
+	{"VolDown",	IR_RIO_VOLMINUS_PRESSED|ALT},
+	{"Vol-",	IR_RIO_VOLMINUS_PRESSED},
+	{"VolUp",	IR_RIO_VOLPLUS_PRESSED|ALT},
+	{"Vol+",	IR_RIO_VOLPLUS_PRESSED},
+	{"Vol ",	IR_RIO_VOLPLUS_PRESSED},	// for http "button=vol+", where '+' becomes a space..
+	{"Detail",	IR_RIO_INFO_PRESSED|ALT|BUTTON_FLAGS_LONGPRESS},
+	{"Info",	IR_RIO_INFO_PRESSED},
+	{"Pause",	IR_RIO_PLAY_PRESSED|ALT},
+	{"Play",	IR_RIO_PLAY_PRESSED},
+	{"Hush",	IR_RIO_PLAY_PRESSED|ALT|BUTTON_FLAGS_LONGPRESS},
 
-	{IR_TOP_BUTTON_PRESSED,		"Top"},
-	{IR_BOTTOM_BUTTON_PRESSED,	"Bottom"},
-	{IR_LEFT_BUTTON_PRESSED,	"Left"},
-	{IR_RIGHT_BUTTON_PRESSED,	"Right"},
-	{IR_KNOB_LEFT,			"KnobLeft"},
-	{IR_KNOB_RIGHT,			"KnobRight"},
-	{IR_KNOB_PRESSED,		"Knob"},
+	{"Top",		IR_TOP_BUTTON_PRESSED},
+	{"Bottom",	IR_BOTTOM_BUTTON_PRESSED},
+	{"Left",	IR_LEFT_BUTTON_PRESSED},
+	{"Right",	IR_RIGHT_BUTTON_PRESSED},
+	{"KnobLeft",	IR_KNOB_LEFT},
+	{"KnobRight",	IR_KNOB_RIGHT},
+	{"Knob",	IR_KNOB_PRESSED},
 
-	{IR_KW_AM_PRESSED,		"AM"},
-	{IR_KW_FM_PRESSED,		"FM"},
-	{IR_KW_DIRECT_PRESSED,		"Direct"},
-	{IR_KW_STAR_PRESSED|ALT,	"*"},		// alternate
-	{IR_KW_STAR_PRESSED,		"Star"},
-	{IR_KW_TUNER_PRESSED,		"Radio"},
-	{IR_KW_TAPE_PRESSED|ALT,	"Auxiliary"},
-	{IR_KW_TAPE_PRESSED,		"Tape"},	// alternate
-	{IR_KW_CD_PRESSED|ALT,		"Player"},
-	{IR_KW_CD_PRESSED,		"CD"},		// alternate
-	{IR_KW_CDMDCH_PRESSED,		"CDMDCH"},
-	{IR_KW_DNPP_PRESSED,		"DNPP"},
+	{"AM",		IR_KW_AM_PRESSED},
+	{"FM",		IR_KW_FM_PRESSED},
+	{"Direct",	IR_KW_DIRECT_PRESSED},
+	{"*",		IR_KW_STAR_PRESSED|ALT},
+	{"Star",	IR_KW_STAR_PRESSED},
+	{"Radio",	IR_KW_TUNER_PRESSED},
+	{"Auxiliary",	IR_KW_TAPE_PRESSED|ALT},
+	{"Tape",	IR_KW_TAPE_PRESSED},
+	{"Player",	IR_KW_CD_PRESSED|ALT},
+	{"CD",		IR_KW_CD_PRESSED},
+	{"CDMDCH",	IR_KW_CDMDCH_PRESSED},
+	{"DNPP",	IR_KW_DNPP_PRESSED},
 
-	{IR_KOFF_PRESSED,		"KOff"},	// Stalk
-	{IR_KSOURCE_PRESSED,		"KSource"},	// Stalk
-	{IR_KATT_PRESSED,		"KAtt"},	// Stalk
-	{IR_KFRONT_PRESSED,		"KFront"},	// Stalk
-	{IR_KNEXT_PRESSED,		"KNext"},	// Stalk
-	{IR_KPREV_PRESSED,		"KPrev"},	// Stalk
-	{IR_KVOLUP_PRESSED,		"KVolUp"},	// Stalk
-	{IR_KVOLDOWN_PRESSED,		"KVolDown"},	// Stalk
-	{IR_KREAR_PRESSED,		"KRear"},	// Stalk
-	{IR_KBOTTOM_PRESSED,		"KBottom"},	// Stalk
+	{"KOff",	IR_KOFF_PRESSED},	// Stalk
+	{"KSource",	IR_KSOURCE_PRESSED},	// Stalk
+	{"KAtt",	IR_KATT_PRESSED},	// Stalk
+	{"KFront",	IR_KFRONT_PRESSED},	// Stalk
+	{"KNext",	IR_KNEXT_PRESSED},	// Stalk
+	{"KPrev",	IR_KPREV_PRESSED},	// Stalk
+	{"KVolUp",	IR_KVOLUP_PRESSED},	// Stalk
+	{"KVolDown",	IR_KVOLDOWN_PRESSED},	// Stalk
+	{"KRear",	IR_KREAR_PRESSED},	// Stalk
+	{"KBottom",	IR_KBOTTOM_PRESSED},	// Stalk
 
-	{IR_KSOFF_PRESSED,		"KSOff"},	// Stalk
-	{IR_KSSOURCE_PRESSED,		"KSSource"},	// Stalk
-	{IR_KSATT_PRESSED,		"KSAtt"},	// Stalk
-	{IR_KSFRONT_PRESSED,		"KSFront"},	// Stalk
-	{IR_KSNEXT_PRESSED,		"KSNext"},	// Stalk
-	{IR_KSPREV_PRESSED,		"KSPrev"},	// Stalk
-	{IR_KSVOLUP_PRESSED,		"KSVolUp"},	// Stalk
-	{IR_KSVOLDOWN_PRESSED,		"KSVolDown"},	// Stalk
-	{IR_KSREAR_PRESSED,		"KSRear"},	// Stalk
-	{IR_KSBOTTOM_PRESSED,		"KSBottom"},	// Stalk
+	{"KSOff",	IR_KSOFF_PRESSED},	// Stalk
+	{"KSSource",	IR_KSSOURCE_PRESSED},	// Stalk
+	{"KSAtt",	IR_KSATT_PRESSED},	// Stalk
+	{"KSFront",	IR_KSFRONT_PRESSED},	// Stalk
+	{"KSNext",	IR_KSNEXT_PRESSED},	// Stalk
+	{"KSPrev",	IR_KSPREV_PRESSED},	// Stalk
+	{"KSVolUp",	IR_KSVOLUP_PRESSED},	// Stalk
+	{"KSVolDown",	IR_KSVOLDOWN_PRESSED},	// Stalk
+	{"KSRear",	IR_KSREAR_PRESSED},	// Stalk
+	{"KSBottom",	IR_KSBOTTOM_PRESSED},	// Stalk
 
-	{IR_RIO_VISUAL_PRESSED|ALT,	"Visual+"},
-	{IR_KSNEXT_PRESSED|ALT,		"Visual-"},	// Stalk
-	{IR_RIO_VISUAL_PRESSED,		"Visual"},
+	{"Visual+",	IR_RIO_VISUAL_PRESSED|ALT},
+	{"Visual-",	IR_KSNEXT_PRESSED|ALT},	// Stalk
+	{"Visual",	IR_RIO_VISUAL_PRESSED},
 
-	{IR_NULL_BUTTON,		"\0"}		// end-of-table-marker
+	{"\0",		IR_NULL_BUTTON}		// end-of-table-marker
 	};
 #undef ALT
 
@@ -530,6 +533,13 @@ const hijack_db_table_t hijack_db_table[] =
 
 // End Bass/Treble defs.
 
+// Volume Boost values -- genixia
+
+       int hijack_volboost[] = {0,0,0,0};	// {FM, MP3, AUX, AM}
+
+// Tony bonus. Give the option of removing default bass boost on FM  -- genixia
+       int hijack_disable_bassboost_FM;		
+
 typedef struct hijack_option_s {
 	char	*name;
 	void	*target;
@@ -594,6 +604,11 @@ static const hijack_option_t hijack_option_table[] =
 {"bass_q",			&hijack_bass_q,			0x4b00,			1,	0x0000,	0xffff}, // Useful in config.ini to set my suggested values as default
 {"treble_freq",			&hijack_treble_freq,		0x6d50,			1,	0x0000,	0xffff}, // and for testing purposes. We shouldn't advertise these settings
 {"treble_q",			&hijack_treble_q,		0xc800,			1,	0x0000,	0xffff}, // as we don't know what they really mean.  --genixia
+{"volume_boost_FM",		&hijack_volboost[0],		0,			1,	-100,	100},
+{"volume_boost_MP3",		&hijack_volboost[1],		0,			1,	-100,	100},
+{"volume_boost_AUX",		&hijack_volboost[2],		0,			1,	-100,	100},
+{"volume_boost_AM",		&hijack_volboost[3],		0,			1,	-100,	100},
+{"disable_bassboost_FM",	&hijack_disable_bassboost_FM,	0,			1,	0,	1,},
 {NULL,NULL,0,0,0,0} // end-of-list
 };
 
@@ -1034,11 +1049,16 @@ static char *get_button_name (unsigned int button, char *buf)
 {
 	button_name_t *bn = button_names;
 
-	button = PRESSCODE(button) | (button & BUTTON_FLAGS_ALTNAME);
+	button = PRESSCODE(button) | (button & (BUTTON_FLAGS_ALTNAME|BUTTON_FLAGS_LONGPRESS));
+search:
 	for (bn = button_names; bn->name[0]; ++bn) {
-		if (button == bn->code) {
+		if (button == (bn->code & ~(BUTTON_FLAGS ^ BUTTON_FLAGS_ALTNAME))) {
 			return bn->name;
 		}
+	}
+	if (button & BUTTON_FLAGS_LONGPRESS) {
+		button ^= BUTTON_FLAGS_LONGPRESS;
+		goto search;
 	}
 	sprintf(buf, "0%x", button);
 	return buf;
@@ -4008,6 +4028,7 @@ get_button_code (unsigned char **s_p, unsigned int *button, int eol_okay, const 
 {
 	button_name_t *bn = button_names;
 	unsigned char *s = *s_p;
+	unsigned int b;
 
 	for (bn = button_names; bn->name[0]; ++bn) {
 		if (!strxcmp(s, bn->name, 1)) {
@@ -4019,7 +4040,10 @@ get_button_code (unsigned char **s_p, unsigned int *button, int eol_okay, const 
 			}
 		}
 	}
-	return get_number(s_p, button, 16, nextchars);
+	if (!get_number(s_p, &b, 16, nextchars))
+		return 0;
+	*button = PRESSCODE(b);
+	return 1;
 }
 
 static char *
@@ -4046,7 +4070,8 @@ ir_setup_translations2 (unsigned char *s, unsigned int *table, int *had_errors)
 			good = 1; // ignore the comment
 		} else if (get_button_code(&s, &old, 0, ".=")) {
 			unsigned short irflags = 0, flagmask, *defaults;
-			old = PRESSCODE(old) | (old & BUTTON_FLAGS_ALTNAME);
+			irflags = old & (BUTTON_FLAGS ^ BUTTON_FLAGS_ALTNAME);
+			old ^= irflags;
 			if (old >= IR_FAKE_POPUP0 && old <= IR_FAKE_POPUP3) {
 				old |= IR_FLAGS_POPUP;
 			} else if (old >= IR_FAKE_INITIAL || old < IR_FAKE_HIJACKMENU) {
@@ -4078,7 +4103,6 @@ ir_setup_translations2 (unsigned char *s, unsigned int *table, int *had_errors)
 						index = saved; // error: completely ignore this line
 						break;
 					}
-					new = PRESSCODE(new) | (new & BUTTON_FLAGS_ALTNAME);
 					if (*s == '.') {
 						do {
 							char c = *++s;

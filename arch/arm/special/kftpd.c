@@ -4,31 +4,16 @@
 //
 // To Do:  fix various buffers to use PATH_MAX (4096) instead of 256 or 512 bytes
 
-extern int hijack_khttpd_port;				// from arch/arm/special/hijack.c
-extern int hijack_khttpd_verbose;			// from arch/arm/special/hijack.c
-extern int hijack_kftpd_control_port;			// from arch/arm/special/hijack.c
-extern int hijack_kftpd_data_port;			// from arch/arm/special/hijack.c
-extern int hijack_kftpd_verbose;			// from arch/arm/special/hijack.c
-extern struct semaphore hijack_khttpd_startup_sem;	// from arch/arm/special/hijack.c
-extern struct semaphore hijack_kftpd_startup_sem;	// from arch/arm/special/hijack.c
-
 #include <linux/config.h>
 #include <linux/mm.h>
 #include <linux/smp_lock.h>
 #include <linux/socket.h>
 #include <linux/file.h>
 #include <linux/net.h>
-#include <linux/interrupt.h>
 #include <linux/netdevice.h>
 #include <linux/proc_fs.h>
-#include <linux/firewall.h>
-#include <linux/wanrouter.h>
 #include <linux/init.h>
 #include <linux/poll.h>
-
-#if defined(CONFIG_KMOD) && defined(CONFIG_NET)
-#include <linux/kmod.h>
-#endif
 
 #include <asm/uaccess.h>
 
@@ -40,9 +25,24 @@ extern struct semaphore hijack_kftpd_startup_sem;	// from arch/arm/special/hijac
 #include <net/udp.h>
 #include <net/scm.h>
 
-#define INET_ADDRSTRLEN	16
+extern int hijack_khttpd_port;				// from arch/arm/special/hijack.c
+extern int hijack_khttpd_verbose;			// from arch/arm/special/hijack.c
+extern int hijack_kftpd_control_port;			// from arch/arm/special/hijack.c
+extern int hijack_kftpd_data_port;			// from arch/arm/special/hijack.c
+extern int hijack_kftpd_verbose;			// from arch/arm/special/hijack.c
+extern struct semaphore hijack_khttpd_startup_sem;	// from arch/arm/special/hijack.c
+extern struct semaphore hijack_kftpd_startup_sem;	// from arch/arm/special/hijack.c
+extern int sys_rmdir(const char *path); // fs/namei.c
+extern int sys_readlink(const char *path, char *buf, int bufsiz);
+extern int skip_atoi(char **s);	// from lib/vsprintf.c
+extern int sys_chmod(const char *path, mode_t mode); // fs/open.c
+extern int sys_mkdir(const char *path, int mode); // fs/namei.c
+extern int sys_unlink(const char *path);
 
+#define BUF_PAGES		2
+#define INET_ADDRSTRLEN		16
 #define CLIENT_CWD_SIZE		512
+
 typedef struct server_parms_s {
 	struct socket		*clientsock;
 	struct socket		*servsock;
@@ -58,8 +58,6 @@ typedef struct server_parms_s {
 	struct sockaddr_in	portaddr;
 	unsigned char		cwd[CLIENT_CWD_SIZE];
 } server_parms_t;
-
-#define PRINTK	if (parms->verbose) printk
 
 #define INRANGE(c,min,max)	((c) >= (min) && (c) <= (max))
 #define ISOCTAL(c)		INRANGE(c,'0','7')
@@ -122,7 +120,6 @@ inet_ntop (int af, const void *src, char *dst, size_t cnt)
 static int
 extract_portaddr (struct sockaddr_in *addr, char *s)
 {
-	extern int	skip_atoi(char **s);	// from lib/vsprintf.c
 	char		*first = s;
 	int		dots = 0;
 
@@ -157,7 +154,6 @@ ksock_rw (struct socket *sock, char *buf, int buf_size, int minimum)
 	struct iovec	iov;
 	int		bytecount = 0, sending = 0;
 
-	lock_kernel();
 	if (minimum < 0) {
 		minimum = buf_size;
 		sending = 1;
@@ -175,15 +171,19 @@ ksock_rw (struct socket *sock, char *buf, int buf_size, int minimum)
 		msg.msg_controllen = 0;
 		msg.msg_flags      = 0;
 
+		lock_kernel();
 		if (sending)
 			rc = sock_sendmsg(sock, &msg, len);
 		else
 			rc = sock_recvmsg(sock, &msg, len, 0);
-		if (rc < 0 || (!sending && rc == 0))	// fixme? was: (rc <= 0)
+		unlock_kernel();
+		if (rc < 0 || (!sending && rc == 0)) {	// fixme? was: (rc <= 0)
+			if (rc)
+				printk("ksock_rw: %s rc=%d\n", sending ? "sock_sendmsg()" : "sock_recvmsg()", rc);
 			break;
+		}
 		bytecount += rc;
 	} while (bytecount < minimum);
-	unlock_kernel();
 	return bytecount;
 }
 
@@ -224,10 +224,11 @@ send_response (server_parms_t *parms, int rcode)
 
 	while (r->rcode && r->rcode != rcode)
 		++r;
-	PRINTK("%s: %d %s.\n", parms->servername, rcode, r->text);
+	if (parms->verbose)
+		printk("%s: %d %s.\n", parms->servername, rcode, r->text);
 	len = sprintf(buf, "%d %s.\r\n", rcode, r->text);
 	if ((rc = ksock_rw(parms->clientsock, buf, len, -1)) != len) {
-		PRINTK("%s: ksock_rw(response) failed, rc=%d\n", parms->servername, rc);
+		printk("%s: ksock_rw(response) failed, rc=%d\n", parms->servername, rc);
 		return -1;
 	}
 	return 0;
@@ -244,7 +245,7 @@ send_dir_response (server_parms_t *parms, int rcode, char *dir, char *suffix)
 	else
 		len = sprintf(buf, "%d \"%s\"\r\n", rcode, dir);
 	if ((rc = ksock_rw(parms->clientsock, buf, len, -1)) != len) {
-		PRINTK("%s: ksock_rw(dir_response) failed, rc=%d\n", parms->servername, rc);
+		printk("%s: ksock_rw(dir_response) failed, rc=%d\n", parms->servername, rc);
 		return 1;
 	}
 	return 0;
@@ -260,7 +261,7 @@ send_help_response (server_parms_t *parms, char *type, char *commands)
 	if (len != (rc = ksock_rw(parms->clientsock, buf, len, -1))
 	 || len != (rc = ksock_rw(parms->clientsock, commands, len = strlen(commands), -1)))
 	{
-		PRINTK("%s: ksock_rw(help_response) failed, rc=%d\n", parms->servername, rc);
+		printk("%s: ksock_rw(help_response) failed, rc=%d\n", parms->servername, rc);
 		return 1;
 	}
 	return 0;
@@ -275,9 +276,9 @@ make_socket (server_parms_t *parms, struct socket **sockp, int port)
 
 	*sockp = NULL;
 	if ((rc = sock_create(AF_INET, SOCK_STREAM, 0, &sock))) {
-		PRINTK("%s: sock_create() failed, rc=%d\n", parms->servername, rc);
+		printk("%s: sock_create() failed, rc=%d\n", parms->servername, rc);
 	} else if ((rc = sock_setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (char *)&turn_on, sizeof(turn_on)))) {
-		PRINTK("%s: setsockopt() failed, rc=%d\n", parms->servername, rc);
+		printk("%s: setsockopt(SO_REUSEADDR) failed, rc=%d\n", parms->servername, rc);
 		sock_release(sock);
 	} else {
 		memset(&addr, 0, sizeof(struct sockaddr_in));
@@ -286,7 +287,7 @@ make_socket (server_parms_t *parms, struct socket **sockp, int port)
 		addr.sin_port        = htons(port);
 		rc = sock->ops->bind(sock, (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
 		if (rc) {
-			PRINTK("%s: bind(port=%d) failed: %d\n", parms->servername, port, rc);
+			printk("%s: bind(port=%d) failed: %d\n", parms->servername, port, rc);
 			sock_release(sock);
 		} else {
 			*sockp = sock;
@@ -409,10 +410,10 @@ format_time (tm_t *tm, int current_year, char *buf)
 		*buf++ = '0' + (t % 10);
 	} else {
 		*buf++ = ' ';
-		*buf++ = '0' +  (y / 1000);
-		*buf++ = '0' + ((y /  100) % 10);
-		*buf++ = '0' + ((y /   10) % 10);
-		*buf++ = '0' +  (y %   10);
+		*buf++ = '0' + y / 1000; y = y % 1000;
+		*buf++ = '0' + y /  100; y = y %  100;
+		*buf++ = '0' + y /   10; y = y %   10;
+		*buf++ = '0' + y;
 	}
 	*buf = '\0';
 	return buf;
@@ -434,7 +435,7 @@ append_string (char *b, const char *s, int quoted)
 
 // Pattern matching: returns 1 if n(ame) matches p(attern), 0 otherwise
 static int
-glob_match (char *n, char *p)
+glob_match (const char *n, const char *p)
 {
 	while (*n && (*n == *p || *p == '?')) {
 		++n;
@@ -455,47 +456,63 @@ glob_match (char *n, char *p)
 }
 
 typedef struct filldir_parms_s {
-	int			current_year;	// current calendar year (YYYY), according to the Empeg
-	int			full_listing;	// 0 == names only, 1 == "ls -al"
+	unsigned short		current_year;	// current calendar year (YYYY), according to the Empeg
+	unsigned short		full_listing;	// 0 == names only, 1 == "ls -al"
+	int			use_http;	// 0 == ftp, 1 == http
 	unsigned long		blockcount;	// for "total xxxx" line at end of kftpd dir listing
+	struct super_block	*sb;		// superblock of filesystem, needed for inode lookups
 	char			*pattern;	// for filename globbing (pattern matching for mget/mput/list)
 	char			*name;		// points into path[]
 	unsigned int		buf_size;	// size (bytes) of buf[]
-	unsigned int		buf_len;	// number of bytes used buf[]
+	unsigned int		buf_used;	// number of bytes used buf[]
 	char			*buf;		// allocated buffer for formatting partial dir listings
 	unsigned int		nam_size;	// size (bytes) of nam[]
-	unsigned int		nam_len;	// number of bytes used in nam[]
+	unsigned int		nam_used;	// number of bytes used in nam[]
 	char			*nam;		// allocated buffer for names from filldir()
 	int			path_len;	// length of (non-zero terminated) base path in path[]
 	char			path[512];	// full dir prefix, plus current name appended for dentry lookups
 	char			lname[256];	// target path of a symbolic link
 } filldir_parms_t;
 
-// Callback routine for filp->f_op->readdir().
+// Callback routine for readdir().
 // This gets called repeatedly until we return non-zero (nam[] buffer full).
 //
 static int
-filldir (void *parms, const char *name, int namelen, off_t offset, ino_t ino)
+filldir (void *data, const char *name, int namelen, off_t offset, ino_t ino)
 {
-	filldir_parms_t *p = parms;
-	char		*pname;
+	filldir_parms_t *p = data;
+	char		*n, *zname;
+	unsigned int	len;
 
 	if (name[0] == '.' && namelen <= 2) {
-		if (namelen < 2 || (name[1] == '.' && p->path_len == 1 && p->path[0] == '/'))
-			return 0;	// always skip "." ,  and skip ".." when showing rootdir
+		if (namelen == 1) {
+			if (p->use_http)
+				return 0;	// skip "." in khttpd listings
+		} else if (name[1] == '.' && p->path_len == 1) {
+			if (p->path[0] == '/')	// paranoia: path_len==1 ought to be sufficient
+				return 0;	// skip ".." when listing "rootdir"
+		}
 	}
-	if ((p->nam_len + namelen + 1) > p->nam_size)
-		return -EAGAIN; // stop reading directory entries
-	pname = p->nam + p->nam_len;
-	strncpy(pname, name, namelen);
-	pname[namelen] = '\0';
-	if (!p->pattern || glob_match(pname, p->pattern))
-		p->nam_len += namelen + 1;	// keep this name
-	return 0; // continue reading directory entries
+	// determine next aligned location in p->nam buffer:
+	len = (p->nam_used + 3) & ~3;
+	if ((len + namelen + (sizeof(ino) + 1)) > p->nam_size)
+		return -EAGAIN;			// buffer full; take a breather
+	n = p->nam + len;
+	len += (sizeof(ino) + 1) + namelen;
+	// copy over the data first, to create a zero-terminated copy of "name"
+	*((ino_t *)n)++ = ino;
+	zname = n;
+	while (namelen--)
+		*n++ = *name++;
+	*n = '\0';
+	// now we can do pattern matching on the copied name:
+	if (!p->pattern || glob_match(zname, p->pattern))
+		p->nam_used = len;	// accept this entry; otherwise it gets overwritten next time thru
+	return 0;			// continue reading directory entries
 }
 
 const char dirlist_html_trailer[] = "</PRE><HR>\n</BODY></HTML>\n";
-#define DIRLIST_TRAILER_MAX	(28)	// (sizeof(dirlist_html_trailer))
+#define DIRLIST_TRAILER_MAX	(sizeof(dirlist_html_trailer))
 
 static int
 send_dirlist_buf (server_parms_t *parms, filldir_parms_t *p, int send_trailer)
@@ -504,43 +521,48 @@ send_dirlist_buf (server_parms_t *parms, filldir_parms_t *p, int send_trailer)
 
 	if (p->full_listing && send_trailer) {
 		if (parms->use_http)
-			p->buf_len += sprintf(p->buf + p->buf_len, dirlist_html_trailer);
+			p->buf_used += sprintf(p->buf + p->buf_used, dirlist_html_trailer);
 		else
-			p->buf_len += sprintf(p->buf + p->buf_len, "total %lu\r\n", p->blockcount);
+			p->buf_used += sprintf(p->buf + p->buf_used, "total %lu\r\n", p->blockcount);
 	}
-	sent = ksock_rw(parms->datasock, p->buf, p->buf_len, -1);
-	if (sent != p->buf_len) {
-		PRINTK("%s: ksock_rw(%u) returned %d\n", parms->servername, p->buf_len, sent);
-		return -EIO;
+	sent = ksock_rw(parms->datasock, p->buf, p->buf_used, -1);
+	if (sent != p->buf_used) {
+		printk("%s: ksock_rw(%u) returned %d\n", parms->servername, p->buf_used, sent);
+		if (sent >= 0)
+			sent = -EIO;
+		return sent;
 	}
-	p->buf_len = 0;
+	p->buf_used = 0;
 	return 0;
 }
 
 static int	// callback routine for filp->f_op->readdir()
-formatdir (server_parms_t *parms, filldir_parms_t *p, char *name, int namelen)
+format_dir (server_parms_t *parms, filldir_parms_t *p, ino_t ino, char *name, int namelen)
 {
-	struct dentry		*dentry;
-	struct inode		*inode;
-	unsigned long		mode;
-	char			*b;
-	tm_t			tm;
-	char			ftype;
-	int			rc, linklen = 0;
+	struct dentry	*dentry = NULL;
+	struct inode	*inode;
+	unsigned long	mode;
+	char		*b;
+	tm_t		tm;
+	char		ftype;
+	int		rc, linklen = 0;
 
-	if ((p->buf_size - p->buf_len) < (58 + namelen)) { 
+	if ((p->buf_size - p->buf_used) < (58 + namelen)) { 
 		if ((rc = send_dirlist_buf(parms, p, 0)))	// empty the buffer
 			return rc;
 	}
 
 	strcpy(p->name, name);		// fill in "tail" of p->path[]
-	dentry = lnamei(p->path);
-	if (IS_ERR(dentry) || !dentry->d_inode) {
-		rc = PTR_ERR(dentry);
-		PRINTK("%s: lnamei(%s) failed, rc=%d\n", parms->servername, p->path, rc);
+	if (p->sb->s_magic == PROC_SUPER_MAGIC) {	// iget() doesn't work properly for /proc fs
+		dentry = lnamei(p->path);
+		if (IS_ERR(dentry) || !(inode = dentry->d_inode)) {
+                	printk("%s: lnamei(%s) failed, rc=%ld\n", parms->servername, p->path, PTR_ERR(dentry));
+                	return -ENOENT;
+		}
+        } else if (!(inode = iget(p->sb, ino))) {	// iget() is magnitudes faster than lnamei()
+		printk("%s: iget(%lu) failed\n", parms->servername, ino);
 		return -ENOENT;
 	}
-	inode = dentry->d_inode;
 	mode = inode->i_mode;
 	switch (mode & S_IFMT) {
 		case S_IFLNK:	ftype = 'l'; break;
@@ -554,14 +576,14 @@ formatdir (server_parms_t *parms, filldir_parms_t *p, char *name, int namelen)
 	}
 	if (!p->full_listing) {
 		if (ftype == '-' || ftype == 'l') {
-			b = append_string((p->buf + p->buf_len), name, 0);
+			b = append_string((p->buf + p->buf_used), name, 0);
 			goto done;
 		}
-		dput(dentry); // free up the inode structure
-		return 0;
+		rc = 0;
+		goto exit;	// not a file or symlink:  skip it
 	}
 
-	b = p->buf + p->buf_len;
+	b = p->buf + p->buf_used;
 	*b++ = ftype;
 	*b++ = (mode & S_IRUSR) ? 'r' : '-';
 	*b++ = (mode & S_IWUSR) ? 'w' : '-';
@@ -585,21 +607,18 @@ formatdir (server_parms_t *parms, filldir_parms_t *p, char *name, int namelen)
 	*b++ = ' ';
 
 	if (ftype == 'l') {
-		extern int sys_readlink(const char *path, char *buf, int bufsiz);
 		linklen = sys_readlink(p->path, p->lname, sizeof(p->lname));
 		if (linklen <= 0) {
-			PRINTK("%s: readlink(%s) failed, rc=%d\n", parms->servername, p->path, linklen);
+			printk("%s: readlink(%s) failed, rc=%d\n", parms->servername, p->path, linklen);
 			linklen = 0;
 		}
 	}
 	p->lname[linklen] = '\0';
 
-	p->buf_len = b - p->buf;
-	if ((p->buf_size - p->buf_len) < ((parms->use_http ? (24+namelen) : 7) + namelen + (linklen ? (2 * linklen) : namelen))) {
-		if ((rc = send_dirlist_buf(parms, p, 0))) {	// empty the buffer
-			dput(dentry); // free up the inode structure
-			return rc;
-		}
+	p->buf_used = b - p->buf;
+	if ((p->buf_size - p->buf_used) < ((parms->use_http ? (24+namelen) : 7) + namelen + (linklen ? (2 * linklen) : namelen))) {
+		if ((rc = send_dirlist_buf(parms, p, 0)))	// empty the buffer
+			goto exit;
 		b = p->buf;
 	}
 
@@ -640,14 +659,16 @@ formatdir (server_parms_t *parms, filldir_parms_t *p, char *name, int namelen)
 done:
 	*b++ = '\r';
 	*b++ = '\n';
-	dput(dentry); // free up the inode structure
-
-	p->buf_len = b - p->buf;
-	if ((p->buf_size - p->buf_len) < DIRLIST_TRAILER_MAX) {
-		if ((rc = send_dirlist_buf(parms, p, 0)))	// empty the buffer
-			return rc;
-	}
-	return 0;
+	rc = 0;
+	p->buf_used = b - p->buf;
+	if ((p->buf_size - p->buf_used) < DIRLIST_TRAILER_MAX)
+		rc = send_dirlist_buf(parms, p, 0);	// empty the buffer
+exit:
+	if (dentry)
+		dput(dentry);
+	else if (inode)
+		iput(inode);
+	return rc;
 }
 
 static const char dirlist_header[] =
@@ -669,8 +690,9 @@ send_dirlist (server_parms_t *parms, char *path, int full_listing)
 	struct file	*filp;
 	unsigned int	response = 0;
 	filldir_parms_t	p;
+	const int	NAM_PAGES = 2;
 
-	p.pattern = NULL;
+	memset(&p, 0, sizeof(p));
 	pathlen = strlen(path);
 	if (path[pathlen-1] == '/') {
 		if (pathlen > 1)
@@ -695,65 +717,69 @@ send_dirlist (server_parms_t *parms, char *path, int full_listing)
 	lock_kernel();
 	filp = filp_open(path,O_RDONLY,0);
 	if (IS_ERR(filp) || !filp) {
-		PRINTK("%s: filp_open(%s) failed\n", parms->servername, path);
+		printk("%s: filp_open(%s) failed\n", parms->servername, path);
 		response = 550;
 	} else {
-		if (!filp->f_dentry || !filp->f_dentry->d_inode || !filp->f_op) {
+		int (*readdir) (struct file *, void *, filldir_t);
+		struct file_operations *fops;
+		struct dentry *dentry = filp->f_dentry;
+		struct inode  *inode;
+		if (!dentry || !(inode = dentry->d_inode) || !(fops = filp->f_op)) {
 			response = 550;
-		} else if (!filp->f_op->readdir) {
+		} else if (!(readdir = fops->readdir)) {
 			response = 553;
-		} else if (!(p.buf = (char *)__get_free_page(GFP_KERNEL))) {
+		} else if (!(p.buf = (char *)__get_free_pages(GFP_KERNEL, BUF_PAGES))) {
 			response = 451;
-		} else if (!(p.nam = (char *)__get_free_page(GFP_KERNEL))) {
+		} else if (!(p.nam = (char *)__get_free_pages(GFP_KERNEL, NAM_PAGES))) {
 			response = 451;
 		} else if (!(response = open_datasock(parms))) {
 			tm_t		tm;
-			struct inode	*inode = filp->f_dentry->d_inode;
 
 			p.current_year	= convert_time(CURRENT_TIME, &tm)->tm_year;
-			p.blockcount	= 0;
-			p.buf_size	= PAGE_SIZE;
-			p.nam_size	= PAGE_SIZE;
+			p.buf_size	= BUF_PAGES*PAGE_SIZE;
+			p.nam_size	= NAM_PAGES*PAGE_SIZE;
 			p.full_listing	= full_listing;
 			strcpy(p.path, path);
 			p.path_len	= pathlen;
-			p.path[pathlen++] = '/';
+			if (p.path[pathlen - 1] != '/')
+				p.path[pathlen++] = '/';
 			p.name		= p.path + pathlen;
-			p.buf_len	= 0;
+			p.use_http	= parms->use_http;
+			p.sb		= dentry->d_sb;
 
 			if (parms->use_http)
-				p.buf_len = sprintf(p.buf, dirlist_header, path, path);
-			filp->f_pos = 0;
+				p.buf_used = sprintf(p.buf, dirlist_header, path, path);
 			do {
-				p.nam_len = 0;
-				down(&inode->i_sem);	// This can go inside the loop
-				rc = filp->f_op->readdir(filp, &p, filldir); // anything "< 0" is an error
+				p.nam_used = 0;
+				down(&inode->i_sem);
+				rc = readdir(filp, &p, filldir);	// anything "< 0" is an error
 				up(&inode->i_sem);
 				if (rc < 0) {
-					PRINTK("%s: readdir() returned %d\n", parms->servername, rc);
+					printk("%s: readdir() returned %d\n", parms->servername, rc);
 				} else {
 					unsigned int pos = 0;
 					rc = 0;
-					while (pos < p.nam_len) {
-						char *name = p.nam + pos;
-						int namelen = strlen(name);
-						pos += namelen + 1;
-						rc = formatdir(parms, &p, name, namelen);
+					while (pos < p.nam_used) {
+						ino_t	ino     = *(ino_t *)(p.nam + pos);
+						char	*name   = p.nam + (pos += sizeof(ino));
+						int	namelen = strlen(name);
+						pos = (pos + namelen + (1 + 3)) & ~3;
+						rc = format_dir(parms, &p, ino, name, namelen);
 						if (rc < 0) {
-							PRINTK("%s: formatdir('%s') returned %d\n", parms->servername, p.name, rc);
+							printk("%s: format_dir('%s') returned %d\n", parms->servername, p.name, rc);
 							break;
 						}
 					}
 				}
-			} while (!rc && p.nam_len);
+			} while (!rc && p.nam_used);
 			if (rc || (rc = send_dirlist_buf(parms, &p, 1)))
 				response = 426;
 			if (!parms->use_http)
 				sock_release(parms->datasock);
 			if (p.nam)
-				free_page((unsigned long)p.nam);
+				free_pages((unsigned long)p.nam, NAM_PAGES);
 			if (p.buf)
-				free_page((unsigned long)p.buf);
+				free_pages((unsigned long)p.buf, BUF_PAGES);
 		}
 		filp_close(filp,NULL);
 	}
@@ -782,32 +808,55 @@ khttpd_dir_redirect (server_parms_t *parms, const char *path, char *buf)
 	len = sprintf(buf, http_redirect, path, path);
 	rc = ksock_rw(parms->clientsock, buf, len, -1);
 	if (rc != len)
-		PRINTK("%s: bad_request(): ksock_rw(%d) returned %d\n", parms->servername, len, rc);
+		printk("%s: bad_request(): ksock_rw(%d) returned %d\n", parms->servername, len, rc);
 }
+
+static const char audio_mpeg[]		= "audio/mpeg";
+static const char text_plain[]		= "text/plain";
+static const char application_x_tar[]	= "application/x-tar";
+
+typedef struct mime_type_s {
+	const char	*pattern;	// a "glob" expression using * and/or ? wildcards
+	const char	*mime;		// the mime-type for matching paths
+} mime_type_t;
+
+static const mime_type_t mime_types[] = {
+	{"*.tiff",		"image/tiff"			},
+	{"*.jpg",		"image/jpeg"			},
+	{"*.html",		"text/html"			},
+	{"*.txt",		 text_plain			},
+	{"*.text",		 text_plain			},
+	{"*.wav",		"audio/x-wav"			},
+	{"*.mp3",		 audio_mpeg			},
+	{"*.gz",		"application/x-gzip"		},
+	{"*.tar",		 application_x_tar		},
+	{"*.tgz",		 application_x_tar		},
+	{"/var/config.ini",	 text_plain			},
+	{"/var/tags",		 text_plain			},
+	{"/etc/*",		 text_plain			},
+	{"/proc/*",		 text_plain			},
+	{"*bin/*",		"application/octet-stream"	},
+	{NULL,			NULL				}};
 
 static int
 khttp_send_file_header (server_parms_t *parms, char *path, unsigned long i_size, char *buf)
 {
-	char *hdr  = "HTTP/1.1 200 OK\nConnection: close\nAccept-Ranges: bytes\nContent-Type: %s\n";
-	char *type = "text/plain"; // or maybe: "application/octet-stream"
-	int len = strlen(path);
+	int		len;
+	const char	*mimetype;
 
-	if (len >= 5) {
-		// Very crude mime typing:
-		const char *e = path + strlen(path);
-		if (!strxcmp(e-4, ".tif", 0) || !strxcmp(e-5, ".tiff", 0)) {
-			type = "image/tiff";
-		} else if (!strxcmp(e-4, ".htm", 0) || !strxcmp(e-5, ".html", 0)) {
-			type = "text/html";
-		} else if (i_size > 1000 && *--e == '0') {
-			while (e > path && *--e != '/');
-			while (e > path && *--e != '/');
-			if (!strncmp(e, "/fids", 5)) {
-				type = "audio/mpeg";	// or "application/octet-stream" ??
-			}
-		}
+	// Crude "tune" recognition; can mislabel WAVs
+	if (i_size > 1000 && glob_match(path, "/drive?/fids/*0")) {
+		mimetype = audio_mpeg;	// Ugh.. could be a WAV, but too bad.
+	} else {
+		const char		*pattern;
+		const mime_type_t	*m = mime_types;
+		while ((pattern = m->pattern) && !glob_match(path, pattern))
+			++m;
+		mimetype = m->mime;
 	}
-	len = sprintf(buf, hdr, type);
+	len = sprintf(buf, "HTTP/1.1 200 OK\nConnection: close\nAccept-Ranges: bytes\n");
+	if (mimetype)
+		len += sprintf(buf+len, "Content-Type: %s\n", mimetype);
 	if (i_size)
 		len += sprintf(buf+len, "Content-Length: %lu\n", i_size);
 	buf[len++] = '\n';
@@ -825,30 +874,33 @@ send_file (server_parms_t *parms, char *path)
 	unsigned char	*buf;
 
 	lock_kernel();
-	if (!(buf = (unsigned char *)__get_free_page(GFP_KERNEL))) {
+	if (!(buf = (unsigned char *)__get_free_pages(GFP_KERNEL, BUF_PAGES))) {
 		response = 451;
 	} else {
 		filp = filp_open(path,O_RDONLY,0);
 		if (IS_ERR(filp) || !filp) {
-			PRINTK("%s: filp_open(%s) failed\n", parms->servername, path);
+			printk("%s: filp_open(%s) failed\n", parms->servername, path);
 			response = 550;
 		} else {
-			if (!filp->f_dentry || !filp->f_dentry->d_inode || !filp->f_op) {
+			struct file_operations *fops;
+			struct dentry *dentry = filp->f_dentry;
+			struct inode  *inode;
+			if (!dentry || !(inode = dentry->d_inode) || !(fops = filp->f_op)) {
 				response = 550;
-			} else if (filp->f_op->readdir) {
+			} else if (fops->readdir) {
 				if (parms->use_http)
 					khttpd_dir_redirect(parms, path, buf);
 				else
 					response = 553;
-			} else if (!filp->f_op->read) {
+			} else if (!fops->read) {
 				response = 550;
 			} else if (!(response = open_datasock(parms))) {
-				if (!parms->use_http || !(response = khttp_send_file_header(parms, path, filp->f_dentry->d_inode->i_size, buf))) {
+				if (!parms->use_http || !(response = khttp_send_file_header(parms, path, inode->i_size, buf))) {
 					filp->f_pos = 0;
 					do {
-						size = filp->f_op->read(filp, buf, PAGE_SIZE, &(filp->f_pos));
+						size = fops->read(filp, buf, BUF_PAGES*PAGE_SIZE, &(filp->f_pos));
 						if (size < 0) {
-							PRINTK("%s: filp->f_op->read() failed; rc=%d\n", parms->servername, size);
+							printk("%s: read() failed; rc=%d\n", parms->servername, size);
 							response = 451;
 							break;
 						} else if (size && size != ksock_rw(parms->datasock, buf, size, -1)) {
@@ -862,33 +914,19 @@ send_file (server_parms_t *parms, char *path)
 			}
 			filp_close(filp,NULL);
 		}
-		free_page((unsigned long)buf);
+		free_pages((unsigned long)buf, BUF_PAGES);
 	}
 	unlock_kernel();
 	return response;
 }
 
-// cloned from fs/read_write.c
-//
-static inline loff_t llseek(struct file *file, loff_t offset, int origin)
-{
-	extern loff_t default_llseek(struct file *file, loff_t offset, int origin); // fs/read_write.c
-	loff_t (*fn)(struct file *, loff_t, int);
-
-	fn = default_llseek;
-	if (file->f_op && file->f_op->llseek)
-		fn = file->f_op->llseek;
-	return fn(file, offset, origin);
-}
-
 static int
 do_rmdir (server_parms_t *parms, const char *path)
 {
-	extern int	sys_rmdir(const char *path); // fs/namei.c
-	int		rc, response = 250;;
+	int	rc, response = 250;;
 
 	if ((rc = sys_rmdir(path))) {
-		PRINTK("%s: rmdir('%s') failed, rc=%d\n", parms->servername, path, rc);
+		printk("%s: rmdir('%s') failed, rc=%d\n", parms->servername, path, rc);
 		response = 550;
 	}
 	return response;
@@ -897,11 +935,10 @@ do_rmdir (server_parms_t *parms, const char *path)
 static int
 do_mkdir (server_parms_t *parms, const char *path)
 {
-	extern int	sys_mkdir(const char *path, int mode); // fs/namei.c
-	int		rc, response = 257;
+	int	rc, response = 257;
 
 	if ((rc = sys_mkdir(path, 0777 & ~parms->umask))) {
-		PRINTK("%s: mkdir('%s') failed, rc=%d\n", parms->servername, path, rc);
+		printk("%s: mkdir('%s') failed, rc=%d\n", parms->servername, path, rc);
 		response = 550;
 	}
 	return response;
@@ -910,11 +947,11 @@ do_mkdir (server_parms_t *parms, const char *path)
 static int
 do_chmod (server_parms_t *parms, unsigned int mode, const char *path)
 {
-	extern int	sys_chmod(const char *path, mode_t mode); // fs/open.c
-	int		rc, response = 200;
+	int	rc, response = 200;
 
 	if ((rc = sys_chmod(path, mode))) {
-		PRINTK("%s: chmod('%s',%d) failed, rc=%d\n", parms->servername, path, mode, rc);
+		if (parms->verbose)
+			printk("%s: chmod('%s',%d) failed, rc=%d\n", parms->servername, path, mode, rc);
 		response = 550;
 	}
 	return response;
@@ -923,11 +960,10 @@ do_chmod (server_parms_t *parms, unsigned int mode, const char *path)
 static int
 do_delete (server_parms_t *parms, const char *path)
 {
-	extern int	sys_unlink(const char *path);
-	int		rc, response = 250;
+	int	rc, response = 250;
 
 	if ((rc = sys_unlink(path))) {
-		PRINTK("%s: unlink('%s') failed, rc=%d\n", parms->servername, path, rc);
+		printk("%s: unlink('%s') failed, rc=%d\n", parms->servername, path, rc);
 		response = 550;
 	}
 	return response;
@@ -942,40 +978,37 @@ receive_file (server_parms_t *parms, const char *path)
 	unsigned char	*buf;
 
 	lock_kernel();
-	if (!(buf = (unsigned char *)__get_free_page(GFP_KERNEL))) {
+	if (!(buf = (unsigned char *)__get_free_pages(GFP_KERNEL, BUF_PAGES))) {
 		response = 451;
 	} else {
 		filp = filp_open(path,O_CREAT|O_TRUNC|O_RDWR, 0666 & ~parms->umask);
 		if (IS_ERR(filp) || !filp) {
-			PRINTK("%s: filp_open(%s) failed\n", parms->servername, path);
+			printk("%s: open(%s) failed\n", parms->servername, path);
 			response = 550;
 		} else {
-			if (filp->f_op->readdir) {
-				response = 553;
-			} else if (!filp->f_dentry || !filp->f_dentry->d_inode || !filp->f_op || !filp->f_op->write) {
+			struct file_operations *fops = filp->f_op;
+			if (!fops || !fops->write) {
 				response = 550;
+			} else if (fops->readdir) {
+				response = 553;
 			} else if (!(response = open_datasock(parms))) {
-				if (llseek(filp, 0, 0) < 0) {
-					response = 550;
-				} else {
-					filp->f_pos = 0;
-					do {
-						size = ksock_rw(parms->datasock, buf, PAGE_SIZE, 1);
-						if (size < 0) {
-							response = 426;
-							break;
-						} else if (size != (rc = filp->f_op->write(filp, buf, size, &(filp->f_pos)))) {
-							PRINTK("%s: filp->f_op->write(%d) failed; rc=%d\n", parms->servername, size, rc);
-							response = 451;
-							break;
-						}
-					} while (size > 0);
-				}
+				filp->f_pos = 0;
+				do {
+					size = ksock_rw(parms->datasock, buf, BUF_PAGES*PAGE_SIZE, 1);
+					if (size < 0) {
+						response = 426;
+						break;
+					} else if (size != (rc = fops->write(filp, buf, size, &(filp->f_pos)))) {
+						printk("%s: write(%d) failed; rc=%d\n", parms->servername, size, rc);
+						response = 451;
+						break;
+					}
+				} while (size > 0);
 				sock_release(parms->datasock);
 			}
 			filp_close(filp,NULL);
 		}
-		free_page((unsigned long)buf);
+		free_pages((unsigned long)buf, BUF_PAGES);
 	}
 	unlock_kernel();
 	return response;
@@ -1057,13 +1090,13 @@ kftpd_handle_command (server_parms_t *parms)
 
 	n = ksock_rw(parms->clientsock, buf, sizeof(buf), 0);
 	if (n < 0) {
-		PRINTK("%s: ksock_rw() failed, rc=%d\n", parms->servername, n);
+		printk("%s: ksock_rw() failed, rc=%d\n", parms->servername, n);
 		return -1;
 	} else if (n == 0) {
-		PRINTK("%s: EOF on client sock\n", parms->servername);
+		if (parms->verbose)
+			printk("%s: EOF on client sock\n", parms->servername);
 		return -1;
 	}
-	//PRINTK("%s: '%02x %02x %02x %02x %02x '\n(size=%d)\n", parms->servername, buf[0],buf[1],buf[2],buf[3],buf[4], n);
 	if (n >= sizeof(buf))
 		n = sizeof(buf) - 1;
 	buf[n] = '\0';
@@ -1071,7 +1104,8 @@ kftpd_handle_command (server_parms_t *parms)
 		buf[--n] = '\0';
 	if (buf[n - 1] == '\r')
 		buf[--n] = '\0';
-	PRINTK("%s: '%s' len=%d\n", parms->servername, buf, n);
+	if (parms->verbose)
+		printk("%s: '%s' len=%d\n", parms->servername, buf, n);
 	if (!strxcmp(buf, "QUIT", 0)) {
 		quit = 1;
 		response = 221;
@@ -1211,7 +1245,7 @@ khttpd_bad_request (server_parms_t *parms, int rcode, const char *title, const c
 	len = sprintf(buf, kttpd_response, rcode, title, title, text);
 	rc = ksock_rw(parms->clientsock, buf, len, -1);
 	if (rc != len)
-		PRINTK("%s: bad_request(): ksock_rw(%d) returned %d\n", parms->servername, len, rc);
+		printk("%s: bad_request(): ksock_rw(%d) returned %d\n", parms->servername, len, rc);
 }
 
 static int
@@ -1223,10 +1257,11 @@ khttpd_handle_connection (server_parms_t *parms)
 
 	n = ksock_rw(parms->clientsock, buf, buflen, 0);
 	if (n < 0) {
-		PRINTK("%s: client request too short, ksock_rw() failed: %d\n", parms->servername, n);
+		printk("%s: client request too short, ksock_rw() failed: %d\n", parms->servername, n);
 		return -1;
 	} else if (n == 0) {
-		PRINTK("%s: EOF on client sock\n", parms->servername);
+		if (parms->verbose)
+			printk("%s: EOF on client sock\n", parms->servername);
 		return -1;
 	}
 	while (--n && (buf[n] == '\n' || buf[n] == '\r'))
@@ -1237,7 +1272,8 @@ khttpd_handle_connection (server_parms_t *parms)
 		unsigned char *path = &buf[sizeof(GET)];
 		for (n = 0; path[n] && path[n] != ' '; ++n); // ignore and strip off all the other http parameters
 		path[n--] = '\0';
-		PRINTK("%s: '%s'\n", parms->servername, buf);
+		if (parms->verbose)
+			printk("%s: '%s'\n", parms->servername, buf);
 		// fixme? (maybe):  need to translate incoming char sequences of "%2F" to slashes
 		if (path[n] == '/') {
 			while (n > 0 && path[n] == '/')
@@ -1272,9 +1308,9 @@ ksock_accept (server_parms_t *parms)
 	if ((parms->clientsock = sock_alloc())) {
 		parms->clientsock->type = parms->servsock->type;
 		if (parms->servsock->ops->dup(parms->clientsock, parms->servsock) < 0) {
-			PRINTK("%s: sock_accept: dup() failed\n", parms->servername);
+			printk("%s: sock_accept: dup() failed\n", parms->servername);
 		} else if (parms->clientsock->ops->accept(parms->servsock, parms->clientsock, parms->servsock->file->f_flags) < 0) {
-			PRINTK("%s: sock_accept: accept() failed\n", parms->servername);
+			printk("%s: sock_accept: accept() failed\n", parms->servername);
 		} else {
 			unlock_kernel();
 			return 0;	// success
@@ -1322,19 +1358,20 @@ run_server (int use_http, struct semaphore *sem_p)
 	}
 	if (control_port) {
 		if (make_socket(parms, &parms->servsock, control_port)) {
-			PRINTK("%s: make_socket(port=%d) failed\n", parms->servername, control_port);
+			printk("%s: make_socket(port=%d) failed\n", parms->servername, control_port);
 		} else if (parms->servsock->ops->listen(parms->servsock, use_http ? 5 : 1) < 0) {
-			PRINTK("%s: listen(port=%d) failed\n", parms->servername, control_port);
+			printk("%s: listen(port=%d) failed\n", parms->servername, control_port);
 		} else {
 			printk("%s: listening on port %d\n", parms->servername, control_port);
 			while (1) {
 				if (ksock_accept(parms)) {
-					PRINTK("%s: accept() failed\n", parms->servername);
+					printk("%s: accept() failed\n", parms->servername);
 				} else {
 					if (get_clientip(parms)) {
-						PRINTK("%s: get_clientip failed\n", parms->servername);
+						printk("%s: get_clientip failed\n", parms->servername);
 					} else {
-						PRINTK("%s: connection from %s\n", parms->servername, parms->clientip);
+						if (parms->verbose)
+							printk("%s: connection from %s\n", parms->servername, parms->clientip);
 						if (parms->use_http) {
 							khttpd_handle_connection(parms);
 						} else if (!send_response(parms, 220)) {

@@ -27,7 +27,7 @@
 #include <net/scm.h>
 
 extern void sys_exit(int);
-extern const char hijack_version[];			// from arch/arm/special/hijack.c
+extern const char hijack_vXXX_by_Mark_Lord[];		// from arch/arm/special/hijack.c
 extern int strxcmp (const char *str, const char *pattern, int partial);	// hijack.c
 extern int hijack_do_command(const char *command, unsigned int size);	// notify.c 
 extern void show_message (const char *message, unsigned long time);	// hijack.c
@@ -164,7 +164,6 @@ ksock_rw (struct socket *sock, const char *buf, int buf_size, int minimum)
 		msg.msg_iov        = &iov;
 		msg.msg_iovlen     = 1;
 
-		lock_kernel();
 		if (sending) {
 			msg.msg_flags = MSG_DONTWAIT;	// asynchronous send
 			while ((rc = sock_sendmsg(sock, &msg, len)) == -EAGAIN)
@@ -172,7 +171,6 @@ ksock_rw (struct socket *sock, const char *buf, int buf_size, int minimum)
 		} else {
 			rc = sock_recvmsg(sock, &msg, len, 0);
 		}
-		unlock_kernel();
 		if (rc < 0 || (!sending && rc == 0)) {
 			if (rc && rc != -EPIPE && rc != -ECONNRESET)
 				printk("ksock_rw: %s rc=%d\n", sending ? "sock_sendmsg()" : "sock_recvmsg()", rc);
@@ -718,7 +716,6 @@ send_dirlist (server_parms_t *parms, char *path, int full_listing)
 			p.pattern = d;
 		}
 	}
-	lock_kernel();
 	filp = filp_open(path,O_RDONLY,0);
 	if (IS_ERR(filp) || !filp) {
 		printk("%s: filp_open(%s) failed\n", parms->servername, path);
@@ -789,7 +786,6 @@ send_dirlist (server_parms_t *parms, char *path, int full_listing)
 		}
 		filp_close(filp,NULL);
 	}
-	unlock_kernel();
 	return response;
 }
 
@@ -897,12 +893,12 @@ find_tags (char *buf, char *labels[], char *values[])
 		for (i = 0; i < n; ++i) {
 			if (!*values[i] && !strxcmp(buf, labels[i], 1)) {
 				buf += strlen(labels[i]);
-				if ((c = *buf) && c != '\r' && c != '\n')
+				if ((c = *buf) && c != '\n' && c != '\r')
 					values[i] = buf;
 				break;
 			}
 		}
-		while ((c = *buf) && c != '\r' && c != '\n')
+		while ((c = *buf) && c != '\n' && c != '\r')
 			++buf;
 		if (c)
 			*buf++ = '\0';
@@ -960,11 +956,11 @@ get_fid_info (char *path, char *buf, int bufsize, char *atitle, int atitlelen, c
 		buf[size] = '\0';
 		close(fd);
 		find_tags(buf, labels, (char **)&tags);
-		if (*tags.type == 't' && *tags.codec) {
-			switch (tags.codec[1]) {
-				case 'p': mimetype = audio_mpeg; break;
-				case 'm': mimetype = audio_wma;	 break;
-				case 'a': mimetype = audio_wav;	 break;
+		if (TOUPPER(*tags.type) == 'T' && *tags.codec) {
+			switch (TOUPPER(tags.codec[1])) {
+				case 'P': mimetype = audio_mpeg; break;
+				case 'M': mimetype = audio_wma;	 break;
+				case 'A': mimetype = audio_wav;	 break;
 			}
 			*ext++ = '.';
 			strcpy(ext, tags.codec);
@@ -1030,7 +1026,6 @@ typedef struct file_xfer_s {
 	int		redirected;
 	struct stat	st;
 } file_xfer_t;
-
 
 static int
 prepare_file_xfer (server_parms_t *parms, char *path, file_xfer_t *xfer, int writing)
@@ -1136,7 +1131,7 @@ send_playlist (server_parms_t *parms, char *path)
 {
 	http_response_t	*response = NULL;
 	unsigned int	secs;
-	char		*p, subpath[] = "/drive0/fids/XXXXXXXXXX", artist_title[128];
+	char		*p, subpath[] = "/drive0/fids/XXXXXXXXXX", artist_title[128], fidtype;
 	int		pfid, fid, size, used = 0, fidfiles[16], fidx = -1;	// up to 16 levels of nesting
 	static char	*labels[] = {"type=", "artist=", "title=", "codec=", "duration=", "source=", "length=", NULL};
 	struct 		{char *type, *artist, *title, *codec, *duration, *source, *length;} tags;
@@ -1159,7 +1154,8 @@ send_playlist (server_parms_t *parms, char *path)
 
 	// parse the tagfile for the tags we are interested in:
 	find_tags(parms->tmp3, labels, (char **)&tags);
-	if (tags.type[0] != 't' && tags.type[0] != 'p') {
+	fidtype = TOUPPER(tags.type[0]);
+	if (fidtype != 'T' && fidtype != 'P') {
 		response = &(http_response_t){408, "Invalid tag file"};
 		goto cleanup;
 	}
@@ -1168,7 +1164,7 @@ send_playlist (server_parms_t *parms, char *path)
 	combine_artist_title(tags.artist, tags.title, artist_title, sizeof(artist_title));
 
 	// If tagfile is for a "tune", then send a .m3u playlist for it, and quit
-	if (tags.type[0] == 't') {
+	if (fidtype == 'T') {
 		path[strlen(path)-1] = '0';
 		if (!strxcmp(tags.codec, "mp3", 0)) {
 			secs = str_val(tags.duration) / 1000;
@@ -1186,7 +1182,7 @@ send_playlist (server_parms_t *parms, char *path)
 		(parms->generate_playlist == 2) ? audio_m3u : text_html);
 	if (parms->generate_playlist == 1) {
 		used += sprintf(xfer.buf+used, "<HTML><HEAD><TITLE>Playlists: %s</TITLE></HEAD>\r\n<BODY>"
-			"<TABLE BGCOLOR=\"WHITE\" BORDER=\"2\"><THEAD><TR>\r\n"
+			"<TABLE BGCOLOR=\"WHITE\" BORDER=\"2\"><THEAD>\r\n<TR>"
 			"<TD> <A HREF=\"%x?.m3u\"><B>Play</B></A> <TD> <A HREF=\"%x\"><B>Tags</B></A> "
 			"<TD ALIGN=CENTER> <FONT SIZE=+2><B><EM>%s</EM></B></FONT> <TD> <B>Length</B> <TD> <B>Type</B> <TD> <B>Artist</B> "
 			"<TD> <B>Source</B><TBODY>\r\n", artist_title, pfid, pfid, tags.title);
@@ -1228,38 +1224,43 @@ open_fidfile:
 				used += sprintf(xfer.buf+used, "<FONT COLOR=RED>read(\"%s\") failed, rc=%d</FONT>\n", subpath, size);
 				goto aborted;
 			}
-			parms->tmp3[size] = '\0';
+			parms->tmp3[size] = '\0';	// Ensure zero-termination of the data
 
 			// parse the tagfile for the tags we are interested in:
 			find_tags(parms->tmp3, labels, (char **)&tags);
-			if (tags.type[0] != 't' && tags.type[0] != 'p') {
-				used += sprintf(xfer.buf+used, "<FONT COLOR=RED>invalid fid type in \"%s\": \"%s\"</FONT>\n", subpath, tags.type);
-				goto aborted;
+			fidtype = TOUPPER(tags.type[0]);
+			if (fidtype != 'T') {
+				if (fidtype != 'P') {
+					used += sprintf(xfer.buf+used, "<FONT COLOR=RED>%s: invalid 'type=%s'</FONT>\n", subpath, tags.type);
+					goto aborted;
+				}
+				if (parms->generate_playlist == 2)
+					goto open_fidfile;	// nest one level deeper for this playlist
 			}
-			if (parms->generate_playlist == 2 && tags.type[0] == 'p')
-				goto open_fidfile;	// nest one level deeper for this playlist
 			if (!tags.title[0])
 				tags.title = subpath;
 			secs = str_val(tags.duration) / 1000;
+
+			// spit out an appropriately formed representation for this fid:
 			if (parms->generate_playlist == 1) {
 				used += sprintf(xfer.buf+used, "<TR><TD> <A HREF=\"%x?.m3u\"><em>Play</em></A> ", fid);
-				if (tags.type[0] == 't') {
+				if (fidtype == 'T') {
+					char href1[24], *href2 = "";
+					href1[0] = '\0';
 					if (hijack_khttpd_files) {
-						used += sprintf(xfer.buf+used, "<TD> <A HREF=\"%x\"><EM>Tags</EM></A> <TD> <A HREF=\"%x\">%s</A> "
-							"<TD ALIGN=CENTER> %u:%02u <TD> %s <TD> %s&nbsp <TD> %s&nbsp \r\n",
-							fid, fid^1, tags.title, secs/60, secs%60, tags.type, tags.artist, tags.source);
-					} else {
-						used += sprintf(xfer.buf+used, "<TD> <A HREF=\"%x\"><EM>Tags</EM></A> <TD> %s "
-							"<TD ALIGN=CENTER> %u:%02u <TD> %s <TD> %s&nbsp <TD> %s&nbsp \r\n",
-							fid, tags.title, secs/60, secs%60, tags.type, tags.artist, tags.source);
+						href2 = "</A>";
+						sprintf(href1, "<A HREF=\"%x\">", fid^1);
 					}
+					used += sprintf(xfer.buf+used, "<TD> <A HREF=\"%x\"><EM>Tags</EM></A> <TD> %s%s%s "
+						"<TD ALIGN=CENTER> %u:%02u <TD> %s <TD> %s&nbsp <TD> %s&nbsp \r\n",
+						fid, href1, tags.title, href2, secs/60, secs%60, tags.type, tags.artist, tags.source);
 				} else {
 					unsigned int entries = str_val(tags.length) / 4;
 					used += sprintf(xfer.buf+used, "<TD> <A HREF=\"%x\"><EM>Tags</EM></A> <TD> <A HREF=\"%x?.html\">%s</A> "
 						"<TD ALIGN=CENTER> %u <TD> %s <TD> %s&nbsp <TD> %s&nbsp \r\n",
 						fid, fid, tags.title, entries, tags.type, tags.artist, tags.source);
 				}
-			} else if (tags.type[0] == 't') {
+			} else if (fidtype == 'T') {
 				combine_artist_title(tags.artist, tags.title, artist_title, sizeof(artist_title));
 				used += sprintf(xfer.buf+used, "#EXTINF:%u,%s\r\nhttp://%s%s\r\n",
 					secs, artist_title, parms->serverip, subpath);
@@ -1272,7 +1273,7 @@ open_fidfile:
 	}
 aborted:
 	if (parms->generate_playlist == 1)
-		used += sprintf(xfer.buf+used, "</TABLE><FONT SIZE=-2>Hijack %s by Mark Lord</FONT></BODY></HTML>\r\n", hijack_version);
+		used += sprintf(xfer.buf+used, "</TABLE><FONT SIZE=-2>%s</FONT></BODY></HTML>\r\n", hijack_vXXX_by_Mark_Lord);
 	if (used)
 		(void) ksock_rw(parms->datasock, xfer.buf, used, -1);
 cleanup:
@@ -1787,6 +1788,9 @@ khttpd_handle_connection (server_parms_t *parms)
 		else if (!strxcmp(cmds, ".m3u", 1))
 			parms->generate_playlist = 2;
 		if (parms->generate_playlist) {
+			// fixme someday: the tail portion could be used to hold the "parent fid chain"
+			// that we embed back into the outgoing html, allowing up/sideways browser links,
+			// and enabling parent fid info to be shown at the current depth.  Useful and free.
 			if (!hijack_khttpd_playlists)
 				response = &access_not_permitted;
 			else if (!glob_match(path, "/drive?/fids/??*1"))
@@ -1847,7 +1851,6 @@ ksock_accept (server_parms_t *parms)
 {
 	int rc;
 
-	lock_kernel();
 	if ((parms->clientsock = sock_alloc())) {
 		parms->clientsock->type = parms->servsock->type;
 		if (parms->servsock->ops->dup(parms->clientsock, parms->servsock) < 0) {
@@ -1857,12 +1860,10 @@ ksock_accept (server_parms_t *parms)
 		} else if (get_ipaddr(parms->clientsock, parms->clientip, 1) || get_ipaddr(parms->clientsock, parms->serverip, 0)) {
 			printk("%s: sock_accept: get_ipaddr() failed\n", parms->servername);
 		} else {
-			unlock_kernel();
 			return 0;	// success
 		}
 		sock_release(parms->clientsock);
 	}
-	unlock_kernel();
 	return 1;	// failure
 }
 

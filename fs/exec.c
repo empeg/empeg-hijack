@@ -809,6 +809,10 @@ int do_execve(char * filename, char ** argv, char ** envp, struct pt_regs * regs
 	int retval;
 	int i;
 
+	extern int hijack_player_is_restarting;	// arch/arm/special/hijack.c
+	if (!strcmp(filename, "/empeg/bin/player"))
+		hijack_player_is_restarting = 1;
+
 	bprm.p = PAGE_SIZE*MAX_ARG_PAGES-sizeof(void *);
 	for (i=0 ; i<MAX_ARG_PAGES ; i++)	/* clear page-table */
 		bprm.page[i] = 0;

@@ -299,7 +299,6 @@ struct voladj_state* voladj_intinit(
   unsigned long flags;
 
   save_flags_cli(flags);
-
   initial->output_multiplier = 0x1 << MULT_POINT;
   initial->desired_multiplier = initial->output_multiplier;
   initial->buf_size = buf_size;

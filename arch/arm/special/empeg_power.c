@@ -242,7 +242,6 @@ static void check_power(void *dev_id)
 		}
 		/* Save new state */
 		dev->newstate=state;
-		
 
 		/* Something has happened, wake up any waiters */
 		wake_up_interruptible(&dev->wq);

@@ -874,8 +874,6 @@ static void input_check_buffer(void *dev_id)
 	queue_task(&dev->timer, &tq_timer);
 }
 
-extern void hijack_init(void);
-static int hijack_got_config_file = 0;
 static int input_open(struct inode *inode, struct file *filp)
 {
 	struct input_dev *dev = input_devices;
@@ -883,8 +881,6 @@ static int input_open(struct inode *inode, struct file *filp)
 	if (users)
 		return -EBUSY;
 
-	hijack_init();
-	hijack_got_config_file = 0;	// re-read config.ini each time player restarts
 	users++;
 	MOD_INC_USE_COUNT;
 	
@@ -994,11 +990,8 @@ unsigned int input_poll(struct file *filp, poll_table *wait)
 {
 	struct input_dev *dev = filp->private_data;
 
-	if (!hijack_got_config_file) {
-		extern void hijack_read_config_file(const char *);
-		hijack_got_config_file = 1;
-		hijack_read_config_file("/empeg/var/config.ini");
-	}
+	extern void hijack_send_initial_buttons(void);
+	hijack_send_initial_buttons();
 
 	/* Add ourselves to the wait queue */
 	poll_wait(filp, &dev->wq, wait);

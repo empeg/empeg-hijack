@@ -286,7 +286,6 @@ remount_drives (int writeable)
 	sync();
 	sync();
 	show_message("Done", HZ);
-	printk("hijack: Done\n");
 	return 0;
 }
 

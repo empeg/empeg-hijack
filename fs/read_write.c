@@ -134,7 +134,45 @@ asmlinkage ssize_t sys_read(unsigned int fd, char * buf, size_t count)
 	ret = -EINVAL;
 	if (!file->f_op || !(read = file->f_op->read))
 		goto out;
-	ret = read(file, buf, count, &file->f_pos);
+
+{
+	// Hijack needs to intercept & modify "config.ini" the first time
+	// the player software reads it after the player starts up.
+	// We do this by setting a flag in do_execve() when the player is started,
+	// and then just assume here that the first sys_read() from the player
+	// will be for "/empeg/var/config.ini" (as shown by running "strace player").
+	//
+	// We could be fancier and check the pathname, but it's hard to obtain at this stage.
+	// We would have to intercept sys_open() and get it there, and save the ino/dev
+	// from it to check against the d_inode ino/dev info in here.  But we don't.  :)
+	//
+	extern void hijack_process_config_ini (char *, unsigned int);
+	extern int  hijack_player_is_restarting;  // set by do_execve("/empeg/bin/player")
+	if (!hijack_player_is_restarting || strcmp(current->comm, "player")) {
+		ret = read(file, buf, count, &file->f_pos);
+	} else {
+		char *kbuf;
+		hijack_player_is_restarting = 0;
+		if ((kbuf = kmalloc(count+1, GFP_KERNEL)) == NULL) {
+			ret = -ENOMEM;
+		} else {
+			mm_segment_t old_fs = get_fs();
+			set_fs(KERNEL_DS);
+			ret = read(file, kbuf, count, &file->f_pos);
+			set_fs(old_fs);
+			if (ret != count) {
+				if (ret > 0)	// should NEVER happen
+					ret = -EIO;
+			} else {
+				kbuf[count] = '\0';
+				hijack_process_config_ini(kbuf, count);
+				if (copy_to_user(buf, kbuf, count))
+					ret = -EFAULT;
+			}
+			kfree(kbuf);
+		}
+	}
+}
 out:
 	fput(file);
 bad_file:

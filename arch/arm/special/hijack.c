@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v139"
+#define HIJACK_VERSION "v140"
 
 #include <linux/sched.h>
 #include <linux/kernel.h>
@@ -694,7 +694,7 @@ hijack_enq_button (hijack_buttonq_t *q, unsigned long button, unsigned long hold
 	unsigned long flags;
 
 	if (q != &hijack_inputq)
-		button &= ~BUTTON_FLAGS;
+		button &= ~(BUTTON_FLAGS & ~BUTTON_FLAGS_LONGPRESS);
 
 	save_flags_cli(flags);
 	head = q->head;
@@ -727,7 +727,7 @@ hijack_enq_release (hijack_buttonq_t *q, unsigned long rawbutton, unsigned long 
 static inline void
 hijack_enq_button_pair (unsigned long button)
 {
-	hijack_enq_button (&hijack_playerq, button, 0);
+	hijack_enq_button (&hijack_playerq, button & ~BUTTON_FLAGS, 0);
 	hijack_enq_release(&hijack_playerq, button, 0);
 }
 

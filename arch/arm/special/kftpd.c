@@ -1151,16 +1151,16 @@ encode_url (unsigned char *out, unsigned char *s, int partial_encode)
 	unsigned char c, *start = out;
 
 	while ((c = *s++)) {
-		if (INRANGE(c,'a','z') || INRANGE(c,'A','Z') || c == '_' || INRANGE(c, '0','9')) {
+		if (INRANGE(c,'a','z') || INRANGE(c,'A','Z') || c == '_' || c == '-' || INRANGE(c, '0','9')) {
 			*out++ = c;
-		} else if (!partial_encode) {
+		} else if (partial_encode == 0) {
 			extern const unsigned char hexchars[];
 			*out++ = '%';
 			*out++ = hexchars[c >> 4];
 			*out++ = hexchars[c & 0xf];
 		} else if (partial_encode == 1) { // for netscape, and stupid iTunes playlist display
 			*out++ = (c == ' ' || c == '?' || c == '%' || c == '#' || c == '!' || c == '@') ? '_' : c;
-		} else {  // xml
+		} else {  // (partial_encode == 2) // for xml
 			if (c == '<' || c == '>' || c == '&') {
 				*out++ = '&';
 				if (c == '&') {
@@ -1268,7 +1268,7 @@ send_playlist (server_parms_t *parms, char *path)
 				"<BODY><TABLE BGCOLOR=\"WHITE\" BORDER=\"2\"><THEAD>\r\n"
 				"<TR><TD> <A HREF=\"/", parms->hostname, artist_title);
 			used += encode_url(xfer.buf+used, artist_title, 1);
-			used += sprintf(xfer.buf+used,"?FID=%x&EXT=.m3u\"><B>Stream</B></A> ", pfid);
+			used += sprintf(xfer.buf+used,".m3u?FID=%x&EXT=.m3u\"><B>Stream</B></A> ", pfid);
 			if (hijack_khttpd_commands) {
 				used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?NODATA&SERIAL=%%23%x\"><B>Play</B></A> ", pfid^1);
 				used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?NODATA&SERIAL=%%23%x-\"><B>Insert</B></A> ", pfid^1);

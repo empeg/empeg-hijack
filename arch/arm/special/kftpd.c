@@ -421,21 +421,27 @@ typedef struct filldir_parms_s {
 	struct super_block	*super;
 } filldir_parms_t;
 
+// Fixme: modify this to just collect data from readdir (including ino information?)
+// until buffer fills, and then return.  Caller can then format/send data.
+// Choose buffer size here to match size of packet buffer that will be used (tricky).
+// Or still do the formatting here, just don't send it.
+//
 static int	// callback routine for filp->f_op->readdir()
 filldir (void *parms, const char *name, int namelen, off_t offset, ino_t ino)
 {
-	filldir_parms_t	*p = parms;
-	unsigned int	len, mode, sent;
-	struct inode	*i;
-	struct tm	tm;
-	char		buf[512], *b, c;
+	filldir_parms_t		*p = parms;
+	unsigned int		len, mode, sent;
+	struct inode		*i;
+	struct tm		tm;
+	char			buf[512], *b, c;
 
 	if (p->rc)
 		return -EIO;
 	i = iget(p->super, ino);
 	if (!i) {
 		printk("kftp: iget(%lu) failed\n", ino);
-		return -ENOENT;
+		p->rc = -ENOENT;
+		return p->rc;	// non-zero rc causes readdir() to stop, but with no indication of an error!
 	}
 
 	b = buf;
@@ -493,7 +499,6 @@ filldir (void *parms, const char *name, int namelen, off_t offset, ino_t ino)
 				*b++ = *name++;
 		}
 	}
-
 	*b++ = '\r';
 	*b++ = '\n';
 	*b   = '\0';
@@ -509,7 +514,7 @@ filldir (void *parms, const char *name, int namelen, off_t offset, ino_t ino)
 		p->rc = -EIO;
 		printk("kftp: ksock_rw(%d) returned %d\n", len, sent);
 	}
-	return p->rc;
+	return p->rc;	// non-zero rc causes readdir() to stop, but with no indication of an error!
 }
 
 static const char *
@@ -541,15 +546,16 @@ send_dirlist (struct socket *sock, const char *path)
 			p.super		= inode->i_sb;
 			p.datasock	= datasock;
 
-			down(&inode->i_sem);
+			down(&inode->i_sem);	// This can go inside the loop
 			filp->f_pos = 0;
 			do {
+				// the return code is not meaningful unless negative:
 				rc = filp->f_op->readdir(filp, &p, filldir);
 			} while (rc >= 0 && !p.rc && filp->f_pos < inode->i_size);
 			up(&inode->i_sem);
 
 			if (p.rc) {
-				printk("kftp: ksock_rw() error %d\n", p.rc);
+				printk("kftp: filldir()/ksock_rw() error %d\n", p.rc);
 				response = "426 ksock_rw() error";
 			} else if (rc) {
 				printk("kftp: readdir() returned %d\n", rc);

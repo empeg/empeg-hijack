@@ -176,9 +176,8 @@ static unsigned int powerontime=0;
 static void powerfail_disabled_timeout(unsigned long);
 static void powerfail_reenabled_timeout(unsigned long);
 
-/* save/restore hijack savearea for user-defined-menu settings */
+/* save hijack savearea for user-defined-menu settings */
 void hijack_save_settings (unsigned char *buf);
-void hijack_restore_settings (unsigned char *buf);
 
 void enable_powerfail(int enable)
 {
@@ -244,17 +243,14 @@ static void state_getflashtype(void)
 	state_disablewrite();
 }
 
-int state_fetch(unsigned char *buffer)
+int empeg_state_restore (unsigned char *buffer)
 {
 	/* EMPEG_FLASHBASE+0x4000 to +0x5fff is the space used for
 	   the power-down state saving: we work through here until
 	   we find the last entry which has a valid CRC - this is
 	   the one we use */
-	int a,calculated_crc,stored_crc;
+	int a,calculated_crc,stored_crc, result = 0;
 	struct timeval t;
-
-	/* Nowhere to save, yet */
-	savebase=NULL;
 
 	/* Find last valid block */
 	for(a=(STATE_BLOCKS-1);a>=0;a--) {
@@ -267,13 +263,43 @@ int state_fetch(unsigned char *buffer)
 		if (calculated_crc==stored_crc) {
 			/* Copy from flash */
 			memcpy(buffer,(void*)blockptr,STATE_BLOCK_SIZE);
-			
 			break;
-			}
+		}
 	}
 
 	/* Nothing valid found? Return nulls */
-	if (a<0) memset(buffer,0,STATE_BLOCK_SIZE);
+	if (a<0) {
+		result = 1;	// failed
+		memset(buffer,0,STATE_BLOCK_SIZE);
+		printk("empegr_state_restore: FAILED\n");
+	}
+
+	/* Later empegs have an RTC */
+	if (empeg_hardwarerevision()<6) {
+		/* Before we go: the first 4 bytes of the block are the elapsed
+		   unixtime: set it */
+		unixtime=t.tv_sec=*((unsigned int*)buffer);
+		t.tv_usec=0;
+		do_settimeofday(&t);
+	}
+
+	/* Get power-on time */
+	powerontime=*((unsigned int*)(buffer+4));
+	return result;
+}
+
+static int state_fetch(unsigned char *buffer)
+{
+	/* EMPEG_FLASHBASE+0x4000 to +0x5fff is the space used for
+	   the power-down state saving: we work through here until
+	   we find the last entry which has a valid CRC - this is
+	   the one we use */
+	int a;
+
+	(void)empeg_state_restore(buffer);
+
+	/* Nowhere to save, yet */
+	savebase=NULL;
 
 	/* Work forward until we find a totally blank page */
 	for(a=0;a<STATE_BLOCKS;a++) {
@@ -323,21 +349,6 @@ int state_fetch(unsigned char *buffer)
 		/* Next block goes at the start */
 		savebase=STATE_BASE;
 	}
-
-	/* Later empegs have an RTC */
-	if (empeg_hardwarerevision()<6) {
-		/* Before we go: the first 4 bytes of the block are the elapsed
-		   unixtime: set it */
-		unixtime=t.tv_sec=*((unsigned int*)buffer);
-		t.tv_usec=0;
-		do_settimeofday(&t);
-	}
-
-	/* Get power-on time */
-	powerontime=*((unsigned int*)(buffer+4));
-
-	/* Restore hijack_savearea */
-	hijack_restore_settings(buffer);
 
 	return(0);
 }

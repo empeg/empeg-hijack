@@ -92,7 +92,7 @@ static void (*hijack_movefunc)(int) = NULL;
 static unsigned long ir_lastevent = 0, ir_lasttime = 0, ir_selected = 0, ir_releasewait = 0, ir_trigger_count = 0;;
 static unsigned long ir_menu_down = 0, ir_left_down = 0, ir_right_down = 0, ir_4_down = 0;
 static unsigned long ir_move_repeat_delay, ir_shifted = 0;
-static int *ir_numeric_input = NULL, player_ui_is_active = 0;
+static int *ir_numeric_input = NULL;
 
 #define IS_RELEASE(b)	(0 != ((b) & (((b) > 0xf) ? 0x80000000 : 1)))
 
@@ -527,7 +527,7 @@ draw_hline (unsigned short pixel_row, unsigned short pixel_col, unsigned short l
 		draw_pixel(pixel_row, pixel_col++, color);
 }
 
-static hijack_geom_t *hijack_overlay_geom = NULL;
+static const hijack_geom_t *hijack_overlay_geom = NULL;
 
 static void
 hijack_do_overlay (unsigned char *dest, unsigned char *src, const hijack_geom_t *geom)
@@ -545,10 +545,11 @@ hijack_do_overlay (unsigned char *dest, unsigned char *src, const hijack_geom_t 
 }
 
 static void
-draw_frame (unsigned char *dest, const hijack_geom_t *geom)
+draw_frame (const hijack_geom_t *geom)
 {
 	// draw a frame inside geom, one pixel smaller all around
 	// for simplicity, we only do pixels in pairs
+	unsigned char *dest = (unsigned char *)hijack_displaybuf;
 	unsigned short offset, top_or_bottom = 1;
 	short row, last_byte_offset = (geom->last_col - geom->first_col - 4) / 2;
 	offset = ((geom->first_row + 1) * (EMPEG_SCREEN_COLS / 2)) + (geom->first_col / 2) + 1;
@@ -561,6 +562,14 @@ draw_frame (unsigned char *dest, const hijack_geom_t *geom)
 		offset += (EMPEG_SCREEN_COLS / 2);
 		top_or_bottom = (--row > 0) ? 0 : 1;
 	}
+}
+
+static void
+create_overlay (const hijack_geom_t *geom)
+{
+	clear_hijack_displaybuf(COLOR0);
+	draw_frame(geom);
+	hijack_overlay_geom = geom;
 }
 
 static void
@@ -897,12 +906,9 @@ voladj_prefix_display (int firsttime)
 {
 	static const hijack_geom_t geom = {8, 8+6+KFONT_HEIGHT, 12, EMPEG_SCREEN_COLS-12};
 
-	ir_selected = 0; // paranoia?
 	if (firsttime) {
 		hijack_last_moved = jiffies ? jiffies : -1;
-		clear_hijack_displaybuf(COLOR0);
-		draw_frame((unsigned char *)hijack_displaybuf, &geom);
-		hijack_overlay_geom = (hijack_geom_t *)&geom;
+		create_overlay(&geom);
 	} else if (jiffies_since(hijack_last_moved) >= (HZ*3)) {
 		hijack_deactivate(HIJACK_INACTIVE);
 	} else {
@@ -910,9 +916,8 @@ voladj_prefix_display (int firsttime)
 		rowcol = draw_string(rowcol, "Auto VolAdj: ", COLOR3);
 		clear_text_row(rowcol, geom.last_col-4, 1);
 		rowcol = draw_string(rowcol, voladj_names[hijack_voladj_enabled], ENTRYCOLOR);
-		return NEED_REFRESH;
 	}
-	return NO_REFRESH;
+	return NO_REFRESH;	// gets overridden if overlay still active
 }
 #endif // EMPEG_KNOB_SUPPORTED
 
@@ -1598,28 +1603,25 @@ knobmenu_display (int firsttime)
 {
 	unsigned long flags;
 	hijack_buttondata_t data;
-	static const hijack_geom_t knobmenu_geom = {8, 8+6+KFONT_HEIGHT, 6, EMPEG_SCREEN_COLS-6};
+	static const hijack_geom_t geom = {8, 8+6+KFONT_HEIGHT, 6, EMPEG_SCREEN_COLS-6};
 	int rc = NO_REFRESH;
 
-	ir_selected = 0; // paranoia?
 	if (firsttime) {
 		knobmenu_pressed = 0;
 		hijack_last_moved = jiffies ? jiffies : -1;
 		ir_numeric_input = &knobmenu_index;	// allows cancel/top to reset it to 0
 		hijack_buttonlist = knobmenu_buttonlist;
 		hijack_initq(&hijack_userq);
-		clear_hijack_displaybuf(COLOR0);
-		draw_frame((unsigned char *)hijack_displaybuf, &knobmenu_geom);
-		hijack_overlay_geom = (hijack_geom_t *)&knobmenu_geom;
+		create_overlay(&geom);
 	}
 	if (knobmenu_pressed) {
 		rc = SHOW_PLAYER;
 	} else if (jiffies_since(hijack_last_moved) >= (HZ*4)) {
 		hijack_deactivate(HIJACK_INACTIVE);
 	} else {
-		unsigned int rowcol = (knobmenu_geom.first_row+4)|((knobmenu_geom.first_col+6)<<16);
+		unsigned int rowcol = (geom.first_row+4)|((geom.first_col+6)<<16);
 		rowcol = draw_string(rowcol, "Select Action: ", COLOR3);
-		clear_text_row(rowcol, knobmenu_geom.last_col-4, 1);
+		clear_text_row(rowcol, geom.last_col-4, 1);
 		(void)draw_string(rowcol, knobmenu_labels[knobmenu_index], ENTRYCOLOR);
 		rc = NEED_REFRESH;
 	}
@@ -1663,7 +1665,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,18), " Enhancements.v109 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,18), " Enhancements.v110", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -2122,12 +2124,17 @@ static int
 menu_display (int firsttime)
 {
 	unsigned long flags;
-	if (firsttime || hijack_last_moved) {
+	static int prev_menu_item;
+
+	if (firsttime) {
+		hijack_last_moved = jiffies ? jiffies : -1;
+		prev_menu_item = -1;
+	}
+	if (menu_item != prev_menu_item) {
 		unsigned int text_row;
-		ir_lasttime = jiffies;	// prevent premature exit from menu
-		hijack_last_moved = 0;
 		clear_hijack_displaybuf(COLOR0);
 		save_flags_cli(flags);
+		prev_menu_item = menu_item;
 		for (text_row = 0; text_row < EMPEG_TEXT_ROWS; ++text_row) {
 			unsigned int index = (menu_top + text_row) % menu_size;
 			unsigned int color = (index == menu_item) ? ENTRYCOLOR : COLOR2;  // COLOR2 <> PROMPTCOLOR
@@ -2138,13 +2145,14 @@ menu_display (int firsttime)
 		restore_flags(flags);
 		return NEED_REFRESH;
 	}
-	save_flags_cli(flags);
 	if (ir_selected) {
 		menu_item_t *item = &menu_table[menu_item];
 		activate_dispfunc(item->dispfunc, item->movefunc);
-	} else if (jiffies_since(ir_lasttime) > (HZ*5))
+	} else if (jiffies_since(hijack_last_moved) > (HZ*5)) {
+		save_flags_cli(flags);
 		hijack_deactivate(HIJACK_INACTIVE_PENDING); // menu timed-out
-	restore_flags(flags);
+		restore_flags(flags);
+	}
 	return NO_REFRESH;
 }
 
@@ -2175,9 +2183,8 @@ userland_display (int firsttime)
 static void
 hijack_move (int direction)
 {
-	if (hijack_status == HIJACK_ACTIVE) {
-		if (hijack_movefunc != NULL)
-			hijack_movefunc(direction);
+	if (hijack_status == HIJACK_ACTIVE && hijack_movefunc != NULL) {
+		hijack_movefunc(direction);
 		hijack_last_moved = jiffies ? jiffies : -1;
 	}
 }
@@ -2189,7 +2196,7 @@ hijack_move_repeat (void)
 		ir_left_down = jiffies ? jiffies : -1;
 		hijack_move(-1);
 		ir_lasttime = jiffies;
-	} if (ir_right_down && jiffies_since(ir_right_down) >= ir_move_repeat_delay) {
+	} else if (ir_right_down && jiffies_since(ir_right_down) >= ir_move_repeat_delay) {
 		ir_right_down = jiffies ? jiffies : -1;
 		hijack_move(+1);
 		ir_lasttime = jiffies;
@@ -2197,11 +2204,11 @@ hijack_move_repeat (void)
 }
 
 static int
-test_row (void *displaybuf, unsigned short row, unsigned long color)
+test_row (const unsigned char *displaybuf, unsigned short row, unsigned long color)
 {
 	const unsigned int offset = 12;
-	unsigned long *first = ((unsigned long *)displaybuf) + (((row * (EMPEG_SCREEN_COLS/2)) + offset) / sizeof(long));
-	unsigned long *test  = first + (((EMPEG_SCREEN_COLS/2) - (offset << 1)) / sizeof(long));
+	const unsigned long *first = ((unsigned long *)displaybuf) + (((row * (EMPEG_SCREEN_COLS/2)) + offset) / sizeof(long));
+	const unsigned long *test  = first + (((EMPEG_SCREEN_COLS/2) - (offset << 1)) / sizeof(long));
 	do {
 		if (*--test != color)
 			return 0;
@@ -2210,9 +2217,9 @@ test_row (void *displaybuf, unsigned short row, unsigned long color)
 }
 
 static int
-check_if_equalizer_is_active (unsigned char *displaybuf)
+check_if_equalizer_is_active (const unsigned char *displaybuf)
 {
-	unsigned char *row = displaybuf + (13 * (EMPEG_SCREEN_COLS/2));
+	const unsigned char *row = displaybuf + (13 * (EMPEG_SCREEN_COLS/2));
 	const unsigned char eqrow[] = {	0xf0,0xff,0xff,0xf2,0xff,0xff,
 					0xf2,0xff,0xff,0xf2,0xff,0xff,
 					0xf2,0xff,0xff,0xf2,0xff,0xff,
@@ -2225,37 +2232,38 @@ check_if_equalizer_is_active (unsigned char *displaybuf)
 }
 
 static int
-check_if_sound_adjust_is_active (void *player_buf)
+check_if_soundadj_is_active (const unsigned char *displaybuf)
 {
-	return (test_row(player_buf,  8, 0x00000000) && test_row(player_buf,  9, 0x11111111)
-	     && test_row(player_buf, 16, 0x11111111) && test_row(player_buf, 17, 0x00000000));
+	return (test_row(displaybuf,  8, 0x00000000) && test_row(displaybuf,  9, 0x11111111)
+	     && test_row(displaybuf, 16, 0x11111111) && test_row(displaybuf, 17, 0x00000000));
 }
 
 static int
-check_if_search_is_active (void *player_buf)
+check_if_search_is_active (const unsigned char *displaybuf)
 {
-	return ((test_row(player_buf,  4, 0x00000000) && test_row(player_buf,  5, 0x11111111))
-	     || (test_row(player_buf,  6, 0x00000000) && test_row(player_buf,  7, 0x11111111)));
+	return ((test_row(displaybuf,  4, 0x00000000) && test_row(displaybuf,  5, 0x11111111))
+	     || (test_row(displaybuf,  6, 0x00000000) && test_row(displaybuf,  7, 0x11111111)));
 }
 
 static int
-check_if_playermenu_is_active (void *player_buf)
+check_if_menu_is_active (const unsigned char *displaybuf)
 {
-	if (test_row(player_buf, 2, 0x00000000)) {
-		if ((test_row(player_buf, 0, 0x00000000) && test_row(player_buf, 1, 0x11111111))
-		 || (test_row(player_buf, 3, 0x11111111) && test_row(player_buf, 4, 0x00000000)))
+	if (test_row(displaybuf, 2, 0x00000000)) {
+		if ((test_row(displaybuf, 0, 0x00000000) && test_row(displaybuf, 1, 0x11111111))
+		 || (test_row(displaybuf, 3, 0x11111111) && test_row(displaybuf, 4, 0x00000000)))
 			return 1;
 	}
 	return 0;
 }
 
 static int
-check_if_player_ui_is_active (void *player_buf)
+player_ui_is_active (const unsigned char *displaybuf)
 {
-	return (check_if_playermenu_is_active(player_buf)
-	 || check_if_sound_adjust_is_active(player_buf)
-	 || check_if_search_is_active(player_buf)
-	 || check_if_equalizer_is_active(player_buf));
+	if (hijack_status != HIJACK_INACTIVE || hijack_overlay_geom)
+		return 0;
+	// Use screen-scraping to see if the player user-interface is active:
+	return (check_if_menu_is_active(displaybuf)   || check_if_soundadj_is_active(displaybuf) ||
+		check_if_search_is_active(displaybuf) || check_if_equalizer_is_active(displaybuf) );
 }
 
 #ifdef EMPEG_KNOB_SUPPORTED
@@ -2361,6 +2369,40 @@ static int hijack_check_buttonlist (unsigned long data, unsigned long delay)
 	return 0;
 }
 
+static const char   *message_text = NULL;
+static unsigned long message_time = 0;
+
+static int
+message_display (int firsttime)
+{
+	static const hijack_geom_t geom = {8, 8+6+KFONT_HEIGHT, 4, EMPEG_SCREEN_COLS-4};
+	unsigned int rowcol;
+
+	timer_started = jiffies;
+	if (firsttime) {
+		create_overlay(&geom);
+		rowcol = (geom.first_row+4)|((geom.first_col+6)<<16);
+		rowcol = draw_string(rowcol, message_text, COLOR3);
+		hijack_last_moved = jiffies ? jiffies : -1;
+	} else if (jiffies_since(hijack_last_moved) >= message_time) {
+		hijack_deactivate(HIJACK_INACTIVE);
+	}
+	return NO_REFRESH;	// gets overridden if overlay still active
+}
+
+static void
+show_message (const char *message, unsigned long time)
+{
+	unsigned long flags;
+	message_text = message;
+	message_time = time;
+	if (message && *message) {
+		save_flags_cli(flags);
+		activate_dispfunc(message_display, NULL);
+		restore_flags(flags);
+	}
+}
+
 static int
 quicktimer_display (int firsttime)
 {
@@ -2379,14 +2421,11 @@ quicktimer_display (int firsttime)
 			hijack_beep(80, 100, 30);
 		}
 		ir_numeric_input = &timer_timeout;
-		clear_hijack_displaybuf(COLOR0);
-		draw_frame((unsigned char *)hijack_displaybuf, &geom);
 		hijack_buttonlist = quicktimer_buttonlist;
-		hijack_overlay_geom = (hijack_geom_t *)&geom;
 		hijack_last_moved = jiffies ? jiffies : -1;
+		create_overlay(&geom);
 	} else if (jiffies_since(hijack_last_moved) >= (HZ*3)) {
 		hijack_deactivate(HIJACK_INACTIVE);
-		return NO_REFRESH;
 	} else {
 		while (hijack_button_deq(&hijack_userq, &data, 0)) {
 			if (!(data.button & 0x80000000))
@@ -2397,9 +2436,8 @@ quicktimer_display (int firsttime)
 		rowcol = draw_string(rowcol, "Quick Timer: ", COLOR3);
 		clear_text_row(rowcol, geom.last_col-4, 1);
 		rowcol = draw_hhmmss(rowcol, timer_timeout / (60*HZ), ENTRYCOLOR);
-		return NEED_REFRESH;
 	}
-	return NO_REFRESH;
+	return NO_REFRESH;	// gets overridden if overlay still active
 }
 
 // This routine gets first shot at IR codes as soon as they leave the translator.
@@ -2410,7 +2448,7 @@ quicktimer_display (int firsttime)
 // Note that ALL front-panel buttons send codes ONCE on press, but twice on RELEASE.
 //
 static int
-hijack_handle_button(unsigned long button, unsigned long delay)
+hijack_handle_button (unsigned long button, unsigned long delay, const unsigned char *player_buf)
 {
 	static unsigned long ir_lastpressed = -1;
 	int hijacked = 0;
@@ -2444,7 +2482,7 @@ hijack_handle_button(unsigned long button, unsigned long delay)
 					}
 				} else if (hijack_status == HIJACK_INACTIVE) {
 					int index = knobdata_index;
-					if (player_ui_is_active)
+					if (player_ui_is_active(player_buf))
 						index = 0;
 					hijacked = 1;
 					if (jiffies_since(ir_knob_down) < (HZ/2)) {	// short press?
@@ -2482,7 +2520,7 @@ hijack_handle_button(unsigned long button, unsigned long delay)
 			break;
 #endif // EMPEG_KNOB_SUPPORTED
 		case IR_RIO_MENU_PRESSED:
-			if (!player_ui_is_active) {
+			if (!player_ui_is_active(player_buf)) {
 				hijacked = 1; // hijack it and later send it with the release
 				ir_menu_down = jiffies ? jiffies : -1;
 			}
@@ -2492,7 +2530,7 @@ hijack_handle_button(unsigned long button, unsigned long delay)
 		case IR_RIO_MENU_RELEASED:
 			if (hijack_status != HIJACK_INACTIVE) {
 				hijacked = 1;
-			} else if (ir_menu_down && !player_ui_is_active) {
+			} else if (ir_menu_down && !player_ui_is_active(player_buf)) {
 				hijack_button_enq(&hijack_playerq, IR_RIO_MENU_PRESSED, 0);
 				ir_releasewait = 0;
 			}
@@ -2552,7 +2590,7 @@ hijack_handle_button(unsigned long button, unsigned long delay)
 				hijacked = 1;
 			break;
 		case IR_RIO_4_PRESSED:
-			if (hijack_status == HIJACK_INACTIVE && !player_ui_is_active) {
+			if (hijack_status == HIJACK_INACTIVE && !player_ui_is_active(player_buf)) {
 				hijacked = 1; // hijack it and later send it with the release
 				ir_4_down = jiffies ? jiffies : -1;
 			}
@@ -2560,7 +2598,7 @@ hijack_handle_button(unsigned long button, unsigned long delay)
 		case IR_RIO_4_RELEASED:
 			if (hijack_status != HIJACK_INACTIVE) {
 				hijacked = 1;
-			} else if (!player_ui_is_active && ir_4_down) {
+			} else if (!player_ui_is_active(player_buf) && ir_4_down) {
 				if (get_current_mixer_source() != 'T') {
 					hijacked = 1;
 					activate_dispfunc(quicktimer_display, timer_move);
@@ -2573,7 +2611,7 @@ hijack_handle_button(unsigned long button, unsigned long delay)
 			break;
 		case IR_KW_4_PRESSED:
 		case IR_KW_4_RELEASED:
-			if (hijack_status == HIJACK_INACTIVE && !player_ui_is_active && get_current_mixer_source() != 'T') {
+			if (hijack_status == HIJACK_INACTIVE && !player_ui_is_active(player_buf) && get_current_mixer_source() != 'T') {
 				hijacked = 1;
 				if (button == IR_KW_4_RELEASED)
 					activate_dispfunc(quicktimer_display, timer_move);
@@ -2608,14 +2646,14 @@ hijack_send_buttons_to_player (void)
 }
 
 static void
-hijack_handle_buttons (void)
+hijack_handle_buttons (const char *player_buf)
 {
-	hijack_buttondata_t data;
-	unsigned long flags;
+	hijack_buttondata_t	data;
+	unsigned long		flags;
 
 	while (hijack_button_deq(&hijack_inputq, &data, 1)) {
 		save_flags_cli(flags);
-		hijack_handle_button(data.button, data.delay);
+		hijack_handle_button(data.button, data.delay, player_buf);
 		restore_flags(flags);
 	}
 }
@@ -2666,7 +2704,7 @@ input_append_code2 (unsigned long button)
 
 	released = (button <= 0xf) ? (button & 1) : (button >> 31);
 	if (released) {
-		if (ir_downkey == -1)	// FIXME? just send the code anyway?
+		if (ir_downkey == -1)	// FIXME? we could just send the code regardless.. ??
 			return;	// already taken care of (we hope)
 		ir_downkey = -1;
 	} else {
@@ -2789,7 +2827,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	restore_flags(flags);
 
 	// Handle any buttons that may be queued up
-	hijack_handle_buttons();
+	hijack_handle_buttons(player_buf);
 	hijack_send_buttons_to_player();
 
 	save_flags_cli(flags);
@@ -2850,32 +2888,33 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 				restore_flags(flags);
 				refresh = hijack_dispfunc(0);
 				save_flags_cli(flags);
-				if (ir_selected && hijack_dispfunc != userland_display
-#ifdef EMPEG_KNOB_SUPPORTED
-				 && hijack_dispfunc != knobmenu_display && hijack_dispfunc != voladj_prefix_display
-#endif // EMPEG_KNOB_SUPPORTED
-				 && hijack_dispfunc != quicktimer_display
-				){
-					if (hijack_dispfunc == forcepower_display)
-						activate_dispfunc(reboot_display, NULL);
-					else
-						activate_dispfunc(menu_display, menu_move);
+				if (ir_selected && !hijack_overlay_geom) {
+					if (hijack_dispfunc != userland_display) {
+						if (hijack_dispfunc == menu_display) {
+							menu_item_t *item = &menu_table[menu_item];
+							activate_dispfunc(item->dispfunc, item->movefunc);
+						} else if (hijack_dispfunc == forcepower_display) {
+							activate_dispfunc(reboot_display, NULL);
+						} else {
+							activate_dispfunc(menu_display, menu_move);
+						}
+					}
 				}
 			}
 			if (refresh == SHOW_PLAYER) {
 				refresh = NEED_REFRESH;
 				buf = player_buf;
 			} else if (hijack_overlay_geom) {
-				hijack_do_overlay (player_buf, (unsigned char *)hijack_displaybuf, hijack_overlay_geom);
+				refresh = NEED_REFRESH;
 				buf = player_buf;
+				hijack_do_overlay(player_buf, (unsigned char *)hijack_displaybuf, hijack_overlay_geom);
 			}
 			break;
 		case HIJACK_PENDING:
+			ir_selected = 0;
 			buf = (unsigned char *)hijack_displaybuf;
-			if (!ir_releasewait) {
-				ir_selected = 0;
+			if (!ir_releasewait)
 				hijack_status = HIJACK_ACTIVE;
-			}
 			break;
 		case HIJACK_INACTIVE_PENDING:
 			if (!ir_releasewait || jiffies_since(ir_lasttime) > (2*HZ)) // timeout == safeguard
@@ -2885,10 +2924,6 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 			hijack_deactivate(HIJACK_INACTIVE_PENDING);
 			break;
 	}
-	// Use screen-scraping to keep track of some of the player states:
-	player_ui_is_active = 0;
-	if (buf == player_buf && !hijack_overlay_geom)
-		player_ui_is_active = check_if_player_ui_is_active(buf);
 	restore_flags(flags);
 
 	// Prevent screen burn-in on an inactive/unattended player:
@@ -3238,138 +3273,6 @@ menu_init (void)
 	while (menu_table[menu_item].label == NULL)
 		--menu_item;
 	menu_top = (menu_item ? menu_item : menu_size) - 1;
-}
-
-#ifdef RESTORE_CARVISUALS
-
-static void
-fix_visuals (unsigned char *buf)
-{
-	restore_carvisuals = 0;
-	if (carvisuals_enabled) {
-		switch (buf[0x0e] & 7) { // examine the saved mixer source
-			case 1: // Tuner FM
-				if ((buf[0x4c] & 0x10) == 0) {	// FM visuals visible ?
-					info_screenrow = 0;	// "chickenfoot"
-					restore_carvisuals = (buf[0x42] - 1) & 3;
-					buf[0x4c] = buf[0x4c] |  0x10;
-					buf[0x42] = buf[0x42] & ~0x03;
-				}
-				break;
-			case 2: // Main/Mp3
-				if ((buf[0x4c] & 0x04) == 0) {	// MP3 visuals visible ?
-					info_screenrow = 15;
-					restore_carvisuals = (buf[0x40] & 3) + 2 + (buf[0x4d] & 1);
-					// switch to "track" mode on startup (because it's easy to detect later one),
-					// and then restore the original mode when the track info appears in the screen buffer.
-					buf[0x40] = (buf[0x40] & ~0x03) | 0x02;
-					buf[0x4c] =  buf[0x4c]          | 0x04;
-					buf[0x4d] = (buf[0x4d] & ~0x07) | 0x03;
-				}
-				break;
-			case 3: // Aux
-				if ((buf[0x4c] & 0x08) == 0) {	// AUX visuals visible ?
-					info_screenrow = 8;
-					restore_carvisuals = (buf[0x41] & 3) + 1;
-					buf[0x41] = (buf[0x41] & ~0x03) | 0x02;
-					buf[0x4c] =  buf[0x4c]          | 0x08;
-				}
-				break;
-			case 4: // Tuner AM
-				if ((buf[0x4c] & 0x20) == 0) {	// AM visuals visible ?
-					info_screenrow = 0;	// "chickenfoot"
-					restore_carvisuals = (buf[0x43] - 1) & 3;
-					buf[0x4c] = buf[0x4c] |  0x20;
-					buf[0x43] = buf[0x43] & ~0x03;
-				}
-				break;
-		}
-	}
-}
-#endif // RESTORE_CARVISUALS
-
-#define HIJACK_SAVEAREA_OFFSET (128 - 2 - sizeof(hijack_savearea))
-
-void	// invoked from empeg_state.c
-hijack_save_settings (unsigned char *buf)
-{
-	// save state
-	if (empeg_on_dc_power)
-		hijack_savearea.voladj_dc_power	= hijack_voladj_enabled;
-	else
-		hijack_savearea.voladj_ac_power	= hijack_voladj_enabled;
-	hijack_savearea.blanker_timeout		= blanker_timeout;
-	hijack_savearea.maxtemp_threshold	= maxtemp_threshold;
-	hijack_savearea.onedrive		= hijack_onedrive;
-#ifdef EMPEG_KNOB_SUPPORTED
-{
-	unsigned int knob;
-	hijack_savearea.knobjog			= hijack_knobjog;
-	if (knobdata_index == 1)
-		knob = (1 << KNOBDATA_BITS) | knobmenu_index;
-	else
-		knob = knobdata_index;
-	if (empeg_on_dc_power)
-		hijack_savearea.knob_dc = knob;
-	else
-		hijack_savearea.knob_ac = knob;
-}
-#endif // EMPEG_KNOB_SUPPORTED
-	hijack_savearea.blanker_sensitivity	= blanker_sensitivity;
-	hijack_savearea.timer_action		= timer_action;
-	hijack_savearea.menu_item		= menu_item;
-	hijack_savearea.restore_visuals		= carvisuals_enabled;
-	hijack_savearea.fsck_disabled		= hijack_fsck_disabled;
-	hijack_savearea.force_power		= hijack_force_power;
-	hijack_savearea.byte3_leftover		= 0;
-	hijack_savearea.byte5_leftover		= 0;
-	hijack_savearea.byte6_leftover		= 0;
-	memcpy(buf+HIJACK_SAVEAREA_OFFSET, &hijack_savearea, sizeof(hijack_savearea));
-}
-
-void	// invoked from empeg_state.c
-hijack_restore_settings (unsigned char *buf)
-{
-	// restore state
-	memcpy(&hijack_savearea, buf+HIJACK_SAVEAREA_OFFSET, sizeof(hijack_savearea));
-
-	empeg_on_dc_power = ((GPLR & EMPEG_EXTPOWER) != 0);
-
-	hijack_force_power		= hijack_savearea.force_power;
-	if (hijack_force_power & 2)
-		empeg_on_dc_power = hijack_force_power & 1;
-	if (empeg_on_dc_power)
-		hijack_voladj_enabled	= hijack_savearea.voladj_dc_power;
-	else
-		hijack_voladj_enabled	= hijack_savearea.voladj_ac_power;
-	blanker_timeout			= hijack_savearea.blanker_timeout;
-	maxtemp_threshold		= hijack_savearea.maxtemp_threshold;
-	hijack_onedrive			= hijack_savearea.onedrive;
-#ifdef EMPEG_KNOB_SUPPORTED
-{
-	unsigned int knob;
-	hijack_knobjog			= hijack_savearea.knobjog;
-	knob = empeg_on_dc_power ? hijack_savearea.knob_dc : hijack_savearea.knob_ac;
-	if ((knob & (1 << KNOBDATA_BITS)) == 0) {
-		knobmenu_index		= 0;
-		knobdata_index		= knob;
-	} else {
-		knobmenu_index		= knob & ((1 << KNOBDATA_BITS) - 1);
-		knobdata_index		= 1;
-	}
-}
-#endif // EMPEG_KNOB_SUPPORTED
-	blanker_sensitivity		= hijack_savearea.blanker_sensitivity;
-	timer_action			= hijack_savearea.timer_action;
-	menu_item			= hijack_savearea.menu_item;
-	menu_init();
-	carvisuals_enabled		= hijack_savearea.restore_visuals;
-	hijack_fsck_disabled		= hijack_savearea.fsck_disabled;
-
-#ifdef RESTORE_CARVISUALS
-	if (empeg_on_dc_power)
-		fix_visuals(buf);
-#endif // RESTORE_CARVISUALS
 }
 
 static int
@@ -3791,6 +3694,93 @@ hijack_read_config_file (const char *path)
 	hijack_set_voladj_parms();
 }
 
+#ifdef RESTORE_CARVISUALS
+
+static void
+fix_visuals (unsigned char *buf)
+{
+	restore_carvisuals = 0;
+	if (carvisuals_enabled) {
+		switch (buf[0x0e] & 7) { // examine the saved mixer source
+			case 1: // Tuner FM
+				if ((buf[0x4c] & 0x10) == 0) {	// FM visuals visible ?
+					info_screenrow = 0;	// "chickenfoot"
+					restore_carvisuals = (buf[0x42] - 1) & 3;
+					buf[0x4c] = buf[0x4c] |  0x10;
+					buf[0x42] = buf[0x42] & ~0x03;
+				}
+				break;
+			case 2: // Main/Mp3
+				if ((buf[0x4c] & 0x04) == 0) {	// MP3 visuals visible ?
+					info_screenrow = 15;
+					restore_carvisuals = (buf[0x40] & 3) + 2 + (buf[0x4d] & 1);
+					// switch to "track" mode on startup (because it's easy to detect later one),
+					// and then restore the original mode when the track info appears in the screen buffer.
+					buf[0x40] = (buf[0x40] & ~0x03) | 0x02;
+					buf[0x4c] =  buf[0x4c]          | 0x04;
+					buf[0x4d] = (buf[0x4d] & ~0x07) | 0x03;
+				}
+				break;
+			case 3: // Aux
+				if ((buf[0x4c] & 0x08) == 0) {	// AUX visuals visible ?
+					info_screenrow = 8;
+					restore_carvisuals = (buf[0x41] & 3) + 1;
+					buf[0x41] = (buf[0x41] & ~0x03) | 0x02;
+					buf[0x4c] =  buf[0x4c]          | 0x08;
+				}
+				break;
+			case 4: // Tuner AM
+				if ((buf[0x4c] & 0x20) == 0) {	// AM visuals visible ?
+					info_screenrow = 0;	// "chickenfoot"
+					restore_carvisuals = (buf[0x43] - 1) & 3;
+					buf[0x4c] = buf[0x4c] |  0x20;
+					buf[0x43] = buf[0x43] & ~0x03;
+				}
+				break;
+		}
+	}
+}
+#endif // RESTORE_CARVISUALS
+
+#define HIJACK_SAVEAREA_OFFSET (128 - 2 - sizeof(hijack_savearea))
+
+void	// invoked from empeg_state.c
+hijack_save_settings (unsigned char *buf)
+{
+	// save state
+	if (empeg_on_dc_power)
+		hijack_savearea.voladj_dc_power	= hijack_voladj_enabled;
+	else
+		hijack_savearea.voladj_ac_power	= hijack_voladj_enabled;
+	hijack_savearea.blanker_timeout		= blanker_timeout;
+	hijack_savearea.maxtemp_threshold	= maxtemp_threshold;
+	hijack_savearea.onedrive		= hijack_onedrive;
+#ifdef EMPEG_KNOB_SUPPORTED
+{
+	unsigned int knob;
+	hijack_savearea.knobjog			= hijack_knobjog;
+	if (knobdata_index == 1)
+		knob = (1 << KNOBDATA_BITS) | knobmenu_index;
+	else
+		knob = knobdata_index;
+	if (empeg_on_dc_power)
+		hijack_savearea.knob_dc = knob;
+	else
+		hijack_savearea.knob_ac = knob;
+}
+#endif // EMPEG_KNOB_SUPPORTED
+	hijack_savearea.blanker_sensitivity	= blanker_sensitivity;
+	hijack_savearea.timer_action		= timer_action;
+	hijack_savearea.menu_item		= menu_item;
+	hijack_savearea.restore_visuals		= carvisuals_enabled;
+	hijack_savearea.fsck_disabled		= hijack_fsck_disabled;
+	hijack_savearea.force_power		= hijack_force_power;
+	hijack_savearea.byte3_leftover		= 0;
+	hijack_savearea.byte5_leftover		= 0;
+	hijack_savearea.byte6_leftover		= 0;
+	memcpy(buf+HIJACK_SAVEAREA_OFFSET, &hijack_savearea, sizeof(hijack_savearea));
+}
+
 // initial setup of hijack menu system
 void
 hijack_init (void)	// invoked from empeg_display.c
@@ -3807,6 +3797,61 @@ hijack_init (void)	// invoked from empeg_display.c
 #ifdef CONFIG_PROC_FS
 		proc_register(&proc_root, &notify_proc_entry);
 #endif
+	}
+}
+
+void	// invoked from empeg_display.c
+hijack_restore_settings (void)
+{
+	extern int empeg_state_restore(unsigned char *);	// arch/arm/special/empeg_state.c
+	unsigned char buf[128];
+	int failed;
+
+	hijack_init();
+	failed = empeg_state_restore(buf);
+
+	// restore state
+	memcpy(&hijack_savearea, buf+HIJACK_SAVEAREA_OFFSET, sizeof(hijack_savearea));
+
+	hijack_force_power		= hijack_savearea.force_power;
+	if (hijack_force_power & 2)
+		empeg_on_dc_power	= hijack_force_power & 1;
+	else
+		empeg_on_dc_power	= ((GPLR & EMPEG_EXTPOWER) != 0);
+	if (empeg_on_dc_power)
+		hijack_voladj_enabled	= hijack_savearea.voladj_dc_power;
+	else
+		hijack_voladj_enabled	= hijack_savearea.voladj_ac_power;
+	blanker_timeout			= hijack_savearea.blanker_timeout;
+	maxtemp_threshold		= hijack_savearea.maxtemp_threshold;
+	hijack_onedrive			= hijack_savearea.onedrive;
+#ifdef EMPEG_KNOB_SUPPORTED
+{
+	unsigned int knob;
+	hijack_knobjog			= hijack_savearea.knobjog;
+	knob = empeg_on_dc_power ? hijack_savearea.knob_dc : hijack_savearea.knob_ac;
+	if ((knob & (1 << KNOBDATA_BITS)) == 0) {
+		knobmenu_index		= 0;
+		knobdata_index		= knob;
+	} else {
+		knobmenu_index		= knob & ((1 << KNOBDATA_BITS) - 1);
+		knobdata_index		= 1;
+	}
+}
+#endif // EMPEG_KNOB_SUPPORTED
+	blanker_sensitivity		= hijack_savearea.blanker_sensitivity;
+	timer_action			= hijack_savearea.timer_action;
+	menu_item			= hijack_savearea.menu_item;
+	menu_init();
+	carvisuals_enabled		= hijack_savearea.restore_visuals;
+	hijack_fsck_disabled		= hijack_savearea.fsck_disabled;
+
+#ifdef RESTORE_CARVISUALS
+	if (empeg_on_dc_power)
+		fix_visuals(buf);
+#endif // RESTORE_CARVISUALS
+	if (failed) {
+		show_message("Settings have been lost", 7*HZ);
 	}
 }
 

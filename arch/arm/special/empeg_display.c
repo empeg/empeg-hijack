@@ -1277,12 +1277,7 @@ void __init empeg_display_init(void)
 	*lcd_command1=0xaf;
 	udelay(1);
 #endif
-{
-	unsigned char ignored[128];
-	extern int state_fetch(unsigned char *);
-	hijack_init();
-	state_fetch(ignored);
-}
+	hijack_restore_settings();
 	handle_splash(dev);
 	printk("empeg display initialised.\n");
 }

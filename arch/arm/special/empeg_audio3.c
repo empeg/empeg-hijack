@@ -626,9 +626,14 @@ static struct file_operations audio_fops =
 	open:		empeg_audio_open,
 };
 
-void hijack_voladj_intinit(int factor_per_second, int minvol, int headroom, int real_silence, int fake_silence)
+void hijack_voladj_intinit (	int factor_per_second, int minvol, int headroom, int real_silence, int fake_silence)
 {
 	(void)voladj_intinit(&audio[0].voladj, AUDIO_BUFFER_SIZE, factor_per_second, minvol, headroom, real_silence, fake_silence);
+}
+
+void hijack_beep (int pitch, int duration_msecs, int vol_percent)
+{
+	(void)empeg_audio_beep(&audio[0], pitch, duration_msecs, vol_percent); // parameters:  dev, pitch:48-96, duration:msec, vol:0-100
 }
 
 int __init empeg_audio_init(void)

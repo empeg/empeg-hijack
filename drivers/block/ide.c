@@ -618,6 +618,7 @@ static void pre_reset (ide_drive_t *drive)
 	        // we want irq ALWAYS unmasked from start
 #if defined( CONFIG_SA1100_EMPEG )
 		drive->unmask = 1;
+		drive->keep_settings = 1;
 #else
 		drive->unmask = 0;
 #endif
@@ -2423,6 +2424,7 @@ void ide_fixstring (byte *s, const int bytecount, const int byteswap)
 		*p++ = '\0';
 }
 
+#ifndef CONFIG_SA1100_EMPEG
 /*
  * stridx() returns the offset of c within s,
  * or -1 if c is '\0' or not found within s.
@@ -2553,7 +2555,6 @@ __initfunc(static int match_parm (char *s, const char *keywords[], int vals[], i
  * "ide0=ali14xx"	: probe/support ali14xx chipsets (ALI M1439, M1443, M1445)
  * "ide0=umc8672"	: probe/support umc8672 chipsets
  */
-#ifndef CONFIG_SA1100_EMPEG
 __initfunc(void ide_setup (char *s))
 {
 	int i, vals[3];

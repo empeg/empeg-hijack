@@ -32,6 +32,17 @@
 #undef REALLY_FAST_IO			/* define if ide ports are perfect */
 #define INITIAL_MULT_COUNT	0	/* off=0; on=2,4,8,16,32, etc.. */
 
+#ifdef CONFIG_SA1100_EMPEG
+#undef  REALLY_SLOW_IO
+#undef  INITIAL_MULT_COUNT
+#define INITIAL_MULT_COUNT	8
+#define SUPPORT_SLOW_DATA_PORTS	0
+#define SUPPORT_VLB_SYNC	0
+#define FAKE_FDISK_FOR_EZDRIVE	0
+#define FANCY_STATUS_DUMPS	0
+#define REALLY_FAST_IO		1
+#endif
+
 #ifndef SUPPORT_SLOW_DATA_PORTS		/* 1 to support slow data ports */
 #define SUPPORT_SLOW_DATA_PORTS	1	/* 0 to reduce kernel size */
 #endif
@@ -48,11 +59,7 @@
 #define FAKE_FDISK_FOR_EZDRIVE 	1	/* 0 to reduce kernel size */
 #endif
 #ifndef FANCY_STATUS_DUMPS		/* 1 for human-readable drive errors */
-#ifdef CONFIG_SA1100_EMPEG
-#define FANCY_STATUS_DUMPS	0	/* 0 to reduce kernel size */
-#else
 #define FANCY_STATUS_DUMPS	1	/* 0 to reduce kernel size */
-#endif
 #endif
 
 #ifdef CONFIG_BLK_DEV_CMD640

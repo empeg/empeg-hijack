@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v372"
+#define HIJACK_VERSION	"v373"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -5013,7 +5013,7 @@ reset_hijack_options (void)
 		++h;
 	}
 #ifdef EMPEG_KNOB_SUPPORTED
-	if (player_version >= MK2_PLAYER_v3a1)
+	if (player_version >= MK2_PLAYER_v3a1 && player_version <= MK2_PLAYER_v3a6)
 		hijack_spindown_seconds /= 2;
 #endif
 }

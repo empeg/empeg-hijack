@@ -212,7 +212,7 @@ static response_t response_table[] = {
 static int
 kftpd_send_response (server_parms_t *parms, int rcode)
 {
-	char		*buf = parms->tmp3;
+	char		buf[512];
 	int		len, rc;
 	response_t	*r = response_table;
 
@@ -445,7 +445,8 @@ glob_match (const char *n, const char *p)
 typedef struct filldir_parms_s {
 	unsigned short		current_year;	// current calendar year (YYYY), according to the Empeg
 	unsigned short		full_listing;	// 0 == names only, 1 == "ls -al"
-	int			use_http;	// 0 == ftp, 1 == http
+	unsigned short		use_http;	// 0 == ftp, 1 == http
+	unsigned short		filecount;	// 0 == end of directory
 	unsigned long		blockcount;	// for "total xxxx" line at end of kftpd dir listing
 	struct super_block	*sb;		// superblock of filesystem, needed for inode lookups
 	char			*pattern;	// for filename globbing (pattern matching for mget/mput/list)
@@ -470,6 +471,7 @@ filldir (void *data, const char *name, int namelen, off_t offset, ino_t ino)
 	char		*n, *zname;
 	unsigned int	len;
 
+	++p->filecount;
 	if (name[0] == '.' && namelen <= 2) {
 		if (namelen == 1) {
 			if (p->use_http || !hijack_kftpd_show_dotdir)
@@ -736,6 +738,7 @@ send_dirlist (server_parms_t *parms, char *path, int full_listing)
 				p.buf_used = sprintf(p.buf, dirlist_header, path, path);
 			do {
 				p.nam_used = 0;
+				p.filecount = 0;
 				schedule(); // give the music player a chance to run
 				down(&inode->i_sem);
 				rc = readdir(filp, &p, filldir);	// anything "< 0" is an error
@@ -757,7 +760,7 @@ send_dirlist (server_parms_t *parms, char *path, int full_listing)
 						}
 					}
 				}
-			} while (!rc && p.nam_used);
+			} while (!rc && p.filecount);
 			if (rc || (rc = send_dirlist_buf(parms, &p, 1)))
 				response = 426;
 			if (!parms->use_http)

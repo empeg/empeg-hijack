@@ -163,7 +163,7 @@ ksock_rw (struct socket *sock, char *buf, int buf_size, int minimum)
 		}
 		unlock_kernel();
 		if (rc < 0 || (!sending && rc == 0)) {
-			if (rc)
+			if (rc && rc != -EPIPE)
 				printk("ksock_rw: %s rc=%d\n", sending ? "sock_sendmsg()" : "sock_recvmsg()", rc);
 			break;
 		}
@@ -740,6 +740,7 @@ send_dirlist (server_parms_t *parms, char *path, int full_listing)
 				p.buf_used = sprintf(p.buf, dirlist_header, path, path);
 			do {
 				p.nam_used = 0;
+				schedule(); // give the music player a chance to run
 				down(&inode->i_sem);
 				rc = readdir(filp, &p, filldir);	// anything "< 0" is an error
 				up(&inode->i_sem);
@@ -796,7 +797,7 @@ khttpd_respond (server_parms_t *parms, int rcode, const char *title, const char 
 
 	len = sprintf(buf, kttpd_response, rcode, title, rcode, title, title, text ? text : "");
 	rc = ksock_rw(parms->clientsock, buf, len, -1);
-	if (rc != len)
+	if (rc != len && parms->verbose)
 		printk("%s: respond(): ksock_rw(%d) returned %d\n", parms->servername, len, rc);
 }
 
@@ -914,6 +915,7 @@ send_file (server_parms_t *parms, char *path)
 			} else if (!(response = open_datasock(parms))) {
 				if (!parms->use_http || !(response = khttp_send_file_header(parms, path, inode->i_size, buf))) {
 					do {
+						schedule(); // give the music player a chance to run
 						size = fops->read(filp, buf, BUF_PAGES*PAGE_SIZE, &(filp->f_pos));
 						if (size < 0) {
 							printk("%s: read() failed; rc=%d\n", parms->servername, size);
@@ -1011,6 +1013,7 @@ receive_file (server_parms_t *parms, const char *path)
 				response = 553;
 			} else if (!(response = open_datasock(parms))) {
 				do {
+					schedule(); // give the music player a chance to run
 					size = ksock_rw(parms->datasock, buf, BUF_PAGES*PAGE_SIZE, 1);
 					if (size < 0) {
 						response = 426;

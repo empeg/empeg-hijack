@@ -735,7 +735,7 @@ static struct file_operations audio_fops =
 
 
 extern int getbitset(void);
-static int voladj_enabled;
+int voladj_enabled;
 void enable_disable_voladj (int on_off)
 {
 	voladj_enabled = on_off ? 1 : 0;
@@ -775,7 +775,7 @@ int __init empeg_audio_init(void)
             30,                             /* real_silence */
             80                              /* fake_silence */
             );
-	enable_disable_voladj(getbitset() & EMPEG_POWER_FLAG_DC);
+	//enable_disable_voladj(getbitset() & EMPEG_POWER_FLAG_DC);
 
 	/* Set up queue: note that two buffers could be DMA'ed any any time,
 	   and so we use two fewer marked as "free" */

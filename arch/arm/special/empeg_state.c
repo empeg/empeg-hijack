@@ -238,6 +238,9 @@ static void state_getflashtype(void)
 	state_disablewrite();
 }
 
+extern int voladj_enabled;
+void enable_disable_voladj (int on_off);
+
 static int state_fetch(unsigned char *buffer)
 {
 	/* EMPEG_FLASHBASE+0x4000 to +0x5fff is the space used for
@@ -246,6 +249,7 @@ static int state_fetch(unsigned char *buffer)
 	   the one we use */
 	int a,calculated_crc,stored_crc;
 	struct timeval t;
+	unsigned int ttime;
 
 	/* Nowhere to save, yet */
 	savebase=NULL;
@@ -319,10 +323,15 @@ static int state_fetch(unsigned char *buffer)
 	}
 
 	/* Later empegs have an RTC */
+	/* Before we go: the first 4 bytes of the block are the elapsed
+	   unixtime: set it */
+	// We steal the LS-bit to store the voladj state
+	ttime = *((unsigned int*)buffer);
+	enable_disable_voladj(ttime & 1);
+	ttime &= ~1;
+	
 	if (empeg_hardwarerevision()<6) {
-		/* Before we go: the first 4 bytes of the block are the elapsed
-		   unixtime: set it */
-		unixtime=t.tv_sec=*((unsigned int*)buffer);
+		unixtime=t.tv_sec=ttime;
 		t.tv_usec=0;
 		do_settimeofday(&t);
 	}
@@ -340,7 +349,8 @@ static inline int state_store(void)
 	volatile unsigned short *from=(volatile unsigned short*)state_devices[0].read_buffer;
 	
 	/* Store current unixtime */
-	*((unsigned int*)from)=xtime.tv_sec;
+	// We steal the LS-bit to store the voladj state
+	*((unsigned int*)from)=(xtime.tv_sec & ~1) | voladj_enabled;
 
 	/* Store current power-on time */
 	*((unsigned int*)(from+2))=(xtime.tv_sec-unixtime)+powerontime;

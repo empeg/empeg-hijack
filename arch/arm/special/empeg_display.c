@@ -523,11 +523,12 @@ static void display_queue_add(struct display_dev *dev)
 #define GAME_OVER 0x11
 #define GAME_PADDLE_SIZE 8
 
-int game_is_active;
 static unsigned char game_buffer[GAME_ROWS][GAME_COLS];
 static int game_over, game_row, game_col, game_hdir, game_vdir, game_paddle_col, game_paddle_lastdir, game_speed, game_bricks;
 static unsigned long game_starttime, game_ball_lastmove, game_paddle_lastmove, game_animbase = 0, game_animtime;
-extern unsigned long knob_down;
+
+// These are set by empeg_input.c
+unsigned int game_is_active = 0, game_knob_down, game_left_down, game_right_down, game_select_count = 0;
 
 static void game_start (void)
 {
@@ -649,9 +650,19 @@ static void game_move_ball (void)
 		game_finale();
 		return;
 	}
-	if ((jiffies - game_ball_lastmove) < (HZ/game_speed))
-		return;
 	save_flags_cli(flags);
+	if (game_left_down && (jiffies - game_left_down) >= (HZ/15)) {
+		game_left_down = jiffies ? jiffies : 1;
+		game_move_left();
+	}
+	if (game_right_down && (jiffies - game_right_down) >= (HZ/15)) {
+		game_right_down = jiffies ? jiffies : 1;
+		game_move_right();
+	}
+	if ((jiffies - game_ball_lastmove) < (HZ/game_speed)) {
+		restore_flags(flags);
+		return;
+	}
 	game_ball_lastmove = jiffies;
 	game_buffer[game_row][game_col] = 0;
 	game_row += game_vdir;
@@ -682,7 +693,7 @@ static void game_move_ball (void)
 	}
 	if (game_buffer[game_row][game_col] == GAME_OVER)
 		game_over = 1;
-	game_buffer[game_row][game_col] = game_over ? 0 : GAME_BALL;
+	game_buffer[game_row][game_col] = GAME_BALL;
 	restore_flags(flags);
 }
 
@@ -692,8 +703,8 @@ static void game_move_ball (void)
 void display_queue_draw(struct display_dev *dev)
 {
 	unsigned long flags;
+	save_flags_cli(flags);
 	if (dev->queue_used) {
-		save_flags_cli(flags);
 		DEBUGK("Spare in queue. Removing one.\n");
 		DEBUGK("Before: rp=%d, wp=%d, free=%d, used=%d.\n",
 		       dev->queue_rp,
@@ -708,14 +719,15 @@ void display_queue_draw(struct display_dev *dev)
 		       dev->queue_wp,
 		       dev->queue_free,
 		       dev->queue_used);
-		restore_flags(flags);
 	}
-	if (knob_down && (jiffies - knob_down) >= HZ) {
-		knob_down = jiffies;
-		game_is_active = !game_is_active;
-		if (game_is_active)
+	if (!game_is_active) {
+		if (game_select_count >= 3 || (game_knob_down && (jiffies - game_knob_down) >= HZ)) {
+			game_select_count = 0;
+			game_is_active = 1;
 			game_start();
+		}
 	}
+	restore_flags(flags);
 	if (game_is_active) {
 		game_move_ball();
 		display_blat(dev, (unsigned char *)game_buffer);

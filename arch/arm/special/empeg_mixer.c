@@ -1154,38 +1154,43 @@ static int empeg_mixer_setvolume(mixer_dev *dev, int vol)
 void
 hijack_tone_set (int bass_value, int bass_freq, int bass_q, int treble_value, int treble_freq, int treble_q)
 {
-	int i;
 	struct empeg_eq_section_t sections[20];
-	if (eq_hijacked == 0) { 
-		for (i=0; i<20; i++) {				// Save the real eq first time around.
-			hijack_eq_real[i]=eq_current[i];
-		}
+
+	if (eq_hijacked == 0) {
+		// Save the real eq at boot.
+		memcpy(hijack_eq_real, eq_current, sizeof(eq_current));
 		eq_hijacked = 1;
 	}
-	for (i=0; i<20; i++){
-		sections[i]=eq_current[i];
-	}
-	if (bass_value != 64) {
-		sections[8].word1  = bass_freq;
-		sections[18].word1 = bass_freq;
-		sections[8].word2  = bass_q | bass_value;       // set the Bass
-		sections[18].word2 = bass_q | bass_value;
-	} else { // flat
-		sections[8]  = hijack_eq_real[8];
-		sections[18] = hijack_eq_real[18];		// reset the eq
-	}
-	
-	if (treble_value != 64) {
-		sections[9].word1  = treble_freq;
-		sections[19].word1 = treble_freq;
-		sections[9].word2  = treble_q | treble_value;	// set the treble.
-		sections[19].word2 = treble_q | treble_value;
-	} else { // flat
-		sections[9]  = hijack_eq_real[9];		// reset the eq.
-		sections[19] = hijack_eq_real[19];
-	}
+
+	// load in the current eq.
+	memcpy(sections, eq_current, sizeof(sections));
+
+	sections[8].word1  = bass_freq;
+	sections[18].word1 = bass_freq;
+	sections[8].word2  = bass_q | bass_value;
+	sections[18].word2 = bass_q | bass_value;
+
+	sections[9].word1  = treble_freq;
+	sections[19].word1 = treble_freq;
+	sections[9].word2  = treble_q | treble_value;
+	sections[19].word2 = treble_q | treble_value;
+
 	(void)empeg_mixer_eq_set(sections);
 	(void)empeg_mixer_eq_apply();
+
+	if (bass_value == 64 || treble_value == 64) {
+		// one or both are flat:  apply original eq
+		if (bass_value == 64) {
+			sections[8]  = hijack_eq_real[8];
+			sections[18] = hijack_eq_real[18];
+		}
+		if (treble_value == 64) {
+			sections[9]  = hijack_eq_real[9];
+			sections[19] = hijack_eq_real[19];
+		}
+		(void)empeg_mixer_eq_set(sections);
+		(void)empeg_mixer_eq_apply();
+	}
 }
 
 static int empeg_mixer_getdb(mixer_dev *dev)

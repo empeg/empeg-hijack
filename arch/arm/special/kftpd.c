@@ -984,7 +984,7 @@ khttp_send_file_header (server_parms_t *parms, char *path, off_t length, char *b
 	if (artist_title[0]) {	// tune title for WinAmp, XMMS, Save-To-Disk, etc..
 		if (parms->icy_metadata)
 			len += sprintf(buf+len, "icy-name:%s\r\n", artist_title);
-		else	// filename= below should be quoted ("), but mozilla doesn't like the quotes:
+		else
 			len += sprintf(buf+len, "Content-Disposition: attachment; filename=%s.%s\r\n", artist_title, tags.codec);
 	}
 	buf[len++] = '\r';

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v242"
+#define HIJACK_VERSION	"v243"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -423,31 +423,20 @@ const hijack_db_table_t hijack_db_table[] =
 	// Some of these values have mathematical errors - bit 0 must be unset for some reason.
 	// dB   , actual ratio.
 	{"[Off]"	, 64	},	// "64" is "special":  hijack_tone_set() recognizes/treats it as "flat".
-	{"+0.5 dB"	, 68	},
+
 	{"+1.0 dB"	, 72	},
-	{"+1.5 dB"	, 76	},
 	{"+2.0 dB"	, 82	},
-	{"+2.5 dB"	, 86	},
 	{"+3.0 dB"	, 90	},
-	{"+3.5 dB"	, 96	},
 	{"+4.0 dB"	, 102	},
-	{"+4.5 dB"	, 108	},
 	{"+5.0 dB"	, 114	},
-	{"+5.5 dB"	, 122	},
 	{"+6.0 dB"	, 128	},
 	
 	{"-6.0 dB"	, 32	},
-	{"-5.5 dB"	, 34	},
 	{"-5.0 dB"	, 36	},
-	{"-4.5 dB"	, 38	},
 	{"-4.0 dB"	, 40	},
-	{"-3.5 dB"	, 42	},
 	{"-3.0 dB"	, 44	},
-	{"-2.5 dB"	, 48	},
 	{"-2.0 dB"	, 50	},
-	{"-1.5 dB"	, 52	},
 	{"-1.0 dB"	, 56	},
-	{"-0.5 dB"	, 60	},
 };
 
 // End Bass/Treble defs.
@@ -2424,14 +2413,14 @@ tone_move (int direction)
 	if (direction == 0) {
 		val = 0;
 	} else if (direction > 0) {
-		if (val == 24)
+		if (val == 12)
 			val = 0;
-		else if (val != 12)
+		else if (val != 6)
 			++val;
 	} else { // (direction < 0)
 		if (val == 0)
-			val = 24;
-		else if (val != 13)
+			val = 12;
+		else if (val != 7)
 			--val;
 	}
 	*ir_numeric_input = val;
@@ -4722,8 +4711,8 @@ hijack_save_settings (unsigned char *buf)
 	acdc->delaytime			= hijack_delaytime;
 	acdc->buttonled_level		= hijack_buttonled_on_level;
 	acdc->voladj			= hijack_voladj_enabled;
-	acdc->bass_adj			= (hijack_bass_adj >> 1);
-	acdc->treble_adj		= (hijack_treble_adj >> 1);
+	acdc->bass_adj			= hijack_bass_adj;
+	acdc->treble_adj		= hijack_treble_adj;
 	savearea.blanker_timeout	= blanker_timeout;
 	savearea.force_power		= hijack_force_power;
 	savearea.blanker_sensitivity	= blanker_sensitivity;
@@ -4771,8 +4760,8 @@ hijack_restore_settings (char *buf)
 	hijack_delaytime		= acdc->delaytime;
 	hijack_buttonled_on_level	= acdc->buttonled_level;
 	hijack_voladj_enabled		= acdc->voladj;
-	hijack_bass_adj			= (acdc->bass_adj << 1);
-	hijack_treble_adj		= (acdc->treble_adj << 1);
+	hijack_bass_adj			= acdc->bass_adj;
+	hijack_treble_adj		= acdc->treble_adj;
 	if ((knob & (1 << KNOBDATA_BITS)) == 0) {
 		popup0_index		= 0;
 		knobdata_index		= knob;

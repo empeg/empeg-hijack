@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v313"
+#define HIJACK_VERSION	"v315"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -484,6 +484,9 @@ static	int hijack_ir_debug;			// printk() for every ir press/release code
 static	int hijack_spindown_seconds;		// drive spindown timeout in seconds
 	int hijack_fake_tuner;			// pretend we have a tuner, when we really don't have one
 	int hijack_trace_tuner;			// dump incoming tuner/stalk packets onto console
+#ifdef HIJACK_MOD_TUNER
+	int hijack_tuner_offset;		// FIXME
+#endif
 #ifdef CONFIG_NET_ETHERNET
 	char hijack_kftpd_password[16];		// kftpd password
 	int hijack_kftpd_control_port;		// kftpd control port
@@ -629,6 +632,9 @@ static const hijack_option_t hijack_option_table[] =
 {"temperature_correction",	&hijack_temperature_correction,	-4,			1,	-20,	+20},
 {"time_offset",			&hijack_time_offset,		0,			1,	-24*60,	24*60},
 {"trace_tuner",			&hijack_trace_tuner,		0,			1,	0,	1},
+#ifdef HIJACK_MOD_TUNER
+{"tuner_offset",		&hijack_tuner_offset,		0,			1,	0,	0x7ffe},
+#endif
 {button_names[4].name,		&hijack_voladj_parms[0][0],	(int)voladj_ldefault,	5,	0,	0x7ffe},
 {button_names[5].name,		&hijack_voladj_parms[1][0],	(int)voladj_mdefault,	5,	0,	0x7ffe},
 {button_names[6].name,		&hijack_voladj_parms[2][0],	(int)voladj_hdefault,	5,	0,	0x7ffe},

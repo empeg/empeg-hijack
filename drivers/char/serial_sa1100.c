@@ -505,6 +505,58 @@ fake_tuner (unsigned char c)
 	}
 }
 
+#ifdef HIJACK_MOD_TUNER
+static unsigned char
+mod_tuner (unsigned char c)
+{
+	static unsigned char state = 0, ctype = 0, eat = 0, csum = 0;
+	extern int hijack_tuner_offset;
+
+	switch (state) {
+		case 0:
+			if (c == 0x01)
+				state = 1;
+			return c;
+		case 3:
+			c += hijack_tuner_offset;
+			csum = c;
+			state = 4;
+			return c;
+		case 4:
+			csum += c;
+			state = 5;
+			return c;
+		case 5:
+			state = 0;
+			return csum;
+		case 1:
+			state = 2;
+			ctype = c;
+			switch (ctype) {
+				case 0x04: eat = 2; break;
+				case 0x05: eat = 1; break;
+				//case 0x03: eat = 4; break;
+				case 0x03:			// tune-to frequency
+					state = 3;
+					return c;
+				case 0x01: eat = 9; break;
+				case 0x00: eat =10; break; // read module id, and set LED on/off
+				case 0xff: eat = 1; break;
+				case 0x09: eat = 1; break; // read tuner dial (tuner ID)
+				default:
+					printk(" unknown msg type\n");
+					state = 0;
+					return c;
+			}
+		default:
+			if (eat && --eat)
+				return c;
+			state = 0;
+			return c;
+	}
+}
+#endif
+
 static _INLINE_ void transmit_chars(struct async_struct *info, int *intr_done)
 {
 	int count;
@@ -536,6 +588,10 @@ static _INLINE_ void transmit_chars(struct async_struct *info, int *intr_done)
 	while(serial_inp(info, UTSR1) & UTSR1_TNF) {
 		char ch = info->xmit_buf[info->xmit_tail++];
 		if (info == IRQ_ports[15]) {	// Tuner interface (ttyS0)
+#ifdef HIJACK_MOD_TUNER
+			if (hijack_tuner_offset)
+				ch = mod_tuner(ch);
+#endif
 			if (hijack_trace_tuner)
 				printk("tuner:out=%02x\n", ch);
 			if (hijack_fake_tuner)

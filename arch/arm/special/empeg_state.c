@@ -572,10 +572,11 @@ static int state_open(struct inode *inode, struct file *filp)
 	struct state_dev *dev = state_devices;
 
 	/* Hmm, is there a race condition here? */
-	if (users)
+	if (users && filp->f_flags)	// allow subsequent O_RDONLY opens only
 		return -EBUSY;
 
-	users++;
+	if (filp->f_flags)
+		users++;
 	MOD_INC_USE_COUNT;
 
 	/* Everything is set up on initialisation */
@@ -586,7 +587,8 @@ static int state_open(struct inode *inode, struct file *filp)
 
 static int state_release(struct inode *inode, struct file *filp)
 {
-	--users;
+	if (filp->f_flags)
+		--users;
 	MOD_DEC_USE_COUNT;
 	return 0;
 }

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v257"
+#define HIJACK_VERSION	"v258"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -2036,7 +2036,7 @@ hijack_adjust_buttonled (int power)
 
 	// illumination command already in progress?
 	if (command) {
-		if (jiffies_since(lasttime) < (HZ/10)) {	// FIXME: was >=
+		if (jiffies_since(lasttime) >= (HZ/10)) {	// FIXME: is this correct?  Seems to work..
 			restore_flags(flags);
 			return;
 		}
@@ -3619,8 +3619,6 @@ input_append_code(void *dev, unsigned int button)  // empeg_input.c
 	save_flags_cli(flags);
 	if (hijack_ir_debug)
 		printk("%lu: IA1:%08x,dk=%08x,dr=%d,lk=%d\n", jiffies, button, ir_downkey, (ir_delayed_rotate != 0), (ir_current_longpress != NULL));
-	//FIXME? if (jiffies_since(hijack_standby_time) < (HZ/5))
-	//FIXME? 	return;	// ignore it
 
 	if (ir_delayed_rotate) {
 		if (button != IR_KNOB_PRESSED)

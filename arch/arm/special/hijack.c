@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v407"
+#define HIJACK_VERSION	"v408"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -2360,10 +2360,11 @@ reservemem_display (int firsttime)
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
 	(void) draw_string(ROWCOL(0,0), reservemem_menu_label, PROMPTCOLOR);
-	rowcol = draw_string(ROWCOL(2,0), "Reserved kB: ", PROMPTCOLOR);
+	rowcol = draw_string(ROWCOL(2,0), "Reserved Memory: ", PROMPTCOLOR);
 	level = hijack_reservemem;
-	sprintf(buf, " %u ", (unsigned int) (level * (16 * 1024)));
-	(void) draw_string(rowcol, buf, ENTRYCOLOR);
+	sprintf(buf, " %u ", (unsigned int) (level * 16));
+	rowcol = draw_string(rowcol, buf, ENTRYCOLOR);
+	(void) draw_string(rowcol, " kB", PROMPTCOLOR);
 	return NEED_REFRESH;
 }
 
@@ -4568,7 +4569,7 @@ hijack_takeover_screen (void)
 		if (signal_pending(current))
 			return -EINTR;
 		if (hijack_dispfunc != userland_display) {
-			activate_dispfunc(userland_display, NULL, 0);
+			activate_dispfunc(userland_display, NULL, current->pid << 8);
 			return 0;
 		}
 		current->state = TASK_INTERRUPTIBLE;

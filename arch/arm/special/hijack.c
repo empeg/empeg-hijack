@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v206"
+#define HIJACK_VERSION	"v207"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -131,17 +131,6 @@ static ir_flags_t ir_flags[] = {
 	{'M', 0, IR_FLAGS_MAIN},
 	{0,0,0 } };
 
-typedef struct ir_translation_s {
-	unsigned int	old;		// original button, IR_NULL_BUTTON means "end-of-table"
-	unsigned short	flags;		// boolean flags
-	unsigned char	count;		// how many codes in new[]
-	unsigned char	popup_index;	// for PopUp translations only: most recent menu position
-	unsigned int	new[1];		// start of macro table with replacement buttons to send
-} ir_translation_t;
-
-static ir_translation_t *ir_current_longpress = NULL;
-static unsigned int *ir_translate_table = NULL;
-
 typedef struct button_name_s {
 	unsigned long	code;
 	char		name[12];
@@ -156,10 +145,33 @@ typedef struct button_name_s {
 #define IR_FAKE_KNOBSEEK	(IR_NULL_BUTTON-7)
 #define IR_FAKE_CLOCK		(IR_NULL_BUTTON-8)
 #define IR_FAKE_NEXTSRC		(IR_NULL_BUTTON-9)	// This MUST be the lowest numbered FAKE code
+#define ALT			BUTTON_FLAGS_ALTNAME
+
+typedef struct ir_translation_s {
+	unsigned int	old;		// original button, IR_NULL_BUTTON means "end-of-table"
+	unsigned short	flags;		// boolean flags
+	unsigned char	count;		// how many codes in new[]
+	unsigned char	popup_index;	// for PopUp translations only: most recent menu position
+	unsigned int	new[0];		// start of macro table with replacement buttons to send
+} ir_translation_t;
+
+// a default translation for PopUp0 menu:
+static struct {
+		ir_translation_t	hdr;
+		unsigned int		buttons[8];
+	} popup0_default_translation =
+	{	{IR_FAKE_POPUP0, 0, 8, 0},
+		{IR_FAKE_CLOCK,		IR_RIO_INFO_PRESSED,
+		 IR_FAKE_KNOBSEEK,	IR_RIO_MARK_PRESSED|ALT,
+		 IR_FAKE_NEXTSRC,	IR_RIO_0_PRESSED|ALT,
+		 IR_FAKE_VOLADJ,	IR_RIO_VISUAL_PRESSED }
+	};
+
+static ir_translation_t *ir_current_longpress = NULL;
+static unsigned int *ir_translate_table = NULL;
 
 // Fixme (someday): serial-port-"w" == "pause" (not pause/play): create a fake button for this.
 
-#define ALT BUTTON_FLAGS_ALTNAME
 static button_name_t button_names[] = {
 	{IR_FAKE_POPUP0,		"PopUp0"},	// index 0 assumed later in hijack_option_table[]
 	{IR_FAKE_POPUP1,		"PopUp1"},	// index 1 assumed later in hijack_option_table[]
@@ -1752,7 +1764,7 @@ ir_next_match (ir_translation_t *table, unsigned int button)
 		if (table == NULL)
 			table = (ir_translation_t *)ir_translate_table;
 		else
-			((unsigned int *)table) += (sizeof(ir_translation_t) / sizeof(unsigned int) - 1) + table->count;
+			((unsigned int *)table) += (sizeof(ir_translation_t) / sizeof(unsigned int)) + table->count;
 		if (!table || table->old == -1)
 			return NULL;
 		if ((table->old & ~BUTTON_FLAGS) == button)
@@ -1845,6 +1857,8 @@ popup_activate (unsigned int button)
 {
 	button &= ~BUTTON_FLAGS;
 	current_popup = ir_next_match(NULL, button);
+	if (current_popup == NULL && button == IR_FAKE_POPUP0)
+		current_popup = &popup0_default_translation.hdr;
 	if (current_popup != NULL) {
 		if (current_popup->old == IR_FAKE_POPUP0)
 		 	current_popup->popup_index = (current_popup->popup_index & ~7) | popup0_index;
@@ -3444,7 +3458,7 @@ ir_setup_translations2 (unsigned char *s, unsigned int *table, int *had_errors)
 					t->flags = irflags;
 					t->count = 0;
 				}
-				index += (sizeof(ir_translation_t) - sizeof(unsigned long)) / sizeof(unsigned long);
+				index += sizeof(ir_translation_t) / sizeof(unsigned long);
 				do {
 					if (!get_button_code(&s, &new, 1, ".,; \t\n")) {
 						index = saved; // error: completely ignore this line

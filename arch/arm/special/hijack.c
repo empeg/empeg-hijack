@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v395"
+#define HIJACK_VERSION	"v396"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -2363,7 +2363,7 @@ knobdata_display (int firsttime)
 	return NEED_REFRESH;
 }
 
-int player_version = 0;		// also referenced in drivers/char/serial_sa1100.c
+int player_version = 0, buggy_v3alpha = 0;		// also referenced in drivers/char/serial_sa1100.c
 
 static void
 get_player_version (void)
@@ -2377,6 +2377,18 @@ get_player_version (void)
 		player_version = st.st_size;
 	}
 	set_fs(old_fs);
+	switch (player_version) {
+		case MK2_PLAYER_v3a1:
+		case MK2_PLAYER_v3a2:
+		case MK2_PLAYER_v3a3:
+		case MK2_PLAYER_v3a5:
+		case MK2_PLAYER_v3a6:
+			buggy_v3alpha = 1;
+			break;
+		default:
+			buggy_v3alpha = 0;
+			break;
+	}
 }
 
 #endif // EMPEG_KNOB_SUPPORTED
@@ -5013,7 +5025,7 @@ reset_hijack_options (void)
 		++h;
 	}
 #ifdef EMPEG_KNOB_SUPPORTED
-	if (player_version >= MK2_PLAYER_v3a1 && player_version <= MK2_PLAYER_v3a6)
+	if (buggy_v3alpha)
 		hijack_spindown_seconds /= 2;
 #endif
 }

@@ -64,6 +64,8 @@ typedef struct hijack_geom_s {
 #define EMPEG_HIJACK_SETGEOM		_IO(EMPEG_DISPLAY_MAGIC, 88)	// Set screen overlay geometry
 #define EMPEG_HIJACK_POLLBUTTONS	_IO(EMPEG_DISPLAY_MAGIC, 89)	// Read next IR code; EBUSY if none available
 #define EMPEG_HIJACK_INJECTBUTTONS	_IO(EMPEG_DISPLAY_MAGIC, 90)	// Inject button codes into player's input queue
+#define EMPEG_HIJACK_GETPLAYERBUFFER	_IO(EMPEG_DISPLAY_MAGIC, 91)	// Inject button codes into player's input queue
+#define EMPEG_HIJACK_GETPLAYERUIFLAGS	_IO(EMPEG_DISPLAY_MAGIC, 92)	// Inject button codes into player's input queue
 #define EMPEG_HIJACK_READ_GPLR		_IO(EMPEG_DISPLAY_MAGIC, 0xa0)	// Read state of serial port flow control pins (and other stuff)
 #define EMPEG_HIJACK_TUNER_SEND		_IO(EMPEG_DISPLAY_MAGIC, 0xee)	// Send bytestring to Tuner.  First byte is bytecount.
 

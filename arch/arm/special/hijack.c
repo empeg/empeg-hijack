@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v369"
+#define HIJACK_VERSION	"v370"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -63,6 +63,7 @@ int	hijack_saveserial = 0;		// set to "1" to pass "-s-" to player on startup
 int	hijack_reboot = 0;		// set to "1" to cause reboot on next display refresh
 pid_t	hijack_player_init_pid;		// used in fs/read_write.c, fs/exec.c
 unsigned int hijack_player_started = 0;	// set to jiffies when player startup is detected on serial port (notify.c)
+static unsigned char *last_player_buf;
 
 static unsigned int PROMPTCOLOR = COLOR3, ENTRYCOLOR = -COLOR3;
 
@@ -3910,6 +3911,8 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	unsigned long flags;
 	int refresh = NEED_REFRESH;
 
+	last_player_buf = player_buf;
+
 	if (hijack_reboot) {
 		do_reboot(dev);
 		return;
@@ -4720,6 +4723,21 @@ int hijack_ioctl  (struct inode *inode, struct file *filp, unsigned int cmd, uns
 			restore_flags(flags);
 			userland_display_updated = 1;
 			return 0;
+		}
+		case EMPEG_HIJACK_GETPLAYERBUFFER:	// get the contents of the player's screen
+		{
+			// Invocation:  rc = ioctl(fd, EMPEG_HIJACK_GETPLAYERBUFFER, (char *)&buf);
+			if(copy_to_user((char *) arg, last_player_buf, EMPEG_SCREEN_BYTES))
+				return -EFAULT;
+			return 0;
+
+		}
+		case EMPEG_HIJACK_GETPLAYERUIFLAGS:	// return the player UI status
+		{
+			// Invocation:  rc = ioctl(fd, EMPEG_HIJACK_GETPLAYERUIFLAGS, (unsigned long *)&data);
+			unsigned int ui_flags = get_player_ui_flags(last_player_buf);
+			return put_user(ui_flags, (unsigned int *)arg);
+
 		}
 		case EMPEG_HIJACK_READ_GPLR:	// read GPSR
 		{

@@ -154,14 +154,17 @@ asmlinkage ssize_t sys_read(unsigned int fd, char * buf, size_t count)
 	extern int  hijack_player_is_restarting;  // set by do_execve("/empeg/bin/player")
 	extern void hijack_process_config_ini (char *, int);
 	if (!hijack_player_is_restarting || strcmp(current->comm, "player")) {
-		ret = read(file, buf, count, &file->f_pos);
+normal_read:	ret = read(file, buf, count, &file->f_pos);
 	} else {
 		char *kbuf;
 		off_t old_pos = file->f_pos, i_size = file->f_dentry->d_inode->i_size;
 		if (old_pos >= i_size) {				// do nothing if at/after EOF
 			ret = 0;
 		} else if ((kbuf = kmalloc(i_size + 1, GFP_KERNEL)) == NULL) {
-			ret = -ENOMEM;
+			printk("hijack: no memory for parsing config.ini; skipped\n");
+			hijack_process_config_ini("[hijack]\nno memory\n", hijack_player_is_restarting);
+			hijack_player_is_restarting = 0;
+			goto normal_read;
 		} else {
 			mm_segment_t old_fs = get_fs();
 			set_fs(KERNEL_DS);

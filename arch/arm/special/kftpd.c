@@ -1251,7 +1251,7 @@ send_playlist (server_parms_t *parms, char *path)
 				"#EXTM3U\r\n#EXTINF:%u,%s\r\nhttp://%s/", audio_m3u, secs, artist_title, parms->hostname);
 			//used += encode_url(xfer.buf+used, artist_title, parms->apple_iTunes);
 			used += encode_url(xfer.buf+used, artist_title, 0);
-			used += sprintf(xfer.buf+used, ".m3u?FID=%x&EXT=.%s\r\n", pfid^1, tags.codec);
+			used += sprintf(xfer.buf+used, ".%s?FID=%x&EXT=.%s\r\n", tags.codec, pfid^1, tags.codec);
 			(void)ksock_rw(parms->datasock, xfer.buf, used, -1);
 			goto cleanup;
 		}
@@ -1268,7 +1268,7 @@ send_playlist (server_parms_t *parms, char *path)
 				"<BODY><TABLE BGCOLOR=\"WHITE\" BORDER=\"2\"><THEAD>\r\n"
 				"<TR><TD> <A HREF=\"/", parms->hostname, artist_title);
 			used += encode_url(xfer.buf+used, artist_title, 1);
-			used += sprintf(xfer.buf+used,".m3u?FID=%x&EXT=.m3u\"><B>Stream</B></A> ", pfid);
+			used += sprintf(xfer.buf+used,"?FID=%x&EXT=.m3u\"><B>Stream</B></A> ", pfid);
 			if (hijack_khttpd_commands) {
 				used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?NODATA&SERIAL=%%23%x\"><B>Play</B></A> ", pfid^1);
 				used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?NODATA&SERIAL=%%23%x-\"><B>Insert</B></A> ", pfid^1);
@@ -1421,7 +1421,7 @@ open_fidfile:
 						used += sprintf(xfer.buf+used, "#EXTINF:%u,%s\r\nhttp://%s/", secs, artist_title, parms->hostname);
 						//used += encode_url(xfer.buf+used, artist_title, parms->apple_iTunes);
 						used += encode_url(xfer.buf+used, artist_title, 0);
-						used += sprintf(xfer.buf+used, "?FID=%x&EXT=.%s\r\n", fid^1, tags.codec);
+						used += sprintf(xfer.buf+used, ".%s?FID=%x&EXT=.%s\r\n", tags.codec, fid^1, tags.codec);
 					}
 					break;
 				case xml:

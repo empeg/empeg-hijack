@@ -537,7 +537,7 @@ void display_queue_draw(struct display_dev *dev)
 		restore_flags(flags);
 	}
 	DEBUGK("Blatting from queue entry %d.\n", dev->queue_rp);
-	hijack_display(dev, dev->software_queue + dev->queue_rp * EMPEG_SCREEN_SIZE);
+	hijack_handle_display(dev, dev->software_queue + dev->queue_rp * EMPEG_SCREEN_SIZE);
 
 	/* Wake up anyone polling on us */
 	wake_up_interruptible(&dev->wq);

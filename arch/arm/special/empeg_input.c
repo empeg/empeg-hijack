@@ -822,6 +822,7 @@ static void input_check_buffer(void *dev_id)
 	queue_task(&dev->timer, &tq_timer);
 }
 
+extern void hijack_init(void);
 static int hijack_got_config_file = 0;
 static int input_open(struct inode *inode, struct file *filp)
 {
@@ -830,6 +831,7 @@ static int input_open(struct inode *inode, struct file *filp)
 	if (users)
 		return -EBUSY;
 
+	hijack_init();
 	hijack_got_config_file = 0;
 	users++;
 	MOD_INC_USE_COUNT;

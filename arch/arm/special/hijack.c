@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v396"
+#define HIJACK_VERSION	"v397"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -27,6 +27,7 @@ const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 #include "empeg_display.h"
 #include "empeg_mixer.h"
 
+extern void *hijack_get_state_read_buffer (void);			// arch/arm/special/empeg_state.c
 extern void save_current_volume(void);					// arch/arm/special/empeg_state.c
 extern void input_wakeup_waiters(void);					// arch/arm/special/empeg_input.c
 extern int display_sendcontrol_part1(int);				// arch/arm/special/empeg_display.c
@@ -2388,6 +2389,14 @@ get_player_version (void)
 		default:
 			buggy_v3alpha = 0;
 			break;
+	}
+	if (player_version == MK2_PLAYER_v3a8) {
+		unsigned char *empeg_statebuf = *empeg_state_writebuf;
+		if (empeg_statebuf[0x1c] == 0x19) {	// lavatory floor visual -- badly broken!
+			empeg_statebuf[0x1c] = 0x1a;
+			empeg_statebuf = hijack_get_state_read_buffer();
+			empeg_statebuf[0x1c] = 0x1a;
+		}
 	}
 }
 
@@ -5365,7 +5374,6 @@ char hijack_zoneinfo[128];
 void
 hijack_init_zoneinfo (void)
 {
-	extern void *hijack_get_state_read_buffer (void);
 	unsigned char *tz = hijack_get_state_read_buffer() + 0x51;
 	int fd, z;
 	mm_segment_t old_fs = get_fs();

@@ -148,9 +148,10 @@ asmlinkage ssize_t sys_read(unsigned int fd, char * buf, size_t count)
 	//
 	extern pid_t hijack_player_init_pid;  // set to -1 by do_execve("/empeg/bin/player")
 	extern void  hijack_process_config_ini (char *, off_t);
+
 #if 0
 	static int babble = 0;
-	if (++babble < 40) {
+	if (++babble < 300) {
 		printk("\nHIJACK: read(%s): PID=%d(%s), offset=%d/%d, count=%d\n",
 			file->f_dentry->d_name.name, current->pid, current->comm,
 			(int)file->f_pos, (int)file->f_dentry->d_inode->i_size, (int)count);

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v339"
+#define HIJACK_VERSION	"v340"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -53,7 +53,7 @@ extern int empeg_inittherm(volatile unsigned int *timerbase, volatile unsigned i
 #endif
 int	kenwood_disabled;		// used by Nextsrc button
 int	empeg_on_dc_power;		// used in arch/arm/special/empeg_power.c
-int	empeg_tuner_present = 0;	// used by NextSrc button, perhaps has other uses
+int	empeg_tuner_present = 0;	// used in many places
 int	hijack_volumelock_enabled = 0;	// used by arch/arm/special/empeg_state.c
 int	hijack_fsck_disabled = 0;	// used in fs/ext2/super.c
 int	hijack_onedrive = 0;		// used in drivers/block/ide-probe.c
@@ -510,6 +510,7 @@ static	int hijack_spindown_seconds;		// drive spindown timeout in seconds
 	int hijack_khttpd_playlists;		// 1 == enable "?.html" or "?.m3u" functionality
 	int hijack_khttpd_commands;		// 1 == enable "?commands" capability
 #endif // CONFIG_NET_ETHERNET
+static	int nextsrc_aux_enabled;		// "1" == include "AUX" when doing NextSrc
 static	int hijack_old_style;			// 1 == don't highlite menu items
 static	int hijack_quicktimer_minutes;		// increment size for quicktimer function
 static	int hijack_stalk_debug;			// trace button in/out actions to/from Stalk?
@@ -623,6 +624,7 @@ static const hijack_option_t hijack_option_table[] =
 {"khttpd_style",		&hijack_khttpd_style,		(int)"/default.xsl",	0,	0,	sizeof(hijack_khttpd_style)-1},
 {"max_connections",		&hijack_max_connections,	4,			1,	0,	20},
 #endif // CONFIG_NET_ETHERNET
+{"nextsrc_aux_enabled",		&nextsrc_aux_enabled,		0,			1,	0,	1},
 {"old_style",			&hijack_old_style,		0,			1,	0,	1},
 {button_names[0].name,		button_names[0].name,		(int)"PopUp0",		0,	0,	8},
 {button_names[1].name,		button_names[1].name,		(int)"PopUp1",		0,	0,	8},
@@ -3310,15 +3312,18 @@ do_nextsrc (void)
 	unsigned int button;
 	unsigned long flags;
 
+	// main -> tuner [ -> aux ] -> main
 	// main -> tuner -> aux -> main
 	save_flags_cli(flags);
 	button = IR_RIO_SOURCE_PRESSED;
 	switch (get_current_mixer_source()) {
 		case IR_FLAGS_TUNER:
-			if (kenwood_disabled)
-				hijack_enq_button_pair(IR_RIO_SOURCE_PRESSED);
-			else
-				button = IR_KW_TAPE_PRESSED;
+			if (nextsrc_aux_enabled) {
+				if (kenwood_disabled)
+					hijack_enq_button_pair(IR_RIO_SOURCE_PRESSED);
+				else
+					button = IR_KW_TAPE_PRESSED;
+			}
 			break;
 		case IR_FLAGS_MAIN:
 			if (empeg_tuner_present || hijack_fake_tuner)

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v167"
+#define HIJACK_VERSION "v168"
 
 #include <linux/sched.h>
 #include <linux/kernel.h>
@@ -338,6 +338,7 @@ static int hijack_ir_debug			=  0;	// printk() for every ir press/release code
        int hijack_extmute_off			=  0;	// buttoncode to inject when EXT-MUTE goes inactive
        int hijack_extmute_on			=  0;	// buttoncode to inject when EXT-MUTE goes active
 #ifdef CONFIG_NET_ETHERNET
+       char hijack_kftpd_password[16]		= "";	// kftpd password
        int hijack_kftpd_control_port		= 21;	// kftpd control port
        int hijack_kftpd_data_port		= 20;	// kftpd data port
        int hijack_kftpd_verbose			=  0;	// kftpd verbosity
@@ -345,11 +346,15 @@ static int hijack_ir_debug			=  0;	// printk() for every ir press/release code
        int hijack_max_connections		=  4;	// restricts memory use
        int hijack_khttpd_port			= 80;	// khttpd port
        int hijack_khttpd_verbose		=  0;	// khttpd verbosity
+       int hijack_khttpd_dirs			=  1;	// 1 == enable directory listings
+       int hijack_khttpd_files			=  1;	// 1 == enable file downloads, except "streaming"
+       int hijack_khttpd_playlists		=  1;	// 1 == enable "?.html" or "?.m3u" functionality
+       int hijack_khttpd_commands		=  1;	// 1 == enable "?commands" capability
 #endif // CONFIG_NET_ETHERNET
 static int hijack_old_style			=  0;	// 1 == don't highlite menu items
 static int hijack_quicktimer_minutes		= 30;	// increment size for quicktimer function
 static int hijack_standby_minutes		= 30;	// number of minutes after screen blanks before we go into standby
-       int hijack_supress_notify		=  0;	// 1 == supress player "notify" (and "dhcp") lines from serial port
+       int hijack_supress_notify		=  0;	// 1 == supress player "notify" and "dhcp" text on serial port
        int hijack_temperature_correction	= -4;	// adjust all h/w temperature readings by this celcius amount
 
 typedef struct hijack_option_s {
@@ -369,10 +374,14 @@ static const hijack_option_t hijack_option_table[] = {
 #ifdef CONFIG_NET_ETHERNET
  	{"kftpd_control_port",		&hijack_kftpd_control_port,	1,	0,	65535},
  	{"kftpd_data_port",		&hijack_kftpd_data_port,	1,	0,	65535},
+ 	{"kftpd_password",		&hijack_kftpd_password,		0,	0,	sizeof(hijack_kftpd_password)-1},
  	{"kftpd_verbose",		&hijack_kftpd_verbose,		1,	0,	1},
  	{"kftpd_show_dotdir",		&hijack_kftpd_show_dotdir,	1,	0,	1},
  	{"khttpd_port",			&hijack_khttpd_port,		1,	0,	65535},
  	{"khttpd_verbose",		&hijack_khttpd_verbose,		1,	0,	1},
+ 	{"khttpd_dirs",			&hijack_khttpd_dirs,		1,	0,	1},
+ 	{"khttpd_files",		&hijack_khttpd_files,		1,	0,	1},
+ 	{"khttpd_playlists",		&hijack_khttpd_playlists,	1,	0,	1},
  	{"max_connections",		&hijack_max_connections,	1,	0,	20},
 #endif // CONFIG_NET_ETHERNET
 	{"old_style",			&hijack_old_style,		1,	0,	1},
@@ -2851,8 +2860,10 @@ input_append_code2 (unsigned int rawbutton)
 	} else {
 		if (ir_downkey == rawbutton || rawbutton == IR_NULL_BUTTON)
 			return;	// ignore repeated press with no intervening release
-		if (rawbutton > IR_NULL_BUTTON || rawbutton < IR_FAKE_NEXTSRC)
-			ir_downkey = rawbutton;
+		if (rawbutton != IR_KNOB_LEFT && rawbutton != IR_KNOB_RIGHT) {
+			if (rawbutton > IR_NULL_BUTTON || rawbutton < IR_FAKE_NEXTSRC)
+				ir_downkey = rawbutton;
+		}
 	}
 	mixer = get_current_mixer_source();	//fixme: temporary here to workaround player bug;
 						//see get_current_mixer_source for details;
@@ -2917,7 +2928,8 @@ input_append_code2 (unsigned int rawbutton)
 static void
 input_send_delayed_rotate (void)
 {
-	hijack_enq_button(&hijack_inputq, ir_delayed_rotate, 0);
+	//hijack_enq_button(&hijack_inputq, ir_delayed_rotate, 0);
+	input_append_code2(ir_delayed_rotate);
 	ir_lasttime = ir_lastevent = jiffies;
 	ir_delayed_rotate = 0;
 }
@@ -2936,7 +2948,7 @@ input_append_code(void *dev, unsigned int button)  // empeg_input.c
 			input_send_delayed_rotate();
 		ir_delayed_rotate = 0;
 	}
-	if (button != IR_KNOB_LEFT && button != IR_KNOB_RIGHT) {
+	if (hijack_status == HIJACK_IDLE || (button != IR_KNOB_LEFT && button != IR_KNOB_RIGHT)) {
 		input_append_code2(button);
 	} else if (ir_downkey == IR_NULL_BUTTON) {
 		ir_delayed_rotate = button;

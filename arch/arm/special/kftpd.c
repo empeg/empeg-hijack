@@ -39,6 +39,11 @@ extern int hijack_kftpd_data_port;			// from arch/arm/special/hijack.c
 extern int hijack_kftpd_verbose;			// from arch/arm/special/hijack.c
 extern int hijack_kftpd_show_dotdir;			// from arch/arm/special/hijack.c
 extern int hijack_max_connections;			// from arch/arm/special/hijack.c
+extern int hijack_khttpd_commands;			// from arch/arm/special/hijack.c
+extern int hijack_khttpd_dirs;				// from arch/arm/special/hijack.c
+extern int hijack_khttpd_files;				// from arch/arm/special/hijack.c
+extern int hijack_khttpd_playlists;			// from arch/arm/special/hijack.c
+extern char hijack_kftpd_password[];			// from arch/arm/special/hijack.c
 extern struct semaphore hijack_khttpd_startup_sem;	// from arch/arm/special/hijack.c
 extern struct semaphore hijack_kftpd_startup_sem;	// from arch/arm/special/hijack.c
 extern int sys_rmdir(const char *path); // fs/namei.c
@@ -65,7 +70,7 @@ typedef struct server_parms_s {
 	char			use_http;		// bool
 	char			have_portaddr;		// bool
 	char			icy_metadata;		// bool
-	char			filler;		// not used.
+	char			need_password;		// bool
 	short			data_port;
 	off_t			start_offset;		// starting offset for next FTP/HTTP file transfer
 	off_t			end_offset;		// for current HTTP file read
@@ -138,7 +143,7 @@ extract_portaddr (struct sockaddr_in *addr, char *s)
 
 // Adapted from various examples in the kernel
 static int
-ksock_rw (struct socket *sock, char *buf, int buf_size, int minimum)
+ksock_rw (struct socket *sock, const char *buf, int buf_size, int minimum)
 {
 	int		bytecount = 0, sending = 0;
 
@@ -152,7 +157,7 @@ ksock_rw (struct socket *sock, char *buf, int buf_size, int minimum)
 		struct iovec	iov;
 
 		memset(&msg, 0, sizeof(msg));
-		iov.iov_base       = &buf[bytecount];
+		iov.iov_base       = (char *)&buf[bytecount];
 		iov.iov_len        = len;
 		msg.msg_iov        = &iov;
 		msg.msg_iovlen     = 1;
@@ -198,9 +203,10 @@ static response_t response_table[] = {
 	{220,	" Connected"},
 	{221,	" Happy Fishing"},
 	{226,	" Okay"},
-	{230,	" Okay"},
+	{230,	" Login okay"},
 	{250,	" Okay"},
 	{257,	" Okay"},
+	{331,	" Password required"},
 	{350,	" Restarting next transfer"},	//350 Restarting at 999. Send STORE or RETRIEVE to initiate transfer.
 	{425,	" Connection error"},
 	{426,	" Connection failed"},
@@ -209,6 +215,7 @@ static response_t response_table[] = {
 	{500,	" Bad command"},
 	{501,	" Bad syntax"},
 	{502,	" Not implemented"},
+	{530,	" Login incorrect"},
 	{541,	" Remote command failed"},
 	{550,	" Failed"},
 	{553,	" Invalid action"},
@@ -789,6 +796,7 @@ khttpd_respond (server_parms_t *parms, int rcode, const char *title, const char 
 	static const char kttpd_response[] =
 		"HTTP/1.1 %d %s\r\n"
 		"Connection: close\r\n"
+		"Allow: GET\r\n"
 		"Content-Type: text/html\r\n\r\n"
 		"<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\">\r\n"
 		"<HTML><HEAD>\r\n"
@@ -818,9 +826,9 @@ khttpd_redirect (server_parms_t *parms, const char *path)
 		"Content-Type: text/html\r\n\r\n"
 		"<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\">\r\n"
 		"<HTML><HEAD>\r\n"
-		"<TITLE>302 Found</TITLE>\r\n"
+		"<TITLE>301 Moved</TITLE>\r\n"
 		"</HEAD><BODY>\r\n"
-		"<H1>Found</H1>\r\n"
+		"<H1>Moved</H1>\r\n"
 		"The document has moved <A HREF=\"%s%s\">here</A>.<P>\r\n"
 		"</BODY></HTML>\r\n";
 	char *buf = parms->tmp3;
@@ -893,23 +901,15 @@ get_tag (char *s, char *tag, char *buf, int buflen)
 }
 
 static int
-open_fid_file (char *path, const char *tail)
+open_fid_file (char *path)
 {
 	int	fd;
-	char	*tailp = NULL, saved = '\0';
 
-	if (tail) {					// use a different tail character?
-		tailp = path + strlen(path) - 1;
-		saved = *tailp;
-		*tailp = *tail;				// substitute tail character
-	}
-	if (0 > (fd = open(path, O_RDONLY, 0))) {	// try the specified drive first
+	if ((fd = open(path, O_RDONLY, 0)) < 0) {	// try the specified drive first
 		path[6] ^= 1;				// failed, now try the other drive
-		if (0 > (fd = open(path, O_RDONLY, 0)))
+		if ((fd = open(path, O_RDONLY, 0)) < 0)
 			path[6] ^= 1;			// point back at original drive
 	}
-	if (tailp)
-		*tailp = saved;				// restore tail character
 	return fd;
 }
 
@@ -920,7 +920,7 @@ get_fid_mime_title (char *path, char *buf, int bufsize, char *title, int titlele
 	char		type[12], codec[12];
 	int		fd, size;
 
-	if (0 <= (fd = open_fid_file(path, "1"))) {	// open tagfile
+	if (0 <= (fd = open_fid_file(path))) {	// open tagfile
 		size = read(fd, buf, bufsize-1);
 		buf[size] = '\0';
 		close(fd);
@@ -959,7 +959,10 @@ khttp_send_file_header (server_parms_t *parms, char *path, off_t length, char *b
 
 	title[0] = '\0';
 	if (glob_match(path, "/drive?/fids/*0")) {
+		char *lastc = path + strlen(path) - 1;
+		*lastc = '1';
 		mimetype = get_fid_mime_title(path, buf, bufsize, title, sizeof(title), ext);
+		*lastc = '0';
 	} else {
 		const char		*pattern;
 		const mime_type_t	*m = mime_types;
@@ -983,7 +986,7 @@ khttp_send_file_header (server_parms_t *parms, char *path, off_t length, char *b
 		if (parms->icy_metadata)
 			len += sprintf(buf+len, "icy-name:%s\r\n", title);
 		else
-			len += sprintf(buf+len, "Content-Disposition: attachment; filename=%s%s;\r\n", title, ext);
+			len += sprintf(buf+len, "Content-Disposition: attachment; filename=\"%s%s\"\r\n", title, ext);
 	}
 	buf[len++] = '\r';
 	buf[len++] = '\n';
@@ -1007,6 +1010,7 @@ prepare_file_xfer (server_parms_t *parms, char *path, file_xfer_t *xfer, int wri
 {
 	int	fd, response = 0, flags;
 	off_t	start_offset = parms->start_offset;
+	off_t	end_offset = parms->end_offset;
 
 	parms->datasock = NULL;
 	xfer->buf_size = PAGE_SIZE;
@@ -1040,9 +1044,11 @@ prepare_file_xfer (server_parms_t *parms, char *path, file_xfer_t *xfer, int wri
 			khttpd_redirect(parms, path);
 			xfer->redirected = 1;
 		}
+	} else if (end_offset != -1 && (xfer->st.st_size && end_offset >= xfer->st.st_size)) {
+		response = parms->use_http ? 416 : 553;
 	} else if (start_offset && (start_offset >= xfer->st.st_size || start_offset != lseek(fd, start_offset, 0))) {
 		printk("%s: lseek(%s,%lu/%lu) failed\n", parms->servername, path, start_offset, xfer->st.st_size);
-		response = 553;
+		response = parms->use_http ? 416 : 553;
 	} else {
 		response = open_datasock(parms);
 	}
@@ -1081,29 +1087,50 @@ get_duration (char *buf)
 	return secs;
 }
 
-// Mmmm.. probably the wrong approach, but it will do for starters.
-// Much better might be to implement an on-the-fly "/proc/playlists" tree,
-// using symlinks (with extensions!) to point at the actual audio files.
-// At present, this is incredibly ugly code (but it works).  -ml
-//
+typedef struct http_response_s {
+	int		 rcode;
+	const char	*rtext;
+} http_response_t;
 
-static int
+static const http_response_t access_not_permitted  = {403, "Access Not Permitted"};
+static const http_response_t invalid_playlist_path = {404, "Invalid playlist path"};
+
+static http_response_t *
+convert_rcode (int rcode)
+{
+	http_response_t	*response;
+
+	if (!rcode)
+		response = NULL;
+	else if (rcode == 416)
+		response = &(http_response_t){416, "Requested Range Not Satisfiable"};
+	else
+		response = &(http_response_t){404, "Error Retrieving File"};
+	return response;
+}
+
+static const http_response_t *
 send_playlist (server_parms_t *parms, char *path)
 {
-	unsigned int	response, secs;
-	char		tags_path[] = "/driveX/fids/XXXXXXXXXX", type[12], codec[4], title[64], artist[32], source[32];
-	int		playlist_fd, fid = -1, done_header = 0, sent, size;
+	http_response_t	*response = NULL;
+	unsigned int	secs;
+	char		subpath[] = "/driveX/fids/XXXXXXXXXX", type[12], codec[4], title[64], artist[32], source[32];
+	int		rootfid, fid, done_header = 0, size;
 	file_xfer_t	xfer;
+	int		fd[16], fdx = -1;	// up to 16 levels of playlist recursion
+	char		*p = &path[13];	// point just after "/drive?/fids/" portion
 
-	if ((response = prepare_file_xfer(parms, path, &xfer, 0)))
-		goto cleanup;
+	if (!get_number(&p, &rootfid, 16, ""))
+		return &invalid_playlist_path;
+	if ((response = convert_rcode(prepare_file_xfer(parms, path, &xfer, 0))))
+		return response;
 	size = read(xfer.fd, xfer.buf, xfer.buf_size);
 	close(xfer.fd); xfer.fd = -1;
 	if (size < 0)
 		size = 0;
 	xfer.buf[size] = '\0';	// Ensure zero-termination of the data
 	if (!get_tag(xfer.buf, "type=", type, sizeof(type))) {
-		response = 408;
+		response = &(http_response_t){408, "Invalid tag file"};
 		goto cleanup;
 	}
 	(void) get_tag(xfer.buf, "artist=", artist, sizeof(artist));
@@ -1124,87 +1151,101 @@ send_playlist (server_parms_t *parms, char *path)
 		goto cleanup;
 	}
 	if (strxcmp("playlist", type, 0)) {
-		response = 408;
-		goto cleanup;
-	}
-	playlist_fd = open_fid_file(path, "0");
-	if (playlist_fd < 0) {
-		response = 408;
+		response = &(http_response_t){408, "Missing playlist tag"};
 		goto cleanup;
 	}
 	set_sockopt(parms, parms->datasock, SOL_TCP, TCP_NODELAY, 0);
-	while (sizeof(fid) == read(playlist_fd, (char *)&fid, sizeof(fid))) {
-		int	tags_fd;
-		char	*tags_buf = parms->tmp3;
-		fid |= 1;
-		sprintf(tags_path, "/drive0/fids/%x", fid);
-		tags_fd = open_fid_file(tags_path, NULL);	// get tagfile
-		if (tags_fd < 0) {
-			printk("open subfid failed: '%s', rc=%d\n", tags_path, tags_fd);
-			continue;
-		}
-		size = read(tags_fd, tags_buf, sizeof(parms->tmp3)-1);
-		close(tags_fd);
-		if (size <= 0) {
-			printk("read subfid failed '%s', rc=%d\n", tags_path, size);
-			continue;
-		}
-		tags_buf[size] = '\0';
-		(void) get_tag(tags_buf, "type=", type, sizeof(type));
-		if (parms->generate_playlist != 1 && *type != 't')
-			continue;
-		size = 0;
-		if (!done_header) {
-			done_header = 1;
-			size  = sprintf(xfer.buf, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s\r\n\r\n",
-				(parms->generate_playlist == 2) ? audio_m3u : text_html);
-			if (parms->generate_playlist == 1) {
-				const char *hyphen = *artist ? " - " : "";
-				size += sprintf(xfer.buf+size, "<HTML><HEAD><TITLE>%s%s%s</TITLE></HEAD>\r\n<BODY>\r\n"
-					"<H2>%s%s%s</H2><TABLE BORDER=2><THEAD>\r\n"
-					"<HTML><BODY><TABLE BORDER=2><THEAD>\r\n"
-					"<TR><TD> <TD> <b>Title</b> <TD> <b>Length</b> <TD> <b>Type</b> "
-					"<TD> <b>Artist</b> <TD> <b>Source</b> <TBODY>\r\n",
-					artist, hyphen, title, artist, hyphen, title);
-			} else {
-				size += sprintf(xfer.buf+size, "#EXTM3U\r\n");
-			}
-		}
-		(void) get_tag(tags_buf, "artist=", artist, sizeof(artist));
-		(void) get_tag(tags_buf, "source=", source, sizeof(source));
-		(void) get_tag(tags_buf, "title=",  title,  sizeof(title));
-		if (!*title)
-			strcpy(title, tags_path);
-		secs = get_duration(tags_buf);
-		if (parms->generate_playlist == 1) {
-			const char *extra = (*type == 't') ? "0" : "1?.html";
-			size += sprintf(xfer.buf+size, "<TR><TD> <A HREF=\"%x?.m3u\"><em>Play</em></A> ", fid);
-			size += sprintf(xfer.buf+size, "<TD> <A HREF=\"%x%s\">%s</A> <TD> %u:%02u <TD> %s "
-			  "<TD> %s <TD> %s \r\n", fid>>4, extra, title, secs/60, secs%60, type, artist, source);
-		} else if (*type == 't') {
-			size += sprintf(xfer.buf+size, "#EXTINF:%u,%s - %s\r\nhttp://%s%s\r\n",
-				secs, artist, title, parms->serverip, tags_path);
-			xfer.buf[size-3] = '0';	// convert tags_path into tune path
-		}
-		sent = ksock_rw(parms->datasock, xfer.buf, size, -1);
-		if (sent != size) {
-			printk("Size=%d, sent=%d\n", size, sent);
-			break;
-		}
+	fid = rootfid;
+
+open_playlist_fid:
+	if (++fdx >= (sizeof(fd) / sizeof(fd[0]))) {
+		--fdx;
+		printk("%s: send_playlist(): nested too deep\n", parms->servername);
+		goto aborted;
 	}
+	sprintf(subpath, "/drive0/fids/%x", fid & ~1);
+	fd[fdx] = open_fid_file(subpath);
+	if (fd[fdx] < 0) {
+		--fdx;
+		printk("%s: send_playlist(): open('%s') failed, rc=%d\n", parms->servername, subpath, fd[fdx--]);
+		goto aborted;
+	}
+	while (fdx >= 0) {
+		while (sizeof(fid) == read(fd[fdx], (char *)&fid, sizeof(fid))) {
+			int	tags_fd;
+			char	*tags_buf = parms->tmp3;
+			fid |= 1;
+			sprintf(subpath, "/drive0/fids/%x", fid);
+			tags_fd = open_fid_file(subpath);	// get tagfile
+			if (tags_fd < 0) {
+				printk("%s: send_playlist(): open('%s') failed, rc=%d\n", parms->servername, subpath, tags_fd);
+				goto aborted;
+			}
+			size = read(tags_fd, tags_buf, sizeof(parms->tmp3)-1);
+			close(tags_fd);
+			if (size <= 0) {
+				printk("%s: send_playlist(): read('%s') failed, rc=%d\n", parms->servername, subpath, size);
+				goto aborted;
+			}
+			tags_buf[size] = '\0';
+			(void) get_tag(tags_buf, "type=", type, sizeof(type));
+			if (parms->generate_playlist == 2 && *type != 't')
+				goto open_playlist_fid;
+			size = 0;
+			if (!done_header) {
+				done_header = 1;
+				size  = sprintf(xfer.buf, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s\r\n\r\n",
+					(parms->generate_playlist == 2) ? audio_m3u : text_html);
+				if (parms->generate_playlist == 1) {
+					const char *hyphen = *artist ? " - " : "";
+					size += sprintf(xfer.buf+size, "<HTML><HEAD><TITLE>%s%s%s</TITLE></HEAD>\r\n<BODY>\r\n"
+						"<H2>%s%s%s</H2><TABLE BORDER=2><THEAD>\r\n"
+						"<HTML><BODY><TABLE BORDER=2><THEAD>\r\n"
+						"<TR><TD> <A HREF=\"%x?.m3u\"><FONT SIZE=-1><EM>Play All</EM></FONT></A> <TD> <B>Title</B> <TD> <B>Length</B> <TD> <B>Type</B> "
+						"<TD> <B>Artist</B> <TD> <B>Source</B> <TBODY>\r\n",
+						rootfid, artist, hyphen, title, artist, hyphen, title);
+				} else {
+					size += sprintf(xfer.buf+size, "#EXTM3U\r\n");
+				}
+			}
+			(void) get_tag(tags_buf, "artist=", artist, sizeof(artist));
+			(void) get_tag(tags_buf, "source=", source, sizeof(source));
+			(void) get_tag(tags_buf, "title=",  title,  sizeof(title));
+			if (!*title)
+				strcpy(title, subpath);
+			secs = get_duration(tags_buf);
+			if (parms->generate_playlist == 1) {
+				const char *extra = (*type == 't') ? "0" : "1?.html";
+				size += sprintf(xfer.buf+size, "<TR><TD> <A HREF=\"%x?.m3u\"><em>Play</em></A> ", fid);
+				size += sprintf(xfer.buf+size, "<TD> <A HREF=\"%x%s\">%s</A> <TD> %u:%02u <TD> %s "
+				  "<TD> %s <TD> %s \r\n", fid>>4, extra, title, secs/60, secs%60, type, artist, source);
+			} else if (*type == 't') {
+				size += sprintf(xfer.buf+size, "#EXTINF:%u,%s - %s\r\nhttp://%s%s\r\n",
+					secs, artist, title, parms->serverip, subpath);
+				xfer.buf[size-3] = '0';	// convert subpath into tune path
+			}
+			if (size != ksock_rw(parms->datasock, xfer.buf, size, -1))
+				goto cleanup;
+		}
+		close(fd[fdx--]);
+	}
+aborted:
 	if (done_header) {
 		if (parms->generate_playlist == 1) {
 			static char trailer[] = "</TABLE></BODY></HTML>\r\n";
 			(void) ksock_rw(parms->datasock, trailer, sizeof(trailer)-1, -1);
 		}
 	} else if (parms->generate_playlist == 1) {
-		khttpd_respond(parms, 200, "Empty Playlist", "empty playlist");
+		khttpd_respond(parms, 200, "Empty Playlist", "Empty playlist");
 	} else {
+		// Somebody tried to "play" a playlist that contains no tunes; redirect them:
 		path[strlen(path)-1] = '1';
 		strcat(path,"?.html");
 		khttpd_redirect(parms, path);
 	}
 cleanup:
+	while (fdx >= 0)
+		close(fd[fdx--]);
 	cleanup_file_xfer(parms, &xfer);
 	return response;
 }
@@ -1217,7 +1258,7 @@ send_file (server_parms_t *parms, char *path)
 	file_xfer_t	xfer;
 
 	response = prepare_file_xfer(parms, path, &xfer, 0);
-	if (!response) {
+	if (!response && !xfer.redirected) {
 		off_t	filepos, filesize = xfer.st.st_size;
 		if (parms->use_http) {
 			if (!filesize)
@@ -1410,8 +1451,6 @@ append_path (char *path, char *new, char *tmp)
 /////////////////////////////////////////////////////////////////////////////////
 
 static response_t simple_response_table[] = {
-	{230,	"\1USER "},
-	{202,	"\1PASS "},
 	{200,	"\1TYPE "},
 	{502,	"\0PASV"},
 	{215,	"\0SYST"},
@@ -1465,7 +1504,18 @@ kftpd_handle_command (server_parms_t *parms)
 	}
 
 	// now look for commands involving more complex handling:
-	if (!strxcmp(buf, "LIST", 1) || !strxcmp(buf, "NLST", 1)) {
+	if (!strxcmp(buf, "USER ", 1)) {
+		response = parms->need_password ? 331 : 230;
+	} else if (!strxcmp(buf, "PASS ", 1) && buf[5]) {
+		if (!parms->need_password || !strcmp(&buf[5], hijack_kftpd_password)) {
+			parms->need_password = 0;
+			response = 230;	// password okay, ACCT info not required
+		} else {
+			response = 530; // login incorrect
+		}
+	} else if (parms->need_password) {
+		response = 530;	// login incorrect
+	} else if (!strxcmp(buf, "LIST", 1) || !strxcmp(buf, "NLST", 1)) {
 		int j = 4;
 		if (buf[j] == ' ' && buf[j+1] == '-')
 			while (buf[++j] && buf[j] != ' ');
@@ -1611,22 +1661,23 @@ static void
 khttpd_handle_connection (server_parms_t *parms)
 {
 	char	*buf = parms->buf, *cmds = NULL, c, *path, *p, *x;
-	int	response = 0, buflen = sizeof(parms->buf) - 1, n;
-	int	use_index = 1;	// look for index.html?
+	int	buflen = sizeof(parms->buf) - 1, pathlen;
+	int	size, use_index = 1;	// look for index.html?
+	const http_response_t *response = NULL;
 
-	n = ksock_rw(parms->clientsock, buf, buflen, 0);
-	if (n <= 0) {
+	size = ksock_rw(parms->clientsock, buf, buflen, 0);
+	if (size <= 0) {
 		if (parms->verbose)
-			printk("%s: receive failed: %d\n", parms->servername, n);
+			printk("%s: receive failed: %d\n", parms->servername, size);
 		return;
 	}
-	buf[n] = '\0';
-	if (n >= buflen) {
-		khttpd_respond(parms, 400, "Bad command", "request too long");
+	if (size >= buflen) {
+		khttpd_respond(parms, 414, "Request-URI Too Long", "POST not allowed");
 		return;
 	}
-	if (strxcmp(buf, "GET ", 1) || n < 4) {
-		khttpd_respond(parms, 400, "Bad command", "server only supports GET");
+	buf[size] = '\0';
+	if (strxcmp(buf, "GET ", 1) || !buf[4]) {
+		khttpd_respond(parms, 405, "Method Not Allowed", "Server only supports GET");
 		return;
 	}
 	p = path = &buf[4];
@@ -1636,10 +1687,9 @@ khttpd_handle_connection (server_parms_t *parms)
 	// HTTP "restart/resume" support:
 	for (x = p; *x; ++x) {
 		static const char Range[] = "\nRange: bytes=";
-		static const char Icy[] = "\nIcy-MetaData:1";
 		int start = 0, end = -1;
 		if (*x == '\n') {
-			if (!strxcmp(x, Icy, 1)) {
+			if (!strxcmp(x, "\nIcy-MetaData:1", 1)) {
 				parms->icy_metadata = 1;
 			} else if (!strxcmp(x, Range, 1) && *(x += sizeof(Range) - 1)) {
 				if (*x != '-' && (!get_number(&x, &start, 10, "-") || start < 0))
@@ -1658,6 +1708,11 @@ khttpd_handle_connection (server_parms_t *parms)
 	if (parms->verbose)
 		printk("%s: GET '%s'\n", parms->servername, path);
 	path = khttpd_fix_hexcodes(path);
+	// a useful shortcut
+	if (!strxcmp(path, "/?playlists", 0)) {
+		khttpd_redirect(parms, "/drive0/fids/101?.html");
+		return;
+	}
 	for (p = path; *p; ++p) {
 		if (*p == '?') {
 			cmds = p + 1;
@@ -1665,42 +1720,58 @@ khttpd_handle_connection (server_parms_t *parms)
 			break;
 		}
 	}
-	if (!*path) {
-		response = 404;
-	} else {
-		if (cmds && *cmds) {
-			// translate '='/'+' into spaces, and '&' into ';'
-			while ((c = *++p)) {
-				if (c == '=' || c == '+')
-					*p = ' ';
-				else if (c == '&')
-					*p = ';';
-			}
-			if (glob_match(path, "/drive?/fids/*")) {
-				if (!strxcmp(cmds, ".html", 1))
-					parms->generate_playlist = 1;
-				else if (!strxcmp(cmds, ".m3u", 1))
-					parms->generate_playlist = 2;
-			}
-			if (parms->generate_playlist) {
-				response = send_playlist(parms, path);
-				goto quit;
-			}
-			(void) hijack_do_command(cmds, p - cmds); // ignore errors
-			use_index = 0;
+	if (cmds && *cmds) {
+		// translate '='/'+' into spaces, and '&' into ';'
+		while ((c = *++p)) {
+			if (c == '=' || c == '+')
+				*p = ' ';
+			else if (c == '&')
+				*p = ';';
 		}
-		n = strlen(path);
-		if (path[n-1] == '/' && (!use_index || !strcpy(path+n, "index.html") || 1 != classify_path(path))) {
-			path[n] = '\0';
-			response = send_dirlist(parms, path, 1);
-		} else
-			response = send_file(parms, path);
+		if (!strxcmp(cmds, ".html", 1))
+			parms->generate_playlist = 1;
+		else if (!strxcmp(cmds, ".m3u", 1))
+			parms->generate_playlist = 2;
+		if (parms->generate_playlist) {
+			if (!glob_match(path, "/drive?/fids/??*1"))
+				response = &invalid_playlist_path;
+			else if (!*path)
+				response = &(http_response_t){400, "Missing Pathname"};
+			else if (hijack_khttpd_playlists)
+				response = send_playlist(parms, path);
+			else
+				response = &access_not_permitted;
+			goto quit;
+		}
+		if (hijack_khttpd_commands) {
+			hijack_do_command(cmds, p - cmds); // ignore errors
+			if (!*path) {
+				const char r204[] = "HTTP/1.1 204 No Response\r\nConnection: close\r\n\r\n";
+				ksock_rw(parms->clientsock, r204, sizeof(r204)-1, -1);
+				return;
+			}
+		} else {
+			response = &access_not_permitted;
+			goto quit;
+		}
+		use_index = 0;
+	}
+	if (!(pathlen = strlen(path))) {
+		response = &(http_response_t){400, "Missing Pathname"};
+	} else if (path[pathlen-1] == '/' && (!use_index || !strcpy(path+pathlen, "index.html") || 1 != classify_path(path))) {
+		path[pathlen] = '\0';	// remove the "index.html" suffix
+		if (hijack_khttpd_dirs)
+			response = convert_rcode(send_dirlist(parms, path, 1));
+		else
+			response = &access_not_permitted;
+	} else if (hijack_khttpd_files || (hijack_khttpd_playlists && parms->icy_metadata)) {
+		response = convert_rcode(send_file(parms, path));
+	} else {
+		response = &(http_response_t){403, "Access Not Permitted"};
 	}
 quit:
-	if (response) {
-		sprintf(buf, "(%d)", response);
-		khttpd_respond(parms, 404, "Error retrieving file", buf);
-	}
+	if (response)
+		khttpd_respond(parms, response->rcode, response->rtext, buf);
 }
 
 static int
@@ -1795,6 +1866,8 @@ kftpd_daemon (unsigned long use_http)	// invoked twice from init/main.c
 	down(sema);	// wait for Hijack to get our port number from config.ini
 
 	parms.end_offset = -1;
+	if (*hijack_kftpd_password)
+		parms.need_password = 1;
 	if (use_http) {
 		server_port	= hijack_khttpd_port;
 		parms.verbose	= hijack_khttpd_verbose;

@@ -755,6 +755,74 @@ draw_temperature (unsigned int rowcol, int temp, int offset, int color)
 	return draw_string(rowcol, buf, color);
 }
 
+static int            savearea_display_offset = 0;
+static unsigned char *last_savearea;
+static unsigned long *last_updated  = NULL;
+unsigned char **empeg_state_writebuf;	// initialized in empeg_state.c
+
+static void
+savearea_move (int direction)
+{
+	savearea_display_offset = (savearea_display_offset + (direction * 8)) & 0x7f;
+}
+
+static int
+savearea_display (int firsttime)
+{
+	unsigned int rc = NO_REFRESH;
+	unsigned char *empeg_statebuf = *empeg_state_writebuf;
+	if (firsttime) {
+		if (!last_savearea)
+			last_savearea  = kmalloc(128, GFP_KERNEL);
+		if (last_savearea)
+			memcpy(last_savearea, empeg_statebuf, 128);
+		if (!last_updated)
+			last_updated  = kmalloc(128 * sizeof(long), GFP_KERNEL);
+		if (last_updated)
+			memset(last_updated, 0, 128 * sizeof(long));
+		rc = NEED_REFRESH;
+	} else if (jiffies_since(hijack_last_refresh) >= (HZ/4)) {
+		rc = NEED_REFRESH;
+	}
+	if (rc == NEED_REFRESH) {
+		int offset, row = 0, rowcol = ROWCOL(0,0);
+		for (offset = savearea_display_offset; offset != ((savearea_display_offset + 32) & 0x7f);) {
+			int color = COLOR2;
+			unsigned char b = empeg_statebuf[offset];
+			if (last_updated && last_savearea) {
+				unsigned long elapsed;
+				if (b != last_savearea[offset])
+					last_updated[offset] = jiffies ? jiffies : -1;
+				last_savearea[offset] = b;
+				if (last_updated[offset]) {
+					elapsed = jiffies_since(last_updated[offset]);
+					if (elapsed < (10*HZ))
+						color = (elapsed < (3*HZ)) ? -COLOR3 : COLOR3;
+					else
+						last_updated[offset] = 0;
+				}
+			}
+			if ((offset & 7) == 0)
+				rowcol = draw_number(ROWCOL(row++,0), offset, "%02x:", COLOR1);
+			if ((offset & 1) == 0)
+				rowcol = draw_string(rowcol, " ", COLOR0);
+			rowcol = draw_number(rowcol, b, "%02X", color);
+			offset = (offset + 1) & 0x7f;
+		}
+	}
+	if (ir_selected) {	// not 100% effective, but good enough
+		if (last_savearea) {
+			kfree(last_savearea);
+			last_savearea = NULL;
+		}
+		if (last_updated) {
+			kfree(last_updated);
+			last_updated = NULL;
+		}
+	}
+	return rc;
+}
+
 static int
 vitals_display (int firsttime)
 {
@@ -1095,7 +1163,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v77 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v78 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1512,6 +1580,7 @@ static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 	{"Reboot Machine",		reboot_display,		NULL,			0},
 	{"Screen Blanker Timeout",	blanker_display,	blanker_move,		0},
 	{"Screen Blanker Sensitivity",	blankerfuzz_display,	blankerfuzz_move,	0},
+	{"Show Flash Savearea",		savearea_display,	savearea_move,		0},
 	{"Vital Signs",			vitals_display,		NULL,			0},
 	{NULL,				NULL,			NULL,			0},};
 

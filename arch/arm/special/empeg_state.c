@@ -700,6 +700,7 @@ void __init empeg_state_init(void)
 {
 	struct state_dev *dev = state_devices;
 	unsigned char *buffer = NULL;
+	extern unsigned char **empeg_state_writebuf;
 	int result;
 		
 	/* First grab the memory buffer */
@@ -714,6 +715,7 @@ void __init empeg_state_init(void)
 
 	dev->read_buffer = dev->buffers[0];
 	dev->write_buffer = dev->buffers[1];
+	empeg_state_writebuf = &dev->write_buffer;
 
 	/* Get the flash product ID to work out if it's a B3 or C3 flash */
 	state_getflashtype();

@@ -3,10 +3,10 @@
 //#define DEBUG_USB_RXD
 //#define DEBUG_USB_1 1
 
-#ifdef DEBUG_USB
+#if defined(CONFIG_EMPEG_PEGASUS) && defined(DEBUG_USB)
 #define PEGASUS_printk printk
 #else
-#define PEGASUS_printk()
+#define PEGASUS_printk(...)
 #endif
 
 #define NO_ZERO_TERM

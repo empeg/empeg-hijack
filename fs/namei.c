@@ -92,7 +92,7 @@ extern int hijack_trace_fs;
  * POSIX.1 2.4: an empty pathname is invalid (ENOENT).
  */
 
-void hijack_mangle_fids (unsigned char *path);
+void hijack_mangle_fids (unsigned char *path, int writing);
 
 static inline int do_getname(const char *filename, char *page)
 {
@@ -115,7 +115,7 @@ static inline int do_getname(const char *filename, char *page)
 	return retval;
 }
 
-char * getname(const char * filename)
+char * getname2(const char * filename, int writing)
 {
 	char *tmp, *result;
 
@@ -129,9 +129,14 @@ char * getname(const char * filename)
 			putname(tmp);
 			result = ERR_PTR(retval);
 		} else
-			hijack_mangle_fids(tmp);
+			hijack_mangle_fids(tmp, writing);
 	}
 	return result;
+}
+
+char * getname(const char * filename)
+{
+	return getname2(filename, 0);
 }
 
 /*

@@ -1,7 +1,7 @@
 VERSION = 2
 PATCHLEVEL = 2
 SUBLEVEL = 17
-EXTRAVERSION = -rmk5-np17-empeg52-hijack-v345
+EXTRAVERSION = -rmk5-np17-empeg52-hijack-v346
 
 ARCH := arm
 

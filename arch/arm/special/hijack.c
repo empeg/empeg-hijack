@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v302"
+#define HIJACK_VERSION	"v303"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -2268,7 +2268,7 @@ knobseek_display (int firsttime)
 		unsigned int rowcol;
 		const char *msg;
 		if (hijack_movefunc == knobseek_move_visuals) {
-			geom = (hijack_geom_t){8, 8+6+KFONT_HEIGHT, 46, EMPEG_SCREEN_COLS-46};
+			geom = (hijack_geom_t){8, 8+6+KFONT_HEIGHT, 44, EMPEG_SCREEN_COLS-44};
 			msg  = "Visuals";
 		} else if (get_current_mixer_source() == IR_FLAGS_TUNER) {
 			geom = (hijack_geom_t){8, 8+6+KFONT_HEIGHT, 8, EMPEG_SCREEN_COLS-50};
@@ -4682,10 +4682,26 @@ hijack_find_player_option (unsigned char *buf, char *section, char *option)
 	return 0;	// option not found
 }
 
+static unsigned char *
+hijack_exec_line (unsigned char *s)
+{
+	unsigned char *cmdline = s = 1 + findchars(s, "=");
+	s = findchars(s, "\n\r");
+	if (s != cmdline) {
+		extern int hijack_exec(const char *);
+		char saved = *s;
+		*s = '\0';
+		hijack_exec(cmdline);
+		*s = saved;
+	}
+	return s;
+}
+
 static int
 hijack_get_options (unsigned char *buf)
 {
 	static const char menu_delete[] = "menu_remove=";
+	static int already_ran_once = 0;
 	int errors;
 	unsigned char *s;
 
@@ -4701,6 +4717,15 @@ hijack_get_options (unsigned char *buf)
 		char *line = s;
 		if (*s == ';')
 			goto nextline;
+		if (!strxcmp(s, "exec_once=", 1)) {
+			if (!already_ran_once)
+				s = hijack_exec_line(s);
+			goto nextline;
+		}
+		if (!strxcmp(s, "exec=", 1)) {
+			s = hijack_exec_line(s);
+			goto nextline;
+		}
 		if (!strxcmp(s, menu_delete, 1)) {
 			unsigned char *label = s += sizeof(menu_delete)-1;
 			s = findchars(s, "\n;\r");
@@ -4719,6 +4744,7 @@ hijack_get_options (unsigned char *buf)
 	nextline:
 		s = findchars(s, "\n");
 	}
+	already_ran_once = 1;
 	return errors;
 }
 

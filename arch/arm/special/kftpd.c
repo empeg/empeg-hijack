@@ -830,7 +830,7 @@ static const mime_type_t mime_types[] = {
 	{"*.png",		"image/png",		1},
 	{"*.htm",		 text_html,		1},
 	{"*.xml",		 text_xml,		1},
-	{"*.xsl",		 NULL,			1},	// text/xml ??
+	{"*.xsl",		 text_xml,		1},
 	{"*.css",		 text_css,		1},
 	{"*.js",		 NULL,			1},
 	{"*.jar",		 NULL,			1},

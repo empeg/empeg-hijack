@@ -1847,7 +1847,7 @@ kftpd_handle_command (server_parms_t *parms)
 			response = 200;
 		}
 	} else if (!strxcmp(buf, "MKD ", 1) || !strxcmp(buf, "XMKD ", 1)) {
-		char *p = &buf[4 + (buf[3] == ' ')];
+		char *p = &buf[4 + (buf[3] != ' ')];
 		if (!*p) {
 			response = 501;
 		} else {
@@ -1856,7 +1856,7 @@ kftpd_handle_command (server_parms_t *parms)
 			response = kftpd_do_mkdir(parms, path);
 		}
 	} else if (!strxcmp(buf, "RMD ", 1) || !strxcmp(buf, "XRMD ", 1)) {
-		char *p = &buf[4 + (buf[3] == ' ')];
+		char *p = &buf[4 + (buf[3] != ' ')];
 		if (!*p) {
 			response = 501;
 		} else {

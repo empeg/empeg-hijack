@@ -973,10 +973,11 @@ khttp_send_file_header (server_parms_t *parms, char *path, off_t length, char *b
 		fd = open_fid_file(path);	// open tagfile
 		*lastc = '0';
 		if (fd > 0) {
-			size = read(fd, buf, bufsize-1);
+			size = read(fd, buf, bufsize/2);
 			buf[size] = '\0';
 			close(fd);
 			find_tags(buf, size, labels, (char **)&tags);
+			buf += size + 1;
 			c = tags.type[0];
 			if (TOUPPER(c) != 'P' && tags.codec[0]) {
 				switch (TOUPPER(tags.codec[1])) {
@@ -1904,8 +1905,6 @@ ksock_accept (server_parms_t *parms)
 	return 1;	// failure
 }
 
-//static int zombies = 0;
-
 static int
 child_thread (void *arg)
 {
@@ -1924,7 +1923,6 @@ child_thread (void *arg)
 	}
 	sock_release(parms->clientsock);
 	free_pages((unsigned long)parms, 1);
-	//++zombies;
 	sys_exit(0);	// never returns
 	return 0;
 }
@@ -1972,8 +1970,6 @@ kftpd_daemon (unsigned long use_http)	// invoked twice from init/main.c
 	}
 
 	if (server_port && hijack_max_connections > 0) {
-		//struct wait_queue *sleepq = NULL;
-		//sleep_on_timeout(&sleepq, 3*HZ);	// snooze long enough for DHCP negotiations to finish
 		if (make_socket(&parms, &parms.servsock, server_port)) {
 			printk("%s: make_socket(port=%d) failed\n", parms.servername, server_port);
 		} else if (parms.servsock->ops->listen(parms.servsock, 10) < 0) {	// queued=10
@@ -1985,17 +1981,11 @@ kftpd_daemon (unsigned long use_http)	// invoked twice from init/main.c
 				int child;
 				do {
 					int status, flags = WUNTRACED | __WCLONE;
-					//if (!zombies && childcount < hijack_max_connections)
 					if (childcount < hijack_max_connections)
 						flags |= WNOHANG;
-					//else printk("%s: too many offspring, waiting\n", parms.servername);
 					child = sys_wait4(-1, &status, flags, NULL);
-					if (child > 0) {
+					if (child > 0)
 						--childcount;
-						//if (zombies > 0)	// paranoia
-						//	--zombies;
-					}
-				//} while (child > 0 || zombies > 0);
 				} while (child > 0);
 				if (!ksock_accept(&parms)) {
 					if (!(clientparms = (server_parms_t *)__get_free_pages(GFP_KERNEL,1))) {

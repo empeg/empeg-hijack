@@ -319,13 +319,15 @@ struct tty_driver *get_tty_driver(kdev_t device)
  */
 int tty_check_change(struct tty_struct * tty)
 {
+	// Don't bother signalling if this is simply the Empeg's serial/console port (ttyS1):
+	if (tty->device == MKDEV(TTY_MAJOR,65))
+		return 0;
+
 	if (current->tty != tty)
 		return 0;
 	if (tty->pgrp <= 0) {
-		if (MAJOR(tty->device) != TTY_MAJOR || MINOR(tty->device) != (MAX_NR_CONSOLES+2)) {	// allow all pgrps to access ttyS1
-			printk("tty_check_change: tty->pgrp <= 0!\n");
-			return 0;
-		}
+		printk("tty_check_change: tty->pgrp <= 0!\n");
+		return 0;
 	}
 	if (current->pgrp == tty->pgrp)
 		return 0;

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v391"
+#define HIJACK_VERSION	"v392"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -55,6 +55,7 @@ extern int empeg_inittherm(volatile unsigned int *timerbase, volatile unsigned i
 #define EMPEG_KNOB_SUPPORTED	// Mk2 and later have a front-panel knob
 #define EMPEG_STALK_SUPPORTED	// Mk2 and later have a front-panel knob
 #endif
+int	hijack_loopback;		// 1 == detected docked "loopback" mode
 int	kenwood_disabled;		// used by Nextsrc button
 int	empeg_on_dc_power;		// used in arch/arm/special/empeg_power.c
 int	empeg_tuner_present = 0;	// used in many places
@@ -5069,12 +5070,14 @@ void
 hijack_process_config_ini (char *buf, off_t f_pos)
 {
 	static const char *acdc_labels[2] = {";@AC", ";@DC"};
+	static const char *loopback_labels[2] = {";@NOLOOPBACK", ";@LOOPBACK"};
 
 #ifdef EMPEG_KNOB_SUPPORTED
 	get_player_version();
 #endif
-	(void) edit_config_ini(buf, acdc_labels    [empeg_on_dc_power]);
-	(void) edit_config_ini(buf, homework_labels[hijack_homework]);
+	(void) edit_config_ini(buf, loopback_labels [hijack_loopback]);
+	(void) edit_config_ini(buf, acdc_labels     [empeg_on_dc_power]);
+	(void) edit_config_ini(buf, homework_labels [hijack_homework]);
 	if (f_pos)		// exit if not first read of this cycle
 		return;
 
@@ -5237,17 +5240,18 @@ hijack_restore_settings (char *buf, char *msg)
 #ifdef EMPEG_KNOB_SUPPORTED
 {
 	extern void hijack_read_tuner_id (int *, int *);	// drivers/char/serial_sa1100.c
-	int	loopback = 0, tuner_id = -1;
+	int	tuner_id = -1;
+	hijack_loopback = 0;
 
-	hijack_read_tuner_id(&loopback, &tuner_id);
-	printk("Tuner: loopback=%d, ID=%d\n", loopback, tuner_id);
+	hijack_read_tuner_id(&hijack_loopback, &tuner_id);
+	printk("Tuner: loopback=%d, ID=%d\n", hijack_loopback, tuner_id);
 	if (tuner_id == -1)
 		tuner_id = 0;	// we use "0" to mean "no tuner" in the Force_Power menu
 	else
 		empeg_tuner_present = 1;
 	if (force_power != FORCE_NOLOOPBACK) {
 		if (force_power != FORCE_AC && force_power != FORCE_DC) {
-			if (empeg_on_dc_power && loopback) {
+			if (empeg_on_dc_power && hijack_loopback) {
 				force_power = FORCE_AC;
 				no_popup = 1;
 			} else if (force_power >= FORCE_TUNER) {

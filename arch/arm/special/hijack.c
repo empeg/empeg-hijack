@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v296"
+#define HIJACK_VERSION	"v297"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -165,7 +165,7 @@ static const min_max_t lhs_stalk_default[] = {
 
 static unsigned long ir_lastevent = 0, ir_lasttime = 0, ir_selected = 0;
 static unsigned int ir_releasewait = IR_NULL_BUTTON, ir_trigger_count = 0;;
-static unsigned long ir_menu_down = 0, ir_left_down = 0, ir_right_down = 0, ir_4_down = 0;
+static unsigned long ir_menu_down = 0, ir_left_down = 0, ir_right_down = 0;
 static unsigned long ir_move_repeat_delay, ir_shifted = 0;
 static int *ir_numeric_input = NULL;
 
@@ -224,7 +224,8 @@ typedef struct button_name_s {
 #define IR_FAKE_NEXTSRC		(IR_NULL_BUTTON-13)
 #define IR_FAKE_BASSADJ		(IR_NULL_BUTTON-14)
 #define IR_FAKE_TREBLEADJ	(IR_NULL_BUTTON-15)
-#define IR_FAKE_HIJACKMENU	(IR_NULL_BUTTON-16)	// This MUST be the lowest numbered FAKE code
+#define IR_FAKE_QUICKTIMER	(IR_NULL_BUTTON-16)
+#define IR_FAKE_HIJACKMENU	(IR_NULL_BUTTON-17)	// This MUST be the lowest numbered FAKE code
 #define ALT			BUTTON_FLAGS_ALTNAME
 
 typedef struct ir_translation_s {
@@ -277,6 +278,7 @@ static button_name_t button_names[] = {
 	{"Clock",	IR_FAKE_CLOCK},
 	{"NextSrc",	IR_FAKE_NEXTSRC},
 	{"VolAdj",	IR_FAKE_VOLADJMENU},
+	{"QuickTimer",	IR_FAKE_QUICKTIMER},
 	{"HijackMenu",	IR_FAKE_HIJACKMENU},
 
 	{"Initial",	IR_FAKE_INITIAL},
@@ -3264,16 +3266,25 @@ show_message (const char *message, unsigned long time)
 	}
 }
 
+static unsigned int ir_lastpressed = IR_NULL_BUTTON;
+
 static int
 quicktimer_display (int firsttime)
 {
-	static const unsigned int quicktimer_buttonlist[] = {5, IR_KW_4_PRESSED, IR_KW_4_RELEASED, IR_RIO_4_PRESSED, IR_RIO_4_RELEASED};
+	static unsigned int buttonlist[3];
 	static const hijack_geom_t geom = {8, 8+6+KFONT_HEIGHT, 12, EMPEG_SCREEN_COLS-12};
 	hijack_buttondata_t data;
 	unsigned int rowcol;
 
 	timer_started = JIFFIES();
 	if (firsttime) {
+		if (ir_lastpressed != IR_NULL_BUTTON) {
+			printk("-------QuickTimer: button=%08x\n", ir_lastpressed);	//FIXME
+			buttonlist[0] = 3;
+			buttonlist[1] = ir_lastpressed;
+			buttonlist[2] = RELEASECODE(ir_lastpressed);
+			hijack_buttonlist = buttonlist;
+		}
 		if (timer_timeout) {
 			timer_timeout = 0;
 			hijack_beep(60, 100, 30);
@@ -3282,7 +3293,6 @@ quicktimer_display (int firsttime)
 			hijack_beep(80, 100, 30);
 		}
 		ir_numeric_input = &timer_timeout;
-		hijack_buttonlist = quicktimer_buttonlist;
 		hijack_last_moved = JIFFIES();
 		create_overlay(&geom);
 	} else if (jiffies_since(hijack_last_moved) >= (HZ*3)) {
@@ -3311,7 +3321,6 @@ quicktimer_display (int firsttime)
 static void
 hijack_handle_button (unsigned int button, unsigned long delay, int any_ui_is_active, const unsigned char *player_buf)
 {
-	static unsigned int ir_lastpressed = IR_NULL_BUTTON;
 	unsigned long old_releasewait;
 	int hijacked = 0;
 
@@ -3376,7 +3385,28 @@ hijack_handle_button (unsigned int button, unsigned long delay, int any_ui_is_ac
 			popup_activate(button, 0);
 			hijacked = 1;
 			break;
+		case IR_FAKE_CLOCK:
+		{
+			tm_t	tm;
+			char	buf[24];
+			const char *wdays[7] = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
+			extern const char *hijack_months[12];
+			hijack_convert_time(CURRENT_TIME + (hijack_time_offset * 60), &tm);
+			sprintf(buf, "%3s %02u:%02u %02u-%3s-%4u", wdays[tm.tm_wday], tm.tm_hour, tm.tm_min,
+				tm.tm_mday, hijack_months[tm.tm_mon], tm.tm_year);
+			show_message(buf, 4*HZ);
+			hijacked = 1;
+			break;
+		}
+		case IR_FAKE_QUICKTIMER:
+			activate_dispfunc(quicktimer_display, timer_move);
+			hijacked = 1;
+			break;
 #ifdef EMPEG_KNOB_SUPPORTED
+		case IR_FAKE_KNOBSEEK:
+			activate_dispfunc(knobseek_display, knobseek_move);
+			hijacked = 1;
+			break;
 		case IR_KNOB_PRESSED:
 			hijacked = 1; // hijack it and later send it with the release
 			ir_knob_busy = 0;
@@ -3417,23 +3447,6 @@ hijack_handle_button (unsigned int button, unsigned long delay, int any_ui_is_ac
 			}
 			ir_knob_down = 0;
 			break;
-		case IR_FAKE_CLOCK:
-		{
-			tm_t	tm;
-			char	buf[24];
-			const char *wdays[7] = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
-			extern const char *hijack_months[12];
-			hijack_convert_time(CURRENT_TIME + (hijack_time_offset * 60), &tm);
-			sprintf(buf, "%3s %02u:%02u %02u-%3s-%4u", wdays[tm.tm_wday], tm.tm_hour, tm.tm_min,
-				tm.tm_mday, hijack_months[tm.tm_mon], tm.tm_year);
-			show_message(buf, 4*HZ);
-			hijacked = 1;
-			break;
-		}
-		case IR_FAKE_KNOBSEEK:
-			activate_dispfunc(knobseek_display, knobseek_move);
-			hijacked = 1;
-			break;
 		case IR_KNOB_RIGHT:
 			if (hijack_status != HIJACK_IDLE) {
 				hijack_move(1);
@@ -3469,7 +3482,7 @@ hijack_handle_button (unsigned int button, unsigned long delay, int any_ui_is_ac
 				hijacked = ir_selected = 1;
 			} else if (hijack_status == HIJACK_IDLE) {
 				// ugly Kenwood remote hack: press/release CD quickly 3 times to activate menu
-				if ((ir_lastpressed & ~0x80000000) != button || delay > HZ)
+				if (ir_lastpressed != button || delay > HZ)
 					ir_trigger_count = 1;
 				else if (++ir_trigger_count >= 3)
 					hijacked = 1;
@@ -3517,38 +3530,8 @@ hijack_handle_button (unsigned int button, unsigned long delay, int any_ui_is_ac
 			if (hijack_status != HIJACK_IDLE)
 				hijacked = 1;
 			break;
-		case IR_RIO_4_PRESSED:
-			if (!any_ui_is_active) {
-				hijacked = 1; // hijack it and later send it with the release
-				ir_4_down = JIFFIES();
-			}
-			break;
-		case IR_RIO_4_RELEASED:
-			if (hijack_status != HIJACK_IDLE) {
-				hijacked = 1;
-			} else if (!any_ui_is_active && ir_4_down) {
-				if (get_current_mixer_source() != IR_FLAGS_TUNER) {
-					hijacked = 1;
-					activate_dispfunc(quicktimer_display, timer_move);
-				} else {
-					hijack_enq_button(&hijack_playerq, IR_RIO_4_PRESSED, 0);
-					ir_releasewait = IR_NULL_BUTTON;
-				}
-			}
-			ir_4_down = 0;
-			break;
-		case IR_KW_4_PRESSED:
-		case IR_KW_4_RELEASED:
-			if (!any_ui_is_active && get_current_mixer_source() != IR_FLAGS_TUNER) {
-				hijacked = 1;
-				if (button == IR_KW_4_RELEASED)
-					activate_dispfunc(quicktimer_display, timer_move);
-			}
-			break;
 	}
 done:
-	ir_lastpressed = button; // used for detection of CD-CD-CD sequence
-
 	// wait for RELEASED code of most recently hijacked PRESSED code
 	old_releasewait = ir_releasewait;
 	ir_releasewait  = IR_NULL_BUTTON;
@@ -3601,8 +3584,9 @@ input_append_code2 (unsigned int rawbutton)
 	} else {
 		if (ir_downkey == rawbutton || rawbutton == IR_NULL_BUTTON)
 			return;	// ignore repeated press with no intervening release
-		if (rawbutton != IR_KNOB_LEFT && rawbutton != IR_KNOB_RIGHT) {
-			if (rawbutton > IR_NULL_BUTTON || rawbutton < IR_FAKE_HIJACKMENU)
+		if (rawbutton > IR_NULL_BUTTON || rawbutton < IR_FAKE_HIJACKMENU) {	// A real button?
+			ir_lastpressed = button; // used for detection of CD-CD-CD sequence; also used by quicktimer
+			if (rawbutton != IR_KNOB_LEFT && rawbutton != IR_KNOB_RIGHT)	// Knob left/right don't issue release codes
 				ir_downkey = rawbutton;
 		}
 	}
@@ -3883,8 +3867,6 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 #endif // EMPEG_KNOB_SUPPORTED
 			 || (ir_menu_down && jiffies_since(ir_menu_down) >= HZ)) {
 				activate_dispfunc(menu_display, menu_move);
-			} else if (ir_4_down && jiffies_since(ir_4_down) >= (3*HZ/2)) {
-				activate_dispfunc(quicktimer_display, timer_move);
 			}
 			break;
 		case HIJACK_ACTIVE:

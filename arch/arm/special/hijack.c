@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v148"
+#define HIJACK_VERSION "v149"
 
 #include <linux/sched.h>
 #include <linux/kernel.h>
@@ -11,7 +11,7 @@
 #include <linux/delay.h>
 #include <linux/init.h>
 
-#include "empeg.h"
+#include <linux/empeg.h>
 #include <asm/uaccess.h>
 
 #include <asm/arch/hijack.h>		// for ioctls, IR_ definitions, etc..
@@ -740,7 +740,7 @@ hijack_enq_translations (ir_translation_t *t)
 
 	while (count--) {
 		unsigned long code = *newp++;
-		hijack_enq_button(&hijack_inputq, code & ~~BUTTON_FLAGS_LONGPRESS, 0);
+		hijack_enq_button(&hijack_inputq, code & ~BUTTON_FLAGS_LONGPRESS, 0);
 		if (count) {
 			unsigned long button = code & ~(BUTTON_FLAGS^BUTTON_FLAGS_UISTATE);
 			hijack_enq_release(&hijack_inputq, button|(code & BUTTON_FLAGS_LONGPRESS), 0);

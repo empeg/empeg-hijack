@@ -181,7 +181,6 @@ static int erase_flash_sector(unsigned short *ptr)
 	volatile unsigned short *flash_ptr;
 	int erase_loop_ctr;
 	unsigned short status;
-	int rc;
 
 	flash_ptr = ptr;
 
@@ -224,11 +223,9 @@ static int erase_flash_sector(unsigned short *ptr)
 
 	*flash_ptr =  FlashCommandClear;
 	*flash_ptr =  FlashCommandRead;
-
-	rc = full_status_check(status);
 	WP_OFF();
 
-   	return rc;
+   	return(full_status_check(status));
 }
 
 

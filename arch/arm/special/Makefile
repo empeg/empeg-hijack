@@ -134,7 +134,6 @@ ifdef CONFIG_SA1100_TIFON
   LX_OBJS	+= mcp_common.o
 endif
 
-CFLAGS += -I.. -I../../../include/linux
 # Common dependencies
 
 all: links first_rule

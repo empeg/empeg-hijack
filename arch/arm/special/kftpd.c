@@ -59,14 +59,15 @@ typedef struct server_parms_s {
 	struct socket		*servsock;
 	struct socket		*datasock;
 	struct sockaddr_in	clientaddr;
-	int			verbose;
-	int			use_http;
+	char			verbose;	// bool
+	char			format_tagfile;	// bool
+	char			use_http;	// bool
+	char			have_portaddr;	// bool
 	int			data_port;
 	unsigned int		umask;
-	char			clientip[INET_ADDRSTRLEN];
-	char*			servername;
-	int			have_portaddr;
+	char			*servername;
 	struct sockaddr_in	portaddr;
+	char			clientip[INET_ADDRSTRLEN];
 	unsigned char		cwd[1024];
 	unsigned char		buf[1024];
 	unsigned char		tmp2[768];
@@ -802,11 +803,11 @@ khttpd_respond (server_parms_t *parms, int rcode, const char *title, const char 
 
 
 static void
-khttpd_dir_redirect (server_parms_t *parms, const char *path, char *buf)
+khttpd_redirect (server_parms_t *parms, const char *path, char *buf)
 {
 	static const char http_redirect[] =
 		"HTTP/1.1 302 Found\n"
-		"Location: %s/\n"
+		"Location: %s\n"
 		"Connection: close\n"
 		"Content-Type: text/html\n\n"
 		"<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\">\n"
@@ -814,19 +815,21 @@ khttpd_dir_redirect (server_parms_t *parms, const char *path, char *buf)
 		"<TITLE>302 Found</TITLE>\n"
 		"</HEAD><BODY>\n"
 		"<H1>Found</H1>\n"
-		"The document has moved <A HREF=\"%s/\">here</A>.<P>\n"
+		"The document has moved <A HREF=\"%s%s\">here</A>.<P>\n"
 		"</BODY></HTML>\n";
 
 	unsigned int	len, rc;
+	char *slash = parms->format_tagfile ? "" : "/";
 
-	len = sprintf(buf, http_redirect, path, path);
+	len = sprintf(buf, http_redirect, path, slash, path, slash);
 	rc = ksock_rw(parms->clientsock, buf, len, -1);
 	if (rc != len)
-		printk("%s: dir_redirect(): ksock_rw(%d) returned %d\n", parms->servername, len, rc);
+		printk("%s: khttpd_redirect(): ksock_rw(%d) returned %d\n", parms->servername, len, rc);
 }
 
 static const char audio_mpeg[]		= "audio/mpeg";
 static const char text_plain[]		= "text/plain";
+static const char text_html[]		= "text/html";
 static const char application_x_tar[]	= "application/x-tar";
 
 typedef struct mime_type_s {
@@ -838,8 +841,8 @@ static const mime_type_t mime_types[] = {
 	{"*.tiff",		"image/tiff"			},
 	{"*.jpg",		"image/jpeg"			},
 	{"*.png",		"image/png"			},
-	{"*.htm",		"text/html"			},
-	{"*.html",		"text/html"			},
+	{"*.htm",		 text_html			},
+	{"*.html",		 text_html			},
 	{"*.txt",		 text_plain			},
 	{"*.text",		 text_plain			},
 	{"*.wav",		"audio/x-wav"			},
@@ -862,7 +865,9 @@ khttp_send_file_header (server_parms_t *parms, char *path, unsigned long i_size,
 	const char	*mimetype;
 
 	// Crude "tune" recognition; can mislabel WAVs
-	if (i_size > 1000 && glob_match(path, "/drive?/fids/*0")) {
+	if (parms->format_tagfile) {
+		mimetype = text_html;
+	} else if (i_size > 1000 && glob_match(path, "/drive?/fids/*0")) {
 		mimetype = audio_mpeg;	// Ugh.. could be a WAV, but too bad.
 	} else {
 		const char		*pattern;
@@ -880,6 +885,101 @@ khttp_send_file_header (server_parms_t *parms, char *path, unsigned long i_size,
 	if (len != ksock_rw(parms->datasock, buf, len, -1))
 		return 426;
 	return 0;
+}
+
+static char
+get_tag (char *s, char *tag, char *buf, int buflen)
+{
+	*buf = '\0';
+	//printk("get_tag(,%s):\n%s\n------------\n", tag,s);
+	while (*s) {
+		if (*s == *tag && !strxcmp(s, tag, 1)) {
+			char *val = buf;
+			s += strlen(tag);
+			while (*s && *s != '\n' && --buflen > 0)
+				*buf++ = *s++;
+			*buf = '\0';
+			//printk(" --> '%s'\n\n", val);
+			return *val;
+		}
+		while (*s && *s != '\n')
+			++s;
+		while (*s == '\n')
+			++s;
+	}
+	return '\0';
+}
+
+// Mmmm.. probably the wrong approach, but it will do for starters.
+// Much better would be to implement an on-the-fly "/proc/playlists" tree,
+// using symlinks (with extensions!) to point at the actual audio files.
+static int
+send_tagfile (server_parms_t *parms, char *path, unsigned char *buf, int size)
+{
+	char	type[12], subpath[64], *pathtail, html[128];
+	int	pathlen = strlen(path);
+
+	if (size < PAGE_SIZE && pathlen < sizeof(subpath)) {	// Ouch.. we cannot handle HUGE tag files here
+		strcpy(subpath, path);
+		pathtail = subpath + pathlen - 1;
+		while (*(pathtail - 1) != '/')
+			--pathtail;
+		buf[size] = '\0';	// Ensure zero-termination of the data
+		if (get_tag(buf, "type=", type, sizeof(type))) {
+			path[strlen(path)-1] = '0';	// for the next phase (whichever) below:
+			if (!strxcmp(type, "tune", 0)) {
+				// fixme: need to somehow specify the audio type (mp3,wav,wmp)
+				khttpd_redirect(parms, path, buf);
+				return 0;
+			}
+			if (!strxcmp(type, "playlist", 0)) {
+				// open the *0 file, which contains a list of 32-bit fids
+				// loop: read a 32-bit fid, open/read the corresponding *1 file,
+				//    format/send the *1 title, type..
+				//    close the *1, and loop again until done.
+				int playlist_fd = open(path, O_RDONLY, 0);
+				if (playlist_fd >= 0) {
+					int rc = 0, fid = -1;
+					if (khttp_send_file_header(parms, path, 0, buf)) {
+						printk("send header failed\n");
+						rc = -1;
+					} else while (sizeof(fid) == read(playlist_fd, (char *)&fid, sizeof(fid))) {
+						int subitem_fd;
+						fid |= 1;
+						sprintf(pathtail, "%x", fid);
+						subitem_fd = open(subpath, O_RDONLY, 0);
+						if (subitem_fd >= 0) {
+							size = read(subitem_fd, buf, PAGE_SIZE-1);
+							if (size > 0) {
+								char title[64];
+								buf[size] = '\0';
+								if (get_tag(buf, "title=", title, sizeof(title))) {
+									size = sprintf(html, "<BR><A HREF=\"%x?FORMAT\">%s</A>\n", fid, title);
+									(void)ksock_rw(parms->datasock, html, size, -1);
+								}
+							} else {
+								printk("read_subitem(%s) returned %d\n", subpath, size);
+							}
+							close(subitem_fd);
+						} else {
+							printk("open_subitem(%s) returned %d\n", subpath, subitem_fd);
+						}
+					}
+					close(playlist_fd);
+					if (!rc)
+						return 0;
+				} else {
+					printk("open_playlist(%s) returned %d\n", path, playlist_fd);
+				}
+			}
+		} else {
+			printk("get_tag(type) failed\n");
+		}
+	} else {
+		printk("prelim check failed, size=%d, pathlen=%d\n", size, pathlen);
+	}
+	khttpd_respond(parms, 408, "Bad Playlist", "File is not a playlist");
+	return 451;	// Ugh, but it will do
 }
 
 static int
@@ -906,13 +1006,15 @@ send_file (server_parms_t *parms, char *path)
 				response = 550;
 			} else if (fops->readdir) {
 				if (parms->use_http)
-					khttpd_dir_redirect(parms, path, buf);
+					khttpd_redirect(parms, path, buf);
 				else
 					response = 553;
 			} else if (!fops->read) {
 				response = 550;
 			} else if (!(response = open_datasock(parms))) {
-				if (!parms->use_http || !(response = khttp_send_file_header(parms, path, inode->i_size, buf))) {
+				if ((parms->use_http && !parms->format_tagfile) && (response = khttp_send_file_header(parms, path, inode->i_size, buf))) {
+					; /* error */
+				} else {
 					do {
 						schedule(); // give the music player a chance to run
 						size = fops->read(filp, buf, BUF_PAGES*PAGE_SIZE, &(filp->f_pos));
@@ -920,6 +1022,9 @@ send_file (server_parms_t *parms, char *path)
 							printk("%s: read() failed; rc=%d\n", parms->servername, size);
 							response = 451;
 							break;
+						} else if (parms->format_tagfile) {
+							response = send_tagfile(parms, path, buf, size);
+							size = 0;	// we assume tag file fits into one page
 						} else if (size && size != ksock_rw(parms->datasock, buf, size, -1)) {
 							response = 426;
 							break;
@@ -1336,6 +1441,7 @@ khttpd_handle_connection (server_parms_t *parms)
 		if (parms->verbose)
 			printk("%s: GET '%s'\n", parms->servername, path);
 		path = khttpd_fix_hexcodes(path);
+		parms->format_tagfile = 0;
 		for (p = path; *p; ++p) {
 			if (*p == '?') {
 				char *cmds = p + 1;
@@ -1348,7 +1454,11 @@ khttpd_handle_connection (server_parms_t *parms)
 						else if (c == '&')
 							*p = ';';
 					}
-					(void) hijack_do_command(cmds, p - cmds); // ignore errors
+					if (!strxcmp(cmds, "FORMAT", 1) && glob_match(path, "/drive?/fids/*1")) {
+						parms->format_tagfile = 1;
+					} else {
+						(void) hijack_do_command(cmds, p - cmds); // ignore errors
+					}
 				}
 				use_index = 0;
 				break;

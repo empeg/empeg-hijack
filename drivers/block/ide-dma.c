@@ -371,7 +371,7 @@ int ide_dmaproc (ide_dma_action_t func, ide_drive_t *drive)
 			if (drive->media != ide_disk)
 				return 0;
 			ide_set_handler(drive, &ide_dma_intr, WAIT_CMD);/* issue cmd to drive */
-			if (func == ide_dma_read || func == ide_dma_write48)
+			if (func == ide_dma_read || func == ide_dma_write)
 				OUT_BYTE(reading ? WIN_READDMA : WIN_WRITEDMA, IDE_COMMAND_REG);
 			else /* lba48 */
 				OUT_BYTE(reading ? WIN_READDMA_EXT : WIN_WRITEDMA_EXT, IDE_COMMAND_REG);

@@ -452,7 +452,7 @@ static ide_startstop_t do_rw_disk (ide_drive_t *drive, struct request *rq, unsig
 #endif /* CONFIG_BLK_DEV_PDC4030 */
 	if (rq->cmd == READ) {
 #ifdef CONFIG_BLK_DEV_IDEDMA
-		if (drive->using_dma && !(HWIF(drive)->dmaproc(ide_dma_read, drive)))
+		if (drive->using_dma && !(HWIF(drive)->dmaproc(lba48 ? ide_dma_read48 : ide_dma_read, drive)))
 			return ide_started;
 #endif /* CONFIG_BLK_DEV_IDEDMA */
 		ide_set_handler(drive, &read_intr, WAIT_CMD);
@@ -465,7 +465,7 @@ static ide_startstop_t do_rw_disk (ide_drive_t *drive, struct request *rq, unsig
 	if (rq->cmd == WRITE) {
 		ide_startstop_t startstop;
 #ifdef CONFIG_BLK_DEV_IDEDMA
-		if (drive->using_dma && !(HWIF(drive)->dmaproc(ide_dma_write, drive)))
+		if (drive->using_dma && !(HWIF(drive)->dmaproc(lba48 ? ide_dma_write48 : ide_dma_write, drive)))
 			return ide_started;
 #endif /* CONFIG_BLK_DEV_IDEDMA */
 		if (lba48)

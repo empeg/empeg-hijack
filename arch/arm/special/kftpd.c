@@ -878,7 +878,6 @@ static const char text_plain[]		= "text/plain";
 static const char text_html[]		= "text/html";
 static const char text_css[]		= "text/css";
 static const char text_xml[]		= "text/xml";
-static const char text_xsl[]		= "text/xsl";
 static const char application_octet[]	= "application/octet-stream";
 static const char application_x_tar[]	= "application/x-tar";
 
@@ -894,7 +893,7 @@ static const mime_type_t mime_types[] = {
 	{"*.png",		"image/png",		1},
 	{"*.htm",		 text_html,		1},
 	{"*.xml",		 text_xml,		1},
-	{"*.xsl",		 text_xsl,		1},
+	{"*.xsl",		 NULL,			1},
 	{"*.css",		 text_css,		1},
 	{"*.html",		 text_html,		1},
 	{"*.txt",		 text_plain,		0},
@@ -1304,11 +1303,13 @@ send_playlist (server_parms_t *parms, char *path)
 		case 3: // xml
 			used += sprintf(xfer.buf+used,
 				"<?xml version=\"1.0\"?>\r\n"
-				"<?xml-stylesheet type=\"%s\" href=\"%s\"?>\r\n"
-				"<playlist host=\"%s\" type=\"%s\" tagfid=\"%x\" fid=\"%x\" length=\"%s\" "
-				"year=\"%s\" genre=\"%s\" options=\"%s\"",
-				text_xsl, parms->style, parms->hostname, tagtype, pfid, pfid^1,
-				tags.length, tags.year, tags.genre, tags.options);
+				"<?xml-stylesheet type=\"text/xsl\" href=\"%s\"?>\r\n"
+				"<playlist stylesheet=\"%s\" host=\"%s\" allow_files=\"%d\" allow_commands=\"%d\" "
+				"type=\"%s\" tagfid=\"%x\" fid=\"%x\" length=\"%s\" "
+				"year=\"%s\" options=\"%s\"",
+				parms->style, parms->style, parms->hostname, hijack_khttpd_files, hijack_khttpd_commands,
+				tagtype, pfid, pfid^1, tags.length, tags.year, tags.options);
+			used += encode_tag1(xfer.buf+used, "genre",   tags.genre);
 			used += encode_tag1(xfer.buf+used, "title",   tags.title);
 			used += encode_tag1(xfer.buf+used, "artist",  tags.artist);
 			used += encode_tag1(xfer.buf+used, "source",  tags.source);
@@ -1424,9 +1425,9 @@ open_fidfile:
 						"\t\t\t<tagfid>%x</tagfid>\r\n"
 						"\t\t\t<fid>%x</fid>\r\n"
 						"\t\t\t<year>%s</year>\r\n"
-						"\t\t\t<genre>%s</genre>\r\n"
 						"\t\t\t<options>%s</options>\r\n",
-						tagtype, fid, fid^1, tags.year, tags.genre, tags.options);
+						tagtype, fid, fid^1, tags.year, tags.options);
+					used += encode_tag2(xfer.buf+used, "genre",   tags.genre);
 					used += encode_tag2(xfer.buf+used, "title",   tags.title);
 					used += encode_tag2(xfer.buf+used, "artist",  tags.artist);
 					used += encode_tag2(xfer.buf+used, "source",  tags.source);

@@ -975,7 +975,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v59 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v60 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1728,7 +1728,7 @@ typedef struct ir_translation_s {
 static ir_translation_t *ir_translation_table = NULL;
 static int ir_debug_translations = 0;
 
-const unsigned char hexchars[] = "0123456789abcdefABCDEF";
+static const unsigned char hexchars[] = "0123456789abcdefABCDEF";
 
 static unsigned char *
 skipover (unsigned char *s, const unsigned char *skipchars)
@@ -1786,6 +1786,8 @@ ir_setup_translations2 (unsigned char *buf, ir_translation_t *table)
 		}
 		if (get_8hex(&s, &old) || *s++ != ':' || get_8hex(&s, &new))
 			return count;
+		while (*s && (*s != '\n' || *s != '\r'))	// ignore end of line (comments)
+			++s;
 		++count;
 		if (table) {
 			table->old = old;

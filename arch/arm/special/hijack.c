@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v215"
+#define HIJACK_VERSION	"v216"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -45,6 +45,7 @@ extern int empeg_inittherm(volatile unsigned int *timerbase, volatile unsigned i
 #define EMPEG_KNOB_SUPPORTED	// Mk2 and later have a front-panel knob
 #endif
 
+int	hijack_got_config_ini = 0;	// used by restore visuals, to avoid triggering on a boot logo
 int	kenwood_disabled;		// used by Nextsrc button
 int	empeg_on_dc_power;		// used in arch/arm/special/empeg_power.c
 int	empeg_tuner_present = 0;	// used by NextSrc button, perhaps has other uses
@@ -65,8 +66,9 @@ static unsigned int PROMPTCOLOR = COLOR3, ENTRYCOLOR = -COLOR3;
 #define HIJACK_ACTIVE_PENDING	2
 #define HIJACK_ACTIVE		3
 
+static unsigned int homevisuals_enabled = 0;	// fixme: temporary workaround
 static unsigned int carvisuals_enabled = 0;
-static unsigned int restore_carvisuals = 0;
+static unsigned int restore_visuals = 0;
 static unsigned int info_screenrow = 0;
 static unsigned int hijack_status = HIJACK_IDLE;
 static unsigned long hijack_last_moved = 0, hijack_last_refresh = 0, blanker_triggered = 0, blanker_lastpoll = 0;
@@ -444,6 +446,7 @@ static const char delaytime_menu_label	[] = "Left/Right Time Alignment";
 static const char homework_menu_label	[] = "Home/Work Location";
 static const char knobdata_menu_label	[] = "Knob Press Redefinition";
 static const char carvisuals_menu_label	[] = "Restore DC/Car Visuals";
+static const char homevisuals_menu_label[] = "Restore Visuals (v2beta11)";	// fixme: workaround for beta11
 static const char blankerfuzz_menu_label[] = "Screen Blanker Sensitivity";
 static const char blanker_menu_label	[] = "Screen Blanker Timeout";
 
@@ -1549,6 +1552,28 @@ carvisuals_display (int firsttime)
 	return NEED_REFRESH;
 }
 
+static void	// fixme: temporary workaround
+homevisuals_move (int direction)
+{
+	homevisuals_enabled = !homevisuals_enabled;
+	empeg_state_dirty = 1;
+}
+
+static int	// fixme: temporary workaround
+homevisuals_display (int firsttime)
+{
+	unsigned int rowcol;
+
+	if (!firsttime && !hijack_last_moved)
+		return NO_REFRESH;
+	hijack_last_moved = 0;
+	clear_hijack_displaybuf(COLOR0);
+	(void)draw_string(ROWCOL(0,0), homevisuals_menu_label, PROMPTCOLOR);
+	rowcol = draw_string(ROWCOL(2,20), "Restore: ", PROMPTCOLOR);
+	(void)   draw_string_spaced(rowcol, disabled_enabled[homevisuals_enabled], ENTRYCOLOR);
+	return NEED_REFRESH;
+}
+
 static void
 timeraction_move (int direction)
 {
@@ -2349,6 +2374,7 @@ static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 	{ delaytime_menu_label,		delaytime_display,	delaytime_move,		0},
 	{"Reboot Machine",		reboot_display,		NULL,			0},
 	{ carvisuals_menu_label,	carvisuals_display,	carvisuals_move,	0},
+	{ homevisuals_menu_label,	homevisuals_display,	homevisuals_move,	0},
 	{ blankerfuzz_menu_label,	blankerfuzz_display,	blankerfuzz_move,	0},
 	{ blanker_menu_label,		blanker_display,	blanker_move,		0},
 	{"Show Flash Savearea",		savearea_display,	savearea_move,		0},
@@ -3176,10 +3202,10 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 		display_blat(dev, player_buf);
 		return;
 	}
-	if (restore_carvisuals) {
+	if (restore_visuals && hijack_got_config_ini) {
 		if (look_for_trackinfo_or_tuner(player_buf, info_screenrow)) {
-			while (restore_carvisuals) {
-				--restore_carvisuals;
+			while (restore_visuals) {
+				--restore_visuals;
 				hijack_enq_button_pair(IR_RIO_INFO_PRESSED);
 			}
 		}
@@ -3877,7 +3903,7 @@ hijack_glob_match (const char *n, const char *p)
 	return (!(*n | *p));
 }
 
-#define HIJACK_MAX_DANCES 10	// must be <= than 32
+#define HIJACK_MAX_DANCES 16	// must be <= than 32
 static int   hijack_num_dances = 0, hijack_dancemap = 0;
 static char *hijack_dances[HIJACK_MAX_DANCES] = {NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL};
 
@@ -4110,6 +4136,8 @@ void
 hijack_process_config_ini (char *buf, int invocation_count)
 {
 	static const char *acdc_labels[2] = {";@AC", ";@DC"};
+
+	hijack_got_config_ini = 1;
 	(void) edit_config_ini(buf, acdc_labels[empeg_on_dc_power], 0);
 	if (!edit_config_ini(buf, homework_labels[ hijack_homework], 0)
 	 && !edit_config_ini(buf, homework_labels[!hijack_homework], 1)
@@ -4152,16 +4180,52 @@ hijack_process_config_ini (char *buf, int invocation_count)
 	set_drive_spindown_times();
 }
 
+// fixme: temporary work-around for v2.00-beta11 bug
+static void
+hijack_fix_homevisuals (unsigned char *buf)
+{
+	if (!empeg_on_dc_power && homevisuals_enabled) {
+		switch (buf[0x0e] & 7) { // examine the saved mixer source
+			case 1: // Tuner FM
+				if ((buf[0x4c] & 0x10) && !(buf[0x42] & 3)) {	// Radio visual supposed to be active?
+					info_screenrow = 8;
+					restore_visuals = 1;			// comes up as OFF: restore it
+				}
+				break;
+			case 2: // Main/Mp3
+				if ((buf[0x4c] & 0x04)) {			// Track, Seek, or Now&Next ?
+					info_screenrow = 8;
+					restore_visuals = (buf[0x4d] & 7) - 2; // comes up as TRANSIENT: restore it
+				}
+				break;
+			case 3: // Aux
+				if ((buf[0x4c] & 0x08) && (buf[0x41] & 3) == 2) {	// Aux visual supposed to be active?
+					info_screenrow = 8;
+					restore_visuals = 1;			// comes up as TRANSIENT: restore it
+				}
+				break;
+			case 4: // Tuner AM
+				if ((buf[0x4c] & 0x20) && !(buf[0x43] & 3)) {	// Radio visual supposed to be active?
+					info_screenrow = 8;
+					restore_visuals = 1;			// comes up as OFF: restore it
+				}
+				break;
+			default:
+		}
+	}
+}
+
 void
 hijack_fix_visuals (unsigned char *buf)
 {
-	restore_carvisuals = 0;
-	if (carvisuals_enabled) {
+	restore_visuals = 0;
+	hijack_fix_homevisuals(buf);	// fixme: temporary work-around for v2.00-beta11 bug
+	if (empeg_on_dc_power && carvisuals_enabled) {
 		switch (buf[0x0e] & 7) { // examine the saved mixer source
 			case 1: // Tuner FM
 				if ((buf[0x4c] & 0x10) == 0) {	// FM visuals visible ?
 					info_screenrow = 0;	// "chickenfoot"
-					restore_carvisuals = (buf[0x42] - 1) & 3;
+					restore_visuals = (buf[0x42] - 1) & 3;
 					buf[0x4c] = buf[0x4c] |  0x10;
 					buf[0x42] = buf[0x42] & ~0x03;
 				}
@@ -4169,20 +4233,20 @@ hijack_fix_visuals (unsigned char *buf)
 			case 2: // Main/Mp3
 				if ((buf[0x4c] & 0x04) == 0) {	// MP3 visuals visible ?
 					info_screenrow = 15;
-					restore_carvisuals = (buf[0x40] & 3) + 2 + (buf[0x4d] & 1);
-					//printk("1restore=%d, x40=%02x, x4c=%02x, x4d=%02x\n", restore_carvisuals, buf[0x40], buf[0x4c], buf[0x4d]);
+					restore_visuals = (buf[0x40] & 3) + 2 + (buf[0x4d] & 1);
+					//printk("1restore=%d, x40=%02x, x4c=%02x, x4d=%02x\n", restore_visuals, buf[0x40], buf[0x4c], buf[0x4d]);
 					// switch to "track" mode on startup (because it's easy to detect later on),
 					// and then restore the original mode when the track info appears in the screen buffer.
 					buf[0x40] = (buf[0x40] & ~0x03) | 0x02;
 					buf[0x4c] =  buf[0x4c]          | 0x04;
 					buf[0x4d] = (buf[0x4d] & ~0x07) | 0x03;
-					//printk("2restore=%d, x40=%02x, x4c=%02x, x4d=%02x\n", restore_carvisuals, buf[0x40], buf[0x4c], buf[0x4d]);
+					//printk("2restore=%d, x40=%02x, x4c=%02x, x4d=%02x\n", restore_visuals, buf[0x40], buf[0x4c], buf[0x4d]);
 				}
 				break;
 			case 3: // Aux
 				if ((buf[0x4c] & 0x08) == 0) {	// AUX visuals visible ?
 					info_screenrow = 8;
-					restore_carvisuals = (buf[0x41] & 3) + 1;
+					restore_visuals = (buf[0x41] & 3) + 1;
 					buf[0x41] = (buf[0x41] & ~0x03) | 0x02;
 					buf[0x4c] =  buf[0x4c]          | 0x08;
 				}
@@ -4190,13 +4254,13 @@ hijack_fix_visuals (unsigned char *buf)
 			case 4: // Tuner AM
 				if ((buf[0x4c] & 0x20) == 0) {	// AM visuals visible ?
 					info_screenrow = 0;	// "chickenfoot"
-					restore_carvisuals = (buf[0x43] - 1) & 3;
+					restore_visuals = (buf[0x43] - 1) & 3;
 					buf[0x43] = buf[0x43] & ~0x03;
 					buf[0x4c] = buf[0x4c] |  0x20;
 				}
 				break;
 		}
-		if (restore_carvisuals)
+		if (restore_visuals)
 			empeg_state_dirty = 1;
 	}
 }
@@ -4224,7 +4288,8 @@ typedef struct hijack_savearea_s {
 	unsigned knob_dc		: 1+KNOBDATA_BITS;	// 4 bits
 
 	signed 	 delaytime		: 8;			// 8 bits
-	unsigned byte6_leftover		: 8;			// 8 bits
+	unsigned fix_beta11		: 1;			// 1 bits
+	unsigned byte6_leftover		: 7;			// 7 bits
 
 	unsigned menu_item		: MENU_BITS;		// 5 bits
 	unsigned blanker_sensitivity	: SENSITIVITY_BITS;	// 3 bits
@@ -4257,12 +4322,13 @@ hijack_save_settings (unsigned char *buf)
 	savearea.timer_action		= timer_action;
 	savearea.menu_item		= menu_item;
 	savearea.restore_visuals	= carvisuals_enabled;
-	savearea.fsck_disabled	= hijack_fsck_disabled;
+	savearea.fix_beta11		= homevisuals_enabled;
+	savearea.fsck_disabled		= hijack_fsck_disabled;
 	savearea.force_power		= hijack_force_power;
 	savearea.homework		= hijack_homework;
-	savearea.byte3_leftover	= 0;
+	savearea.byte3_leftover		= 0;
 	savearea.delaytime		= delaytime;
-	savearea.byte6_leftover	= 0;
+	savearea.byte6_leftover		= 0;
 	memcpy(buf+HIJACK_SAVEAREA_OFFSET, &savearea, sizeof(savearea));
 }
 
@@ -4300,6 +4366,7 @@ hijack_restore_settings (char *buf)
 	menu_item			= savearea.menu_item;
 	menu_init();
 	carvisuals_enabled		= savearea.restore_visuals;
+	homevisuals_enabled		= savearea.fix_beta11;
 	hijack_fsck_disabled		= savearea.fsck_disabled;
 
 	delaytime = hijack_delaytime	= savearea.delaytime;
@@ -4328,9 +4395,6 @@ hijack_init (void *animptr)
 	hijack_initq(&hijack_userq);
 	menu_init();
 	hijack_notify_init();
-	// this now gets done in empeg_state.c
-	//if (empeg_on_dc_power)
-	//	hijack_fix_visuals(buf);
 	if (failed)
 		show_message("Settings have been lost", HZ*7);
 	else

@@ -759,6 +759,7 @@ asmlinkage int sys_open(const char * filename, int flags, int mode)
 {
 	char * tmp;
 	int fd, error;
+	int dancefile = 0;
 
 	tmp = getname(filename);
 	fd = PTR_ERR(tmp);
@@ -769,6 +770,9 @@ asmlinkage int sys_open(const char * filename, int flags, int mode)
 		extern char *hijack_pick_dancefile(const char *);
 		extern int hijack_glob_match (const char *n, const char *p);
 		if (!strcmp(current->comm, "player") && hijack_glob_match(tmp, "/empeg/lib/visuals/*dance.raw"))
+			dancefile = 1;
+try_again:
+		if (dancefile)
 			path = hijack_pick_dancefile(tmp);
 
 		lock_kernel();
@@ -776,8 +780,13 @@ asmlinkage int sys_open(const char * filename, int flags, int mode)
 		if (fd >= 0) {
 			struct file * f = filp_open(path, flags, mode);
 			error = PTR_ERR(f);
-			if (IS_ERR(f))
+			if (IS_ERR(f)) {
+				if (dancefile && error == -ENOENT) {
+					printk(" -- dance file not found\n");
+					goto try_again;
+				}
 				goto out_error;
+			}
 			fd_install(fd, f);
 		}
 out:

@@ -817,6 +817,7 @@ typedef struct mime_type_s {
 static const mime_type_t mime_types[] = {
 	{"*.tiff",		"image/tiff",		1},
 	{"*.jpg",		"image/jpeg",		1},
+	{"*.gif",		"image/gif",		1},
 	{"*.png",		"image/png",		1},
 	{"*.htm",		 text_html,		1},
 	{"*.xml",		 text_xml,		1},

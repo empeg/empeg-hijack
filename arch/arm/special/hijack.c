@@ -36,8 +36,8 @@ extern int empeg_inittherm(volatile unsigned int *timerbase, volatile unsigned i
 #define EMPEG_KNOB_SUPPORTED	// Mk2 and later have a front-panel knob
 #endif
 
-int  hijack_fsck_disabled = 0;		// used in fs/ext2/super.c
-char hijack_notify_buf[84] = {0,};	// used in drivers/char/serial.c // FIXME: add to /proc, or a fifo?
+int  hijack_fsck_disabled = 0;			// used in fs/ext2/super.c
+void hijack_serial_notify (const char *s);	// used in drivers/char/serial.c
 
 static unsigned int PROMPTCOLOR = COLOR3, ENTRYCOLOR = -COLOR3;
 static unsigned int hijack_classic = 0;	// 1 == don't highlite menu items
@@ -345,6 +345,84 @@ const unsigned char kfont [1 + '~' - ' '][KFONT_WIDTH] = {  // variable width fo
 	{0x41,0x3e,0x08,0x00,0x00,0x00}, // }
 	{0x02,0x01,0x02,0x04,0x02,0x00}  // ~
 	};
+
+#ifdef CONFIG_PROC_FS
+#include <linux/proc_fs.h>
+
+#define NOTIFY_MAX_LINES	6
+#define NOTIFY_MAX_LENGTH	79
+static char notify_data[NOTIFY_MAX_LINES][NOTIFY_MAX_LENGTH+1] = {{0,},};
+
+void
+hijack_serial_notify (const char *s)
+{
+	//  -----Parameter from serial.c---- Saved-Portion	Interpretation
+	//                                   =============	===============
+	//  serial_notify_thread.cpp: 116:@@ N0			(Track Number?)
+	//  serial_notify_thread.cpp: 117:@@ F0x2d0		(FID)
+	//  serial_notify_thread.cpp: 118:@@ TSand Dance	(Track)
+	//  serial_notify_thread.cpp: 119:@@ AYanni		(Artist)
+	//  serial_notify_thread.cpp: 120:@@ G			(Gendre?)
+	//  serial_notify_thread.cpp: 180:@@ #2d0  0:00:25	(#FID  h:mm:ss)
+
+	static const char	*notify = "  serial_notify_thread.cpp: ";
+	const int		notify_len = 28;
+	unsigned long		flags;
+
+	if (!strncmp(s, notify, notify_len)) {
+		s += notify_len;
+		while (*s && *s++ != ':');
+		if (*s++ == '@' && *s++ == '@' && *s++ == ' ') {
+			int	i;
+			char	*n;
+			switch (*s) {
+				case 'N': i = 0; break;
+				case 'F': i = 1; break;
+				case 'T': i = 2; break;
+				case 'A': i = 3; break;
+				case 'G': i = 4; break;
+				case '#': i = 5; break;
+				default: return;
+			}
+			n = notify_data[i];
+			save_flags_cli(flags);
+			strncpy(n, s, NOTIFY_MAX_LENGTH);
+			n[NOTIFY_MAX_LENGTH] = '\0';
+			restore_flags(flags);
+		}
+	}
+}
+
+// /proc/empeg_notify read() routine:
+static int
+hijack_proc_notify (char *buf, char **start, off_t offset, int len, int unused)
+{
+	int	i;
+
+	len = 0;
+	for (i = 0; i < NOTIFY_MAX_LINES; ++i) {
+		char *n = notify_data[i];
+		if (*n) {
+			unsigned long flags;
+			save_flags_cli(flags);
+			len += sprintf(buf+len, "%s\n", n);
+			restore_flags(flags);
+		}
+	}
+	return len;
+}
+
+// /proc/empeg_notify directory entry:
+struct proc_dir_entry notify_proc_entry = {
+	0,			/* inode (dynamic) */
+	8, "empeg_notify",  	/* length and name */
+	S_IFREG | S_IRUGO, 	/* mode */
+	1, 0, 0, 		/* links, owner, group */
+	0, 			/* size */
+	NULL, 			/* use default operations */
+	&hijack_proc_notify , 	/* function used to read data */
+};
+#endif // CONFIG_PROC_FS
 
 static void
 clear_hijack_displaybuf (int color)
@@ -989,19 +1067,23 @@ draw:	return draw_string(rowcol, buf, color);
 static void
 timer_move (int direction)
 {
-	const int max = (99 * 60 * 60);  // Max 99 hours
+	const int max = (99 * 60 * 60 * HZ);  // Max 99 hours
 	int new;
 
 	if (direction == 0) {
 		timer_timeout = 0;
 	} else {
-		if (timer_timeout >= (60 * 60))
-			direction *= (10 * 60);
-		else if (timer_timeout >= (4 * 60))
+		if (timer_timeout >= (5 * 60 * 60 * HZ))
 			direction *= 30;
-		else if (timer_timeout >= (2 * 60))
+		else if (timer_timeout >= (1 * 60 * 60 * HZ))
 			direction *= 15;
-		new = timer_timeout + direction;
+		else if (direction > 0 && timer_timeout >= (5 * 60 * HZ))
+			direction *= 5;
+		else if (direction < 0 && timer_timeout > (5 * 60 * HZ))
+			direction *= 5;
+		else if (timer_timeout == 0)
+			direction *= 30;
+		new = timer_timeout + (direction * (60 * HZ));
 		if (new < 0)
 			timer_timeout = 0;
 		else if (new > max)
@@ -1024,8 +1106,8 @@ timer_display (int firsttime)
 	if (firsttime) {
 		paused = 0;
 		if (timer_timeout) {  // was timer already running?
-			int remaining = timer_timeout - (jiffies_since(timer_started) / HZ);
-			if (remaining > 0) {
+			int remaining = timer_timeout - jiffies_since(timer_started);
+			if (remaining >= HZ) {
 				timer_timeout = remaining;
 				paused = 1;
 			} else {
@@ -1043,7 +1125,7 @@ timer_display (int firsttime)
 	(void)draw_string(ROWCOL(0,0), "Countdown Timer Timeout", PROMPTCOLOR);
 	rowcol = draw_string(ROWCOL(2,0), "Duration: ", PROMPTCOLOR);
 	if (timer_timeout) {
-		rowcol = draw_hhmmss(rowcol, timer_timeout, ENTRYCOLOR);
+		rowcol = draw_hhmmss(rowcol, timer_timeout / HZ, ENTRYCOLOR);
 		if (paused)
 			(void)draw_string(rowcol, " [paused]", PROMPTCOLOR);
 	} else {
@@ -1367,7 +1449,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v83 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v84 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1963,9 +2045,9 @@ static int
 timer_check_expiry (struct display_dev *dev)
 {
 	static unsigned long beeping;
-	int color, elapsed;
+	int elapsed;
 
-	if (!timer_timeout || 0 > (elapsed = (jiffies_since(timer_started) / HZ) - timer_timeout))
+	if (!timer_timeout || 0 > (elapsed = jiffies_since(timer_started) - timer_timeout))
 		return 0;
 	if (dev->power) {
 		if (timer_action == 0) {  // Toggle Standby?
@@ -1995,6 +2077,7 @@ timer_check_expiry (struct display_dev *dev)
 	}
 
 	// Beep Alarm
+	elapsed /= HZ;
 	if (elapsed < 1) {
 		beeping = 0;
 	} else if (((elapsed >> 2) & 7) == (beeping & 7)) {
@@ -2002,9 +2085,14 @@ timer_check_expiry (struct display_dev *dev)
 		hijack_beep(80, 400, volume);
 	}
 	if (dev->power && hijack_status == HIJACK_INACTIVE && jiffies_since(ir_lasttime) > (HZ*4)) {
-		color = (elapsed & 1) ? -COLOR3 : COLOR3;
-		clear_hijack_displaybuf(-color);
-		(void) draw_string(ROWCOL(2,31), " Timer Expired ", color);
+		static unsigned long lasttime = 0;
+		static int color = 0;
+		if (jiffies_since(lasttime) >= HZ) {
+			lasttime = jiffies;
+			color = (color == COLOR3) ? -COLOR3 : COLOR3;
+			clear_hijack_displaybuf(-color);
+			(void) draw_string(ROWCOL(2,31), " Timer Expired ", color);
+		}
 		return 1;
 	}
 	return 0;
@@ -3277,6 +3365,9 @@ hijack_init (void)
 		hijack_initq(&hijack_playerq);
 		hijack_initq(&hijack_userq);
 		menu_init();
+#ifdef CONFIG_PROC_FS
+		proc_register(&proc_root, &notify_proc_entry);
+#endif
 	}
 }
 

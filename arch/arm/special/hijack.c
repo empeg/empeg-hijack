@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v357"
+#define HIJACK_VERSION	"v358"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -1578,12 +1578,10 @@ savearea_move (int direction)
 static int
 savearea_display (int firsttime)
 {
-	static unsigned int tick;
 	unsigned int rc = NO_REFRESH;
 	unsigned char *empeg_statebuf = *empeg_state_writebuf;
+	int i;
 	if (firsttime) {
-		tick = 0;
-		clear_hijack_displaybuf(COLOR0);
 		if (!last_savearea)
 			last_savearea = kmalloc(128, GFP_KERNEL);
 		if (!last_updated)
@@ -1595,35 +1593,34 @@ savearea_display (int firsttime)
 		}
 		memcpy(last_savearea, empeg_statebuf, 128);
 		memset(last_updated, 0, 128 * sizeof(long));
+		clear_hijack_displaybuf(COLOR0);
 		rc = NEED_REFRESH;
 	} else if (jiffies_since(hijack_last_refresh) >= (HZ/4)) {
-		rc = NEED_REFRESH;
+		unsigned long now = JIFFIES();
+		for (i = 127; i >= 0; --i) {	// Monitor all 128 bytes
+			unsigned char b = empeg_statebuf[i];
+			if (b != last_savearea[i]) {
+				last_savearea[i] = b;
+				last_updated[i] = now;
+				rc = NEED_REFRESH;
+			}
+		}
+		if (rc != NEED_REFRESH) {
+			if (hijack_last_moved || jiffies_since(hijack_last_refresh) >= (HZ))
+				rc = NEED_REFRESH;
+		}
 	}
 	if (rc == NEED_REFRESH) {
-		int i;
 		unsigned int rowcol = ROWCOL(0,0), offset = savearea_display_offset;
-		{
-			int updated = 0;
-			unsigned long now = JIFFIES();
-			for (i = 127; i >= 0; --i) {	// Monitor all 128 bytes
-				unsigned char b = empeg_statebuf[i];
-				if (b != last_savearea[i]) {
-					last_savearea[i] = b;
-					last_updated[i] = now;
-					updated = 1;
-				}
-			}
-			if ((++tick & 3) && !updated)
-				return NO_REFRESH;	// defer screen update to a later time
-		}
+		hijack_last_moved = 0;
 		for (i = 0; i < 32; ++i) {	// Show 32 bytes at a time on the screen
 			unsigned long elapsed;
 			unsigned int addr = (offset + i) & 0x7f, color = COLOR2;
 			unsigned char b = empeg_statebuf[addr];
 			if (last_updated[addr]) {
 				elapsed = jiffies_since(last_updated[addr]);
-				if (elapsed < (12*HZ))
-					color = (elapsed < (4*HZ)) ? -COLOR3 : COLOR3;
+				if (elapsed < (11*HZ))
+					color = (elapsed < (3*HZ)) ? -COLOR3 : COLOR3;
 				else
 					last_updated[addr] = 0;
 			}

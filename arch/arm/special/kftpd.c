@@ -826,6 +826,7 @@ static const char text_css[]		= "text/css";
 static const char text_xml[]		= "text/xml";
 static const char application_octet[]	= "application/octet-stream";
 static const char application_x_tar[]	= "application/x-tar";
+static const char video_xmpegurl[]	= "video/x-mpegurl";
 
 typedef struct mime_type_s {
 	const char	*pattern;	// a "glob" expression using * and/or ? wildcards
@@ -865,6 +866,8 @@ static const mime_type_t mime_types[] = {
 	{"/empeg/fids?/*1",	 text_plain,		0},
 	{"*bin/*",		 application_octet,	0},
 	{"/proc/version",	 text_plain,		1},
+	{"*.m1u",		 video_xmpegurl,	1},
+	{"*.mpg",		 video_xmpegurl,	1},
 	{NULL,			NULL,			0}};
 
 static int
@@ -1133,7 +1136,7 @@ encode_url (unsigned char *out, unsigned char *s, int partial_encode)
 			*out++ = hexchars[c >> 4];
 			*out++ = hexchars[c & 0xf];
 		} else if (partial_encode == 1) { // for netscape, and stupid iTunes playlist display
-			*out++ = (c == ' ' || c == '?' || c == '%' || c == '#' || c == '!' || c == '@') ? '_' : c;
+			*out++ = (c == ' ' || c == '?' || c == '%' || c == '#' || c == '!' || c == '@' || c == '"') ? '_' : c;
 		} else {  // (partial_encode == 2) // for xml
 			if (c == '<' || c == '>' || c == '&') {
 				*out++ = '&';

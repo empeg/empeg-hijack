@@ -987,6 +987,10 @@ static void change_speed(struct async_struct *info)
 	}
 }
 
+#ifdef CONFIG_PROC_FS
+extern int hijack_serial_notify (const unsigned char *, int);
+#endif // CONFIG_PROC_FS
+
 static void rs_put_char(struct tty_struct *tty, unsigned char ch)
 {
 	struct async_struct *info = (struct async_struct *)tty->driver_data;
@@ -998,6 +1002,12 @@ static void rs_put_char(struct tty_struct *tty, unsigned char ch)
 	if (!tty || !info->xmit_buf)
 		return;
 
+#ifdef CONFIG_PROC_FS
+{
+	if (hijack_serial_notify(&ch, 1))
+		return;
+}
+#endif // CONFIG_PROC_FS
 	save_flags(flags); cli();
 	if (info->xmit_cnt >= SERIAL_XMIT_SIZE - 1) {
 		restore_flags(flags);
@@ -1073,6 +1083,11 @@ static int rs_write(struct tty_struct * tty, int from_user,
 		}
 		up(&tmp_buf_sem);
 	} else {
+#ifdef CONFIG_PROC_FS
+		if (hijack_serial_notify(buf, count))
+			ret = count;
+		else
+#endif // CONFIG_PROC_FS
 		while (1) {
 			cli();		
 			c = MIN(count,
@@ -2299,7 +2314,6 @@ static _INLINE_ void show_serial_version(void)
  */
 static void autoconfig(struct serial_state * state)
 {
-	unsigned char status1, status2, scratch, scratch2;
 	struct async_struct *info, scr_info;
 	unsigned long flags;
 

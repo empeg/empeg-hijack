@@ -144,8 +144,8 @@ endif
 
 HEAD		:= arch/arm/kernel/head-$(PROCESSOR).o \
 		   arch/arm/kernel/init_task.o
-SUBDIRS		+= arch/arm/kernel arch/arm/mm arch/arm/lib \
-		   arch/arm/special arch/arm/nwfpe
+SUBDIRS		:= arch/arm/special arch/arm/mm arch/arm/lib \
+		   arch/arm/kernel arch/arm/nwfpe $(SUBDIRS)
 CORE_FILES	:= arch/arm/kernel/kernel.o arch/arm/mm/mm.o $(CORE_FILES)
 LIBS		:= arch/arm/lib/lib.o arch/arm/lib/lib.a $(LIBS) $(GCCLIB)
 DRIVERS		+= arch/arm/special/special.a

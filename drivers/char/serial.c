@@ -1458,9 +1458,6 @@ static int rs_write(struct tty_struct * tty, int from_user,
 					ret = -EFAULT;
 				break;
 			}
-#ifdef CONFIG_PROC_FS
-			hijack_serial_notify(tmp_buf);
-#endif // CONFIG_PROC_FS
 			cli();
 			c = MIN(c, MIN(SERIAL_XMIT_SIZE - info->xmit_cnt - 1,
 				       SERIAL_XMIT_SIZE - info->xmit_head));

@@ -37,10 +37,8 @@ extern int empeg_inittherm(volatile unsigned int *timerbase, volatile unsigned i
 #endif
 
 int  hijack_fsck_disabled = 0;			// used in fs/ext2/super.c
-void hijack_serial_notify (const char *s);	// used in drivers/char/serial.c
 
 static unsigned int PROMPTCOLOR = COLOR3, ENTRYCOLOR = -COLOR3;
-static unsigned int hijack_classic = 0;	// 1 == don't highlite menu items
 
 #define NEED_REFRESH		0
 #define NO_REFRESH		1
@@ -170,6 +168,8 @@ static unsigned int hijack_voladj_parms[(1<<VOLADJ_BITS)-1][5] = { // Values as 
 static hijack_buttonq_t hijack_inputq, hijack_playerq, hijack_userq;
 static int hijack_button_pacing			=  4;	// minimum spacing between press/release pairs within playerq
 static int hijack_temperature_correction	= -4;	// adjust all h/w temperature readings by this celcius amount
+static int hijack_block_notify			=  0;	// 1 == block player "notify" strings from serial port
+static int hijack_old_style			=  0;	// 1 == don't highlite menu items
 
 typedef struct hijack_option_s {
 	const char	*name;
@@ -181,12 +181,13 @@ typedef struct hijack_option_s {
 
 static const hijack_option_t hijack_option_table[] = {
 	// config.ini string		address-of-variable		howmany	min	max
-	{"temperature_correction",	&hijack_temperature_correction,	1,	-20,	+20},
+	{"block_notify",		&hijack_block_notify,		1,	0,	1},
 	{"button_pacing",		&hijack_button_pacing,		1,	0,	HZ},
+	{"old_style",			&hijack_old_style,		1,	0,	1},
+	{"temperature_correction",	&hijack_temperature_correction,	1,	-20,	+20},
 	{"voladj_low",			&hijack_voladj_parms[0][0],	5,	0,	0x7ffe},
 	{"voladj_medium",		&hijack_voladj_parms[1][0],	5,	0,	0x7ffe},
 	{"voladj_high",			&hijack_voladj_parms[2][0],	5,	0,	0x7ffe},
-	{"old_style",			&hijack_classic,		1,	0,	1},
 	{NULL,NULL,0,0,0} // end-of-list
 	};
 
@@ -349,48 +350,83 @@ const unsigned char kfont [1 + '~' - ' '][KFONT_WIDTH] = {  // variable width fo
 #ifdef CONFIG_PROC_FS
 #include <linux/proc_fs.h>
 
-#define NOTIFY_MAX_LINES	6
-#define NOTIFY_MAX_LENGTH	79
-static char notify_data[NOTIFY_MAX_LINES][NOTIFY_MAX_LENGTH+1] = {{0,},};
+#define NOTIFY_MAX_LINES	8
+#define NOTIFY_MAX_LENGTH	64
+static char notify_data[NOTIFY_MAX_LINES][NOTIFY_MAX_LENGTH] = {{0,},};
 
-void
-hijack_serial_notify (const char *s)
+int
+hijack_serial_notify (const unsigned char *s, int size)
 {
-	//  -----Parameter from serial.c---- Saved-Portion	Interpretation
-	//                                   =============	===============
-	//  serial_notify_thread.cpp: 116:@@ N0			(Track Number?)
-	//  serial_notify_thread.cpp: 117:@@ F0x2d0		(FID)
-	//  serial_notify_thread.cpp: 118:@@ TSand Dance	(Track)
-	//  serial_notify_thread.cpp: 119:@@ AYanni		(Artist)
-	//  serial_notify_thread.cpp: 120:@@ G			(Gendre?)
-	//  serial_notify_thread.cpp: 180:@@ #2d0  0:00:25	(#FID  h:mm:ss)
+	// "return 0" means "send data to serial port"
+	// "return 1" means "discard without sending"
+	//
+	// Note that printk() will probably not work from within this routine
+	//
+	static enum {want_title, want_data, want_eol} state = want_title;
 
-	static const char	*notify = "  serial_notify_thread.cpp: ";
-	const int		notify_len = 28;
-	unsigned long		flags;
+	switch (state) {
+		default:
+			state = want_title;
+			// fall thru
+		case want_title:
+		{
+			static const char notify_thread[] = "  serial_notify_thread.cpp";
+			const int notify_len = sizeof(notify_thread) - 1;
 
-	if (!strncmp(s, notify, notify_len)) {
-		s += notify_len;
-		while (*s && *s++ != ':');
-		if (*s++ == '@' && *s++ == '@' && *s++ == ' ') {
-			int	i;
-			char	*n;
-			switch (*s) {
-				case 'N': i = 0; break;
-				case 'F': i = 1; break;
-				case 'T': i = 2; break;
-				case 'A': i = 3; break;
-				case 'G': i = 4; break;
-				case '#': i = 5; break;
-				default: return;
+			static const char dhcp_thread[] = "  dhcp_thread.cpp";
+			const int dhcp_len = sizeof(dhcp_thread) - 1;
+
+			if (size >= notify_len && !memcmp(s, notify_thread, notify_len)) {
+				state = want_data;
+				return hijack_block_notify;
+			} else if (size >= dhcp_len && !memcmp(s, dhcp_thread, dhcp_len)) {
+				state = want_eol;
+				return hijack_block_notify;
 			}
-			n = notify_data[i];
-			save_flags_cli(flags);
-			strncpy(n, s, NOTIFY_MAX_LENGTH);
-			n[NOTIFY_MAX_LENGTH] = '\0';
-			restore_flags(flags);
+			break;
+		}
+		case want_data:
+		{
+			int		i;
+			char		*line;
+			unsigned long	flags;
+
+			if (size > 3 && *s == '@' && *++s == '@' && *++s == ' ' && *++s) {
+				size -= 3;
+				while (size > 0 && (s[size-1] <= ' ' || s[size-1] > '~'))
+					--size;
+				if (size > (NOTIFY_MAX_LENGTH - 1))
+					size = (NOTIFY_MAX_LENGTH - 1);
+				if (size > 0) {
+					switch (*s) {
+						case 'S': i = 0; break; // state: 0=notplaying, 1=playing
+						case 'N': i = 1; break; // iNdex within playlist
+						case 'F': i = 2; break; // 0xFid
+						case 'T': i = 3; break; // Track name
+						case 'A': i = 4; break; // Artist
+						case 'G': i = 5; break; // Gendre
+						case '#': i = 6; break; // fid h:mm:ss
+						default:  i = 7; break; // ??
+					}
+					line = notify_data[i];
+					save_flags_cli(flags);
+					memcpy(line, s, size);
+					line[size] = '\0';
+					restore_flags(flags);
+				}
+				state = want_eol;
+				return hijack_block_notify;
+			}
+			break;
+		}
+		case want_eol:
+		{
+			if (s[size-1] == '\n')
+				state = want_title;
+			return hijack_block_notify;
 		}
 	}
+	return 0;
 }
 
 // /proc/empeg_notify read() routine:
@@ -1157,6 +1193,57 @@ fsck_display (int firsttime)
 	return NEED_REFRESH;
 }
 
+#ifdef DISPLAY_NOTIFICATIONS
+static void
+notifications_move (int direction)
+{
+	hijack_block_notify = (direction < 0);
+	empeg_state_dirty = 1;
+}
+
+static int
+notifications_display (int firsttime)
+{
+	unsigned int rowcol;
+
+	if (!firsttime && !hijack_last_moved)
+		return NO_REFRESH;
+	hijack_last_moved = 0;
+	clear_hijack_displaybuf(COLOR0);
+	(void)draw_string(ROWCOL(0,0), "Serial Port Notifications:", PROMPTCOLOR);
+	rowcol = draw_string(ROWCOL(2,0), "Notifications are: ", PROMPTCOLOR);
+	(void)   draw_string(rowcol, hijack_block_notify ? " Disabled " : " Enabled ", ENTRYCOLOR);
+	return NEED_REFRESH;
+}
+
+static int notify_display_line = 0;
+static void
+notify_move (int direction)
+{
+	notify_display_line += direction;
+	if (notify_display_line < 0)
+		notify_display_line = NOTIFY_MAX_LINES - 1;
+	else if (notify_display_line >= NOTIFY_MAX_LINES)
+		notify_display_line = 0;
+}
+
+static int
+notify_display (int firsttime)
+{
+	unsigned int rowcol;
+	unsigned long flags;
+
+	clear_hijack_displaybuf(COLOR0);
+	save_flags_cli(flags);
+	rowcol = draw_number(ROWCOL(0,0), notify_display_line, "%2d:", COLOR2);
+	rowcol = draw_string(rowcol, "'", COLOR2);
+	rowcol = draw_string(rowcol, notify_data[notify_display_line], COLOR3);
+	rowcol = draw_string(rowcol, "'", COLOR2);
+	restore_flags(flags);
+	return NEED_REFRESH;
+}
+#endif // DISPLAY_NOTIFICATIONS
+
 #ifdef RESTORE_CARVISUALS
 static void
 carvisuals_move (int direction)
@@ -1307,6 +1394,8 @@ screen_compare (unsigned long *screen1, unsigned long *screen2)
 	int allowable_fuzz = blankerfuzz_amount * (BLANKERFUZZ_MULTIPLIER * (2 * EMPEG_SCREEN_BYTES) / 100);
 	unsigned long *end = screen1 - 1;
 
+	if (allowable_fuzz == 0)
+		allowable_fuzz = 1;	// beta7 always has a single blinking pixel on track-info
 	// Compare backwards, since changes occur most frequently near bottom of screen
 	screen1 += (EMPEG_SCREEN_BYTES / sizeof(unsigned long)) - 1;
 	screen2 += (EMPEG_SCREEN_BYTES / sizeof(unsigned long)) - 1;
@@ -1449,7 +1538,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v84 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v85 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1864,12 +1953,18 @@ static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 #ifdef EMPEG_KNOB_SUPPORTED
 	{" Knob Press Redefinition ",	knobdata_display,	knobdata_move,		0},
 #endif // EMPEG_KNOB_SUPPORTED
+#ifdef DISPLAY_NOTIFICATIONS
+	{" Notify Display ",		notify_display,		notify_move,		0},
+#endif // DISPLAY_NOTIFICATIONS
 	{" Reboot Machine ",		reboot_display,		NULL,			0},
 #ifdef RESTORE_CARVISUALS
 	{" Restore DC/Car Visuals ",	carvisuals_display,	carvisuals_move,	0},
 #endif // RESTORE_CARVISUALS
 	{" Screen Blanker Timeout ",	blanker_display,	blanker_move,		0},
 	{" Screen Blanker Sensitivity ", blankerfuzz_display,	blankerfuzz_move,	0},
+#ifdef DISPLAY_NOTIFICATIONS
+	{" Serial Port Notifications ", notifications_display,	notifications_move,	0},
+#endif // DISPLAY_NOTIFICATIONS
 	{" Show Flash Savearea ",	savearea_display,	savearea_move,		0},
 	{" Vital Signs ",		vitals_display,		NULL,			0},
 	{NULL,				NULL,			NULL,			0},};
@@ -3162,7 +3257,7 @@ hijack_read_config_file (const char *path)
 		printk("hijack.c: open(%s) failed (errno=%d)\n", path, rc);
 	} else if (rc > 0 && buf && *buf) {
 		get_hijack_options(buf);
-		if (hijack_classic) {
+		if (hijack_old_style) {
 			PROMPTCOLOR		=  COLOR2;
 			ENTRYCOLOR		=  COLOR3;
 		} else {

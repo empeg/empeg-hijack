@@ -738,9 +738,9 @@ int  voladj_enabled;	// 2-bits; 0x00=disabled
 void voladj_next_preset (int incr)
 {
 	const unsigned int parms[3][6] = { // Values as suggested by Richard Lovejoy
-		{AUDIO_BUFFER_SIZE,0x2000, 409,0x1000,30,80},
-		{AUDIO_BUFFER_SIZE,0x2000,3000,0x0c00,30,80},
-		{AUDIO_BUFFER_SIZE,0x2000,3000,0x1000,30,80}};
+		{AUDIO_BUFFER_SIZE,0x1800, 100,0x1000,30,80},  // Low
+		{AUDIO_BUFFER_SIZE,0x2000, 409,0x1000,30,80},  // Medium (Normal)
+		{AUDIO_BUFFER_SIZE,0x2000,3000,0x0c00,30,80}}; // High
 
 	voladj_enabled = (voladj_enabled + incr) & 3;
 	if (voladj_enabled) {

@@ -1,3 +1,42 @@
+// Empeg display/IR hijacking by Mark Lord <mlord@pobox.com>
+//
+// Near-future plans: Implement a new virtual device (or piggyback existing)
+// for a userland app to open/mmap/ioctl to/from for userland menus, apps,
+// etc.. to be able to use the hijack capability to run while player is running.
+// We hijack the screen, and MOST buttons, leaving just a few buttons under
+// control of the player itself (most likely just the four on the front panel).
+//
+// Basic userland interface would be like this:
+// 	vdev = open("/dev/hijack")	// access the hijack virtual device
+// 	mmap(vdev,displaybuf,2048)	// get ptr to kernel's displaybuf
+// 	fork();				// create an extra thread
+// 	ioctl(vdev, HIJACK_WAIT_MENU, "GPS") // thread1: create a menu entry,
+// 					     // and wait for it to be selected
+// top:
+// 	ioctl(vdev, HIJACK_WAIT_MENU, "TETRIS") // thread2: another menu entry
+// 	...
+// 	## user selected "TETRIS" menu item
+// 	## kernel unblocks thread2 only.
+// 	## thread2 now has *exclusive* control of screen and (most) buttons
+// 	...
+// 	while (playing_tetris) {	// thread2
+// 	  ioctl(vdev, HIJACK_IR_POLL)	// thread2: poll for input from IR buttons
+// 	  write stuff to displaybuf	// thread2
+// 	  ioctl(vdev, HIJACK_UPDATE_DISPLAY) // thread2: force another screen update
+// 	}
+// 	...
+// 	ioctl(vdev, HIJACK_UPDATE_DISPLAY) // thread2: force another screen update
+// 	goto top;			// thread2
+// 	...
+// 	ioctl(vdev, HIJACK_REMOVE_MENU, "TETRIS") // optional
+// 	close("/dev/hijack")			// optional
+//
+// Well, that's the idea, anyway.
+// So if you want to port/develop an application for this,
+// then at least you've now got the basic structure to build around.
+// I hope to implement this (smaller than it looks) by early Nov/2001.
+// --
+// Mark Lord <mlord@pobox.com>
 
 int hijack_status = 0, hijack_knob_wait = 0;
 #define HIJACK_INACTIVE		0
@@ -233,7 +272,7 @@ static void game_finale (void)
 	if (jiffies_since(game_ball_lastmove) < (HZ*2))
 		return;
 	if (game_bricks) {
-		(void)draw_string(1, 17, " Enhancements.V14 ", -COLOR3);
+		(void)draw_string(1, 17, " Enhancements.V15 ", -COLOR3);
 		(void)draw_string(2, 30, "by Mark Lord", COLOR3);
 		if (jiffies_since(game_ball_lastmove) < (HZ*3))
 			return;
@@ -371,7 +410,7 @@ static int  menu_item = 0, menu_size = 0;
 
 static void menu_draw (void)
 {
-	const char *menu[] = {"Volume Adjust Preset", "Break-Out Game", "[exit]", NULL};
+	const char *menu[] = {"Break-Out Game", "Volume Adjust Presets", "[exit]", NULL};
 	clear_hijacked_displaybuf(COLOR0);
 	for (menu_size = 0; menu[menu_size] != NULL; ++menu_size)
 		(void)draw_string(menu_size, 0, menu[menu_size], (menu_size == menu_item) ? COLOR3 : COLOR2);
@@ -396,14 +435,14 @@ static void menu_move (int amount)
 
 extern void voladj_next_preset(int);
 extern int  voladj_enabled;
-static const char *voladj_names[4] = {"Off", "Normal", "High", "Max"};
+static const char *voladj_names[4] = {"Off", "Low", "Medium", "High"};
 
 static void voladj_display_setting (int firsttime)
 {
 	unsigned int col;
 	clear_hijacked_displaybuf(COLOR0);
-	col  = draw_string(0,   0, "Volume Adjust:  ", COLOR2);
-	(void) draw_string(0, col, voladj_names[voladj_enabled], COLOR3);
+	col  = draw_string(1,   0, "Volume Adjust:  ", COLOR2);
+	(void) draw_string(1, col, voladj_names[voladj_enabled], COLOR3);
 	if (firsttime) {
 		hijack_knob_wait = HIJACK_VOLADJ_ACTIVE;
 		hijack_status = HIJACK_KNOB_WAIT;
@@ -416,6 +455,14 @@ static void voladj_display_setting (int firsttime)
 static void voladj_move (int amount)
 {
 	voladj_enabled = (voladj_enabled + amount) & 3;
+}
+
+static void hijack_deactivate (void)
+{
+	ir_selected = 0;	// paranoia
+	ir_trigger_count = 0;	// paranoia
+	hijack_knob_wait = HIJACK_INACTIVE;
+	hijack_status = HIJACK_KNOB_WAIT;
 }
 
 // This routine covertly intercepts all display updates,
@@ -441,7 +488,6 @@ int hijacked_display(struct display_dev *dev)
 			if (!ir_knob_down) {
 				ir_selected = 0;
 				hijack_status = hijack_knob_wait;
-				hijack_knob_wait = 0;
 			}
 		} else if (hijack_status == HIJACK_MENU_ACTIVE) {
 			menu_draw();
@@ -449,19 +495,18 @@ int hijacked_display(struct display_dev *dev)
 				ir_selected = 0;
 				switch (menu_item) {
 					case 0:
-						voladj_display_setting(1);
-						break;
-					case 1:
 						game_start();
 						break;
+					case 1:
+						voladj_display_setting(1);
+						break;
 					default:
-						hijack_knob_wait = HIJACK_INACTIVE;
-						hijack_status = HIJACK_KNOB_WAIT;
+						hijack_deactivate();
 						break;
 				}
 			}
 		} else {
-			hijack_status = HIJACK_INACTIVE;
+			hijack_deactivate();
 		}
 		restore_flags(flags);
 		display_blat(dev, (unsigned char *)hijacked_displaybuf);
@@ -498,6 +543,7 @@ static int check_selected (unsigned long data)
 // This routine covertly intercepts all button presses/releases,
 // giving us a chance to ignore them or to trigger our own responses.
 //
+#include "ir_codes.h"
 int hijacked_input (unsigned long data)
 {
 	int rc = 0;
@@ -506,11 +552,17 @@ int hijacked_input (unsigned long data)
 	//printk("Button: %08x, status=%d, ir_knob_down=%u, ir_selected=%u\n", data, hijack_status, ir_knob_down, ir_selected);
 	save_flags_cli(flags);
 	switch (data) {
-		case 0x80b9461e: // IR_KW_CD_RELEASED
+		case IR_KW_CD_RELEASED:
 			rc = check_selected(data);
 			break;
-		case 0x0020df0b: // IR_RIO_SELECTMODE_PRESSED
-		case 0x00000008: // IR_KNOB_PRESSED
+		case IR_TOP_BUTTON_PRESSED:
+			if (hijack_status != HIJACK_INACTIVE) {
+				hijack_deactivate();
+				rc = 1; // input WAS hijacked
+			}
+			break;
+		case IR_RIO_SELECTMODE_PRESSED:
+		case IR_KNOB_PRESSED:
 			ir_knob_down = jiffies ? jiffies : 1;
 			if (hijack_status != HIJACK_INACTIVE) {
 				switch (hijack_status) {
@@ -522,16 +574,16 @@ int hijacked_input (unsigned long data)
 				rc = 1; // input WAS hijacked
 			}
 			break;
-		case 0x8020df0b: // IR_RIO_SELECTMODE_RELEASED
+		case IR_RIO_SELECTMODE_RELEASED:
 			rc = check_selected(data);
 			// fall thru
-		case 0x00000009: // IR_KNOB_RELEASED  (these come in pairs sometimes)
+		case IR_KNOB_RELEASED:  // these often arrive in pairs
 			ir_knob_down = 0;
 			if (hijack_status != HIJACK_INACTIVE) {
 				rc = 1; // input WAS hijacked
 			}
 			break;
-		case 0x0000000a: // IR_KNOB_RIGHT
+		case IR_KNOB_RIGHT:
 			if (hijack_status != HIJACK_INACTIVE) {
 				switch (hijack_status) {
 					case HIJACK_MENU_ACTIVE:   menu_move(1); break;
@@ -541,7 +593,7 @@ int hijacked_input (unsigned long data)
 				rc = 1; // input WAS hijacked
 			}
 			break;
-		case 0x0000000b: // IR_KNOB_LEFT
+		case IR_KNOB_LEFT:
 			if (hijack_status != HIJACK_INACTIVE) {
 				switch (hijack_status) {
 					case HIJACK_MENU_ACTIVE:   menu_move(-1); break;
@@ -551,8 +603,8 @@ int hijacked_input (unsigned long data)
 				rc = 1; // input WAS hijacked
 			}
 			break;
-		case 0x00b9460a: // IR_KW_PREVTRACK_PRESSED
-		case 0x0020df10: // IR_RIO_PREVTRACK_PRESSED
+		case IR_KW_PREVTRACK_PRESSED:
+		case IR_RIO_PREVTRACK_PRESSED:
 			ir_left_down = jiffies ? jiffies : 1;
 			if (hijack_status != HIJACK_INACTIVE) {
 				switch (hijack_status) {
@@ -562,14 +614,14 @@ int hijacked_input (unsigned long data)
 				rc = 1; // input WAS hijacked
 			}
 			break;
-		case 0x80b9460a: // IR_KW_PREVTRACK_RELEASED
-		case 0x8020df10: // IR_RIO_PREVTRACK_RELEASED
+		case IR_KW_PREVTRACK_RELEASED:
+		case IR_RIO_PREVTRACK_RELEASED:
 			ir_left_down = 0;
 			if (hijack_status != HIJACK_INACTIVE)
 				rc = 1; // input WAS hijacked
 			break;
-		case 0x00b9460b: // IR_KW_NEXTTRACK_PRESSED
-		case 0x0020df11: // IR_RIO_NEXTTRACK_PRESSED
+		case IR_KW_NEXTTRACK_PRESSED:
+		case IR_RIO_NEXTTRACK_PRESSED:
 			ir_right_down = jiffies ? jiffies : 1;
 			if (hijack_status != HIJACK_INACTIVE) {
 				switch (hijack_status) {
@@ -579,22 +631,22 @@ int hijacked_input (unsigned long data)
 				rc = 1; // input WAS hijacked
 			}
 			break;
-		case 0x80b9460b: // IR_KW_NEXTTRACK_RELEASED
-		case 0x8020df11: // IR_RIO_NEXTTRACK_RELEASED
+		case IR_KW_NEXTTRACK_RELEASED:
+		case IR_RIO_NEXTTRACK_RELEASED:
 			ir_right_down = 0;
 			if (hijack_status != HIJACK_INACTIVE)
 				rc = 1; // input WAS hijacked
 			break;
-		case 0x00b9460e:// IR_KW_PAUSE_PRESSED
-		case 0x0020df16: // IR_RIO_PAUSE_PRESSED
+		case IR_KW_PAUSE_PRESSED:
+		case IR_RIO_PAUSE_PRESSED:
 			if (hijack_status != HIJACK_INACTIVE) {
 				if (hijack_status == HIJACK_GAME_ACTIVE)
 					game_paused = !game_paused;
 				rc = 1; // input WAS hijacked
 			}
 			break;
-		case 0x80b9460e: // IR_KW_PAUSE_RELEASED
-		case 0x8020df16: // IR_RIO_PAUSE_RELEASED
+		case IR_KW_PAUSE_RELEASED:
+		case IR_RIO_PAUSE_RELEASED:
 			if (hijack_status == HIJACK_GAME_ACTIVE)
 				rc = 1; // input WAS hijacked
 			break;

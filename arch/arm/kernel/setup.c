@@ -543,7 +543,6 @@ setup_arch(char **cmdline_p, unsigned long * memory_start_p, unsigned long * mem
 #endif
 	}
 
-	// Empeg boot rom supplies mem=12m / mem=16m command line here.
 	parse_cmdline(cmdline_p, from);
 
 	if (!mem_end)
@@ -556,16 +555,51 @@ setup_arch(char **cmdline_p, unsigned long * memory_start_p, unsigned long * mem
 	else
 		empeg_setup_bank_mapping(9);
 
-#ifdef CONFIG_MK2A_32MB
+#ifdef CONFIG_EMPEG_EXTRA_RAM
+	//
 	// Above, we used the cmdline parameter (mem=12m / mem=16m) from the boot ROM
-	// to select the correct size bank mappings above, which is fine.
+	// to select the correct size bank mappings above, which is fine since the
+	// mapping tables allow for up to 16m (Mk1/Mk2), or 64m (Mk2a).
+	//
 	// But now we need a way to correctly determine the real amount of memory..
-	// One way would be to use a temporary MMU mapping REALLY EARLY during startup
-	// so that we could test for the presence of an extra bank, or perhaps
-	// simply so we can access the MDCNFG register to see which banks are enabled.
-	// (upgraded players will have the newer e000 ROM which enables additional banks).
-	
-	mem_end = PAGE_OFFSET + 32*1024*1024;	// FIXME: Hard-coded for now
+	//
+	// The arch/arm/kernel/head-armv.S entry code sets up temporary MMU mappings
+	// for the 1MB section at virtual=0xc0f00000 (physical=0xc0c00000)
+	// and for the 1MB section at virtual=0xc1000000 (physical=0xc8000000).
+	// This allows us to access and test for the existance of extended memory here.
+	//
+	// Upgraded players must have the newer e000 ROM which enables additional banks.
+	//
+	// The code below does a rudimentry memory test of 1MB, and enables use of the
+	// extra memory size if that test succeeds.  Oddly enough, even though we mapped
+	// this as unbuffered and uncacheable, an immediate readback works even when
+	// memory is not present, so we walk over the full 1MB twice to eliminate cache effects.
+{
+	unsigned int i;
+	volatile unsigned long *test;
+
+	#define ONE_MB		(1024 * 1024)
+	#define LONG_1MB	(ONE_MB / sizeof(unsigned long))
+	#define _16MB		(PAGE_OFFSET + (16 * ONE_MB))
+
+	if (mem_end < _16MB)
+		test = (void *)(_16MB - ONE_MB);	// Mk1/Mk2
+	else
+		test = (void *)(_16MB);			// Mk2a
+	for (i = 0; i < LONG_1MB; ++i) {
+		test[i] = ~i;
+	}
+	for (i = 0; i < LONG_1MB; ++i) {
+		if (test[i] != ~i)
+			break;
+	}
+	if (i == LONG_1MB) {
+		if (mem_end < _16MB)
+			mem_end = _16MB;
+		else
+			mem_end = _16MB + (16 * ONE_MB);
+	}
+}
 #endif
 	init_task.mm->start_code = (unsigned long) &_text;
 	init_task.mm->end_code	 = (unsigned long) &_etext;

@@ -161,7 +161,7 @@ static int empeg_ramtest_ioctl(struct inode *inode, struct file *filp,
 #else
 {
 		extern unsigned long memory_end;
-		mem_size = memory_end & ~0xc0000000;
+		mem_size = memory_end & ~PAGE_OFFSET;
 }
 #endif
 

@@ -152,6 +152,22 @@ __create_page_tables:
 		str	r3, [r0], #4
 		teq	r0, r2
 		bne	1b
+
+		/*
+		 * We need early access to the 16th and 17th MBs of DRAM so that the kernel
+		 * proper can test for extended memory on the Empegs at startup time.
+		 * Create non-cached non-buffered mappings for the 16th and 17th MBs of DRAM.
+		 */
+		add	r0, r4, #(TEXTADDR - 0x8000) >> 18
+		add	r0, r0, #15 << 2	@ virtual  = c0f0_0000
+		add	r3, r5, #15 << 20	@ physical = c0f0_0000 (first bank of 128MB)
+		orr	r3, r3, r8		@ MMU flags: C=0, B=0
+		str	r3, [r0], #4
+						@ virtual  = c100_0000
+		add	r3, r5, #128 << 20	@ physical = c800_0000 (second bank of 128MB)
+		orr	r3, r3, r8		@ MMU flags: C=0, B=0
+		str	r3, [r0]
+
 		/*
 		 * Create identity mapping for first MB of kernel.
 		 * map in four sections (4MB) for kernel.

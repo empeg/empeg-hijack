@@ -174,7 +174,7 @@ if [ "$CONFIG_SA1100_EMPEG" = "y" ]; then
   bool 'empeg-car support for i2c Fan Controller' CONFIG_EMPEG_I2C_FAN_CONTROL
   bool 'empeg-car support for Hijacking Tuner' CONFIG_HIJACK_TUNER
   bool 'empeg-car support for USB-Ethernet Emulation' CONFIG_EMPEG_PEGASUS
-  bool 'empeg-car expanded memory support' CONFIG_MK2A_32MB
+  bool 'empeg-car expanded memory support' CONFIG_EMPEG_EXTRA_RAM
 fi
 
 mainmenu_option next_comment

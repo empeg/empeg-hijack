@@ -1346,6 +1346,7 @@ open_fidfile:
 			if (used >= xmit_threshold && (used -= ksock_rw(parms->datasock, xfer.buf, used, -1)))
 				goto cleanup;
 
+			schedule(); // give the music player a chance to run
 			// read in the tagfile for this fid
 			fid |= 1;
 			sublen = 13+sprintf(subpath+13, "%x", fid);

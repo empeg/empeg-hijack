@@ -296,6 +296,9 @@ struct voladj_state* voladj_intinit(
 
   int log_scale;
   int temp_fake;
+  unsigned long flags;
+
+  save_flags_cli(flags);
 
   initial->output_multiplier = 0x1 << MULT_POINT;
   initial->desired_multiplier = initial->output_multiplier;
@@ -339,6 +342,7 @@ struct voladj_state* voladj_intinit(
   }
 
   initial->max_sample = 0;
+  restore_flags(flags);
 
   /*
   fprintf(stderr, 
@@ -622,9 +626,9 @@ static struct file_operations audio_fops =
 	open:		empeg_audio_open,
 };
 
-void hijack_voladj_intinit(int buf_size, int factor_per_second, int minvol, int headroom, int real_silence, int fake_silence)
+void hijack_voladj_intinit(int factor_per_second, int minvol, int headroom, int real_silence, int fake_silence)
 {
-	(void)voladj_intinit(&audio[0].voladj, buf_size, factor_per_second, minvol, headroom, real_silence, fake_silence);
+	(void)voladj_intinit(&audio[0].voladj, AUDIO_BUFFER_SIZE, factor_per_second, minvol, headroom, real_silence, fake_silence);
 }
 
 int __init empeg_audio_init(void)
@@ -775,7 +779,7 @@ static int empeg_audio_write(struct file *file,
 		unsigned long flags;
                 int multiplier;
 		extern void hijack_voladj_update_history(int);
-		extern int  voladj_enabled;
+		extern int  hijack_voladj_enabled;
 
 		/* Critical sections kept as short as possible to give good
 		   latency for other tasks */
@@ -799,7 +803,7 @@ static int empeg_audio_write(struct file *file,
 		dev->stats.samples += AUDIO_BUFFER_SIZE;
 		count -= AUDIO_BUFFER_SIZE;
 
-              if (voladj_enabled) {
+              if (hijack_voladj_enabled) {
                 multiplier = voladj_check( &(dev->voladj), 
                         (short *) (dev->buffers[thisbufind].data) );
               } else {
@@ -813,7 +817,7 @@ static int empeg_audio_write(struct file *file,
 
 
 		save_flags_cli(flags);
-              if (voladj_enabled) {
+              if (hijack_voladj_enabled) {
                 if (dev->used > 1) {
                     dev->used--;
                     restore_flags(flags);

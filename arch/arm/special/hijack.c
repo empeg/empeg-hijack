@@ -21,8 +21,8 @@ extern int get_loadavg(char * buffer);					// fs/proc/array.c
 extern void machine_restart(void *);					// arch/alpha/kernel/process.c
 extern int real_input_append_code(unsigned long data);			// arch/arm/special/empeg_input.c
 extern int empeg_state_dirty;						// arch/arm/special/empeg_state.c
-extern void state_cleanse();						// arch/arm/special/empeg_state.c
-extern void hijack_voladj_intinit(int, int, int, int, int, int);	// arch/arm/special/empeg_audio3.c
+extern void state_cleanse(void);					// arch/arm/special/empeg_state.c
+extern void hijack_voladj_intinit(int, int, int, int, int);		// arch/arm/special/empeg_audio3.c
 extern int getbitset(void);						// arch/arm/special/empeg_power.c
 extern int get_current_mixer_source(void);				// arch/arm/special/empeg_mixer.c
 extern int empeg_readtherm(volatile unsigned int *timerbase, volatile unsigned int *gpiobase);	// arch/arm/special/empeg_therm.S
@@ -70,7 +70,7 @@ static struct wait_queue *hijack_dataq_waitq = NULL, *hijack_menu_waitq = NULL;
 #define VOLADJ_FIXEDPOINT(whole,fraction) ((((whole)<<MULT_POINT)|((unsigned int)((fraction)*(1<<MULT_POINT))&MULT_MASK)))
 #define VOLADJ_BITS 2
 
-int voladj_enabled = 0; // used by voladj code in empeg_audio3.c
+int hijack_voladj_enabled = 0; // used by voladj code in empeg_audio3.c
 
 static const char *voladj_names[] = {"[Off]", "Low", "Medium", "High"};
 static unsigned int voladj_history[VOLADJ_HISTSIZE] = {0,}, voladj_last_histx = 0, voladj_histx = 0;
@@ -441,26 +441,27 @@ hijack_voladj_update_history (int multiplier)
 	restore_flags(flags);
 }
 
-const unsigned int hijack_voladj_parms[1<<VOLADJ_BITS][5] = { // Values as suggested by Richard Lovejoy
-	{0x1800,   0,     0, 0, 0},  // Low
-	{0x1800, 100,0x1000,30,80},  // Low
-	{0x2000, 409,0x1000,30,80},  // Medium (Normal)
-	{0x2000,3000,0x0c00,30,80}}; // High
+const unsigned int hijack_voladj_parms[(1<<VOLADJ_BITS)-1][5] = { // Values as suggested by Richard Lovejoy
+	{0x1800,	 100,	0x1000,	30,	80},  // Low
+	{0x2000,	 409,	0x1000,	30,	80},  // Medium (Normal)
+	{0x2000,	3000,	0x0c00,	30,	80}}; // High
 
 static void
 voladj_move (int direction)
 {
-	unsigned int old = voladj_enabled;
+	unsigned int old = hijack_voladj_enabled;
 
-	voladj_enabled += direction;
-	if (voladj_enabled < 0)
-		voladj_enabled = 0;
-	else if (voladj_enabled >= ((1<<VOLADJ_BITS)-1))
-		voladj_enabled   = ((1<<VOLADJ_BITS)-1);
-	if (voladj_enabled != old) {
-		unsigned const int *p = hijack_voladj_parms[voladj_enabled];
-		hijack_voladj_intinit(4608,p[0],p[1],p[2],p[3],p[4]);	
+	hijack_voladj_enabled += direction;
+	if (hijack_voladj_enabled < 0)
+		hijack_voladj_enabled = 0;
+	else if (hijack_voladj_enabled >= ((1<<VOLADJ_BITS)-1))
+		hijack_voladj_enabled   = ((1<<VOLADJ_BITS)-1);
+	if (hijack_voladj_enabled != old) {
 		empeg_state_dirty = 1;
+		if (hijack_voladj_enabled) {
+			unsigned const int *p = hijack_voladj_parms[hijack_voladj_enabled - 1];
+			hijack_voladj_intinit(p[0],p[1],p[2],p[3],p[4]);	
+		}
 	}
 }
 
@@ -477,7 +478,7 @@ voladj_display (int firsttime)
 	clear_hijack_displaybuf(COLOR0);
 	hijack_last_moved = 0;
 	rowcol = draw_string(ROWCOL(0,0), "Auto Volume Adjust: ", COLOR2);
-	(void)draw_string(rowcol, voladj_names[voladj_enabled], COLOR3);
+	(void)draw_string(rowcol, voladj_names[hijack_voladj_enabled], COLOR3);
 	save_flags_cli(flags);
 	histx = voladj_last_histx = voladj_histx;
 	mult  = voladj_history[histx];
@@ -506,7 +507,7 @@ voladj_prefix (int firsttime)
 		unsigned int rowcol = (geom.first_row+4)|((geom.first_col+6)<<16);
 		rowcol = draw_string(rowcol, "Auto VolAdj: ", COLOR3);
 		clear_text_row(rowcol, geom.last_col-4);
-		rowcol = draw_string(rowcol, voladj_names[voladj_enabled], COLOR3);
+		rowcol = draw_string(rowcol, voladj_names[hijack_voladj_enabled], COLOR3);
 		return NEED_REFRESH;
 	}
 	return NO_REFRESH;
@@ -768,7 +769,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v51 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v52 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1672,9 +1673,9 @@ hijack_save_settings (unsigned char *buf)
 {
 	// save state
 	if (hijack_on_dc_power)
-		hijack_savearea.voladj_dc_power	= voladj_enabled;
+		hijack_savearea.voladj_dc_power	= hijack_voladj_enabled;
 	else
-		hijack_savearea.voladj_ac_power	= voladj_enabled;
+		hijack_savearea.voladj_ac_power	= hijack_voladj_enabled;
 	hijack_savearea.blanker_timeout		= blanker_timeout;
 	hijack_savearea.maxtemp_threshold	= maxtemp_threshold;
 #ifdef EMPEG_KNOB_SUPPORTED
@@ -1690,15 +1691,15 @@ hijack_restore_settings (const unsigned char *buf)
 	// restore state
 	memcpy(&hijack_savearea, buf, sizeof(hijack_savearea));
 	if (hijack_on_dc_power)
-		voladj_enabled	= hijack_savearea.voladj_dc_power;
+		hijack_voladj_enabled	= hijack_savearea.voladj_dc_power;
 	else
-		voladj_enabled	= hijack_savearea.voladj_ac_power;
-	blanker_timeout		= hijack_savearea.blanker_timeout;
-	maxtemp_threshold	= hijack_savearea.maxtemp_threshold;
+		hijack_voladj_enabled	= hijack_savearea.voladj_ac_power;
+	blanker_timeout			= hijack_savearea.blanker_timeout;
+	maxtemp_threshold		= hijack_savearea.maxtemp_threshold;
 #ifdef EMPEG_KNOB_SUPPORTED
-	knobdata_index		= hijack_savearea.knobdata_index;
+	knobdata_index			= hijack_savearea.knobdata_index;
 #endif // EMPEG_KNOB_SUPPORTED
-	blankerfuzz_amount	= hijack_savearea.blankerfuzz_amount;
+	blankerfuzz_amount		= hijack_savearea.blankerfuzz_amount;
 }
 
 static int

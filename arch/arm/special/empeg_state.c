@@ -240,7 +240,7 @@ static void state_getflashtype(void)
 	state_disablewrite();
 }
 
-typedef struct savearea_fields_s {
+typedef struct player_savearea_fields_s {
 	long		filler0;
 	long		filler1;
 	int		filler2;
@@ -248,11 +248,21 @@ typedef struct savearea_fields_s {
 	unsigned	ac_volume :7;
 	unsigned	dc_volume :7;
 	unsigned	filler4   :16;
-} savearea_fields_t;
+} player_savearea_fields_t;
 
-static int saved_volume;
-extern int hijack_volumelock_enabled;
+static int hijack_saved_volume;
 extern int empeg_on_dc_power;
+
+//
+// This gets invoked from hijack.c whenever hijack_volumelock_enabled
+// is toggled from 0 -> 1.  It saves the current volume level for
+// later insertion into the savearea.
+//
+void save_current_volume (void)
+{
+	player_savearea_fields_t *buf = (player_savearea_fields_t *)state_devices[0].read_buffer;
+	hijack_saved_volume = empeg_on_dc_power ? buf->dc_volume : buf->ac_volume;
+}
 
 int empeg_state_restore (unsigned char *buffer)
 {
@@ -368,23 +378,26 @@ static int state_fetch(unsigned char *buffer)
 static inline int state_store(void)
 {
 	extern void hijack_save_settings (unsigned char *buf);
+	extern int  hijack_volumelock_enabled;
 
 	/* Store the contents of read_buffer to flash, at savebase */
 	int a,status,crc=0xffff,data;
 	volatile unsigned short *from=(volatile unsigned short*)state_devices[0].read_buffer;
-	if (!hijack_volumelock_enabled) {
-		savearea_fields_t *buf = (savearea_fields_t *)from;
-		if (empeg_on_dc_power)
-			buf->dc_volume = saved_volume;
-		else
-			buf->ac_volume = saved_volume;
-	}
 
 	/* Store current unixtime */
 	*((unsigned int*)from)=xtime.tv_sec;
 
 	/* Store current power-on time */
 	*((unsigned int*)(from+2))=(xtime.tv_sec-unixtime)+powerontime;
+
+	// Store desired start-up volume level, if enabled.
+	if (hijack_volumelock_enabled) {
+		player_savearea_fields_t *buf = (player_savearea_fields_t *)from;
+		if (empeg_on_dc_power)
+			buf->dc_volume = hijack_saved_volume;
+		else
+			buf->ac_volume = hijack_saved_volume;
+	}
 
 	/* Store hijack_savearea */
 	hijack_save_settings((unsigned char *)from);
@@ -623,10 +636,7 @@ static ssize_t state_read(struct file *filp, char *dest, size_t count,
 			  loff_t *ppos)
 {
 	struct state_dev *dev = filp->private_data;
-	savearea_fields_t *buf = (savearea_fields_t *)dev->read_buffer;
 
-	if (saved_volume == -1)
-		saved_volume = empeg_on_dc_power ? buf->dc_volume : buf->ac_volume;
 	if (count > STATE_BLOCK_SIZE || count <= 0)
 		count = STATE_BLOCK_SIZE;
 
@@ -652,12 +662,6 @@ static ssize_t state_write(struct file *filp, const char *source, size_t count,
 	temp = dev->read_buffer;
 	dev->read_buffer = dev->write_buffer;
 	dev->write_buffer = temp;
-
-	if (!hijack_volumelock_enabled) {
-		savearea_fields_t *buf = (savearea_fields_t *)dev->read_buffer;
-		saved_volume = empeg_on_dc_power ? buf->dc_volume : buf->ac_volume;
-	}
-
 
 	/* Mark as dirty */
 	dirty=1;
@@ -743,7 +747,7 @@ void __init empeg_state_init(void)
 	unsigned char *buffer = NULL;
 	extern unsigned char **empeg_state_writebuf;
 	int result;
-		
+
 	/* First grab the memory buffer */
 	buffer = vmalloc(STATE_BLOCK_SIZE * 2);
 	if (!buffer) {
@@ -766,6 +770,8 @@ void __init empeg_state_init(void)
 
 	/* Copy the current state to other buffer */
 	memcpy(dev->buffers[1],dev->buffers[0],STATE_BLOCK_SIZE);
+
+	save_current_volume();
 
 	/* Ensure the IRQ is disabled at source */
 	GRER&=~EMPEG_POWERFAIL;

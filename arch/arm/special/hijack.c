@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v319"
+#define HIJACK_VERSION	"v320"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -23,6 +23,7 @@ const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 #include "empeg_display.h"
 #include "empeg_mixer.h"
 
+extern void save_current_volume(void);					// arch/arm/special/empeg_state.c
 extern void input_wakeup_waiters(void);					// arch/arm/special/empeg_input.c
 extern int display_sendcontrol_part1(void);				// arch/arm/special/empeg_display.c
 extern int display_sendcontrol_part2(int);				// arch/arm/special/empeg_display.c
@@ -53,7 +54,7 @@ extern int empeg_inittherm(volatile unsigned int *timerbase, volatile unsigned i
 int	kenwood_disabled;		// used by Nextsrc button
 int	empeg_on_dc_power;		// used in arch/arm/special/empeg_power.c
 int	empeg_tuner_present = 0;	// used by NextSrc button, perhaps has other uses
-int	hijack_volumelock_enabled;	// used by arch/arm/special/empeg_state.c
+int	hijack_volumelock_enabled = 0;	// used by arch/arm/special/empeg_state.c
 int	hijack_fsck_disabled = 0;	// used in fs/ext2/super.c
 int	hijack_onedrive = 0;		// used in drivers/block/ide-probe.c
 int	hijack_reboot = 0;		// set to "1" to cause reboot on next display refresh
@@ -1812,6 +1813,7 @@ volumelock_display (int firsttime)
 {
 	unsigned int rowcol;
 
+	save_current_volume();
 	if (!firsttime && !hijack_last_moved)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
@@ -5139,7 +5141,6 @@ hijack_init (void *animptr)
 	hijack_player_init_pid = 0;
 	hijack_game_animptr = animptr;
 	hijack_buttonled_level = 0;	// turn off button LEDs
-	hijack_volumelock_enabled = 0;
 	failed = hijack_restore_settings(buf);
 	menu_init();
 	reset_hijack_options();

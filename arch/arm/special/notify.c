@@ -108,6 +108,50 @@ hijack_serial_notify (const unsigned char *s, int size)
 	return 0;
 }
 
+#define	EPOCH_YR		(1970)		/* Unix EPOCH = Jan 1 1970 00:00:00 */
+#define	SECS_PER_HOUR		(60L * 60L)
+#define	SECS_PER_DAY		(24L * SECS_PER_HOUR)
+#define	IS_LEAPYEAR(year)	(!((year) % 4) && (((year) % 100) || !((year) % 400)))
+#define	DAYS_PER_YEAR(year)	(IS_LEAPYEAR(year) ? 366 : 365)
+
+const int DAYS_PER_MONTH[2][12] = {
+	{ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 },	// normal year
+	{ 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 } };	// leap year
+
+const char *hijack_months[12] =
+	{ "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+	  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+
+tm_t *
+hijack_convert_time (time_t time, tm_t *tm)
+{
+	unsigned long clock, day;
+	const int *days_per_month;
+	int month = 0, year = EPOCH_YR;
+
+	clock   = (unsigned long)time % SECS_PER_DAY;
+	day = (unsigned long)time / SECS_PER_DAY;
+	tm->tm_sec   =  clock % 60;
+	tm->tm_min   = (clock % SECS_PER_HOUR) / 60;
+	tm->tm_hour  =  clock / SECS_PER_HOUR;
+	tm->tm_wday  = (day + 4) % 7;	/* day 0 was a thursday */
+	while ( day >= DAYS_PER_YEAR(year) ) {
+		day -= DAYS_PER_YEAR(year);
+		year++;
+	}
+	tm->tm_year  = year;
+	tm->tm_yday  = day;
+	days_per_month = DAYS_PER_MONTH[IS_LEAPYEAR(year)];
+	month          = 0;
+	while ( day >= days_per_month[month] ) {
+		day -= days_per_month[month];
+		month++;
+	}
+	tm->tm_mon   = month;
+	tm->tm_mday  = day + 1;
+	return tm;
+}
+
 #ifdef CONFIG_NET_ETHERNET
 
 static inline char *

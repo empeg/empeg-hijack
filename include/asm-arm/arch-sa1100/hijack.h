@@ -207,4 +207,17 @@ typedef struct hijack_geom_s {
 #define IR_RIO_HUSH_PRESSED		IR_RIO_PLAY_PRESSED
 #define IR_RIO_HUSH_RELEASED		IR_RIO_PLAY_RELEASED
 
+// These are just for in-kernel use:
+typedef struct tm_s
+{
+	int tm_sec;	/* seconds	*/
+	int tm_min;	/* minutes	*/
+	int tm_hour;	/* hours	*/
+	int tm_mday;	/* day of month */
+	int tm_mon;	/* month	*/
+	int tm_year;	/* full year	*/
+	int tm_wday;	/* day of week	*/
+	int tm_yday;	/* days in year */
+} tm_t;
+
 #endif // KERNEL_HIJACK_H

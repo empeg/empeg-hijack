@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v205"
+#define HIJACK_VERSION	"v206"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -33,8 +33,9 @@ extern void hijack_voladj_intinit(int, int, int, int, int);		// arch/arm/special
 extern void hijack_beep (int pitch, int duration_msecs, int vol_percent);// arch/arm/special/empeg_audio3.c
 extern unsigned long jiffies_since(unsigned long past_jiffies);		// arch/arm/special/empeg_input.c
 extern void display_blat(struct display_dev *dev, unsigned char *source_buffer); // empeg_display.c
+extern tm_t *hijack_convert_time(time_t, tm_t *);			// from arch/arm/special/notify.c
 
-extern int get_current_mixer_input(void);			// arch/arm/special/empeg_mixer.c
+extern int get_current_mixer_input(void);				// arch/arm/special/empeg_mixer.c
 extern void empeg_mixer_select_input(int input);			// arch/arm/special/empeg_mixer.c
 extern int empeg_readtherm(volatile unsigned int *timerbase, volatile unsigned int *gpiobase);	// arch/arm/special/empeg_therm.S
 extern int empeg_inittherm(volatile unsigned int *timerbase, volatile unsigned int *gpiobase);	// arch/arm/special/empeg_therm.S
@@ -153,7 +154,8 @@ typedef struct button_name_s {
 #define IR_FAKE_POPUP0		(IR_NULL_BUTTON-5)
 #define IR_FAKE_VOLADJ		(IR_NULL_BUTTON-6)
 #define IR_FAKE_KNOBSEEK	(IR_NULL_BUTTON-7)
-#define IR_FAKE_NEXTSRC		(IR_NULL_BUTTON-8)	// This MUST be the lowest numbered FAKE code
+#define IR_FAKE_CLOCK		(IR_NULL_BUTTON-8)
+#define IR_FAKE_NEXTSRC		(IR_NULL_BUTTON-9)	// This MUST be the lowest numbered FAKE code
 
 // Fixme (someday): serial-port-"w" == "pause" (not pause/play): create a fake button for this.
 
@@ -165,6 +167,7 @@ static button_name_t button_names[] = {
 	{IR_FAKE_POPUP3,		"PopUp3"},	// index 3 assumed later in hijack_option_table[]
 	{IR_FAKE_VOLADJ,		"VolAdj"},
 	{IR_FAKE_KNOBSEEK,		"KnobSeek"},
+	{IR_FAKE_CLOCK,			"Clock"},
 	{IR_FAKE_NEXTSRC,		"NextSrc"},
 
 	{IR_FAKE_INITIAL,		"Initial"},
@@ -356,6 +359,7 @@ static int hijack_old_style;			// 1 == don't highlite menu items
 static int hijack_quicktimer_minutes;		// increment size for quicktimer function
 static int hijack_standby_minutes;		// number of minutes after screen blanks before we go into standby
        int hijack_supress_notify;		// 1 == supress player "notify" and "dhcp" text on serial port
+       int hijack_time_offset;			// adjust system time-of-day clock by this many minutes
        int hijack_temperature_correction;	// adjust all h/w temperature readings by this celcius amount
 
 typedef struct hijack_option_s {
@@ -405,6 +409,7 @@ static const hijack_option_t hijack_option_table[] =
 {"quicktimer_minutes",		&hijack_quicktimer_minutes,	30,			1,	1,	120},
 {"standby_minutes",		&hijack_standby_minutes,	30,			1,	0,	240},
 {"fake_tuner",			&hijack_fake_tuner,		0,			1,	0,	1},
+{"time_offset",			&hijack_time_offset,		0,			1,	-24*60,	24*60},
 {"trace_tuner",			&hijack_trace_tuner,		0,			1,	0,	1},
 {"supress_notify",		&hijack_supress_notify,		0,			1,	0,	1},	
 {"temperature_correction",	&hijack_temperature_correction,	-4,			1,	-20,	+20},
@@ -2775,6 +2780,19 @@ hijack_handle_button (unsigned int button, unsigned long delay, int any_ui_is_ac
 			}
 			ir_knob_down = 0;
 			break;
+		case IR_FAKE_CLOCK:
+		{
+			tm_t	tm;
+			char	buf[24];
+			const char *wdays[7] = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
+			extern const char *hijack_months[12];
+			hijack_convert_time(CURRENT_TIME + (hijack_time_offset * 60), &tm);
+			sprintf(buf, "%3s %02u:%02u %02u-%3s-%4u", wdays[tm.tm_wday], tm.tm_hour, tm.tm_min,
+				tm.tm_mday, hijack_months[tm.tm_mon], tm.tm_year);
+			show_message(buf, 4*HZ);
+			hijacked = 1;
+			break;
+		}
 		case IR_FAKE_KNOBSEEK:
 			activate_dispfunc(knobseek_display, knobseek_move);
 			hijacked = 1;

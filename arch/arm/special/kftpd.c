@@ -31,6 +31,7 @@
 #define KHTTPD	"khttpd"
 #define KFTPD	"kftpd"
 
+extern tm_t *hijack_convert_time(time_t, tm_t *);	// from arch/arm/special/notify.c
 extern void sys_exit(int);
 extern char hijack_khttpd_style[];			// from arch/arm/special/hijack.c
 extern const char hijack_vXXX_by_Mark_Lord[];		// from arch/arm/special/hijack.c
@@ -351,69 +352,13 @@ open_datasock (server_parms_t *parms)
 	return response;
 }
 
-typedef struct tm_s
-{
-	int	tm_sec;		/* seconds	*/
-	int	tm_min;		/* minutes	*/
-	int	tm_hour;	/* hours	*/
-	int	tm_mday;	/* day of month	*/
-	int	tm_mon;		/* month	*/
-	int	tm_year;	/* full year	*/
-	int	tm_wday;	/* day of week	*/
-	int	tm_yday;	/* days in year	*/
-} tm_t;
-
-#define	EPOCH_YR		(1970)		/* Unix EPOCH = Jan 1 1970 00:00:00 */
-#define	SECS_PER_HOUR		(60L * 60L)
-#define	SECS_PER_DAY		(24L * SECS_PER_HOUR)
-#define	IS_LEAPYEAR(year)	(!((year) % 4) && (((year) % 100) || !((year) % 400)))
-#define	DAYS_PER_YEAR(year)	(IS_LEAPYEAR(year) ? 366 : 365)
-
-const int DAYS_PER_MONTH[2][12] = {
-	{ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 },	// normal year
-	{ 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 } };	// leap year
-
-static char *MONTHS[12] =
-	{ "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-	  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
-
-static tm_t *
-convert_time (time_t time, tm_t *tm)
-{
-	unsigned long clock, day;
-	const int *days_per_month;
-	int month = 0, year = EPOCH_YR;
-
-	clock   = (unsigned long)time % SECS_PER_DAY;
-	day = (unsigned long)time / SECS_PER_DAY;
-	tm->tm_sec   =  clock % 60;
-	tm->tm_min   = (clock % SECS_PER_HOUR) / 60;
-	tm->tm_hour  =  clock / SECS_PER_HOUR;
-	tm->tm_wday  = (day + 4) % 7;	/* day 0 was a thursday */
-	while ( day >= DAYS_PER_YEAR(year) ) {
-		day -= DAYS_PER_YEAR(year);
-		year++;
-	}
-	tm->tm_year  = year;
-	tm->tm_yday  = day;
-	days_per_month = DAYS_PER_MONTH[IS_LEAPYEAR(year)];
-	month          = 0;
-	while ( day >= days_per_month[month] ) {
-		day -= days_per_month[month];
-		month++;
-	}
-	tm->tm_mon   = month;
-	tm->tm_mday  = day + 1;
-	return tm;
-}
-
 static char *
 format_time (tm_t *tm, int current_year, char *buf)
 {
-	int		t, y;
-	const char	*s;
+	int t, y;
+	extern const char *hijack_months[12];
+	const char *s = hijack_months[tm->tm_mon];
 
-	s = MONTHS[tm->tm_mon];
 	*buf++ = ' ';
 	*buf++ = s[0];
 	*buf++ = s[1];
@@ -632,7 +577,7 @@ format_dir (server_parms_t *parms, filldir_parms_t *p, ino_t ino, char *name, in
 		p->blockcount += inode->i_blocks;
 	}
 
-	b = format_time(convert_time(inode->i_mtime, &tm), p->current_year, b);
+	b = format_time(hijack_convert_time(inode->i_mtime, &tm), p->current_year, b);
 	*b++ = ' ';
 
 	if (ftype == 'l') {
@@ -764,7 +709,7 @@ send_dirlist (server_parms_t *parms, char *path, int full_listing)
 		} else if (!(response = open_datasock(parms))) {
 			tm_t		tm;
 
-			p.current_year	= convert_time(CURRENT_TIME, &tm)->tm_year;
+			p.current_year	= hijack_convert_time(CURRENT_TIME, &tm)->tm_year;
 			p.buf_size	= PAGE_SIZE;
 			p.nam_size	= PAGE_SIZE;
 			p.full_listing	= full_listing;

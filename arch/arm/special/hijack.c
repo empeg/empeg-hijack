@@ -15,9 +15,18 @@
 //
 
 #include <asm/arch/hijack.h>
-#include <linux/soundcard.h>  // for SOUND_MASK_*
+#include <linux/soundcard.h>	// for SOUND_MASK_*
 
-extern int real_input_append_code(unsigned long data); // empeg_input.c
+extern int get_loadavg(char * buffer);					// fs/proc/array.c
+extern void machine_restart(void *);					// arch/alpha/kernel/process.c
+extern int real_input_append_code(unsigned long data);			// arch/arm/special/empeg_input.c
+extern int empeg_state_dirty;						// arch/arm/special/empeg_state.c
+extern void state_cleanse();						// arch/arm/special/empeg_state.c
+extern void hijack_voladj_intinit(int, int, int, int, int, int);	// arch/arm/special/empeg_audio3.c
+extern int getbitset(void);						// arch/arm/special/empeg_power.c
+extern int get_current_mixer_source(void);				// arch/arm/special/empeg_mixer.c
+extern int empeg_readtherm(volatile unsigned int *timerbase, volatile unsigned int *gpiobase);	// arch/arm/special/empeg_therm.S
+extern int empeg_inittherm(volatile unsigned int *timerbase, volatile unsigned int *gpiobase);	// arch/arm/special/empeg_therm.S
 
 #ifdef CONFIG_NET_ETHERNET	// Mk2 or later? (Mk1 has no ethernet)
 #define EMPEG_KNOB_SUPPORTED	// Mk2 and later have a front-panel knob
@@ -57,18 +66,22 @@ static struct wait_queue *hijack_dataq_waitq = NULL, *hijack_menu_waitq = NULL;
 #define MULT_POINT		12
 #define MULT_MASK		((1 << MULT_POINT) - 1)
 #define VOLADJ_THRESHSIZE	16
-#define VOLADJ_HISTSIZE		128
+#define VOLADJ_HISTSIZE		128	/* must be a power of two */
 #define VOLADJ_FIXEDPOINT(whole,fraction) ((((whole)<<MULT_POINT)|((unsigned int)((fraction)*(1<<MULT_POINT))&MULT_MASK)))
 #define VOLADJ_BITS 2
 
-int  voladj_enabled = 0, voladj_multiplier;
+int voladj_enabled = 0; // used by voladj code in empeg_audio3.c
 
 static const char *voladj_names[] = {"[Off]", "Low", "Medium", "High"};
-unsigned int voladj_histx = 0, voladj_history[VOLADJ_HISTSIZE] = {0,};
+static unsigned int voladj_history[VOLADJ_HISTSIZE] = {0,}, voladj_last_histx = 0, voladj_histx = 0;
 
 #define SCREEN_BLANKER_MULTIPLIER 15
 #define BLANKER_BITS (8 - VOLADJ_BITS)
-int blanker_timeout = 0;	// saved/restored in empeg_state.c
+static int blanker_timeout = 0;
+
+#define BLANKERFUZZ_MULTIPLIER 5
+#define BLANKERFUZZ_BITS 3
+static int blankerfuzz_amount = 0;
 
 static int maxtemp_threshold = 0, hijack_on_dc_power = 0;
 #define MAXTEMP_OFFSET	29
@@ -384,14 +397,14 @@ static unsigned int
 voladj_plot (unsigned short text_row, unsigned short pixel_col, unsigned int multiplier, int *prev)
 {
 	if (text_row < (EMPEG_TEXT_ROWS - 1)) {
-		unsigned short height = VOLADJ_THRESHSIZE, pixel_row, threshold, color;
 		int mdiff, tdiff;
+		unsigned int height = VOLADJ_THRESHSIZE-1, pixel_row, threshold, color;
 		do {
-			threshold = voladj_thresholds[--height];
-		} while (multiplier < threshold && height != 0);
-		pixel_row = (text_row * KFONT_HEIGHT) + (VOLADJ_THRESHSIZE - 1) - height;
+			threshold = voladj_thresholds[height];
+		} while (multiplier < threshold && --height != 0);
+		pixel_row = (text_row * KFONT_HEIGHT) + (VOLADJ_THRESHSIZE-1) - height;
 		mdiff = multiplier - threshold;
-		if (height < (VOLADJ_THRESHSIZE - 1))
+		if (height < (VOLADJ_THRESHSIZE-1))
 			tdiff = voladj_thresholds[height+1] - threshold;
 		else
 			tdiff = threshold / 2;
@@ -417,56 +430,62 @@ voladj_plot (unsigned short text_row, unsigned short pixel_col, unsigned int mul
 	return pixel_col;
 }
 
+// invoked from the voladj code in empeg_audio3.c
+void
+hijack_voladj_update_history (int multiplier)
+{
+	unsigned long flags;
+	save_flags_cli(flags);
+	voladj_histx = (voladj_histx + 1) & (VOLADJ_HISTSIZE-1);
+	voladj_history[voladj_histx] = multiplier;
+	restore_flags(flags);
+}
+
+const unsigned int hijack_voladj_parms[1<<VOLADJ_BITS][5] = { // Values as suggested by Richard Lovejoy
+	{0x1800,   0,     0, 0, 0},  // Low
+	{0x1800, 100,0x1000,30,80},  // Low
+	{0x2000, 409,0x1000,30,80},  // Medium (Normal)
+	{0x2000,3000,0x0c00,30,80}}; // High
+
 static void
 voladj_move (int direction)
 {
-	const unsigned int parms[1<<VOLADJ_BITS][5] = { // Values as suggested by Richard Lovejoy
-		{0x1800,   0,     0, 0, 0},  // Low
-		{0x1800, 100,0x1000,30,80},  // Low
-		{0x2000, 409,0x1000,30,80},  // Medium (Normal)
-		{0x2000,3000,0x0c00,30,80}}; // High
-	extern void hijack_voladj_intinit(int, int, int, int, int, int);
-	unsigned const int *p;
+	unsigned int old = voladj_enabled;
 
 	voladj_enabled += direction;
 	if (voladj_enabled < 0)
 		voladj_enabled = 0;
-	else if (voladj_enabled > (sizeof(voladj_names) / sizeof(voladj_names[0]) - 1))
-		voladj_enabled  = sizeof(voladj_names) / sizeof(voladj_names[0]) - 1;
-	p = parms[voladj_enabled];
-	hijack_voladj_intinit(4608,p[0],p[1],p[2],p[3],p[4]);	
+	else if (voladj_enabled >= ((1<<VOLADJ_BITS)-1))
+		voladj_enabled   = ((1<<VOLADJ_BITS)-1);
+	if (voladj_enabled != old) {
+		unsigned const int *p = hijack_voladj_parms[voladj_enabled];
+		hijack_voladj_intinit(4608,p[0],p[1],p[2],p[3],p[4]);	
+		empeg_state_dirty = 1;
+	}
 }
-
-static unsigned long last_histx = -1;
 
 static int
 voladj_display (int firsttime)
 {
-	unsigned int i, rowcol, mult, prev = -1;
+	int prev = -1;
+	unsigned int histx, col, rowcol, mult;
 	unsigned char buf[32];
 	unsigned long flags;
 
-	if (firsttime) {
-		memset(voladj_history, 0, sizeof(voladj_history));
-		voladj_histx = 0;
-	} else if (!hijack_last_moved && last_histx == voladj_histx) {
+	if (!firsttime && !hijack_last_moved && voladj_histx == voladj_last_histx)
 		return NO_REFRESH;
-	}
-	hijack_last_moved = 0;
-	last_histx = voladj_histx;
 	clear_hijack_displaybuf(COLOR0);
-	save_flags_cli(flags);
-	voladj_history[voladj_histx = (voladj_histx + 1) % VOLADJ_HISTSIZE] = voladj_multiplier;
-	restore_flags(flags);
+	hijack_last_moved = 0;
 	rowcol = draw_string(ROWCOL(0,0), "Auto Volume Adjust: ", COLOR2);
 	(void)draw_string(rowcol, voladj_names[voladj_enabled], COLOR3);
-	mult = voladj_multiplier;
+	save_flags_cli(flags);
+	histx = voladj_last_histx = voladj_histx;
+	mult  = voladj_history[histx];
+	restore_flags(flags);
 	sprintf(buf, "Current Multiplier: %2u.%02u", mult >> MULT_POINT, (mult & MULT_MASK) * 100 / (1 << MULT_POINT));
 	(void)draw_string(ROWCOL(3,12), buf, COLOR2);
-	save_flags_cli(flags);
-	for (i = 1; i <= VOLADJ_HISTSIZE; ++i)
-		(void)voladj_plot(1, i - 1, voladj_history[(voladj_histx + i) % VOLADJ_HISTSIZE], &prev);
-	restore_flags(flags);
+	for (col = 0; col < VOLADJ_HISTSIZE; ++col)
+		(void)voladj_plot(1, col, voladj_history[++histx & (VOLADJ_HISTSIZE-1)], &prev);
 	return NEED_REFRESH;
 }
 
@@ -512,10 +531,6 @@ kfont_display (int firsttime)
 	}
 	return NEED_REFRESH;
 }
-
-extern int empeg_readtherm(volatile unsigned int *timerbase, volatile unsigned int *gpiobase);
-extern int empeg_inittherm(volatile unsigned int *timerbase, volatile unsigned int *gpiobase);
-extern int get_loadavg(char * buffer);
 
 static void
 init_temperature (void)
@@ -607,11 +622,15 @@ vitals_display (int firsttime)
 static void
 blanker_move (int direction)
 {
+	int old = blanker_timeout;
+
 	blanker_timeout += direction;
 	if (blanker_timeout < 0)
 		blanker_timeout = 0;
 	else if (blanker_timeout > ((1<<BLANKER_BITS)-1))
 		blanker_timeout  = ((1<<BLANKER_BITS)-1);
+	if (blanker_timeout != old)
+		empeg_state_dirty = 1;
 }
 
 static int
@@ -635,17 +654,18 @@ blanker_display (int firsttime)
 	return NEED_REFRESH;
 }
 
-#define BLANKERFUZZ_BITS 3
-static int blankerfuzz_5pcts = 0;
-
 static void
 blankerfuzz_move (int direction)
 {
-	blankerfuzz_5pcts += direction;
-	if (blankerfuzz_5pcts < 0)
-		blankerfuzz_5pcts = 0;
-	else if (blankerfuzz_5pcts > ((1<<BLANKERFUZZ_BITS)-1))
-		blankerfuzz_5pcts  = ((1<<BLANKERFUZZ_BITS)-1);
+	int old = blankerfuzz_amount;
+
+	blankerfuzz_amount += direction;
+	if (blankerfuzz_amount < 0)
+		blankerfuzz_amount = 0;
+	else if (blankerfuzz_amount > ((1<<BLANKERFUZZ_BITS)-1))
+		blankerfuzz_amount  = ((1<<BLANKERFUZZ_BITS)-1);
+	if (blankerfuzz_amount != old)
+		empeg_state_dirty = 1;
 }
 
 static int
@@ -659,7 +679,7 @@ blankerfuzz_display (int firsttime)
 	clear_hijack_displaybuf(COLOR0);
 	(void)draw_string(ROWCOL(0,0), "Screen Blanker Sensitivity", COLOR2);
 	rowcol = draw_string(ROWCOL(2,0), "Examine ", COLOR2);
-	rowcol = draw_number(rowcol, 100 - (5 * blankerfuzz_5pcts), "%u%%", COLOR3);
+	rowcol = draw_number(rowcol, 100 - (blankerfuzz_amount * BLANKERFUZZ_MULTIPLIER), "%u%%", COLOR3);
 	(void)   draw_string(rowcol, " of screen", COLOR2);
 	return NEED_REFRESH;
 }
@@ -668,7 +688,7 @@ static int
 screen_compare (unsigned long *screen1, unsigned long *screen2)
 {
 	const unsigned char bitcount4[16] = {0,1,1,2, 1,2,2,3, 1,2,3,4, 2,3,3,4};
-	int allowable_fuzz = blankerfuzz_5pcts * (5 * (2 * EMPEG_SCREEN_BYTES) / 100);
+	int allowable_fuzz = blankerfuzz_amount * (BLANKERFUZZ_MULTIPLIER * (2 * EMPEG_SCREEN_BYTES) / 100);
 	unsigned long *end = screen1 - 1;
 
 	// Compare backwards, since changes are most frequently near bottom of screen
@@ -694,7 +714,11 @@ screen_compare (unsigned long *screen1, unsigned long *screen2)
 static void
 knobdata_move (int direction)
 {
+	unsigned int old = knobdata_index;
+
 	knobdata_index = (knobdata_index + direction) & ((1<<KNOBDATA_BITS)-1);
+	if (knobdata_index != old)
+		empeg_state_dirty = 1;
 }
 
 static int
@@ -744,7 +768,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v49 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v50 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -908,14 +932,15 @@ game_display (int firsttime)
 static void
 maxtemp_move (int direction)
 {
-	if (maxtemp_threshold == 0) {
-		if (direction > 0)
-			++maxtemp_threshold;
-	} else if (direction < 0) {
-		--maxtemp_threshold;
-	} else if (maxtemp_threshold < ((1<<MAXTEMP_BITS)-1)) {
-		++maxtemp_threshold;
-	}
+	int old = maxtemp_threshold;
+
+	maxtemp_threshold += direction;
+	if (maxtemp_threshold < 0)
+		maxtemp_threshold = 0;
+	else if (maxtemp_threshold > ((1<<MAXTEMP_BITS)-1))
+		maxtemp_threshold  = ((1<<MAXTEMP_BITS)-1);
+	if (maxtemp_threshold != old)
+		empeg_state_dirty = 1;
 }
 
 static int
@@ -1068,8 +1093,8 @@ reboot_display (int firsttime)
 			hijack_buttonlist = NULL;
 			ir_selected = 1; // return to main menu
 		} else if (left_pressed && right_pressed) {
-			extern void machine_restart(void *);
-			machine_restart(NULL);
+			state_cleanse();	// Ensure flash is updated first
+			machine_restart(NULL);	// Reboot the machine NOW!
 		}
 	}
 	restore_flags(flags);
@@ -1275,7 +1300,6 @@ check_if_sound_adjust_is_active (void *player_buf)
 static void
 toggle_input_source (void)
 {
-	extern int get_current_mixer_source(void);
 	unsigned long button;
 
 	switch (get_current_mixer_source()) {
@@ -1635,7 +1659,7 @@ static struct sa_struct {
 	unsigned voladj_dc_power	: VOLADJ_BITS;
 	unsigned maxtemp_threshold	: MAXTEMP_BITS;
 	unsigned knobdata_index		: KNOBDATA_BITS;
-	unsigned blankerfuzz_5pcts	: BLANKERFUZZ_BITS;
+	unsigned blankerfuzz_amount	: BLANKERFUZZ_BITS;
 	unsigned leftover		: (8 - (KNOBDATA_BITS + BLANKERFUZZ_BITS));
 	unsigned byte4			: 8;
 	unsigned byte5			: 8;
@@ -1656,7 +1680,7 @@ hijack_save_settings (unsigned char *buf)
 #ifdef EMPEG_KNOB_SUPPORTED
 	hijack_savearea.knobdata_index		= knobdata_index;
 #endif // EMPEG_KNOB_SUPPORTED
-	hijack_savearea.blankerfuzz_5pcts	= blankerfuzz_5pcts;
+	hijack_savearea.blankerfuzz_amount	= blankerfuzz_amount;
 	memcpy(buf, &hijack_savearea, sizeof(hijack_savearea));
 }
 
@@ -1674,7 +1698,7 @@ hijack_restore_settings (const unsigned char *buf)
 #ifdef EMPEG_KNOB_SUPPORTED
 	knobdata_index		= hijack_savearea.knobdata_index;
 #endif // EMPEG_KNOB_SUPPORTED
-	blankerfuzz_5pcts	= hijack_savearea.blankerfuzz_5pcts;
+	blankerfuzz_amount	= hijack_savearea.blankerfuzz_amount;
 }
 
 static int
@@ -1945,7 +1969,6 @@ hijack_ioctl (struct inode *inode, struct file *filp, unsigned int cmd, unsigned
 void
 hijack_init (void)
 {
-	extern int getbitset(void);
 	menu_item_t item = {"Vital Signs", vitals_display, NULL, 0};
 	(void)extend_menu(&item);	// we need at least one call to extend_menu() to set the menu_size!!
 	hijack_on_dc_power = getbitset() & EMPEG_POWER_FLAG_DC;

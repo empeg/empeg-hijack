@@ -773,7 +773,9 @@ static int empeg_audio_write(struct file *file,
 	/* Fill as many buffers as we can */
 	while(count > 0 && dev->free > 0) {
 		unsigned long flags;
-		extern int voladj_enabled, voladj_multiplier;
+                int multiplier;
+		extern void hijack_voladj_update_history(int);
+		extern int  voladj_enabled;
 
 		/* Critical sections kept as short as possible to give good
 		   latency for other tasks */
@@ -798,12 +800,13 @@ static int empeg_audio_write(struct file *file,
 		count -= AUDIO_BUFFER_SIZE;
 
               if (voladj_enabled) {
-                dev->voladj.desired_multiplier = voladj_check( &(dev->voladj), 
+                multiplier = voladj_check( &(dev->voladj), 
                         (short *) (dev->buffers[thisbufind].data) );
-                voladj_multiplier = dev->voladj.desired_multiplier;
               } else {
-                voladj_multiplier = (1 << MULT_POINT);
+                multiplier = (1 << MULT_POINT);
               }
+              dev->voladj.desired_multiplier = multiplier;
+              hijack_voladj_update_history(multiplier);
 #if AUDIO_DEBUG_VERBOSE
 	printk("mults: des=%x,out=%x\n", dev->voladj.desired_multiplier, dev->voladj.output_multiplier);
 #endif

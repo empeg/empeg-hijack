@@ -163,7 +163,7 @@ static volatile unsigned short *savebase = NULL;
 static int flash_manufacturer,flash_product;
 
 /* Has buffer been modified? */
-static int dirty=0;
+       int empeg_state_dirty=0;
 static int powerfail_disable_count=0;
 static int erroneous_interrupts = 0;
 
@@ -397,7 +397,7 @@ static inline int state_store(void)
 	state_disablewrite();
 	
 	/* Cleansed */
-	dirty=0;
+	empeg_state_dirty=0;
 
 	return 0;
 }
@@ -407,7 +407,7 @@ static inline int state_store(void)
 extern void state_cleanse(void)
 {
 	/* Is the state dirty? Flush it if it is */
-	if (dirty) {
+	if (empeg_state_dirty) {
 		unsigned long flags;
 		save_flags_cli(flags);
 		state_store();
@@ -426,7 +426,7 @@ static void powerfail_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 
 		/* Store state if it's changed, or if we've been
                    powered on for 30+ seconds */
-		if (dirty || ((unsigned int)xtime.tv_sec-unixtime)>=30) state_store();
+		if (empeg_state_dirty || ((unsigned int)xtime.tv_sec-unixtime)>=30) state_store();
 
 		/* NOTE! This used to be BEFORE the dirty save, but on the
 		   issue9 and later players, turning the display off involves
@@ -616,7 +616,7 @@ static ssize_t state_write(struct file *filp, const char *source, size_t count,
 	dev->write_buffer = temp;
 
 	/* Mark as dirty */
-	dirty=1;
+	empeg_state_dirty=1;
 
 	restore_flags(flags);
 
@@ -669,7 +669,7 @@ int state_read_procmem(char *buf, char **start, off_t offset, int len, int unuse
 
 	len += sprintf(buf+len, "PowerOnSeconds=%ld\n",(xtime.tv_sec-unixtime)+powerontime);
 	len += sprintf(buf+len, "SaveBase=%p\n",savebase);
-	len += sprintf(buf+len, "DirtyFlag=%d\n",dirty);
+	len += sprintf(buf+len, "DirtyFlag=%d\n",empeg_state_dirty);
 	return len;
 }
 

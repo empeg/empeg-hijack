@@ -820,7 +820,7 @@ static void handle_splash(struct display_dev *dev)
 	unsigned int *p = (unsigned int *)(kernel_start + (0xa0000 - 4));
 	if (*p == ('A'|('N'<<8)|('I'<<16)|('M'<<24))) {
 		unsigned int offset = *(p - 1);
-		if (offset >= 0x90000 && offset < (0xa0000 - (1024 + 8 + 8))) {
+		if (offset >= 0x90000 && offset < (0xa0000 - (1024 + 8 + 8)) && !(offset & 3)) {
 			printk("Found custom animation at offset 0x%x\n", offset);
 			ani_ptr = (unsigned long *)(kernel_start + offset);
 		}

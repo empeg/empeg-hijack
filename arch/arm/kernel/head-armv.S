@@ -159,15 +159,18 @@ __create_page_tables:
 		 * Create non-cached non-buffered mappings for the 16th and 17th MBs of DRAM.
 		 */
 		add	r0, r4, #(TEXTADDR - 0x8000) >> 18	@ c000_0000
-		add	r0, r0, #15 << 2	@ virtual  = c0f0_0000
-		add	r3, r5, r8		@ combine MMU flags + physical RAM c000_0000
+
+		add	r0, r0, #16 << 2	@ point at entry for virtual c100_0000
+		mov	r3, #0xc8000000		@ physical = c800_0000 (first MB of second bank)
+		add	r3, r3, r8		@ combine with MMU flags
 		bic	r3, r3, #0x0c		@ clear C&B (Cachable and Bufferable) bits
+		str	r3, [r0]		@ save page table entry for virtual c100_0000
 
-		add	r3, r3, #15 << 20	@ physical = c0f0_0000 (last MB of first 16MB)
-		str	r3, [r0], #4		@ save page table entry; increment virtual = c100_0000
-
-		add	r3, r3, #113 << 20	@ physical = c800_0000 (first MB of second 128MB bank)
-		str	r3, [r0]		@ save page table entry
+		sub	r0, r0, #4 << 2		@ point at entry for virtual c0c0_0000
+		mov	r3, #0xd8000000		@ physical = d800_0000 (first MB of fourth bank)
+		add	r3, r3, r8		@ combine with MMU flags
+		bic	r3, r3, #0x0c		@ clear C&B (Cachable and Bufferable) bits
+		str	r3, [r0]		@ save page table entry for virtual c0c0_0000
 
 		/*
 		 * We also need early access to the memory controller registers,

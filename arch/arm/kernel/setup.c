@@ -479,7 +479,7 @@ static unsigned long check_for_extra_dram (unsigned long mem_end)
 
 	// Figure out where the "extra" 1MB will appear, based on player type:
 	if (mem_end < _16MB)
-		test = (void *)(_16MB - ONE_MB);	// Mk1, Mk2
+		test = (void *)(_16MB - (4 * ONE_MB));	// Mk1, Mk2
 	else
 		test = (void *)(_16MB);			// Mk2a
 

@@ -412,7 +412,6 @@ int voladj_check(
   unsigned short cur_sample;
   unsigned short max_la_sample;
 
-  int quickadjust = 0;
   int num_samples = state->buf_size / 2;
   int i, outputvalue;
 
@@ -734,7 +733,9 @@ static struct file_operations audio_fops =
 	open:		empeg_audio_open,
 };
 
-int  voladj_enabled;	// 2-bits; 0x00=disabled
+unsigned int  voladj_enabled;	// 2-bits; 0x00=disabled
+unsigned int  voladj_multiplier;
+
 void voladj_next_preset (int incr)
 {
 	const unsigned int parms[3][6] = { // Values as suggested by Richard Lovejoy
@@ -921,6 +922,9 @@ static int empeg_audio_write(struct file *file,
               if (voladj_enabled) {
                 dev->voladj.desired_multiplier = voladj_check( &(dev->voladj), 
                         (short *) (dev->buffers[thisbufind].data) );
+                voladj_multiplier = dev->voladj.desired_multiplier;
+              } else {
+                voladj_multiplier = (1 << MULT_POINT);
               }
 #if AUDIO_DEBUG_VERBOSE
 	printk("mults: des=%x,out=%x\n", dev->voladj.desired_multiplier, dev->voladj.output_multiplier);

@@ -239,6 +239,7 @@ static void state_getflashtype(void)
 }
 
 extern int voladj_enabled;  // 2-bits
+extern int screen_blanker_timeout;  // 6-bits
 
 static int state_fetch(unsigned char *buffer)
 {
@@ -322,7 +323,7 @@ static int state_fetch(unsigned char *buffer)
 	}
 
 	/* Later empegs have an RTC */
-	// We steal the two least-significant bits to store the voladj state
+	// We steal the two least-significant bits for voladj state
 	ttime = *((unsigned int*)buffer);
 	voladj_enabled = (ttime & 3);
 	ttime &= ~3;
@@ -333,6 +334,9 @@ static int state_fetch(unsigned char *buffer)
 		unixtime=t.tv_sec=ttime;
 		t.tv_usec=0;
 		do_settimeofday(&t);
+	} else {
+		// On newer models, we steal another 6 bits for the screen blanker timeout
+		screen_blanker_timeout = (ttime >> 2) & 0x3f;
 	}
 
 	/* Get power-on time */
@@ -348,8 +352,13 @@ static inline int state_store(void)
 	volatile unsigned short *from=(volatile unsigned short*)state_devices[0].read_buffer;
 	
 	/* Store current unixtime */
-	// We steal the two least-significant bits to store the voladj state
-	*((unsigned int*)from)=(xtime.tv_sec & ~3) | (voladj_enabled & 3);
+	if (empeg_hardwarerevision()<6) {
+		// We steal the two least-significant bits for voladj state
+		*((unsigned int*)from)=(xtime.tv_sec & ~3) | (voladj_enabled & 3);
+	} else {
+		// On newer models, we steal another 6 bits for the screen blanker timeout
+		*((unsigned int*)from)=(xtime.tv_sec & ~0xff) | (voladj_enabled & 3) | ((screen_blanker_timeout & 0x3f) << 2);
+	}
 
 	/* Store current power-on time */
 	*((unsigned int*)(from+2))=(xtime.tv_sec-unixtime)+powerontime;

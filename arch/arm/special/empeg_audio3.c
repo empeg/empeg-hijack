@@ -734,7 +734,20 @@ static struct file_operations audio_fops =
 	open:		empeg_audio_open,
 };
 
-int voladj_enabled;
+int  voladj_enabled;	// 2-bits; 0x00=disabled
+void voladj_next_preset (int incr)
+{
+	const unsigned int parms[3][6] = { // Values as suggested by Richard Lovejoy
+		{AUDIO_BUFFER_SIZE,0x2000, 409,0x1000,30,80},
+		{AUDIO_BUFFER_SIZE,0x2000,3000,0x0c00,30,80},
+		{AUDIO_BUFFER_SIZE,0x2000,3000,0x1000,30,80}};
+
+	voladj_enabled = (voladj_enabled + incr) & 3;
+	if (voladj_enabled) {
+		unsigned int *p = (unsigned int *)parms[voladj_enabled-1];
+		voladj_intinit(&(audio[0].voladj),p[0],p[1],p[2],p[3],p[4],p[5]);	
+	}
+}
 
 int __init empeg_audio_init(void)
 {

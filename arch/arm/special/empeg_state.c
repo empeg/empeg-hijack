@@ -238,7 +238,7 @@ static void state_getflashtype(void)
 	state_disablewrite();
 }
 
-extern int voladj_enabled;
+extern int voladj_enabled;  // 2-bits
 
 static int state_fetch(unsigned char *buffer)
 {
@@ -326,8 +326,8 @@ static int state_fetch(unsigned char *buffer)
 	   unixtime: set it */
 	// We steal the LS-bit to store the voladj state
 	ttime = *((unsigned int*)buffer);
-	voladj_enabled = (ttime & 1);
-	ttime &= ~1;
+	voladj_enabled = (ttime & 3);
+	ttime &= ~3;
 	
 	if (empeg_hardwarerevision()<6) {
 		unixtime=t.tv_sec=ttime;
@@ -349,7 +349,7 @@ static inline int state_store(void)
 	
 	/* Store current unixtime */
 	// We steal the LS-bit to store the voladj state
-	*((unsigned int*)from)=(xtime.tv_sec & ~1) | voladj_enabled;
+	*((unsigned int*)from)=(xtime.tv_sec & ~3) | (voladj_enabled & 3);
 
 	/* Store current power-on time */
 	*((unsigned int*)(from+2))=(xtime.tv_sec-unixtime)+powerontime;

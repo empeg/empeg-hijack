@@ -837,13 +837,6 @@ ide_startstop_t ide_error (ide_drive_t *drive, const char *msg, byte stat)
 	struct request *rq;
 	byte err;
 
-#ifdef CONFIG_SA1100_EMPEG /* HIJACK */
-	extern void show_message (const char *message, unsigned long time);
-	char buf[128];
-	sprintf(buf, "%s: disk error: %s\n", drive->name, msg);
-	show_message(buf, HZ*20);
-#endif
-
 	err = ide_dump_status(drive, msg, stat);
 	if (drive == NULL || (rq = HWGROUP(drive)->rq) == NULL)
 		return ide_stopped;
@@ -853,6 +846,15 @@ ide_startstop_t ide_error (ide_drive_t *drive, const char *msg, byte stat)
 		ide_end_drive_cmd(drive, stat, err);
 		return ide_stopped;
 	}
+
+#ifdef CONFIG_SA1100_EMPEG /* HIJACK */
+{
+	extern void show_message (const char *message, unsigned long time);
+	char buf[128];
+	sprintf(buf, "%s: disk error: %s\n", drive->name, msg);
+	show_message(buf, HZ*20);
+}
+#endif
 	if (stat & BUSY_STAT || ((stat & WRERR_STAT) && !drive->nowerr)) { /* other bits are useless when BUSY */
 		rq->errors |= ERROR_RESET;
 	} else {

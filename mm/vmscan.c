@@ -424,9 +424,12 @@ static int do_try_to_free_pages(unsigned int gfp_mask)
 done:
 	unlock_kernel();
 
-	if (!ret)
+	if (!ret) {
+		extern void show_message(const char *msg, unsigned int duration);
+		show_message("no_memory error", 20);
 		printk("VM: do_try_to_free_pages failed for %s...\n",
 				current->comm);
+	}
 	/* Return success if we freed a page. */
 	return ret;
 }

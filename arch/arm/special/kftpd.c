@@ -28,6 +28,8 @@
 #include <net/udp.h>
 #include <net/scm.h>
 
+extern int hijack_do_command(const char *command, unsigned int size);	// notify.c 
+extern void show_message (const char *message, unsigned long time);	// hijack.c
 extern int hijack_khttpd_port;				// from arch/arm/special/hijack.c
 extern int hijack_khttpd_verbose;			// from arch/arm/special/hijack.c
 extern int hijack_kftpd_control_port;			// from arch/arm/special/hijack.c
@@ -41,12 +43,11 @@ extern int sys_readlink(const char *path, char *buf, int bufsiz);
 extern int sys_chmod(const char *path, mode_t mode); // fs/open.c
 extern int sys_mkdir(const char *path, int mode); // fs/namei.c
 extern int sys_unlink(const char *path);
-extern void sys_sync(void);
+extern int sys_newstat(char *, struct stat *);
 extern pid_t kernel_thread(int (*fn)(void *), void *arg, unsigned long flags);
 
 #define BUF_PAGES		2
 #define INET_ADDRSTRLEN		16
-#define CLIENT_CWD_SIZE		512
 
 typedef struct server_parms_s {
 	struct socket		*clientsock;
@@ -61,7 +62,8 @@ typedef struct server_parms_s {
 	char			servername[8];
 	int			have_portaddr;
 	struct sockaddr_in	portaddr;
-	unsigned char		cwd[CLIENT_CWD_SIZE];
+	unsigned char		cwd[512];
+	unsigned char		tmp[1024];
 } server_parms_t;
 
 #define INRANGE(c,min,max)	((c) >= (min) && (c) <= (max))
@@ -195,8 +197,6 @@ extract_portaddr (struct sockaddr_in *addr, unsigned char *s)
 static int
 ksock_rw (struct socket *sock, char *buf, int buf_size, int minimum)
 {
-	struct msghdr	msg;
-	struct iovec	iov;
 	int		bytecount = 0, sending = 0;
 
 	if (minimum < 0) {
@@ -204,17 +204,15 @@ ksock_rw (struct socket *sock, char *buf, int buf_size, int minimum)
 		sending = 1;
 	}
 	do {
-		int rc, len = buf_size - bytecount;
+		int		rc, len = buf_size - bytecount;
+		struct msghdr	msg;
+		struct iovec	iov;
 
+		memset(&msg, 0, sizeof(msg));
 		iov.iov_base       = &buf[bytecount];
 		iov.iov_len        = len;
-		msg.msg_name       = NULL;
-		msg.msg_namelen    = 0;
 		msg.msg_iov        = &iov;
 		msg.msg_iovlen     = 1;
-		msg.msg_control    = NULL;
-		msg.msg_controllen = 0;
-		msg.msg_flags      = 0;
 
 		lock_kernel();
 		if (sending) {
@@ -258,13 +256,14 @@ static response_t response_table[] = {
 	{500, "Bad command"},
 	{501, "Bad syntax"},
 	{502, "Not implemented"},
+	{541, "Remote command failed"},
 	{550, "Failed"},
 	{553, "Invalid action"},
 	{0, NULL} // End-Of-Table Marker
 	};
 
 static int
-send_response (server_parms_t *parms, int rcode)
+kftpd_send_response (server_parms_t *parms, int rcode)
 {
 	char		buf[64];
 	int		len, rc;
@@ -373,7 +372,7 @@ open_datasock (server_parms_t *parms)
 		if (make_socket(parms, &parms->datasock, hijack_kftpd_data_port)) {
 			response = 425;
 		} else {
-			if (send_response(parms, 150)) {
+			if (kftpd_send_response(parms, 150)) {
 				response = 451;	// this obviously will never get sent..
 			} else if (parms->datasock->ops->connect(parms->datasock,
 					(struct sockaddr *)&parms->portaddr, sizeof(struct sockaddr_in), flags)) {
@@ -848,28 +847,53 @@ send_dirlist (server_parms_t *parms, char *path, int full_listing)
 	return response;
 }
 
-static const char http_redirect[] =
-	"HTTP/1.1 302 Found\n"
-	"Location: %s/\n"
-	"Connection: close\n"
-	"Content-Type: text/html\n\n"
-	"<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\">\n"
-	"<HTML><HEAD>\n"
-	"<TITLE>302 Found</TITLE>\n"
-	"</HEAD><BODY>\n"
-	"<H1>Found</H1>\n"
-	"The document has moved <A HREF=\"%s/\">here</A>.<P>\n"
-	"</BODY></HTML>\n";
+static void
+khttpd_respond (server_parms_t *parms, int rcode, const char *title, const char *text)
+{
+	static const char kttpd_response[] =
+		"HTTP/1.1 %d %s\n"
+		"Connection: close\n"
+		"Content-Type: text/html\n\n"
+		"<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\">\n"
+		"<HTML><HEAD>\n"
+		"<TITLE>%d %s</TITLE>\n"
+		"</HEAD><BODY>\n"
+		"<H1>%s</H1>\n"
+		"%s<P>\n"
+		"</BODY></HTML>\n";
+
+	char		*buf = parms->cwd;
+	unsigned int	len, rc;
+
+	len = sprintf(buf, kttpd_response, rcode, title, rcode, title, title, text);
+	rc = ksock_rw(parms->clientsock, buf, len, -1);
+	if (rc != len)
+		printk("%s: respond(): ksock_rw(%d) returned %d\n", parms->servername, len, rc);
+}
+
 
 static void
 khttpd_dir_redirect (server_parms_t *parms, const char *path, char *buf)
 {
+	static const char http_redirect[] =
+		"HTTP/1.1 302 Found\n"
+		"Location: %s/\n"
+		"Connection: close\n"
+		"Content-Type: text/html\n\n"
+		"<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\">\n"
+		"<HTML><HEAD>\n"
+		"<TITLE>302 Found</TITLE>\n"
+		"</HEAD><BODY>\n"
+		"<H1>Found</H1>\n"
+		"The document has moved <A HREF=\"%s/\">here</A>.<P>\n"
+		"</BODY></HTML>\n";
+
 	unsigned int	len, rc;
 
 	len = sprintf(buf, http_redirect, path, path);
 	rc = ksock_rw(parms->clientsock, buf, len, -1);
 	if (rc != len)
-		printk("%s: bad_request(): ksock_rw(%d) returned %d\n", parms->servername, len, rc);
+		printk("%s: dir_redirect(): ksock_rw(%d) returned %d\n", parms->servername, len, rc);
 }
 
 static const char audio_mpeg[]		= "audio/mpeg";
@@ -1085,7 +1109,7 @@ receive_file (server_parms_t *parms, const char *path)
 static void
 append_path (char *path, char *new)
 {
-	char	buf[CLIENT_CWD_SIZE], *b = buf, *p = path;
+	char	buf[1024], *b = buf, *p = path;
 
 	if (*new == '/') {
 		strcpy(buf, new);
@@ -1155,11 +1179,11 @@ append_path (char *path, char *new)
 static int
 kftpd_handle_command (server_parms_t *parms)
 {
-	char		path[CLIENT_CWD_SIZE], buf[300];
+	char		path[512], *buf = parms->tmp;
 	unsigned int	response = 0;
-	int		n, quit = 0;
+	int		n, quit = 0, bufsize = sizeof(parms->tmp) - 1;
 
-	n = ksock_rw(parms->clientsock, buf, sizeof(buf), 0);
+	n = ksock_rw(parms->clientsock, buf, bufsize, 0);
 	if (n < 0) {
 		printk("%s: ksock_rw() failed, rc=%d\n", parms->servername, n);
 		return -1;
@@ -1168,8 +1192,8 @@ kftpd_handle_command (server_parms_t *parms)
 			printk("%s: EOF on client sock\n", parms->servername);
 		return -1;
 	}
-	if (n >= sizeof(buf))
-		n = sizeof(buf) - 1;
+	if (n >= bufsize)
+		n = bufsize;
 	buf[n] = '\0';
 	if (buf[n - 1] == '\n')
 		buf[--n] = '\0';
@@ -1208,7 +1232,7 @@ kftpd_handle_command (server_parms_t *parms)
 	} else if (!strxcmp(buf, "PWD", 0)) {
 		quit = send_dir_response(parms, 257, parms->cwd, NULL);
 	} else if (!strxcmp(buf, "SITE HELP", 0)) {
-		quit = send_help_response(parms, "SITE ", "   CHMOD   HELP    RO    RW    REBOOT  EXEC    \r\n");
+		quit = send_help_response(parms, "SITE ", "   BUTTON CHMOD EXEC HELP POPUP REBOOT RO RW\r\n");
 		response = 214;
 	} else if (!strxcmp(buf, "SITE CHMOD ", 1)) {
 		unsigned char *p = &buf[11];
@@ -1220,20 +1244,10 @@ kftpd_handle_command (server_parms_t *parms)
 			append_path(path, p);
 			response = do_chmod(parms, mode, path);
 		}
-	} else if (!strxcmp(buf, "SITE REBOOT", 0)) {
-		extern int hijack_reboot;
-		hijack_reboot = 1;
-		response = 200;
-	} else if (!strxcmp(buf, "SITE RO", 0)) {
-		char ro[] =	"[ -e /proc/ide/hdb ] && mount -n -o remount,ro /drive1;"
-				"mount -n -o remount,ro /drive0; mount -n -o remount,ro /";
-		response = site_exec(ro);
-	} else if (!strxcmp(buf, "SITE RW", 0)) {
-		char rw[] =	"mount -n -o remount,rw /; mount -n -o remount,rw /drive0;"
-				"[ -e /proc/ide/hdb ] && mount -n -o remount,rw /drive1";
-		response = site_exec(rw);
 	} else if (!strxcmp(buf, "SITE EXEC ", 1)) {
 		response = site_exec(&buf[10]);
+	} else if (!strxcmp(buf, "SITE ", 1)) {
+		response = hijack_do_command(&buf[5], n - 5) ? 541 : 200;
 	} else if (n == 2 && buf[0] == 0xff && buf[1] == 0xf4) {
 		response = 0;	// Ignore the telnet escape sequence
 	} else if (n == 5 && buf[0] == 0xf2 && !strxcmp(buf+1, "ABOR", 0)) {
@@ -1305,36 +1319,51 @@ kftpd_handle_command (server_parms_t *parms)
 		response = 500;
 	}
 	if (response)
-		send_response(parms, response);
+		kftpd_send_response(parms, response);
 	return quit;
 }
 
-static void
-khttpd_bad_request (server_parms_t *parms, int rcode, const char *title, const char *text)
+static unsigned char
+fromhex (unsigned char x)
 {
-	static const char kttpd_response[] =
-		"<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\">\n"
-		"<HTML><HEAD>\n"
-		"<TITLE>%d %s</TITLE>\n"
-		"</HEAD><BODY>\n"
-		"<H1>%s</H1>\n"
-		"%s<P>\n"
-		"</BODY></HTML>\n";
-	char		buf[256];
-	unsigned int	len, rc;
+	if (INRANGE(x,'0','9'))
+		return x - '0';
+	x = TOUPPER(x);
+	if (INRANGE(x, 'A', 'F'))
+		return x - 'A';
+	return 16;
+}
 
-	len = sprintf(buf, kttpd_response, rcode, title, title, text);
-	rc = ksock_rw(parms->clientsock, buf, len, -1);
-	if (rc != len)
-		printk("%s: bad_request(): ksock_rw(%d) returned %d\n", parms->servername, len, rc);
+static char *
+khttpd_fix_hexcodes (char *buf)
+{
+	char *s = buf;
+	unsigned char x1, x2;
+
+	while (*s) {
+		while (*s && *s++ != '%');
+		if ((x1 = *s) && (x2 = *++s)) {
+			if ((x1 = fromhex(x1)) < 16 && (x2 = fromhex(x2)) < 16) {
+				int len = s - buf;
+				*s = (x1 << 4) | x2;
+				buf = s;
+				while (len--) {
+					--buf;
+					*buf = *(buf - 2);
+				}
+				++s;
+			}
+		}
+	}
+	return buf;
 }
 
 static int
 khttpd_handle_connection (server_parms_t *parms)
 {
-	const char	GET[4] = "GET ";
-	char		*buf = parms->cwd;
-	int		response = 0, buflen = CLIENT_CWD_SIZE, n;
+	const char	empeg_remote[] = "/proc/empeg_notify?";
+	char		*buf = parms->tmp;
+	int		response = 0, buflen = sizeof(parms->tmp) - 1, n;
 
 	n = ksock_rw(parms->clientsock, buf, buflen, 0);
 	if (n < 0) {
@@ -1345,20 +1374,34 @@ khttpd_handle_connection (server_parms_t *parms)
 			printk("%s: EOF on client sock\n", parms->servername);
 		return -1;
 	}
-	while (--n && (buf[n] == '\n' || buf[n] == '\r'))
-		buf[n] = '\0';
-	if (n < sizeof(GET) || n >= buflen || strncmp(buf, GET, sizeof(GET)) || !buf[sizeof(GET)]) {
-		khttpd_bad_request(parms, 400, "Bad command", "server only supports GET");
-	} else {
-		unsigned char *path = &buf[sizeof(GET)];
-		for (n = 0; path[n] && path[n] != ' '; ++n); // ignore and strip off all the other http parameters
-		path[n--] = '\0';
+	buf[n] = '\0';
+	if (n >= buflen) {
+		while (buflen == ksock_rw(parms->clientsock, buf, buflen, 0));	// fixme? flush incoming stream
+		khttpd_respond(parms, 400, "Bad command", "request too long");
+	} else if (!strxcmp(buf, "GET ", 1) && n > 4) {
+		char *path = &buf[4], *p = path, c;
+		while (*p && (*p != ' '))
+			++p;
+		*p = '\0';
 		if (parms->verbose)
-			printk("%s: '%s'\n", parms->servername, buf);
-		// fixme? (maybe):  need to translate incoming char sequences of "%2F" to slashes
+			printk("%s: GET '%s'\n", parms->servername, path);
+		path = khttpd_fix_hexcodes(path);
+		if (!strncmp(path, empeg_remote, sizeof(empeg_remote)-1)) {
+			char *cmds = path + (sizeof(empeg_remote)-1);
+			p = cmds - 1;	// *p == '?'
+			*p = '\0';	// zero-terminate the path portion
+			if (*cmds) {
+				while ((c = *++p)) {
+					if (c == '=' || c == '+')
+						*p = ' ';
+					else if (c == '&')
+						*p = ';';
+				}
+				(void) hijack_do_command(cmds, p - cmds); // fixme? handle errors, or ignore them?
+			}
+		}
 		if (path[n] == '/') {
 			struct stat statbuf;
-			extern int sys_newstat(char *, struct stat *);
 			while (n > 0 && path[n] == '/')
 				path[n--] = '\0';
 			strcat(path, "/index.html");
@@ -1371,8 +1414,10 @@ khttpd_handle_connection (server_parms_t *parms)
 		response = send_file(parms, path);
 		if (response) {
 			sprintf(buf, "(%d)", response);
-			khttpd_bad_request(parms, 404, "Error retrieving file", buf);
+			khttpd_respond(parms, 404, "Error retrieving file", buf);
 		}
+	} else {
+		khttpd_respond(parms, 400, "Bad command", "server only supports GET");
 	}
 	return 0;
 }
@@ -1418,11 +1463,11 @@ child_thread (void *arg)
 	(void) turn_on_sockopt(parms, parms->servsock, SOL_TCP, TCP_NODELAY); // don't care
 	if (parms->use_http) {
 		khttpd_handle_connection(parms);
-	} else if (!send_response(parms, 220)) {
+	} else if (!kftpd_send_response(parms, 220)) {
 		strcpy(parms->cwd, "/");
 		parms->umask = 0022;
 		while (!kftpd_handle_command(parms));
-		sys_sync();	// useful for flash upgrades
+		sync();	// useful for flash upgrades
 	}
 	sock_release(parms->clientsock);
 	kfree(parms);

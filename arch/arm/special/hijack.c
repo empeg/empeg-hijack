@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v124"
+#define HIJACK_VERSION "v125"
 
 #include <linux/sched.h>
 #include <linux/kernel.h>
@@ -19,6 +19,7 @@
 #include "../../../drivers/block/ide.h"	// for ide_hwifs[]
 #include "empeg_display.h"
 
+extern int sys_sync(void);						// fs/buffer.c
 extern int get_loadavg(char * buffer);					// fs/proc/array.c
 extern void machine_restart(void *);					// arch/arm/kernel/process.c
 extern int real_input_append_code(unsigned long data);			// arch/arm/special/empeg_input.c
@@ -676,6 +677,7 @@ activate_dispfunc (int (*dispfunc)(int), void (*movefunc)(int))
 	hijack_deactivate(HIJACK_PENDING);
 	hijack_dispfunc = dispfunc;
 	hijack_movefunc = movefunc;
+	blanker_triggered = 0;
 	dispfunc(1);
 }
 
@@ -2218,7 +2220,6 @@ message_display (int firsttime)
 	static const hijack_geom_t geom = {8, 8+6+KFONT_HEIGHT, 2, EMPEG_SCREEN_COLS-2};
 	unsigned int rowcol;
 
-	timer_started = jiffies;
 	if (firsttime) {
 		create_overlay(&geom);
 		rowcol = (geom.first_row+4)|((geom.first_col+6)<<16);
@@ -2654,6 +2655,7 @@ hijack_reboot_now (void *dev)
 	clear_hijack_displaybuf(COLOR0);
 	(void) draw_string(ROWCOL(2,32), "Rebooting..", PROMPTCOLOR);
 	display_blat(dev, (unsigned char *)hijack_displaybuf);
+
 	state_cleanse();		// Ensure flash savearea is updated first
 	save_flags_clif(flags);		// clif is necessary for machine_restart
 	machine_restart(NULL);		// never returns
@@ -3724,5 +3726,5 @@ hijack_restore_settings (unsigned char *buf, int failed)
 	if (failed)
 		show_message("Settings have been lost", 7*HZ);
 	else
-		show_message("Hijack "HIJACK_VERSION" by Mark Lord", HZ/5);
+		show_message("Hijack "HIJACK_VERSION" by Mark Lord", HZ/6);
 }

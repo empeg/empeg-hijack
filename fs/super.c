@@ -948,7 +948,7 @@ static int do_remount_sb(struct super_block *sb, int flags, char *data)
 	return 0;
 }
 
-static int do_remount(const char *dir,int flags,char *data)
+int do_remount(const char *dir,int flags,char *data)
 {
 	struct dentry *dentry;
 	int retval;

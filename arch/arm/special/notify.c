@@ -1,5 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 
+#define __KERNEL_SYSCALLS__
 #include <linux/sched.h>
 #include <linux/kernel.h>
 #include <linux/errno.h>
@@ -8,10 +9,13 @@
 #include <linux/malloc.h>
 #include <linux/delay.h>
 #include <linux/init.h>
+#include <linux/unistd.h>
+#include <asm/smplock.h>
 #include <asm/arch/hijack.h>
 
 #include <linux/proc_fs.h>
  
+extern int do_remount(const char *dir,int flags,char *data);
 extern int hijack_supress_notify, hijack_reboot;							// hijack.c
 extern int get_number (unsigned char **src, int *target, unsigned int base, const char *nextchars);	// hijack.c
 extern void hijack_button_enq_inputq (unsigned int button, unsigned int hold_time);			// hijack.c
@@ -121,46 +125,89 @@ insert_button_pair (unsigned int button, unsigned int hold_time)
 }
 
 static int
-proc_notify_write (struct file *file, const char *buffer, unsigned long count, void *data)
+remount_drives (int writeable)
 {
-	unsigned char	*kbuf, *nextline;
+	int rc0, rc1, flags = writeable ? (MS_NODIRATIME | MS_NOATIME) : MS_RDONLY;
 
-	if (!count)
-		return 0;
-	// make a zero-terminated copy to simplify parsing:
+	show_message(writeable ? "Remounting read-write.." : "Remounting read-only..", 99*HZ);
+
+	lock_kernel();
+	rc0 = do_remount("/drive0", flags, NULL);
+	rc1 = do_remount("/drive1", flags, NULL);     // returns -EINVAL on 1-drive systems
+	if (rc1 != -EINVAL && !rc0)
+		rc0 = rc1;
+	rc1 = do_remount("/", flags, NULL);
+	unlock_kernel();
+	sync();
+	sync();
+
+	if (!rc1)
+		rc1 = rc0;
+	show_message(rc1 ? "Failed" : "Done", HZ);
+	return rc1;
+}
+
+extern int hijack_reboot;
+
+int
+hijack_do_command (const char *buffer, unsigned int count)
+{
+	int	rc = 0;
+	char	*nextline, *kbuf;
+
+	// make a zero-terminated writeable copy to simplify parsing:
 	if (!(kbuf = kmalloc(count + 1, GFP_KERNEL)))
 		return -ENOMEM;
 	memcpy(kbuf, buffer, count);
 	kbuf[count] = '\0';
 	nextline = kbuf;
 
-	while (*nextline) {
+	while (!rc && *nextline) {
 		unsigned char *s;
 		s = nextline;
-		while (*nextline && *++nextline != '\n');
+		while (*nextline && *++nextline != '\n' && *nextline != ';');
 		*nextline = '\0';
-		if (*s) {
-			if (!strxcmp(s, "button ", 1)) {
-				unsigned int button;
-				s += 7;
-				if (*s && get_number(&s, &button, 16, NULL)) {
-					unsigned int hold_time = 5;
-					if (s[0] == '.' && s[1] == 'L')
-						hold_time = HZ+(HZ/5);
-					insert_button_pair(button, hold_time);
-				}
-			} else if (!strxcmp(s, "reboot", 0)) {
-				hijack_reboot = 1;
-			} else if (!strxcmp(s, "popup ", 1) && s[6]) {
-				show_message(s+6, 2*HZ); // fixme: allow varying times, maybe with popupcancel cmd
-				/* not implemented yet */
-			//} else if (!strxcmp(s, "serial:", 1)) {
-			//	/* fixme: not implemented yet */
+
+		if (!strxcmp(s, "BUTTON ", 1)) {
+			unsigned int button;
+			s += 7;
+			if (*s && get_number(&s, &button, 16, NULL)) {
+				unsigned int hold_time = 5;
+				if (s[0] == '.' && s[1] == 'L')
+					hold_time = HZ+(HZ/5);
+				insert_button_pair(button, hold_time);
 			}
+		} else if (!strxcmp(s, "RO", 0)) {
+			rc = remount_drives(0);
+		} else if (!strxcmp(s, "RW", 0)) {
+			rc = remount_drives(1);
+		} else if (!strxcmp(s, "REBOOT", 0)) {
+			remount_drives(0);
+			hijack_reboot = 1;
+		} else if (!strxcmp(s, "POPUP ", 1)) {
+			int secs;
+			s += 6;
+			if (*s && get_number(&s, &secs, 10, NULL) && *s++ == ' ' && *s)
+				show_message(s, secs * HZ);
+			else
+				rc = -EINVAL;
+		//} else if (!strxcmp(s, "SERIAL ", 1)) {
+		//	/* fixme: not implemented yet */
+		} else {
+			rc = -EINVAL;
 		}
 	}
 	kfree(kbuf);
-	return count;
+	return rc;
+}
+
+static int
+proc_notify_write (struct file *file, const char *buffer, unsigned long count, void *data)
+{
+	int rc = hijack_do_command(buffer, count); 
+	if (!rc)
+		rc = count;
+	return rc;
 }
 
 static int

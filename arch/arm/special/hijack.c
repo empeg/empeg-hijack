@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v272"
+#define HIJACK_VERSION	"v273"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -569,7 +569,7 @@ static const hijack_option_t hijack_option_table[] =
 {"extmute_on",			&hijack_extmute_on,		0,			1,	0,	IR_NULL_BUTTON},
 {"fake_tuner",			&hijack_fake_tuner,		0,			1,	0,	1},
 {"ir_debug",			&hijack_ir_debug,		0,			1,	0,	1},
-{"keypress_flash",		&hijack_keypress_flash,		0,			1,	0,	1},
+{"keypress_flash",		&hijack_keypress_flash,		0,			1,	0,	65535},
 #ifdef CONFIG_NET_ETHERNET
 {"kftpd_control_port",		&hijack_kftpd_control_port,	21,			1,	0,	65535},
 {"kftpd_data_port",		&hijack_kftpd_data_port,	20,			1,	0,	65535},
@@ -3534,7 +3534,7 @@ hijack_handle_buttons (const char *player_buf)
 }
 
 static unsigned int ir_downkey = IR_NULL_BUTTON, ir_delayed_rotate = 0;
-static unsigned int do_keypress_flash = 0;
+static unsigned long do_keypress_flash = 0, last_keypress_flash = 0;
 
 static void
 input_append_code2 (unsigned int rawbutton)
@@ -3563,8 +3563,12 @@ input_append_code2 (unsigned int rawbutton)
 				ir_downkey = rawbutton;
 		}
 	}
-	if (!released && button > 0xf)	// don't flash for front panel, or releases
-		do_keypress_flash = hijack_keypress_flash;
+	if (hijack_keypress_flash) {
+		if (!released && button > 0xf && button < IR_FAKE_HIJACKMENU)	// don't flash for front panel, or releases
+			do_keypress_flash = jiffies ? jiffies : 0;
+		else
+			do_keypress_flash = 0;
+	}
 	if (ir_translate_table != NULL) {
 		unsigned short	mixer		= get_current_mixer_source();
 		unsigned short	carhome		= empeg_on_dc_power ? IR_FLAGS_CAR : IR_FLAGS_HOME;
@@ -3943,22 +3947,18 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 			}
 		}
 	}
-	if (do_keypress_flash) {
-		if (do_keypress_flash == 2)
-			do_keypress_flash = 0;
-		refresh = NEED_REFRESH;
-	}
-	if (refresh == NEED_REFRESH) {
-		if (do_keypress_flash == 1) {
-			unsigned char tbuf[EMPEG_SCREEN_BYTES], *t = tbuf + EMPEG_SCREEN_BYTES, *b = buf + EMPEG_SCREEN_BYTES;
-			do_keypress_flash = 2;	// for next time
-			while (b != buf) {
-				*--t = (*--b) ^ 0x33;
-			}
-			display_blat(dev, tbuf);
-		} else {
-			display_blat(dev, buf);
+	if (do_keypress_flash && jiffies_since(do_keypress_flash) > hijack_keypress_flash)
+		do_keypress_flash = 0;
+	if (refresh == NEED_REFRESH || last_keypress_flash != do_keypress_flash) {
+		unsigned char tbuf[EMPEG_SCREEN_BYTES];
+		last_keypress_flash = do_keypress_flash;
+		if (do_keypress_flash) {
+			unsigned char *t = tbuf;
+			while (t != &tbuf[EMPEG_SCREEN_BYTES])
+				*t++ = *buf++ ^ 0x33;
+			buf = tbuf;
 		}
+		display_blat(dev, buf);
 		hijack_last_refresh = jiffies;
 	}
 }

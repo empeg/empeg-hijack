@@ -337,6 +337,7 @@ hijack_deactivate (int new_status)
 	hijack_movefunc = NULL;
 	hijack_dispfunc = NULL;
 	hijack_buttonlist = NULL;
+	ir_trigger_count = 0;
 	hijack_overlay_geom = NULL;
 	hijack_status = new_status;
 }
@@ -649,11 +650,15 @@ static int
 screen_compare (unsigned long *screen1, unsigned long *screen2)
 {
 	const unsigned char bitcount4[16] = {0,1,1,2, 1,2,2,3, 1,2,3,4, 2,3,3,4};
-	unsigned long *end = (unsigned long *)(((unsigned char *)screen1) + EMPEG_SCREEN_BYTES);
 	int allowable_fuzz = blankerfuzz_5pcts * (5 * (2 * EMPEG_SCREEN_BYTES) / 100);
+	unsigned long *end = screen1 - 1;
+
+	// Compare backwards, since changes are most frequently near bottom of screen
+	screen1 += (EMPEG_SCREEN_BYTES / sizeof(unsigned long)) - 1;
+	screen2 += (EMPEG_SCREEN_BYTES / sizeof(unsigned long)) - 1;
 
 	do {	// compare 8 pixels at a time for speed
-		unsigned long x = *screen1 ^ *screen2++;
+		unsigned long x = *screen1-- ^ *screen2--;
 		if (x) { // Now figure out how many of the 8 pixels didn't match
 			x |= x >>  1;		// reduce each pixel to one bit
 			x &= 0x11111111;	// mask away the excess bits
@@ -663,7 +668,7 @@ screen_compare (unsigned long *screen1, unsigned long *screen2)
 			if (allowable_fuzz < 0)
 				return 1;	// not the same
 		}
-	} while (++screen1 < end);
+	} while (screen1 > end);
 	return 0;	// the same
 }
 
@@ -719,7 +724,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v47 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v48 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1283,8 +1288,7 @@ hijack_display (struct display_dev *dev, unsigned char *player_buf)
 
 	save_flags_cli(flags);
 	if (!dev->power) {  // do nothing if unit is in standby mode
-		ir_trigger_count = 0;
-		hijack_status = HIJACK_INACTIVE;
+		hijack_deactivate(HIJACK_INACTIVE);
 		restore_flags(flags);
 		display_blat(dev, player_buf);
 		return;
@@ -1341,10 +1345,16 @@ hijack_display (struct display_dev *dev, unsigned char *player_buf)
 			break;
 		case HIJACK_INACTIVE_PENDING:
 			buf = player_buf;
-			if (!ir_releasewait) {
-				ir_selected = 0;
+			ir_selected = 0;
+#if 0
+			if (!ir_releasewait || jiffies_since(ir_lasttime) > HZ) {
+				ir_lasttime = 0;	// safeguard
 				hijack_status = HIJACK_INACTIVE;
 			}
+#else
+			if (!ir_releasewait)
+				hijack_status = HIJACK_INACTIVE;
+#endif
 			break;
 		default: // (good) paranoia
 			hijack_deactivate(HIJACK_INACTIVE_PENDING);
@@ -1365,14 +1375,12 @@ hijack_display (struct display_dev *dev, unsigned char *player_buf)
 			blanker_is_blanked = 0;
 		if (jiffies_since(blanker_lastpoll) >= (4*HZ/3)) {  // use an oddball interval to avoid patterns
 			blanker_lastpoll = jiffies;
-			save_flags_clif(flags);
 			if (screen_compare((unsigned long *)blanker_lastbuf, (unsigned long *)buf)) {
 				memcpy(blanker_lastbuf, buf, EMPEG_SCREEN_BYTES);
 				blanker_triggered = 0;
 			} else if (!blanker_triggered) {
 				blanker_triggered = jiffies ? jiffies : 1;
 			}
-			restore_flags(flags);
 		}
 		if (blanker_triggered) {
 			if (jiffies_since(blanker_triggered) > (blanker_timeout * (SCREEN_BLANKER_MULTIPLIER * HZ))) {

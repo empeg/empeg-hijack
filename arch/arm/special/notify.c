@@ -381,6 +381,12 @@ proc_notify_write (struct file *file, const char *buffer, unsigned long count, v
 	return rc;
 }
 
+#else
+
+#define proc_notify_write NULL
+
+#endif // CONFIG_NET_ETHERNET
+
 extern struct file_operations  flash_fops;
 static struct inode_operations kflash_ops = {
 	&flash_fops,
@@ -406,12 +412,6 @@ static struct proc_dir_entry proc_kernel_entry = {
 	MKDEV(60,8),		/* size holds device number */
 	&kflash_ops,		/* inode operations */
 };
-
-#else
-
-#define proc_notify_write NULL
-
-#endif // CONFIG_NET_ETHERNET
 
 static int
 proc_notify_read (char *buf, char **start, off_t offset, int len, int unused)
@@ -458,8 +458,8 @@ void hijack_notify_init (void)
 	proc_register(&proc_root, &proc_screen_png_entry);
 #endif // CONFIG_NET_ETHERNET
 	proc_register(&proc_root, &proc_notify_entry);
-#ifdef CONFIG_NET_ETHERNET
 	proc_register(&proc_root, &proc_bootlogos_entry);
+#ifdef CONFIG_NET_ETHERNET
 	proc_register(&proc_root, &proc_kernel_entry);
 #endif // CONFIG_NET_ETHERNET
 }

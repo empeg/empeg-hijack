@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v247"
+#define HIJACK_VERSION	"v248"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -457,9 +457,7 @@ static hijack_buttonq_t hijack_inputq, hijack_playerq, hijack_userq;
 
 // Externally tuneable parameters for config.ini; the voladj_parms are also tuneable
 //
-#ifdef EMPEG_KNOB_SUPPORTED
 static int hijack_buttonled_off_level;		// button brightness when player is "off"
-#endif
 static int hijack_button_pacing;		// minimum spacing between press/release pairs within playerq
 static int hijack_dc_servers;			// 1 == allow kftpd/khttpd when on DC power
        int hijack_disable_emplode;		// 1 == block TCP port 8300 (Emplode/Emptool)
@@ -555,9 +553,7 @@ static const hijack_option_t hijack_option_table[] =
 {
 // config.ini string		address-of-variable		default			howmany	min	max
 //===========================	==========================	=========		=======	===	================
-#ifdef EMPEG_KNOB_SUPPORTED
 {"buttonled_off",		&hijack_buttonled_off_level,	1,			1,	0,	7},
-#endif
 {"button_pacing",		&hijack_button_pacing,		20,			1,	0,	HZ},
 {"dc_servers",			&hijack_dc_servers,		0,			1,	0,	1},
 {"disable_emplode",		&hijack_disable_emplode,	0,			1,	0,	1},
@@ -1978,8 +1974,6 @@ screen_compare (unsigned long *screen1, unsigned long *screen2)
 static unsigned int hijack_buttonled_on_level = 0;
 static unsigned int hijack_buttonled_level = 0;
 
-#ifdef EMPEG_KNOB_SUPPORTED
-
 static const char buttonled_menu_label	[] = "Button Illumination Level";
 
 // Front panel illumination info from Hugo:
@@ -2113,6 +2107,8 @@ buttonled_display (int firsttime)
 		(void) draw_number(rowcol, level, "%2u", ENTRYCOLOR);
 	return NEED_REFRESH;
 }
+
+#ifdef EMPEG_KNOB_SUPPORTED
 
 static void
 knobdata_move (int direction)
@@ -2829,9 +2825,7 @@ static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 	{"Auto Volume Adjust",		voladj_display,		voladj_move,		0},
 	{"Break-Out Game",		game_display,		game_move,		0},
 	{ showbutton_menu_label,	showbutton_display,	NULL,			0},
-#ifdef EMPEG_KNOB_SUPPORTED
 	{ buttonled_menu_label,		buttonled_display,	buttonled_move,		0},
-#endif
 	{"Calculator",			calculator_display,	NULL,			0},
 	{ timeraction_menu_label,	timeraction_display,	timeraction_move,	0},
 	{ timer_menu_label,		timer_display,		timer_move,		0},
@@ -3767,7 +3761,6 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	}
 #endif // DEBUG_JIFFIES
 
-#ifdef EMPEG_KNOB_SUPPORTED
 {
 	static unsigned long poweroff = 0;
 
@@ -3778,7 +3771,6 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	if (!poweroff || jiffies_since(poweroff) > (HZ/4))
 		hijack_adjust_buttonled(dev->power);
 }
-#endif
 	// Send initial button sequences, if any
 	if (!sent_initial_buttons && hijack_player_started) {
 		sent_initial_buttons = 1;

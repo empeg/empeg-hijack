@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v181"
+#define HIJACK_VERSION	"v182"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -61,12 +61,9 @@ static unsigned int PROMPTCOLOR = COLOR3, ENTRYCOLOR = -COLOR3;
 #define HIJACK_ACTIVE_PENDING	2
 #define HIJACK_ACTIVE		3
 
-#define RESTORE_CARVISUALS
-#ifdef RESTORE_CARVISUALS
 static unsigned int carvisuals_enabled = 0;
 static unsigned int restore_carvisuals = 0;
 static unsigned int info_screenrow = 0;
-#endif // RESTORE_CARVISUALS
 static unsigned int hijack_status = HIJACK_IDLE;
 static unsigned long hijack_last_moved = 0, hijack_last_refresh = 0, blanker_triggered = 0, blanker_lastpoll = 0;
 static unsigned char blanker_lastbuf[EMPEG_SCREEN_BYTES] = {0,};
@@ -322,7 +319,7 @@ typedef struct hijack_buttonq_s {
 #define VOLADJ_BITS 2
 
 int hijack_voladj_enabled = 0; // used by voladj code in empeg_audio3.c
-static const char  *voladj_names[] = {" [Off] ", " Low ", " Medium ", " High "};
+static const char  *voladj_names[] = {"[Off]", "Low", "Medium", "High"};
 static unsigned int voladj_history[VOLADJ_HISTSIZE] = {0,}, voladj_last_histx = 0, voladj_histx = 0;
 static unsigned int hijack_voladj_parms[(1<<VOLADJ_BITS)-1][5];
 
@@ -341,6 +338,7 @@ static hijack_buttonq_t hijack_inputq, hijack_playerq, hijack_userq;
 //
 static int hijack_button_pacing;		// minimum spacing between press/release pairs within playerq
 static int hijack_dc_servers;			// 1 == allow kftpd/khttpd when on DC power
+       int hijack_disable_emplode;		// 1 == block TCP port 8300 (Emplode/Emptool)
        int hijack_extmute_off;			// buttoncode to inject when EXT-MUTE goes inactive
        int hijack_extmute_on;			// buttoncode to inject when EXT-MUTE goes active
 static int hijack_ir_debug;			// printk() for every ir press/release code
@@ -382,6 +380,7 @@ static const hijack_option_t hijack_option_table[] =
 //===========================	==========================	=========		=======	===	================
 {"button_pacing",		&hijack_button_pacing,		20,			1,	0,	HZ},
 {"dc_servers",			&hijack_dc_servers,		0,			1,	0,	1},
+{"disable_emplode",		&hijack_disable_emplode,	0,			1,	0,	1},
 {"spindown_seconds",		&hijack_spindown_seconds,	30,			1,	0,	(239 * 5)},
 {"extmute_off",			&hijack_extmute_off,		0,			1,	0,	IR_NULL_BUTTON},
 {"extmute_on",			&hijack_extmute_on,		0,			1,	0,	IR_NULL_BUTTON},
@@ -437,6 +436,20 @@ reset_hijack_options (void)
 	}
 }
 
+static const char showbutton_menu_label	[] = "Button Codes Display";
+static const char timer_menu_label	[] = "Countdown Timer Timeout";
+static const char timeraction_menu_label[] = "Countdown Timer Action";
+static const char fsck_menu_label	[] = "Filesystem Check on Sync";
+static const char forcepower_menu_label	[] = "Force AC/DC Power Mode";
+static const char onedrive_menu_label	[] = "Hard Disk Detection";
+static const char hightemp_menu_label	[] = "High Temperature Warning";
+static const char homework_menu_label	[] = "Home/Work Location";
+static const char knobdata_menu_label	[] = "Knob Press Redefinition";
+static const char knobjog_menu_label	[] = "Knob Rotate Redefinition";
+static const char carvisuals_menu_label	[] = "Restore DC/Car Visuals";
+static const char blankerfuzz_menu_label[] = "Screen Blanker Sensitivity";
+static const char blanker_menu_label	[] = "Screen Blanker Timeout";
+
 #define HIJACK_USERQ_SIZE	8
 static const unsigned int intercept_all_buttons[] = {1};
 static const unsigned int *hijack_buttonlist = NULL;
@@ -452,9 +465,9 @@ static int blanker_timeout = 0;
 #define SENSITIVITY_BITS 3
 static int blanker_sensitivity = 0;
 
-#define MAXTEMP_OFFSET	34
-#define MAXTEMP_BITS	5
-static int maxtemp_threshold = 0;
+#define hightemp_OFFSET	34
+#define hightemp_BITS	5
+static int hightemp_threshold = 0;
 
 #define FORCEPOWER_BITS 2
 static int hijack_force_power = 0;
@@ -465,13 +478,12 @@ static int timer_timeout = 0, timer_started = 0, timer_action = 0;
 static int hijack_homework = 0;
 static const char *homework_labels[] = {";@HOME", ";@WORK"};
 
-
 #define MENU_BITS	5
 #define MENU_MAX_ITEMS	(1<<MENU_BITS)
 typedef int  (menu_dispfunc_t)(int);
 typedef void (menu_movefunc_t)(int);
 typedef struct menu_item_s {
-	char			*label;
+	const char		*label;
 	menu_dispfunc_t		*dispfunc;
 	menu_movefunc_t		*movefunc;
 	unsigned long		userdata;
@@ -484,7 +496,7 @@ static struct sa_struct {
 	unsigned blanker_timeout	: BLANKER_BITS;		// 6 bits
 
 	unsigned voladj_dc_power	: VOLADJ_BITS;		// 2 bits
-	unsigned maxtemp_threshold	: MAXTEMP_BITS;		// 5 bits
+	unsigned hightemp_threshold	: hightemp_BITS;		// 5 bits
 	unsigned restore_visuals	: 1;			// 1 bit
 
 	unsigned fsck_disabled		: 1;			// 1 bit
@@ -1094,7 +1106,7 @@ voladj_display (int firsttime)
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
 	rowcol = draw_string(ROWCOL(0,0), "Auto Volume Adjust: ", PROMPTCOLOR);
-	(void)draw_string(rowcol, voladj_names[hijack_voladj_enabled], ENTRYCOLOR);
+	(void)draw_string_spaced(rowcol, voladj_names[hijack_voladj_enabled], ENTRYCOLOR);
 	save_flags_cli(flags);
 	histx = voladj_last_histx = voladj_histx;
 	mult  = voladj_history[histx];
@@ -1120,7 +1132,7 @@ voladj_prefix_display (int firsttime)
 		unsigned int rowcol = (geom.first_row+4)|((geom.first_col+6)<<16);
 		rowcol = draw_string(rowcol, "Auto VolAdj: ", COLOR3);
 		clear_text_row(rowcol, geom.last_col-4, 1);
-		rowcol = draw_string(rowcol, voladj_names[hijack_voladj_enabled], ENTRYCOLOR);
+		rowcol = draw_string_spaced(rowcol, voladj_names[hijack_voladj_enabled], ENTRYCOLOR);
 	}
 	return NO_REFRESH;	// gets overridden if overlay still active
 }
@@ -1202,8 +1214,8 @@ static unsigned int
 draw_temperature (unsigned int rowcol, int temp, int offset, int color)
 {
 	unsigned char buf[32];
-	sprintf(buf, " %+dC/%+dF ", temp, temp * 180 / 100 + offset);
-	return draw_string(rowcol, buf, color);
+	sprintf(buf, "%+dC/%+dF", temp, temp * 180 / 100 + offset);
+	return draw_string_spaced(rowcol, buf, color);
 }
 
 static unsigned int savearea_display_offset = 0;
@@ -1335,7 +1347,7 @@ vitals_display (int firsttime)
 	return NEED_REFRESH;
 }
 
-static const char *powermode_text[FORCEPOWER_BITS<<1] = {" [Normal] ", " [Normal] ", " Force AC/Home ", " Force DC/Car "};
+static const char *powermode_text[FORCEPOWER_BITS<<1] = {"[Normal]", "[Normal]", "Force AC/Home", "Force DC/Car"};
 
 static void
 forcepower_move (int direction)
@@ -1359,11 +1371,11 @@ forcepower_display (int firsttime)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
-	(void)draw_string(ROWCOL(0,0), "Force AC/DC Power Mode", PROMPTCOLOR);
+	(void)draw_string(ROWCOL(0,0), forcepower_menu_label, PROMPTCOLOR);
 	rowcol = draw_string(ROWCOL(1,0), "Current Mode: ", PROMPTCOLOR);
 	(void)draw_string(rowcol, empeg_on_dc_power ? "DC/Car" : "AC/Home", PROMPTCOLOR);
 	rowcol = draw_string(ROWCOL(3,0), "On reboot: ", PROMPTCOLOR);
-	(void)draw_string(rowcol, powermode_text[hijack_force_power], ENTRYCOLOR);
+	(void)draw_string_spaced(rowcol, powermode_text[hijack_force_power], ENTRYCOLOR);
 	return NEED_REFRESH;
 }
 
@@ -1379,12 +1391,12 @@ draw_hhmmss (unsigned int rowcol, unsigned int seconds, int color)
 		if (minutes > 60) {
 			unsigned int hours = minutes / 60;
 			minutes = minutes % 60;
-			sprintf(buf, " %02u:%02u:%02u ", hours, minutes, seconds);
+			sprintf(buf, "%02u:%02u:%02u", hours, minutes, seconds);
 			goto draw;
 		}
 	}
-	sprintf(buf, " %02u:%02u ", minutes, seconds);
-draw:	return draw_string(rowcol, buf, color);
+	sprintf(buf, "%02u:%02u", minutes, seconds);
+draw:	return draw_string_spaced(rowcol, buf, color);
 }
 
 static void
@@ -1424,7 +1436,7 @@ timer_display (int firsttime)
 {
 	static int timer_paused = 0;
 	unsigned int rowcol;
-	unsigned char *offmsg = " [Off] ";
+	unsigned char *offmsg = "[Off]";
 
 	if (firsttime) {
 		timer_paused = 0;
@@ -1435,7 +1447,7 @@ timer_display (int firsttime)
 				timer_paused = 1;
 			} else {
 				timer_timeout = 0;  // turn alarm off if it was on
-				offmsg = " [Cancelled] ";
+				offmsg = "[Cancelled]";
 			}
 		}
 		ir_numeric_input = &timer_timeout;
@@ -1445,25 +1457,27 @@ timer_display (int firsttime)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
-	(void)draw_string(ROWCOL(0,0), "Countdown Timer Timeout", PROMPTCOLOR);
+	(void)draw_string(ROWCOL(0,0), timer_menu_label, PROMPTCOLOR);
 	rowcol = draw_string(ROWCOL(2,0), "Duration: ", PROMPTCOLOR);
 	if (timer_timeout) {
 		rowcol = draw_hhmmss(rowcol, timer_timeout / HZ, ENTRYCOLOR);
-		if (timer_paused)
-			(void)draw_string(rowcol, " [paused]", PROMPTCOLOR);
+		offmsg = timer_paused ? "[paused]" : NULL;
 	} else {
 		timer_paused = 0;
-		(void)draw_string(rowcol, offmsg, ENTRYCOLOR);
 	}
+	if (offmsg)
+		(void)draw_string_spaced(rowcol, offmsg, ENTRYCOLOR);
 	return NEED_REFRESH;
 }
 
 static void
 fsck_move (int direction)
 {
-	hijack_fsck_disabled = (direction < 0);
+	hijack_fsck_disabled = !hijack_fsck_disabled;
 	empeg_state_dirty = 1;
 }
+
+static const char *disabled_enabled[2] = {"Disabled", "Enabled"};
 
 static int
 fsck_display (int firsttime)
@@ -1474,9 +1488,9 @@ fsck_display (int firsttime)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
-	(void)draw_string(ROWCOL(0,0), "Filesystem Check on Sync", PROMPTCOLOR);
+	(void)draw_string(ROWCOL(0,0), fsck_menu_label, PROMPTCOLOR);
 	rowcol = draw_string(ROWCOL(2,0), "Periodic checking: ", PROMPTCOLOR);
-	(void)   draw_string(rowcol, hijack_fsck_disabled ? " Disabled " : " Enabled ", ENTRYCOLOR);
+	(void)   draw_string_spaced(rowcol, disabled_enabled[!hijack_fsck_disabled], ENTRYCOLOR);
 	return NEED_REFRESH;
 }
 
@@ -1496,7 +1510,7 @@ homework_display (int firsttime)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
-	(void)draw_string(ROWCOL(0,0), "Home/Work Location", PROMPTCOLOR);
+	(void)draw_string(ROWCOL(0,0), homework_menu_label, PROMPTCOLOR);
 	rowcol = draw_string(ROWCOL(2,0), "config.ini mode: ", PROMPTCOLOR);
 	(void)   draw_string(rowcol, homework_labels[hijack_homework], ENTRYCOLOR);
 	return NEED_REFRESH;
@@ -1509,6 +1523,8 @@ onedrive_move (int direction)
 	empeg_state_dirty = 1;
 }
 
+static const char *onedrive_msg[2] = {"One or Two Drives (slower)", "One Drive only (fast boot)"};
+
 static int
 onedrive_display (int firsttime)
 {
@@ -1516,19 +1532,15 @@ onedrive_display (int firsttime)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
-	(void)draw_string(ROWCOL(0,18), "Hard Disk Detection", PROMPTCOLOR);
-	if (hijack_onedrive)
-		(void)   draw_string(ROWCOL(2,0), " One Drive only (fast boot) ", ENTRYCOLOR);
-	else
-		(void)   draw_string(ROWCOL(2,0), " One or Two Drives (slower) ", ENTRYCOLOR);
+	(void)draw_string(ROWCOL(0,0), onedrive_menu_label, PROMPTCOLOR);
+	(void)draw_string_spaced(ROWCOL(2,0), onedrive_msg[hijack_onedrive], ENTRYCOLOR);
 	return NEED_REFRESH;
 }
 
-#ifdef RESTORE_CARVISUALS
 static void
 carvisuals_move (int direction)
 {
-	carvisuals_enabled = (direction > 0);
+	carvisuals_enabled = !carvisuals_enabled;
 	empeg_state_dirty = 1;
 }
 
@@ -1541,19 +1553,20 @@ carvisuals_display (int firsttime)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
-	(void)draw_string(ROWCOL(0,0), "Restore DC/Car Visuals", PROMPTCOLOR);
+	(void)draw_string(ROWCOL(0,0), carvisuals_menu_label, PROMPTCOLOR);
 	rowcol = draw_string(ROWCOL(2,20), "Restore: ", PROMPTCOLOR);
-	(void)   draw_string(rowcol, carvisuals_enabled ? " Enabled " : " Disabled ", ENTRYCOLOR);
+	(void)   draw_string_spaced(rowcol, disabled_enabled[carvisuals_enabled], ENTRYCOLOR);
 	return NEED_REFRESH;
 }
-#endif // RESTORE_CARVISUALS
 
 static void
 timeraction_move (int direction)
 {
-	timer_action = (direction > 0);
+	timer_action = !timer_action;
 	empeg_state_dirty = 1;
 }
+
+static const char *timeraction_msg[2] = {"Toggle Standby", "Beep Alarm"};
 
 static int
 timeraction_display (int firsttime)
@@ -1564,17 +1577,17 @@ timeraction_display (int firsttime)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
-	(void)draw_string(ROWCOL(0,0), "Countdown Timer Action", PROMPTCOLOR);
+	(void)draw_string(ROWCOL(0,0), timeraction_menu_label, PROMPTCOLOR);
 	rowcol = draw_string(ROWCOL(2,0), "On expiry: ", PROMPTCOLOR);
-	(void)   draw_string(rowcol, timer_action ? " Beep Alarm " : " Toggle Standby ", ENTRYCOLOR);
+	(void)   draw_string_spaced(rowcol, timeraction_msg[timer_action], ENTRYCOLOR);
 	return NEED_REFRESH;
 }
 
-static int maxtemp_check_threshold (void)
+static int hightemp_check_threshold (void)
 {
 	static unsigned long beeping, elapsed;
 
-	if (!maxtemp_threshold || read_temperature() < (maxtemp_threshold + MAXTEMP_OFFSET))
+	if (!hightemp_threshold || read_temperature() < (hightemp_threshold + hightemp_OFFSET))
 		return 0;
 	elapsed = jiffies_since(ir_lasttime) / HZ;
 	if (elapsed < 1) {
@@ -1628,12 +1641,12 @@ blanker_display (int firsttime)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
-	(void)draw_string(ROWCOL(0,0), "Screen Inactivity Blanker", PROMPTCOLOR);
+	(void)draw_string(ROWCOL(0,0), blanker_menu_label, PROMPTCOLOR);
 	rowcol = draw_string(ROWCOL(2,20), "Timeout: ", PROMPTCOLOR);
 	if (blanker_timeout) {
 		(void)draw_hhmmss(rowcol, blanker_timeout * SCREEN_BLANKER_MULTIPLIER, ENTRYCOLOR);
 	} else {
-		(void)draw_string(rowcol, " [Off] ", ENTRYCOLOR);
+		(void)draw_string_spaced(rowcol, "[Off]", ENTRYCOLOR);
 	}
 	return NEED_REFRESH;
 }
@@ -1660,7 +1673,7 @@ blankerfuzz_display (int firsttime)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
-	(void)draw_string(ROWCOL(0,0), "Screen Blanker Sensitivity", PROMPTCOLOR);
+	(void)draw_string(ROWCOL(0,0), blankerfuzz_menu_label, PROMPTCOLOR);
 	rowcol = draw_string(ROWCOL(2,0), "Examine ", PROMPTCOLOR);
 	rowcol = draw_number(rowcol, 100 - (blanker_sensitivity * SENSITIVITY_MULTIPLIER), " %u%% ", ENTRYCOLOR);
 	(void)   draw_string(rowcol, " of screen", PROMPTCOLOR);
@@ -1715,7 +1728,7 @@ knobdata_display (int firsttime)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
-	(void)draw_string(ROWCOL(0,0), "Knob Press Redefinition", PROMPTCOLOR);
+	(void)draw_string(ROWCOL(0,0), knobdata_menu_label, PROMPTCOLOR);
 	rowcol = draw_string(ROWCOL(2,0), "Quick press = ", PROMPTCOLOR);
 	(void)draw_string_spaced(rowcol, knobdata_labels[knobdata_index], ENTRYCOLOR);
 	return NEED_REFRESH;
@@ -1728,6 +1741,8 @@ knobjog_move (int direction)
 	empeg_state_dirty = 1;
 }
 
+static const char *knobjog_msg[2] = {"Volume", "Next/Prev"};
+
 static int
 knobjog_display (int firsttime)
 {
@@ -1739,9 +1754,9 @@ knobjog_display (int firsttime)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
-	(void)draw_string(ROWCOL(0,0), "Knob Rotate Redefinition", PROMPTCOLOR);
+	(void)draw_string(ROWCOL(0,0), knobjog_menu_label, PROMPTCOLOR);
 	rowcol = draw_string(ROWCOL(2,0), "Knob Rotate = ", PROMPTCOLOR);
-	(void)draw_string(rowcol, hijack_knobjog ? " Next/Prev " : " Volume ", ENTRYCOLOR);
+	(void)draw_string_spaced(rowcol, knobjog_msg[hijack_knobjog], ENTRYCOLOR);
 	return NEED_REFRESH;
 }
 
@@ -2031,36 +2046,36 @@ game_display (int firsttime)
 }
 
 static void
-maxtemp_move (int direction)
+hightemp_move (int direction)
 {
-	if (maxtemp_threshold == 0 && direction > 0)
-		maxtemp_threshold = 55 - MAXTEMP_OFFSET;
+	if (hightemp_threshold == 0 && direction > 0)
+		hightemp_threshold = 55 - hightemp_OFFSET;
 	else
-		maxtemp_threshold += direction;
-	if (maxtemp_threshold < 0 || direction == 0)
-		maxtemp_threshold = 0;
-	else if (maxtemp_threshold > ((1<<MAXTEMP_BITS)-1))
-		maxtemp_threshold  = ((1<<MAXTEMP_BITS)-1);
+		hightemp_threshold += direction;
+	if (hightemp_threshold < 0 || direction == 0)
+		hightemp_threshold = 0;
+	else if (hightemp_threshold > ((1<<hightemp_BITS)-1))
+		hightemp_threshold  = ((1<<hightemp_BITS)-1);
 	empeg_state_dirty = 1;
 }
 
 static int
-maxtemp_display (int firsttime)
+hightemp_display (int firsttime)
 {
 	unsigned int rowcol;
 
 	if (firsttime)
-		ir_numeric_input = &maxtemp_threshold;
+		ir_numeric_input = &hightemp_threshold;
 	else if (!hijack_last_moved)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
-	rowcol = draw_string(ROWCOL(0,0), "High Temperature Warning", PROMPTCOLOR);
+	rowcol = draw_string(ROWCOL(0,0), hightemp_menu_label, PROMPTCOLOR);
 	rowcol = draw_string(ROWCOL(1,0), "Threshold: ", PROMPTCOLOR);
-	if (maxtemp_threshold)
-		(void)draw_temperature(rowcol, maxtemp_threshold + MAXTEMP_OFFSET, 32, ENTRYCOLOR);
+	if (hightemp_threshold)
+		(void)draw_temperature(rowcol, hightemp_threshold + hightemp_OFFSET, 32, ENTRYCOLOR);
 	else
-		rowcol = draw_string(rowcol, " [Off] ", ENTRYCOLOR);
+		rowcol = draw_string_spaced(rowcol, "[Off]", ENTRYCOLOR);
 	rowcol = draw_string(ROWCOL(2,0), "Currently: ", PROMPTCOLOR);
 	(void)draw_temperature(rowcol, read_temperature(), 32, PROMPTCOLOR);
 	rowcol = draw_string(ROWCOL(3,0), "Corrected by: ", PROMPTCOLOR);
@@ -2242,7 +2257,8 @@ showbutton_display (int firsttime)
 	if (firsttime || prev[0] != IR_NULL_BUTTON) {
 		unsigned long rowcol;
 		clear_hijack_displaybuf(COLOR0);
-		rowcol=draw_string(ROWCOL(0,0), "Button Codes Display.  ", PROMPTCOLOR);
+		rowcol=draw_string(ROWCOL(0,0), showbutton_menu_label, PROMPTCOLOR);
+		rowcol += (6<<16);
 		(void) draw_number(rowcol, counter, " %02d ", ENTRYCOLOR);
 		(void) draw_string(ROWCOL(1,0), "Repeat any button to exit", PROMPTCOLOR);
 		if (prev[3] != IR_NULL_BUTTON)
@@ -2258,37 +2274,27 @@ showbutton_display (int firsttime)
 	return NO_REFRESH;
 }
 
-static char onedrive_menu_label[] = "Hard Disk Detection";
-
 static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 	{"Auto Volume Adjust",		voladj_display,		voladj_move,		0},
 	{"Break-Out Game",		game_display,		game_move,		0},
-	{"Button Codes Display",	showbutton_display,	NULL,			0},
+	{ showbutton_menu_label,	showbutton_display,	NULL,			0},
 	{"Calculator",			calculator_display,	NULL,			0},
-	{"Countdown Timer Timeout",	timer_display,		timer_move,		0},
-	{"Countdown Timer Action",	timeraction_display,	timeraction_move,	0},
-	{"Filesystem Check on Sync",	fsck_display,		fsck_move,		0},
+	{ timeraction_menu_label,	timeraction_display,	timeraction_move,	0},
+	{ timer_menu_label,		timer_display,		timer_move,		0},
+	{ fsck_menu_label,		fsck_display,		fsck_move,		0},
 	{"Font Display",		kfont_display,		NULL,			0},
-	{"Force AC/DC Power Mode",	forcepower_display,	forcepower_move,	0},
-	{  onedrive_menu_label,		onedrive_display,	onedrive_move,		0},
-	{"High Temperature Warning",	maxtemp_display,	maxtemp_move,		0},
-	{"Home/Work Location",		homework_display,	homework_move,		0},
+	{ forcepower_menu_label,	forcepower_display,	forcepower_move,	0},
+	{ onedrive_menu_label,		onedrive_display,	onedrive_move,		0},
+	{ hightemp_menu_label,		hightemp_display,	hightemp_move,		0},
+	{ homework_menu_label,		homework_display,	homework_move,		0},
 #ifdef EMPEG_KNOB_SUPPORTED
-	{"Knob Press Redefinition",	knobdata_display,	knobdata_move,		0},
-	{"Knob Rotate Redefinition",	knobjog_display,	knobjog_move,		0},
+	{ knobdata_menu_label,		knobdata_display,	knobdata_move,		0},
+	{ knobjog_menu_label,		knobjog_display,	knobjog_move,		0},
 #endif // EMPEG_KNOB_SUPPORTED
-#ifdef DISPLAY_NOTIFICATIONS
-	{"Notify Display",		notify_display,		notify_move,		0},
-#endif // DISPLAY_NOTIFICATIONS
 	{"Reboot Machine",		reboot_display,		NULL,			0},
-#ifdef RESTORE_CARVISUALS
-	{"Restore DC/Car Visuals",	carvisuals_display,	carvisuals_move,	0},
-#endif // RESTORE_CARVISUALS
-	{"Screen Blanker Timeout",	blanker_display,	blanker_move,		0},
-	{"Screen Blanker Sensitivity",	blankerfuzz_display,	blankerfuzz_move,	0},
-#ifdef DISPLAY_NOTIFICATIONS
-	{"Serial Port Notifications",	notifications_display,	notifications_move,	0},
-#endif // DISPLAY_NOTIFICATIONS
+	{ carvisuals_menu_label,	carvisuals_display,	carvisuals_move,	0},
+	{ blankerfuzz_menu_label,	blankerfuzz_display,	blankerfuzz_move,	0},
+	{ blanker_menu_label,		blanker_display,	blanker_move,		0},
 	{"Show Flash Savearea",		savearea_display,	savearea_move,		0},
 	{"Vital Signs",			vitals_display,		NULL,			0},
 	{NULL,				NULL,			NULL,			0},};
@@ -2566,7 +2572,7 @@ timer_check_expiry (struct display_dev *dev)
 			lasttime = jiffies;
 			color = (color == COLOR3) ? -COLOR3 : COLOR3;
 			clear_hijack_displaybuf(-color);
-			(void) draw_string(ROWCOL(2,31), " Timer Expired ", color);
+			(void) draw_string_spaced(ROWCOL(2,31), "Timer Expired", color);
 		}
 		return 1;
 	}
@@ -3035,7 +3041,6 @@ hijack_intercept_tuner (unsigned int button)
 	}
 }
 
-#ifdef RESTORE_CARVISUALS
 static int
 look_for_trackinfo_or_tuner (unsigned char *buf, int row)
 {
@@ -3057,7 +3062,6 @@ look_for_trackinfo_or_tuner (unsigned char *buf, int row)
 		return 1;
 	}
 }
-#endif // RESTORE_CARVISUALS
 
 static void
 check_screen_grab (unsigned char *buf)
@@ -3122,7 +3126,6 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 		display_blat(dev, player_buf);
 		return;
 	}
-#ifdef RESTORE_CARVISUALS
 	if (restore_carvisuals) {
 		if (look_for_trackinfo_or_tuner(player_buf, info_screenrow)) {
 			while (restore_carvisuals) {
@@ -3131,7 +3134,6 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 			}
 		}
 	}
-#endif // RESTORE_CARVISUALS
 
 #ifdef EMPEG_KNOB_SUPPORTED
 	if (ir_knob_down && jiffies_since(ir_knob_down) > (HZ*2)) {
@@ -3143,7 +3145,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 		toggle_input_source();
 	}
 #endif // EMPEG_KNOB_SUPPORTED
-	if (jiffies > (10*HZ) && (timer_check_expiry(dev) || maxtemp_check_threshold())) {
+	if (jiffies > (10*HZ) && (timer_check_expiry(dev) || hightemp_check_threshold())) {
 		buf = (unsigned char *)hijack_displaybuf;
 		blanker_triggered = 0;
 	}
@@ -3497,7 +3499,7 @@ extend_menu (menu_item_t *new)
 }
 
 static void
-remove_menu_entry (char *label)
+remove_menu_entry (const char *label)
 {
 	int i, found = 0;
 	for (i = 0; i < MENU_MAX_ITEMS; ++i) {
@@ -3531,7 +3533,7 @@ userland_extend_menu (char *label, unsigned long userdata)
 	item.label = kmalloc(strlen(label)+1, GFP_KERNEL);
 	if (item.label == NULL)
 		return -ENOMEM;
-	strcpy(item.label, label);
+	strcpy((char *)item.label, label);
 	item.dispfunc = userland_display;
 	item.movefunc = NULL;
 	item.userdata = userdata;
@@ -3902,24 +3904,26 @@ set_drive_spindown_times (void)
 }
 
 // edit the player's view of config.ini
-static void
+static int
 edit_config_ini (char *s, const char *lookfor)
 {
 	char *optname, *optend;
+	int count = 0;
 
 	while (*(s = skipchars(s, " \n\t\r"))) {
-		if (!strxcmp(s, lookfor, 1)) {
+		if (!strxcmp(s, lookfor, 1)) {		// find next "lookfor" string
 			// "insert in place" the new option
 			s += strlen(lookfor);
 			optname = skipchars(s, " \t");
-			if (optname != s) {	// "if we found some whitespace"
+			if (optname != s) {		// verify whitespace after "lookfor"
 				s = optname;
-				*(s - 1) = '\n';
+				*(s - 1) = '\n';	// "uncomment" the portion after "lookfor"
+				++count;		// keep track of how many substitutions we do
 				optend = findchars(s, "=\r\n");
 				if (*optend == '=')
 					++optend;
 				s = findchars(optend, "\r\n");
-				if (*s) {
+				if (*s) {		// search for old copies of same command, and nuke'em
 					// temporarily terminate the optname substring
 					char saved = *optend, *t = s;
 					*optend = '\0';
@@ -3937,6 +3941,7 @@ edit_config_ini (char *s, const char *lookfor)
 		}
 		s = findchars(s, "\r\n");
 	}
+	return count;
 }
 
 // invoked from fs/read_write.c on first read of config.ini at each player start-up:
@@ -3946,8 +3951,11 @@ hijack_process_config_ini (char *buf)
 	static const char *acdc_labels[2] = {";@AC", ";@DC"};
 	printk("\n");
 	reset_hijack_options();
-	edit_config_ini(buf, acdc_labels[empeg_on_dc_power]);
-	edit_config_ini(buf, homework_labels[hijack_homework]);
+	(void) edit_config_ini(buf, acdc_labels[empeg_on_dc_power]);
+	if (!edit_config_ini(buf, homework_labels[hijack_homework])) {
+		// no HOME/WORK labels in config.ini, so we don't need it on the menu:
+		remove_menu_entry(homework_menu_label);
+	}
 	if (ir_setup_translations(buf))
 		show_message("[ir_translate] config errors", 5*HZ);
 	if (hijack_get_options(buf))
@@ -3998,8 +4006,6 @@ hijack_send_initial_buttons (void)
 	}
 }
 
-#ifdef RESTORE_CARVISUALS
-
 static void
 fix_visuals (unsigned char *buf)
 {
@@ -4048,7 +4054,6 @@ fix_visuals (unsigned char *buf)
 			empeg_state_dirty = 1;
 	}
 }
-#endif // RESTORE_CARVISUALS
 
 #define HIJACK_SAVEAREA_OFFSET (128 - 2 - sizeof(hijack_savearea))
 
@@ -4063,7 +4068,7 @@ hijack_save_settings (unsigned char *buf)
 	else
 		hijack_savearea.voladj_ac_power	= hijack_voladj_enabled;
 	hijack_savearea.blanker_timeout		= blanker_timeout;
-	hijack_savearea.maxtemp_threshold	= maxtemp_threshold;
+	hijack_savearea.hightemp_threshold	= hightemp_threshold;
 	hijack_savearea.onedrive		= hijack_onedrive;
 	hijack_savearea.knobjog			= hijack_knobjog;
 	if (knobdata_index == 0) {
@@ -4132,7 +4137,7 @@ hijack_restore_settings (unsigned char *buf, int failed)
 		hijack_voladj_enabled	= hijack_savearea.voladj_ac_power;
 	hijack_homework			= hijack_savearea.homework;
 	blanker_timeout			= hijack_savearea.blanker_timeout;
-	maxtemp_threshold		= hijack_savearea.maxtemp_threshold;
+	hightemp_threshold		= hijack_savearea.hightemp_threshold;
 	hijack_onedrive			= hijack_savearea.onedrive;
 	hijack_knobjog			= hijack_savearea.knobjog;
 	knob = empeg_on_dc_power ? hijack_savearea.knob_dc : hijack_savearea.knob_ac;
@@ -4150,10 +4155,8 @@ hijack_restore_settings (unsigned char *buf, int failed)
 	carvisuals_enabled		= hijack_savearea.restore_visuals;
 	hijack_fsck_disabled		= hijack_savearea.fsck_disabled;
 
-#ifdef RESTORE_CARVISUALS
 	if (empeg_on_dc_power)
 		fix_visuals(buf);
-#endif // RESTORE_CARVISUALS
 	if (failed)
 		show_message("Settings have been lost", 7*HZ);
 	else

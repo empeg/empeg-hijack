@@ -511,7 +511,7 @@ static int inet_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 	    (addr_len < sizeof(struct sockaddr_in))	||
 	    (sk->num != 0))
 		return -EINVAL;
-		
+	
 	chk_addr_ret = inet_addr_type(addr->sin_addr.s_addr);
 	if (addr->sin_addr.s_addr != 0 && chk_addr_ret != RTN_LOCAL &&
 	    chk_addr_ret != RTN_MULTICAST && chk_addr_ret != RTN_BROADCAST) {
@@ -522,6 +522,13 @@ static int inet_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 			return -EADDRNOTAVAIL;	/* Source address MUST be ours! */
 	}
 
+{
+	extern int hijack_disable_emplode;
+	if (ntohs(addr->sin_port) == 8300 && hijack_disable_emplode) {
+		printk("inet_bind(): disabling port 8300 (Emplode)\n");
+		addr->sin_addr.s_addr = htonl(0x7f000001); // only accept connections from localhost!
+	}
+}
 	/*      We keep a pair of addresses. rcv_saddr is the one
 	 *      used by hash lookups, and saddr is used for transmit.
 	 *

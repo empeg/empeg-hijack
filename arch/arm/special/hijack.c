@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v403"
+#define HIJACK_VERSION	"v404"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -2330,6 +2330,43 @@ buttonled_display (int firsttime)
 	return NEED_REFRESH;
 }
 
+static const char reservemem_menu_label	[] = "Reserved Memory for Apps";
+#define RESERVEMEM_BITS 8
+int hijack_reservemem;		// used in fs/stat.c to adjust memory size reported at player startup
+
+static void
+reservemem_move (int direction)
+{
+	if (direction == 0) {
+		hijack_reservemem = 0;
+	} else {
+		int level = hijack_reservemem + direction;
+		if (level >= 0 && level < (1<<RESERVEMEM_BITS))
+			hijack_reservemem = level;
+	}
+	empeg_state_dirty = 1;
+}
+
+static int
+reservemem_display (int firsttime)
+{
+	unsigned int rowcol, level;
+	char buf[4];
+
+	if (firsttime)
+		ir_numeric_input = &hijack_reservemem;
+	else if (!hijack_last_moved)
+		return NO_REFRESH;
+	hijack_last_moved = 0;
+	clear_hijack_displaybuf(COLOR0);
+	(void) draw_string(ROWCOL(0,0), reservemem_menu_label, PROMPTCOLOR);
+	rowcol = draw_string(ROWCOL(2,0), "Reserved kB: ", PROMPTCOLOR);
+	level = hijack_reservemem;
+	sprintf(buf, " %u ", (unsigned int) (level * (16 * 1024)));
+	(void) draw_string(rowcol, buf, ENTRYCOLOR);
+	return NEED_REFRESH;
+}
+
 static unsigned short
 get_current_mixer_source (void)
 {
@@ -2389,7 +2426,7 @@ get_player_version (void)
 	struct stat st;
 
 	set_fs(KERNEL_DS);
-	if (0 == sys_newstat("/empeg/bin/player", &st)) {
+	if (0 == sys_newstat("/proc/self/exe", &st)) {
 		player_version = st.st_size;
 	}
 	set_fs(old_fs);
@@ -3066,6 +3103,7 @@ static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 #endif // EMPEG_KNOB_SUPPORTED
 	{ delaytime_menu_label,		delaytime_display,	delaytime_move,		0},
 	{"Reboot Machine",		reboot_display,		NULL,			0},
+	{ reservemem_menu_label,	reservemem_display,	reservemem_move,	0},
 	{ carvisuals_menu_label,	carvisuals_display,	carvisuals_move,	0},
 	{ blankerfuzz_menu_label,	blankerfuzz_display,	blankerfuzz_move,	0},
 	{ blanker_menu_label,		blanker_display,	blanker_move,		0},
@@ -5224,7 +5262,7 @@ typedef struct hijack_savearea_s {
 	unsigned force_power		: FORCEPOWER_BITS;	// 4 bits
 
 	unsigned spare16		: 16;			// 16 bits
-	unsigned spare8			:  8;			//  8 bits
+	unsigned reservemem		: RESERVEMEM_BITS;	//  8 bits
 	unsigned layout_version		:  8;			//  8 bits
 } hijack_savearea_t;
 
@@ -5269,6 +5307,7 @@ hijack_save_settings (unsigned char *buf)
 	savearea.saveserial		= hijack_saveserial;
 	savearea.timer_action		= timer_action;
 	savearea.homework		= hijack_homework;
+	savearea.reservemem		= hijack_reservemem;
 	savearea.layout_version		= SAVEAREA_LAYOUT;
 	memcpy(buf+HIJACK_SAVEAREA_OFFSET, &savearea, sizeof(savearea));
 }
@@ -5360,6 +5399,7 @@ hijack_restore_settings (char *buf, char *msg)
 	hijack_saveserial		= savearea.saveserial;
 	timer_action			= savearea.timer_action;
 	hijack_homework			= savearea.homework;
+	hijack_reservemem		= savearea.reservemem;
 
 	return failed;
 }

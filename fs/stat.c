@@ -59,7 +59,7 @@ static int cp_old_stat(struct inode * inode, struct __old_kernel_stat * statbuf)
 
 #endif
 
-static int cp_new_stat(struct inode * inode, struct stat * statbuf)
+static int cp_new_stat(struct inode * inode, struct stat * statbuf, ssize_t size_adj)
 {
 	struct stat tmp;
 	unsigned int blocks, indirect;
@@ -72,7 +72,7 @@ static int cp_new_stat(struct inode * inode, struct stat * statbuf)
 	tmp.st_uid = inode->i_uid;
 	tmp.st_gid = inode->i_gid;
 	tmp.st_rdev = kdev_t_to_nr(inode->i_rdev);
-	tmp.st_size = inode->i_size;
+	tmp.st_size = inode->i_size - size_adj;
 	tmp.st_atime = inode->i_atime;
 	tmp.st_mtime = inode->i_mtime;
 	tmp.st_ctime = inode->i_ctime;
@@ -132,9 +132,9 @@ asmlinkage int sys_stat(char * filename, struct __old_kernel_stat * statbuf)
 	error = PTR_ERR(dentry);
 	if (!IS_ERR(dentry)) {
 		error = do_revalidate(dentry);
-		if (!error)
+		if (!error) {
 			error = cp_old_stat(dentry->d_inode, statbuf);
-
+		}
 		dput(dentry);
 	}
 	unlock_kernel();
@@ -154,9 +154,14 @@ asmlinkage int sys_newstat(char * filename, struct stat * statbuf)
 	error = PTR_ERR(dentry);
 	if (!IS_ERR(dentry)) {
 		error = do_revalidate(dentry);
-		if (!error)
-			error = cp_new_stat(dentry->d_inode, statbuf);
-
+		if (!error) {
+			extern unsigned int hijack_reservemem;
+			ssize_t size_adj = 0;
+			if (0 == strcmp(current->comm, "player") && 0 == strncmp(dentry->d_name.name, "kcore", dentry->d_name.len)) {
+				size_adj = (hijack_reservemem + 2) * (16 * 1024);	// +32kB for Hijack
+			}
+			error = cp_new_stat(dentry->d_inode, statbuf, size_adj);
+		}
 		dput(dentry);
 	}
 	unlock_kernel();
@@ -205,7 +210,7 @@ asmlinkage int sys_newlstat(char * filename, struct stat * statbuf)
 	if (!IS_ERR(dentry)) {
 		error = do_revalidate(dentry);
 		if (!error)
-			error = cp_new_stat(dentry->d_inode, statbuf);
+			error = cp_new_stat(dentry->d_inode, statbuf, 0);
 
 		dput(dentry);
 	}
@@ -253,7 +258,7 @@ asmlinkage int sys_newfstat(unsigned int fd, struct stat * statbuf)
 
 		err = do_revalidate(dentry);
 		if (!err)
-			err = cp_new_stat(dentry->d_inode, statbuf);
+			err = cp_new_stat(dentry->d_inode, statbuf, 0);
 		fput(f);
 	}
 	unlock_kernel();

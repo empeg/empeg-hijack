@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v405"
+#define HIJACK_VERSION	"v406"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -4564,14 +4564,14 @@ static int
 hijack_takeover_screen (void)
 {
 	while (1) {
-		current->state = TASK_INTERRUPTIBLE;
 		if (signal_pending(current))
 			return -EINTR;
 		if (hijack_dispfunc != userland_display) {
 			activate_dispfunc(userland_display, NULL, 0);
 			return 0;
 		}
-		schedule_timeout(2);
+		current->state = TASK_INTERRUPTIBLE;
+		schedule_timeout(HZ/5);
 		current->state = TASK_RUNNING;
 	}
 }

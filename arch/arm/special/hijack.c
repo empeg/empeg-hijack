@@ -451,7 +451,7 @@ hijack_proc_notify (char *buf, char **start, off_t offset, int len, int unused)
 // /proc/empeg_notify directory entry:
 struct proc_dir_entry notify_proc_entry = {
 	0,			/* inode (dynamic) */
-	8, "empeg_notify",  	/* length and name */
+	12, "empeg_notify",  	/* length and name */
 	S_IFREG | S_IRUGO, 	/* mode */
 	1, 0, 0, 		/* links, owner, group */
 	0, 			/* size */
@@ -1538,7 +1538,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v85 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v86 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v353"
+#define HIJACK_VERSION	"v354"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -139,6 +139,7 @@ typedef struct min_max_s {
 } min_max_t;
 
        int hijack_stalk_enabled = 0;	// used to ignore stalk input when in standby
+static unsigned char most_recent_stalk_code;
 static int stalk_on_left = 0;
 static min_max_t rhs_stalk_vals[11];	// 10 sets of values, followed by {-1,-1} terminator.
 static min_max_t lhs_stalk_vals[11];	// 10 sets of values, followed by {-1,-1} terminator.
@@ -2997,6 +2998,8 @@ showbutton_display (int firsttime)
 		}
 	}
 	restore_flags(flags);
+	if (firsttime)
+		most_recent_stalk_code = 0xff;
 	if (firsttime || prev[0] != IR_NULL_BUTTON) {
 		unsigned long rowcol;
 		clear_hijack_displaybuf(COLOR0);
@@ -3004,8 +3007,13 @@ showbutton_display (int firsttime)
 		rowcol += (6<<16);
 		(void) draw_number(rowcol, counter, " %02d ", ENTRYCOLOR);
 		(void) draw_string(ROWCOL(1,0), "Repeat any button to exit", PROMPTCOLOR);
-		if (prev[3] != IR_NULL_BUTTON)
+		if (most_recent_stalk_code != 0xff) {
+			unsigned char buf[16];
+			sprintf(buf, "Stalk=%02x", most_recent_stalk_code);
+			(void)draw_string(ROWCOL(2,4), buf, PROMPTCOLOR);
+		} else if (prev[3] != IR_NULL_BUTTON) {
 			(void)draw_number(ROWCOL(2,4), prev[3], "%08X", PROMPTCOLOR);
+		}
 		if (prev[2] != IR_NULL_BUTTON)
 			(void)draw_number(ROWCOL(2,(EMPEG_SCREEN_COLS/2)), prev[2], " %08X ", PROMPTCOLOR);
 		if (prev[1] != IR_NULL_BUTTON)
@@ -3849,6 +3857,7 @@ handle_stalk_packet (unsigned char *pkt)
 	} else {
 		min_max_t *v, *vals;
 		int i;
+		most_recent_stalk_code = val;	// For button_codes_display
 		vals = stalk_on_left ? lhs_stalk_vals : rhs_stalk_vals;
 		for (i = 0; (v = &vals[i])->min != -1; ++i) {
 			if (val >= v->min && val <= v->max) {

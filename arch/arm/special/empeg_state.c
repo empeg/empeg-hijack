@@ -303,6 +303,8 @@ int empeg_state_restore (unsigned char *buffer)
 		unixtime=t.tv_sec=*((unsigned int*)buffer);
 		t.tv_usec=0;
 		do_settimeofday(&t);
+	} else {				// Added by tman
+		unixtime=xtime.tv_sec;		// Added by tman
 	}
 
 	/* Get power-on time */

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v329"
+#define HIJACK_VERSION	"v330"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -34,13 +34,13 @@ extern int get_loadavg(char * buffer);					// fs/proc/array.c
 extern void machine_restart(void *);					// arch/arm/kernel/process.c
 extern int empeg_state_dirty;						// arch/arm/special/empeg_state.c
 extern void state_cleanse(void);					// arch/arm/special/empeg_state.c
-extern void hijack_serial_rx_insert (const char *buf, int size, int port); // drivers/char/serial_sa1100.c
 extern void hijack_voladj_intinit(int, int, int, int, int);		// arch/arm/special/empeg_audio3.c
 extern void hijack_beep (int pitch, int duration_msecs, int vol_percent);// arch/arm/special/empeg_audio3.c
 extern unsigned long jiffies_since(unsigned long past_jiffies);		// arch/arm/special/empeg_input.c
 extern void display_blat(struct display_dev *dev, unsigned char *source_buffer); // empeg_display.c
 extern tm_t *hijack_convert_time(time_t, tm_t *);			// from arch/arm/special/notify.c
 extern void hijack_set_displaypower (int off_on);			// arch/arm/special/empeg_power.c
+extern void hijack_serial_rx_insert (const char *buf, int size, int port); // drivers/char/serial_sa1100.c
 
 extern void empeg_mixer_select_input(int input);			// arch/arm/special/empeg_mixer.c
 extern void hijack_tone_set(int, int, int, int, int, int);					// arch/arm/special/empeg_mixer.c
@@ -486,7 +486,6 @@ static	int hijack_dc_servers;			// 1 == allow kftpd/khttpd when on DC power
 	int hijack_extmute_on;			// buttoncode to inject when EXT-MUTE goes active
 static	int hijack_ir_debug;			// printk() for every ir press/release code
 static	int hijack_spindown_seconds;		// drive spindown timeout in seconds
-	int hijack_fake_tuner;			// pretend we have a tuner, when we really don't have one
 	int hijack_trace_tuner;			// dump incoming tuner/stalk packets onto console
 #ifdef HIJACK_MOD_TUNER
 	int hijack_tuner_offset;		// FIXME
@@ -594,7 +593,6 @@ static const hijack_option_t hijack_option_table[] =
 {"spindown_seconds",		&hijack_spindown_seconds,	30,			1,	0,	(239 * 5)},
 {"extmute_off",			&hijack_extmute_off,		0,			1,	0,	IR_NULL_BUTTON},
 {"extmute_on",			&hijack_extmute_on,		0,			1,	0,	IR_NULL_BUTTON},
-{"fake_tuner",			&hijack_fake_tuner,		0,			1,	0,	1},
 #ifdef CONFIG_EMPEG_I2C_FAN_CONTROL
 {"fan_control",			&fan_control_enabled,		0,			1,	0,	1},
 {"fan_low",			&fan_control_low,		45,			1,	0,	100},
@@ -1210,7 +1208,9 @@ inject_stalk_button (unsigned int button)
 	pkt[3] = pkt[1] + pkt[2];
 	if (hijack_stalk_debug)
 		printk("Stalk: out=%02x %02x %02x %02x == %08x\n", pkt[0], pkt[1], pkt[2], pkt[3], rawbutton);
+#ifdef CONFIG_HIJACK_TUNER
 	hijack_serial_rx_insert(pkt, sizeof(pkt), 0);
+#endif // CONFIG_HIJACK_TUNER
 }
 
 static int
@@ -3262,7 +3262,7 @@ do_nextsrc (void)
 				button = IR_KW_TAPE_PRESSED;
 			break;
 		case IR_FLAGS_MAIN:
-			if (empeg_tuner_present || hijack_fake_tuner)
+			if (empeg_tuner_present)
 				button = IR_RIO_TUNER_PRESSED;
 			break;
 	}
@@ -3802,6 +3802,8 @@ input_append_code(void *dev, unsigned int button)  // empeg_input.c
 	restore_flags(flags);
 }
 
+#ifdef CONFIG_HIJACK_TUNER
+
 static int
 handle_stalk_packet (unsigned char *pkt)
 {
@@ -3851,18 +3853,16 @@ done:
 }
 
 void
-hijack_intercept_tuner (unsigned int packet)
+hijack_intercept_stalk (unsigned int packet)
 {
 	empeg_tuner_present = 1;
 	if (hijack_trace_tuner)
-		printk("tuner: in=%08x\n", htonl(packet));
-	if (hijack_fake_tuner) {
-		hijack_fake_tuner = 0;
-		printk("tuner: \"fake_tuner=0\"\n");
-	} else if (!handle_stalk_packet((unsigned char *)&packet)) {
+		printk("stalk: in=%08x\n", htonl(packet));
+	if (!handle_stalk_packet((unsigned char *)&packet)) {
 		hijack_serial_rx_insert((unsigned char *)&packet, sizeof(packet), 0);
 	}
 }
+#endif // CONFIG_HIJACK_TUNER
 
 static void
 check_screen_grab (unsigned char *buf)

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v288"
+#define HIJACK_VERSION	"v289"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -23,6 +23,7 @@ const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 #include "empeg_display.h"
 #include "empeg_mixer.h"
 
+extern void input_wakeup_waiters(void);					// arch/arm/special/empeg_input.c
 extern int display_sendcontrol_part1(void);				// arch/arm/special/empeg_display.c
 extern int display_sendcontrol_part2(int);				// arch/arm/special/empeg_display.c
 extern int remount_drives (int writeable);				// arch/arm/special/notify.c
@@ -30,7 +31,6 @@ extern int sys_newfstat(int, struct stat *);
 extern int sys_sync(void);						// fs/buffer.c
 extern int get_loadavg(char * buffer);					// fs/proc/array.c
 extern void machine_restart(void *);					// arch/arm/kernel/process.c
-extern int real_input_append_code(unsigned long data);			// arch/arm/special/empeg_input.c
 extern int empeg_state_dirty;						// arch/arm/special/empeg_state.c
 extern void state_cleanse(void);					// arch/arm/special/empeg_state.c
 extern void hijack_serial_rx_insert (const char *buf, int size, int port); // drivers/char/serial_sa1100.c
@@ -472,7 +472,6 @@ static hijack_buttonq_t hijack_inputq, hijack_playerq, hijack_userq;
 // Externally tuneable parameters for config.ini; the voladj_parms are also tuneable
 //
 static	int hijack_buttonled_off_level;		// button brightness when player is "off"
-static	int hijack_button_pacing;		// minimum spacing between press/release pairs within playerq
 static	int hijack_dc_servers;			// 1 == allow kftpd/khttpd when on DC power
 	int hijack_disable_emplode;		// 1 == block TCP port 8300 (Emplode/Emptool)
 	int hijack_extmute_off;			// buttoncode to inject when EXT-MUTE goes inactive
@@ -570,7 +569,6 @@ static const hijack_option_t hijack_option_table[] =
 // config.ini string		address-of-variable		default			howmany	min	max
 //===========================	==========================	=========		=======	===	================
 {"buttonled_off",		&hijack_buttonled_off_level,	1,			1,	0,	7},
-{"button_pacing",		&hijack_button_pacing,		20,			1,	0,	HZ},
 {"dc_servers",			&hijack_dc_servers,		0,			1,	0,	1},
 {"disable_emplode",		&hijack_disable_emplode,	0,			1,	0,	1},
 {"spindown_seconds",		&hijack_spindown_seconds,	30,			1,	0,	(239 * 5)},
@@ -1100,8 +1098,6 @@ hijack_enq_button (hijack_buttonq_t *q, unsigned int button, unsigned long hold_
 
 	save_flags_cli(flags);
 	head = q->head;
-	if (head != q->tail && hold_time < hijack_button_pacing && q == &hijack_playerq && !IS_RELEASE(button))
-		hold_time = hijack_button_pacing;	// ensure we have sufficient delay between press/release pairs
 	if (hijack_ir_debug)
 		printk("%lu: ENQ.%c: %08x.%ld\n", jiffies, (q == &hijack_playerq) ? 'P' : ((q == &hijack_inputq) ? 'I' : 'U'), button, hold_time);
 	if (++head >= HIJACK_BUTTONQ_SIZE)
@@ -1110,6 +1106,8 @@ hijack_enq_button (hijack_buttonq_t *q, unsigned int button, unsigned long hold_
 		hijack_buttondata_t *data = &q->data[q->head = head];
 		data->button = button;
 		data->delay  = hold_time;
+		if (q == &hijack_playerq)
+			input_wakeup_waiters();		// wake up the player software
 	}
 	restore_flags(flags);
 }
@@ -1151,6 +1149,37 @@ hijack_enq_translations (ir_translation_t *t)
 	}
 }
 
+static void
+inject_stalk_button (unsigned int button)
+{
+	unsigned char pkt[4] = {0x02, 0x00, 0xff, 0xff};
+	min_max_t *vals, *v;
+	int i;
+	unsigned int rawbutton = button;	//fixme
+
+	pkt[0] = 0x02;
+	pkt[1] = 0x00;
+	if (button & IR_STALK_SHIFTED) {
+		button ^= IR_STALK_SHIFTED;
+		pkt[1] = 0x01;
+	}
+	if (button & 0x80000000) {
+		pkt[2] = 0xff;
+	} else {
+		for (i = 0; stalk_buttons[i] != button; ++i) {
+			if (stalk_buttons[i] == IR_NULL_BUTTON)
+				return;
+		}
+		vals = stalk_on_left ? lhs_stalk_vals : rhs_stalk_vals;
+		v = &vals[i];
+		pkt[2] = (v->min + v->max) / 2;
+	}
+	pkt[3] = pkt[1] + pkt[2];
+	if (hijack_stalk_debug)
+		printk("Stalk: out=%02x %02x %02x %02x == %08x\n", pkt[0], pkt[1], pkt[2], pkt[3], rawbutton); //fixme
+	hijack_serial_rx_insert(pkt, sizeof(pkt), 0);
+}
+
 static int
 hijack_button_deq (hijack_buttonq_t *q, hijack_buttondata_t *rdata, int nowait)
 {
@@ -1174,6 +1203,50 @@ hijack_button_deq (hijack_buttonq_t *q, hijack_buttondata_t *rdata, int nowait)
 	}
 	restore_flags(flags);
 	return 0;	// no buttons available
+}
+
+int
+hijack_playerq_deq (unsigned int *rbutton)	// for use by empeg_input.c
+{
+	hijack_buttondata_t *data;
+	unsigned short tail;
+	unsigned long flags;
+
+	save_flags_cli(flags);
+	while ((tail = hijack_playerq.tail) != hijack_playerq.head) {	// anything in the queue?
+		unsigned int button;
+		if (++tail >= HIJACK_BUTTONQ_SIZE)
+			tail = 0;
+		data = &(hijack_playerq.data[tail]);
+		if (jiffies_since(hijack_playerq.last_deq) < data->delay)
+			break;		// no button available yet
+
+		button = data->button;
+		if ((button & IR_STALK_MASK) == IR_STALK_MASK) {
+			//
+			// Dequeue/issue the stalk button, and loop again
+			//
+			hijack_playerq.tail = tail;
+			hijack_playerq.last_deq = jiffies;
+			restore_flags(flags);
+			inject_stalk_button(button);
+			save_flags_cli(flags);
+		} else {
+			//
+			// If caller gave us a pointer, then deq/return button,
+			// otherwise leave button on the queue for now.
+			//
+			if (rbutton) {
+				*rbutton = button;
+				hijack_playerq.tail = tail;
+				hijack_playerq.last_deq = jiffies;
+			}
+			restore_flags(flags);
+			return 0;	// a button was available
+		}
+	}
+	restore_flags(flags);
+	return 1;	// no buttons available
 }
 
 static void
@@ -2003,7 +2076,7 @@ headlight_sense_is_active (void)
 }
 
 
-static unsigned long buttonled_command = 0;
+static unsigned int buttonled_command = 0;
 
 static void	// invoked from empeg_display.c
 hijack_adjust_buttonled (int power)
@@ -3486,37 +3559,6 @@ done:
 }
 
 static void
-inject_stalk_button (unsigned int button)
-{
-	unsigned char pkt[4] = {0x02, 0x00, 0xff, 0xff};
-	min_max_t *vals, *v;
-	int i;
-	unsigned int rawbutton = button;	//fixme
-
-	pkt[0] = 0x02;
-	pkt[1] = 0x00;
-	if (button & IR_STALK_SHIFTED) {
-		button ^= IR_STALK_SHIFTED;
-		pkt[1] = 0x01;
-	}
-	if (button & 0x80000000) {
-		pkt[2] = 0xff;
-	} else {
-		for (i = 0; stalk_buttons[i] != button; ++i) {
-			if (stalk_buttons[i] == IR_NULL_BUTTON)
-				return;
-		}
-		vals = stalk_on_left ? lhs_stalk_vals : rhs_stalk_vals;
-		v = &vals[i];
-		pkt[2] = (v->min + v->max) / 2;
-	}
-	pkt[3] = pkt[1] + pkt[2];
-	if (hijack_stalk_debug)
-		printk("Stalk: out=%02x %02x %02x %02x == %08x\n", pkt[0], pkt[1], pkt[2], pkt[3], rawbutton); //fixme
-	hijack_serial_rx_insert(pkt, sizeof(pkt), 0);
-}
-
-static void
 hijack_handle_buttons (const char *player_buf)
 {
 	hijack_buttondata_t	data;
@@ -3529,13 +3571,6 @@ hijack_handle_buttons (const char *player_buf)
 		save_flags_cli(flags);
 		hijack_handle_button(data.button, data.delay, any_ui_is_active, player_buf);
 		restore_flags(flags);
-	}
-	while (hijack_button_deq(&hijack_playerq, &data, 0)) {
-		unsigned int button = data.button;
-		if ((button & IR_STALK_MASK) == IR_STALK_MATCH)
-			inject_stalk_button(button);
-		else
-			(void)real_input_append_code(data.button);
 	}
 }
 
@@ -3742,7 +3777,7 @@ check_screen_grab (unsigned char *buf)
 // This routine covertly intercepts all display updates,
 // giving us a chance to substitute our own display.
 //
-enum {poweringup, booting, booted, waiting, starting, started} player_state = booting;
+enum {poweringup, booting, booted, waiting, started} player_state = booting;
 
 void	// invoked from empeg_display.c
 hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
@@ -3750,7 +3785,6 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	unsigned char *buf = player_buf;
 	unsigned long flags;
 	int refresh = NEED_REFRESH;
-	static unsigned long poweron;
 
 	if (hijack_reboot) {
 		do_reboot(dev);
@@ -3785,13 +3819,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 		case waiting:
 			if (dev->power) {
 				if (carvisuals_enabled && empeg_on_dc_power)
-					(void)real_input_append_code(IR_BOTTOM_BUTTON_PRESSED);
-				poweron = jiffies;
-				player_state = starting;
-			}
-			break;
-		case starting:
-			if (jiffies_since(poweron) > (HZ)) {
+					hijack_enq_button_pair(IR_BOTTOM_BUTTON_PRESSED|BUTTON_FLAGS_LONGPRESS);
 				init_temperature(1);
 				// Send initial button sequences, if any
 				input_append_code(IR_INTERNAL, IR_FAKE_INITIAL);

@@ -925,6 +925,7 @@ int display_sendcontrol_part2(int b)
 
 	/* End of transmission, line low */
 	GPCR=EMPEG_DISPLAYCONTROL;
+	udelay(40);
 
 	/* Reenable IRQs */
 	sendcontrol_busy = 0;
@@ -938,7 +939,7 @@ int display_sendcontrol_part1(void)
 	unsigned long flags;
 
 	/* Send a byte to the display serially via control line (mk2 only) */
-	if (empeg_hardwarerevision()<6) return 1;
+	if (empeg_hardwarerevision()<6) return 0;
 
 	save_flags_clif(flags);
 	if (sendcontrol_busy) {
@@ -963,6 +964,7 @@ int display_sendcontrol_part1(void)
 static void display_sendcontrol(int b)
 {
 	// claim (almost) exclusive access to the control lines and prime the PIC
+	//
 	while (display_sendcontrol_part1()) {
 		current->state=TASK_INTERRUPTIBLE;
 		schedule_timeout(1);
@@ -970,8 +972,10 @@ static void display_sendcontrol(int b)
 	// send the command byte, after a suitable pause
 	current->state=TASK_INTERRUPTIBLE;
 	schedule_timeout(HZ/10);
-	while (display_sendcontrol_part2(b))
-		schedule();
+	while (display_sendcontrol_part2(b)) {
+		current->state=TASK_INTERRUPTIBLE;
+		schedule_timeout(1);
+	}
 }
 
 static int display_open(struct inode *inode, struct file *filp)

@@ -161,12 +161,6 @@ struct input_dev
 	volatile int timings_tail;      /* Do not move */
 	volatile unsigned long *timings_buffer;     /* Do not move */
 #endif
-	
-	input_code *buf_start;
-	input_code *buf_end;
-	input_code *buf_wp;
-	input_code *buf_rp;
-
 	struct wait_queue *wq;          /* Blocking queue */
 	struct tq_struct timer;         /* Timer queue */
 	
@@ -238,37 +232,6 @@ unsigned long jiffies_since(unsigned long past_jiffies)
 }
 
 extern void input_append_code(void *dev, unsigned long data); /* in hijack.c */
-
-int real_input_append_code(input_code data)  // invoked from hijack.c
-{
-	/* Now this is called from the bottom half we need to make
-	   sure that noone else is fiddling with stuff while we
-	   do it. */
-	struct input_dev *dev = input_devices;
-	int rc = 0;
-	input_code *new_wp;
-	unsigned long flags;
-	save_flags_cli(flags);
-	
-	new_wp = dev->buf_wp + 1;
-	if (new_wp == dev->buf_end)
-		new_wp = dev->buf_start;
-	
-	if (new_wp != dev->buf_rp)
-	{
-		*dev->buf_wp = data;
-		dev->buf_wp = new_wp;
-		/* Now we've written, wake up anyone who's reading */
-		wake_up_interruptible(&dev->wq);
-	} else {
-#if IR_DEBUG
-		printk("Infra-red buffer is full.\n");
-#endif
-		rc = -ENOMEM;
-	}
-	restore_flags(flags);
-	return rc;
-}
 
 static void input_on_remote_repeat(struct input_dev *dev)
 {
@@ -905,6 +868,12 @@ static int input_release(struct inode *inode, struct file *filp)
 	return 0;
 }
 
+void input_wakeup_waiters (void)	// called from hijack.c
+{
+	wake_up_interruptible(&input_devices->wq);
+}
+
+int hijack_playerq_deq (unsigned int *rbutton);	// returns 1 if no button available
 /*
  * Read some bytes from the IR buffer. The count should be a multiple
  * of four bytes - if it isn't then it is rounded down. If the
@@ -914,58 +883,45 @@ static ssize_t input_read(struct file *filp, char *dest, size_t count,
 		       loff_t *ppos)
 {
 	struct input_dev *dev = filp->private_data;
-	int n;
+	unsigned int data, n = 0;
 
-	struct wait_queue wait = { current, NULL };
-
-	/* If we're nonblocking then return immediately if there's no data */
-	if ((filp->f_flags & O_NONBLOCK) && (dev->buf_rp == dev->buf_wp))
-		return -EAGAIN;
-
-	/* Wait for some data to turn up - this method avoids race
-           conditions see p209 of Linux device drivers. */
-	add_wait_queue(&dev->wq, &wait);
-	current->state = TASK_INTERRUPTIBLE;	
-	while ((dev->buf_rp == dev->buf_wp) && !signal_pending(current))
-		schedule();
-	current->state = TASK_RUNNING;
-	remove_wait_queue(&dev->wq, &wait);
-
-	if (signal_pending(current))
-	    return -ERESTARTSYS;
-
-	/* Only allow reads of a multiple of four bytes. Anything else
-           is meaningless and may cause us to get out of sync */
+	// count must be a non-zero multiple of 4 here
 	count >>= 2;
-
-	/* Not sure if this is a valid thing to be doing */
-	if (!count)
+	if (count == 0)
 		return -EINVAL;
-	
-	n = 0;
-	while (count--) {
-		input_code data;
 
-		if (dev->buf_rp == dev->buf_wp)
-			return n;
+	if (hijack_playerq_deq(&data)) {	// no data available?
+		struct wait_queue wait = { current, NULL };
 
-		/* Need to put one byte at a time since there are no
-		   alignment requirements on parameters to read. */
-		data = *dev->buf_rp;
-		__put_user(data & 0xFF, dest++);
-		__put_user((data >> 8) & 0xFF, dest++);
-		__put_user((data >> 16) & 0xFF, dest++);
-		__put_user((data >> 24) & 0xFF, dest++);
-		dev->buf_rp++;
-		if (dev->buf_rp == dev->buf_end)
-			dev->buf_rp = dev->buf_start;
+		// If we're nonblocking then return immediately
+		if (filp->f_flags & O_NONBLOCK)
+			return -EAGAIN;
 
-		n += 4;
+		// Wait for some data to turn up - this method avoids race
+		// conditions see p209 of Linux device drivers.
+		add_wait_queue(&dev->wq, &wait);
+		current->state = TASK_INTERRUPTIBLE;	
+		while (hijack_playerq_deq(&data) && !signal_pending(current))
+			schedule();
+		current->state = TASK_RUNNING;
+		remove_wait_queue(&dev->wq, &wait);
+
+		if (signal_pending(current))
+	    		return -ERESTARTSYS;
 	}
 
-	return n;
+	do {
+		// Need to put one byte at a time since there are
+		//  no alignment requirements on parameters to read.
+		__put_user((data      ) & 0xFF, dest++);
+		__put_user((data >>  8) & 0xFF, dest++);
+		__put_user((data >> 16) & 0xFF, dest++);
+		__put_user((data >> 24) & 0xFF, dest++);
+	} while (++n < count && !hijack_playerq_deq(&data));
+	return n << 2;
 }
 
+#if 0
 // input_write() exists solely for DisplayServer
 static ssize_t
 input_write(struct file *filp, const char *buf, size_t count, loff_t *ppos)
@@ -985,6 +941,7 @@ input_write(struct file *filp, const char *buf, size_t count, loff_t *ppos)
 		input_on_remote_code(dev,data.ircode);
 	return count;
 }
+#endif
 
 unsigned int input_poll(struct file *filp, poll_table *wait)
 {
@@ -994,7 +951,7 @@ unsigned int input_poll(struct file *filp, poll_table *wait)
 	poll_wait(filp, &dev->wq, wait);
 
 	/* Check if we've got data to read */
-	if (dev->buf_rp != dev->buf_wp)
+	if (!hijack_playerq_deq(NULL))
 		return POLLIN | POLLRDNORM;
 	else
 		return 0;
@@ -1023,7 +980,7 @@ int input_ioctl(struct inode *inode, struct file *filp, unsigned int cmd,
 static struct file_operations input_fops = {
 	NULL, /* ir_lseek */
 	input_read,
-	input_write, /* for DisplayServer */
+	NULL,	//input_write, /* for DisplayServer */
 	NULL, /* ir_readdir */
 	input_poll, /* ir_poll */
 	input_ioctl,
@@ -1076,14 +1033,6 @@ void __init empeg_input_init(void)
 	}
 
 	/* First grab the memory buffer */
-	dev->buf_start = vmalloc(IR_BUFFER_SIZE * sizeof(input_code));
-	if (!dev->buf_start) {
-		printk(KERN_WARNING "Could not allocate memory buffer for empeg IR.\n");
-		return;
-	}
-	
-	dev->buf_end = dev->buf_start + IR_BUFFER_SIZE;
-	dev->buf_rp = dev->buf_wp = dev->buf_start;
 	dev->wq = NULL;
 	dev->remote_type = IR_TYPE_DEFAULT;
 

@@ -176,7 +176,7 @@ static unsigned int hijack_voladj_parms[(1<<VOLADJ_BITS)-1][5] = { // Values as 
 static hijack_buttonq_t hijack_inputq, hijack_playerq, hijack_userq;
 static int hijack_button_pacing			=  8;	// minimum spacing between press/release pairs within playerq
 static int hijack_temperature_correction	= -4;	// adjust all h/w temperature readings by this celcius amount
-static int hijack_block_notify			=  0;	// 1 == block player "notify" (and "dhcp") lines from serial port
+static int hijack_block_serial_notify		=  0;	// 1 == block player "notify" (and "dhcp") lines from serial port
 static int hijack_old_style			=  0;	// 1 == don't highlite menu items
 
 typedef struct hijack_option_s {
@@ -189,7 +189,8 @@ typedef struct hijack_option_s {
 
 static const hijack_option_t hijack_option_table[] = {
 	// config.ini string		address-of-variable		howmany	min	max
-	{"block_notify",		&hijack_block_notify,		1,	0,	1},
+	{"block_notify",		&hijack_block_serial_notify,	1,	0,	1},	// FIXME: delete this line
+	{"block_serial_notify",		&hijack_block_serial_notify,	1,	0,	1},
 	{"button_pacing",		&hijack_button_pacing,		1,	0,	HZ},
 	{"old_style",			&hijack_old_style,		1,	0,	1},
 	{"temperature_correction",	&hijack_temperature_correction,	1,	-20,	+20},
@@ -391,10 +392,10 @@ hijack_serial_notify (const unsigned char *s, int size)
 
 			if (size >= notify_len && !memcmp(s, notify_thread, notify_len)) {
 				state = want_data;
-				return hijack_block_notify;
+				return hijack_block_serial_notify;
 			} else if (size >= dhcp_len && !memcmp(s, dhcp_thread, dhcp_len)) {
 				state = want_eol;
-				return hijack_block_notify;
+				return hijack_block_serial_notify;
 			}
 			break;
 		}
@@ -420,7 +421,7 @@ hijack_serial_notify (const unsigned char *s, int size)
 					restore_flags(flags);
 				}
 				state = want_eol;
-				return hijack_block_notify;
+				return hijack_block_serial_notify;
 			}
 			break;
 		}
@@ -428,7 +429,7 @@ hijack_serial_notify (const unsigned char *s, int size)
 		{
 			if (s[size-1] == '\n')
 				state = want_title;
-			return hijack_block_notify;
+			return hijack_block_serial_notify;
 		}
 	}
 	return 0;
@@ -1036,20 +1037,33 @@ savearea_display (int firsttime)
 static int
 vitals_display (int firsttime)
 {
+	extern int nr_free_pages;
 	unsigned int *permset=(unsigned int*)(EMPEG_FLASHBASE+0x2000);
-	unsigned char buf[80];
+	unsigned char *model, buf[80];
 	int rowcol, i, count;
-	struct sysinfo si;
 
 	if (!firsttime && jiffies_since(hijack_last_refresh) < (HZ*2))
 		return NO_REFRESH;
 	clear_hijack_displaybuf(COLOR0);
-	sprintf(buf, "Rev:%02d, Jiffies:%08lX\nTemperature:", permset[0], jiffies);
-	rowcol = draw_string(ROWCOL(0,0), buf, PROMPTCOLOR);
-	(void)draw_temperature(rowcol, read_temperature(), 32, PROMPTCOLOR);
-	si_meminfo(&si);
-	sprintf(buf, "Free: %lukB/%lukB\nLoadAvg: ", si.freeram/1024, si.totalram/1024);
-	rowcol = draw_string(ROWCOL(2,0), buf, PROMPTCOLOR);
+	rowcol = ROWCOL(0,0);
+	// Hardware Rev; Current FID info:
+	model = "Mk2a";
+	if (permset[0] < 7) 
+		model = "Mk1";
+	else if (permset[0] < 9)
+		model = "Mk2";
+	sprintf(buf, "%s, FID:%s\n", model, notify_data[6]);
+	rowcol = draw_string(rowcol, buf, PROMPTCOLOR);
+	// Temperature:
+	rowcol = draw_temperature(rowcol, read_temperature(), 32, PROMPTCOLOR);
+	// Virtual Memory Pages Status:  Physical,Cached,Buffers,Free
+	//sprintf(buf,", PgStats:\nP:%lu,C:%lu,B:%lu,F:%u",
+	//	num_physpages, page_cache_size, buffermem/PAGE_SIZE, nr_free_pages);
+	sprintf(buf,", PgStats:\nCach:%lu,Buf:%lu,Free:%u",
+		page_cache_size, buffermem/PAGE_SIZE, nr_free_pages);
+	rowcol = draw_string(rowcol, buf, PROMPTCOLOR);
+	// CPU Load Average:
+	rowcol = draw_string(rowcol, "\nLoadAvg:", PROMPTCOLOR);
 	(void)get_loadavg(buf);
 	count = 0;
 	for (i = 0;; ++i) {
@@ -1228,11 +1242,12 @@ onedrive_display (int firsttime)
 	return NEED_REFRESH;
 }
 
+//#define DISPLAY_NOTIFICATIONS
 #ifdef DISPLAY_NOTIFICATIONS
 static void
 notifications_move (int direction)
 {
-	hijack_block_notify = (direction < 0);
+	hijack_block_serial_notify = (direction < 0);
 	empeg_state_dirty = 1;
 }
 
@@ -1247,7 +1262,7 @@ notifications_display (int firsttime)
 	clear_hijack_displaybuf(COLOR0);
 	(void)draw_string(ROWCOL(0,0), "Serial Port Notifications:", PROMPTCOLOR);
 	rowcol = draw_string(ROWCOL(2,0), "Notifications are: ", PROMPTCOLOR);
-	(void)   draw_string(rowcol, hijack_block_notify ? " Disabled " : " Enabled ", ENTRYCOLOR);
+	(void)   draw_string(rowcol, hijack_block_serial_notify ? " Disabled " : " Enabled ", ENTRYCOLOR);
 	return NEED_REFRESH;
 }
 
@@ -1598,7 +1613,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v95 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v96 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -2477,7 +2492,7 @@ ir_send_release (unsigned long button)
 {
 	unsigned long new, delay = 0;
 
-	if (button != IR_NULL_BUTTON) {
+	if (button != IR_NULL_BUTTON && button != IR_KNOB_LEFT && button != IR_KNOB_RIGHT) {
 		if (button & 0x80000000)
 			delay = HZ;
 		//printk("%8lu: SENDREL(%ld): %08lx\n", jiffies, delay, button);
@@ -2506,6 +2521,99 @@ ir_send_buttons (ir_translation_t *t)
 				ir_send_release(button);
 		}
 	}
+}
+
+static unsigned long ir_downkey = -1, ir_delayed_rotate = 0;
+
+static void
+input_append_code2 (unsigned long button)
+{
+	unsigned long released, *table = ir_translate_table;
+
+	//if (button == IR_KNOB_LEFT || button == IR_KNOB_RIGHT) {
+	//	if (ir_downkey != -1)
+	//		return;
+	//} else {
+		released = (button <= 0xf) ? (button & 1) : (button >> 31);
+		if (released) {
+			if (ir_downkey == -1)	// FIXME: just send the code anyway?
+				return;	// already taken care of (we hope)
+			ir_downkey = -1;
+		} else {
+			if (ir_downkey == button)
+				return;	// ignore repeated press with no intervening release
+			ir_downkey = button;
+		}
+		ir_current_longpress = NULL;
+		//printk("%8lu: %08lx\n", jiffies, button);
+		if (table) {
+			unsigned long old = button & ~0xc0000000, common_bits = *table++;
+			if ((old & common_bits) == common_bits) {	// saves time (usually) on large tables
+				int delayed_send = 0;
+				unsigned char flags = empeg_on_dc_power ? IR_FLAGS_CAR : IR_FLAGS_HOME;
+				if (ir_shifted)
+					flags |= IR_FLAGS_SHIFTED;
+				while (*table != -1) {
+					ir_translation_t *t = (ir_translation_t *)table;
+					table += (sizeof(ir_translation_t) / sizeof(unsigned long) - 1) + t->count;
+					if (old == t->old
+					 && (!t->source  || t->source == get_current_mixer_source())
+					 && ((t->flags & (IR_FLAGS_SHIFTED|IR_FLAGS_HOME|IR_FLAGS_CAR)) == (t->flags & flags))) {
+						if (released) {	// button release?
+							if ((t->flags & IR_FLAGS_LONGPRESS) && jiffies_since(ir_lastevent) < HZ) {
+								delayed_send = 1;
+								continue; // look for shortpress instead
+							}
+							if (delayed_send)
+								ir_send_buttons(t);
+							ir_send_release(t->new[t->count - 1]); // final button release
+						} else { // button press?
+							if ((t->flags & IR_FLAGS_LONGPRESS))
+								ir_current_longpress = t;
+							else
+								ir_send_buttons(t);
+						}
+						ir_lasttime = ir_lastevent = jiffies;
+						return;
+					}
+				}
+				if (delayed_send)
+					hijack_button_enq(&hijack_inputq, old, 0);
+			}
+		}
+	//}
+	hijack_button_enq(&hijack_inputq, button, 0);
+	ir_lasttime = ir_lastevent = jiffies;
+}
+
+static void
+input_send_delayed_rotate (void)
+{
+	hijack_button_enq(&hijack_inputq, ir_delayed_rotate, 0);
+	ir_lasttime = ir_lastevent = jiffies;
+	ir_delayed_rotate = 0;
+}
+
+void  // invoked from multiple places (time-sensitive code) in empeg_input.c
+input_append_code(void *ignored, unsigned long button)  // empeg_input.c
+{
+	unsigned long flags;
+
+	save_flags_cli(flags);
+	//printk("%lx,dk=%lx, dr=%d\n", button, ir_downkey, (ir_delayed_rotate != 0));
+
+	if (ir_delayed_rotate) {
+		if (button != IR_KNOB_PRESSED)
+			input_send_delayed_rotate();
+		ir_delayed_rotate = 0;
+	}
+	if (button != IR_KNOB_LEFT && button != IR_KNOB_RIGHT) {
+		input_append_code2(button);
+	} else if (ir_downkey == -1) {
+		ir_delayed_rotate = button;
+		ir_lasttime = ir_lastevent = jiffies;
+	}
+	restore_flags(flags);
 }
 
 #ifdef RESTORE_CARVISUALS
@@ -2543,6 +2651,8 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	int refresh = NEED_REFRESH;
 
 	save_flags_cli(flags);
+	if (ir_delayed_rotate && jiffies_since(ir_lastevent) >= (HZ/10))
+		input_send_delayed_rotate();
 	if (ir_current_longpress && jiffies_since(ir_lastevent) >= HZ) {
 		//printk("%8lu: LPEXP: %08lx\n", jiffies, ir_current_longpress->old);
 		ir_send_buttons(ir_current_longpress);
@@ -2586,7 +2696,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 		toggle_input_source();
 	}
 #endif // EMPEG_KNOB_SUPPORTED
-	if (timer_check_expiry(dev) || maxtemp_check_threshold()) {
+	if (jiffies > (10*HZ) && (timer_check_expiry(dev) || maxtemp_check_threshold())) {
 		buf = (unsigned char *)hijack_displaybuf;
 		blanker_triggered = 0;
 	}
@@ -2792,8 +2902,11 @@ ir_setup_translations2 (unsigned char *buf, unsigned long *table)
 		}
 		if (initial || get_number(&s, &old, 16, " \t.=")) {
 			unsigned char flags = 0, source = 0;
-			if (!initial)
+			if (!initial) {
 				old &= ~0xc0000000;
+				if (old <= 0xf)
+					old &= ~1;
+			}
 			if (*s == '.') {
 				loop: if (*++s) {
 					switch (*s) {
@@ -2832,7 +2945,7 @@ ir_setup_translations2 (unsigned char *buf, unsigned long *table)
 					}
 				}
 			}
-			if (old > 0xf && match_char(&s, '=')) {	// We currently disallow front-panel buttons
+			if (old != IR_KNOB_LEFT && old != IR_KNOB_RIGHT && match_char(&s, '=')) {
 				int saved = index;
 				if (table) {
 					t = (ir_translation_t *)&(table[index]);
@@ -2913,69 +3026,6 @@ ir_setup_translations (unsigned char *buf)
 		ir_translate_table = table;
 		restore_flags(flags);
 	}
-}
-
-void  // invoked from multiple places (time-sensitive code) in empeg_input.c
-input_append_code(void *ignored, unsigned long button)  // empeg_input.c
-{
-	static unsigned long ir_downkey = 0;
-	unsigned long flags, *table = ir_translate_table;
-
-	save_flags_cli(flags);
-	//printk("\n%8ld: IAC(%08lx)\n", jiffies, button);
-	if (button > 0xf) {	// we cannot correctly handle front-panel here
-		int released = button >> 31;
-		if (released) {
-			if (!ir_downkey)
-				goto done;	// already taken care of (we hope)
-			ir_downkey = 0;
-		} else {
-			if (ir_downkey == button)
-				goto done;	// ignore repeated press with no intervening release
-			ir_downkey = button;
-		}
-		ir_current_longpress = NULL;
-		//printk("%8lu: %08lx\n", jiffies, button);
-		if (table) {
-			unsigned long old = button & ~0xc0000000, common_bits = *table++;
-			if ((old & common_bits) == common_bits) {	// saves time (usually) on large tables
-				int delayed_send = 0;
-				unsigned char flags = empeg_on_dc_power ? IR_FLAGS_CAR : IR_FLAGS_HOME;
-				if (ir_shifted)
-					flags |= IR_FLAGS_SHIFTED;
-				while (*table != -1) {
-					ir_translation_t *t = (ir_translation_t *)table;
-					table += (sizeof(ir_translation_t) / sizeof(unsigned long) - 1) + t->count;
-					if (old == t->old
-					 && (!t->source  || t->source == get_current_mixer_source())
-					 && ((t->flags & (IR_FLAGS_SHIFTED|IR_FLAGS_HOME|IR_FLAGS_CAR)) == (t->flags & flags))) {
-						if (released) {	// button release?
-							if ((t->flags & IR_FLAGS_LONGPRESS) && jiffies_since(ir_lastevent) < HZ) {
-								delayed_send = 1;
-								continue; // look for shortpress instead
-							}
-							if (delayed_send)
-								ir_send_buttons(t);
-							ir_send_release(t->new[t->count - 1]); // final button release
-						} else { // button press?
-							if ((t->flags & IR_FLAGS_LONGPRESS))
-								ir_current_longpress = t;
-							else
-								ir_send_buttons(t);
-						}
-						ir_lasttime = ir_lastevent = jiffies;
-						goto done;
-					}
-				}
-				if (delayed_send)
-					hijack_button_enq(&hijack_inputq, old, 0);
-			}
-		}
-	}
-	ir_lasttime = ir_lastevent = jiffies;
-	hijack_button_enq(&hijack_inputq, button, 0);
-done:
-	restore_flags(flags);
 }
 
 // returns enu index >= 0,  or -ERROR

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v233"
+#define HIJACK_VERSION	"v234"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -147,10 +147,15 @@ typedef struct button_name_s {
 #define IR_FAKE_POPUP2		(IR_NULL_BUTTON-3)
 #define IR_FAKE_POPUP1		(IR_NULL_BUTTON-4)
 #define IR_FAKE_POPUP0		(IR_NULL_BUTTON-5)
-#define IR_FAKE_VOLADJ		(IR_NULL_BUTTON-6)
-#define IR_FAKE_KNOBSEEK	(IR_NULL_BUTTON-7)
-#define IR_FAKE_CLOCK		(IR_NULL_BUTTON-8)
-#define IR_FAKE_NEXTSRC		(IR_NULL_BUTTON-9)	// This MUST be the lowest numbered FAKE code
+#define IR_FAKE_VOLADJ3		(IR_NULL_BUTTON-6)
+#define IR_FAKE_VOLADJ2		(IR_NULL_BUTTON-7)
+#define IR_FAKE_VOLADJ1		(IR_NULL_BUTTON-8)
+#define IR_FAKE_VOLADJOFF	(IR_NULL_BUTTON-9)
+#define IR_FAKE_VOLADJMENU	(IR_NULL_BUTTON-10)
+#define IR_FAKE_KNOBSEEK	(IR_NULL_BUTTON-11)
+#define IR_FAKE_CLOCK		(IR_NULL_BUTTON-12)
+#define IR_FAKE_NEXTSRC		(IR_NULL_BUTTON-13)
+#define IR_FAKE_HIJACKMENU	(IR_NULL_BUTTON-14)	// This MUST be the lowest numbered FAKE code
 #define ALT			BUTTON_FLAGS_ALTNAME
 
 typedef struct ir_translation_s {
@@ -170,7 +175,7 @@ static struct {
 		{IR_FAKE_CLOCK,		IR_RIO_INFO_PRESSED,
 		 IR_FAKE_KNOBSEEK,	IR_RIO_MARK_PRESSED|ALT,
 		 IR_FAKE_NEXTSRC,	IR_RIO_0_PRESSED|ALT,
-		 IR_FAKE_VOLADJ,	IR_RIO_VISUAL_PRESSED }
+		 IR_FAKE_VOLADJMENU,	IR_RIO_VISUAL_PRESSED }
 	};
 
 static ir_translation_t *ir_current_longpress = NULL;
@@ -183,10 +188,15 @@ static button_name_t button_names[] = {
 	{IR_FAKE_POPUP1,		"PopUp1"},	// index 1 assumed later in hijack_option_table[]
 	{IR_FAKE_POPUP2,		"PopUp2"},	// index 2 assumed later in hijack_option_table[]
 	{IR_FAKE_POPUP3,		"PopUp3"},	// index 3 assumed later in hijack_option_table[]
-	{IR_FAKE_VOLADJ,		"VolAdj"},
+	{IR_FAKE_VOLADJ1,		"VolAdjLow"},	// index 4 assumed later in hijack_option_table[]
+	{IR_FAKE_VOLADJ2,		"VolAdjMed"},	// index 5 assumed later in hijack_option_table[]
+	{IR_FAKE_VOLADJ3,		"VolAdjHigh"},	// index 6 assumed later in hijack_option_table[]
+	{IR_FAKE_VOLADJOFF,		"VolAdjOff"},
 	{IR_FAKE_KNOBSEEK,		"KnobSeek"},
 	{IR_FAKE_CLOCK,			"Clock"},
 	{IR_FAKE_NEXTSRC,		"NextSrc"},
+	{IR_FAKE_VOLADJMENU,		"VolAdj"},
+	{IR_FAKE_HIJACKMENU,		"HijackMenu"},
 
 	{IR_FAKE_INITIAL,		"Initial"},
 	{IR_NULL_BUTTON,		"null"},
@@ -439,9 +449,9 @@ static const hijack_option_t hijack_option_table[] =
 {"trace_tuner",			&hijack_trace_tuner,		0,			1,	0,	1},
 {"supress_notify",		&hijack_supress_notify,		0,			1,	0,	1},	
 {"temperature_correction",	&hijack_temperature_correction,	-4,			1,	-20,	+20},
-{"voladj_low",			&hijack_voladj_parms[0][0],	(int)voladj_ldefault,	5,	0,	0x7ffe},
-{"voladj_medium",		&hijack_voladj_parms[1][0],	(int)voladj_mdefault,	5,	0,	0x7ffe},
-{"voladj_high",			&hijack_voladj_parms[2][0],	(int)voladj_hdefault,	5,	0,	0x7ffe},
+{button_names[4].name,		&hijack_voladj_parms[0][0],	(int)voladj_ldefault,	5,	0,	0x7ffe},
+{button_names[5].name,		&hijack_voladj_parms[1][0],	(int)voladj_mdefault,	5,	0,	0x7ffe},
+{button_names[6].name,		&hijack_voladj_parms[2][0],	(int)voladj_hdefault,	5,	0,	0x7ffe},
 {NULL,NULL,0,0,0,0} // end-of-list
 };
 
@@ -858,7 +868,7 @@ static unsigned long
 RELEASECODE (unsigned int button)
 {
 	button &= ~BUTTON_FLAGS;
-	if ((button >= IR_FAKE_NEXTSRC && button <= IR_NULL_BUTTON) || button == IR_KNOB_LEFT || button == IR_KNOB_RIGHT)
+	if ((button >= IR_FAKE_HIJACKMENU && button <= IR_NULL_BUTTON) || button == IR_KNOB_LEFT || button == IR_KNOB_RIGHT)
 		return IR_NULL_BUTTON;
 	return (button > 0xf) ? button | 0x80000000 : button | 1;
 }
@@ -898,7 +908,7 @@ hijack_enq_button (hijack_buttonq_t *q, unsigned int button, unsigned long hold_
 
 #if 1 //fixme someday
 	// special case to allow embedding PopUp's
-	if ((button & ~BUTTON_FLAGS) >= IR_FAKE_NEXTSRC && (button & ~BUTTON_FLAGS) <= IR_FAKE_POPUP3)
+	if ((button & ~BUTTON_FLAGS) >= IR_FAKE_HIJACKMENU && (button & ~BUTTON_FLAGS) <= IR_FAKE_POPUP3)
 		q = &hijack_inputq;
 #endif
 	if (q != &hijack_inputq)
@@ -945,7 +955,7 @@ static void
 hijack_enq_translations (ir_translation_t *t)
 {
 	unsigned int *newp = &t->new[0];
-	int count = t->count, waitrelease = (t->old < IR_FAKE_NEXTSRC) && t->old != IR_KNOB_LEFT && t->old != IR_KNOB_RIGHT;
+	int count = t->count, waitrelease = (t->old < IR_FAKE_HIJACKMENU) && t->old != IR_KNOB_LEFT && t->old != IR_KNOB_RIGHT;
 
 	while (count--) {
 		unsigned long code = *newp++;
@@ -1078,7 +1088,7 @@ hijack_voladj_update_history (int multiplier)
 	restore_flags(flags);
 }
 
-static void
+void
 hijack_set_voladj_parms (void)
 {
 	empeg_state_dirty = 1;
@@ -1428,6 +1438,7 @@ forcepower_move (int direction)
 	} else if (hijack_force_power > 3) {
 		hijack_force_power = 0;
 	}
+	empeg_state_dirty = 1;
 }
 
 static int
@@ -1497,6 +1508,7 @@ timer_move (int direction)
 		if (ir_move_repeat_delay > 2)
 			ir_move_repeat_delay -= 2;
 	}
+	empeg_state_dirty = 1;
 }
 
 static int
@@ -1829,6 +1841,26 @@ static const char buttonled_menu_label	[] = "Button Illumination Level";
 // 242, then multiple 243's to step the brightness up (no idea why I never put
 // one to dim the other way...)
 
+static inline int
+dimmer_is_active (void)
+{
+	static unsigned long lasttime = 0;
+	static int dimmer = 0, last = 0;
+	int sense;
+
+	sense = GPLR & EMPEG_SERIALCTS;
+
+	if (sense != dimmer) {
+		if (sense != last) {
+			last = sense;
+			lasttime = jiffies;
+		} else if (jiffies_since(lasttime) > (HZ/2)) {
+			dimmer = sense;
+		}
+	}
+	return dimmer;
+}
+
 static void	// invoked from empeg_display.c
 hijack_adjust_buttonled (int power)
 {
@@ -1858,6 +1890,8 @@ hijack_adjust_buttonled (int power)
 		brightness = hijack_buttonled_off_level;
 	else
 		brightness = 0;
+	if (dimmer_is_active())
+		brightness = (brightness + 1) / 2;
 	brightness = bright_levels[brightness];
 	if (hijack_buttonled_level != brightness) {
 		if (brightness == 255)
@@ -2452,6 +2486,7 @@ do_reboot (struct display_dev *dev)
 		(void) draw_string(ROWCOL(2,32), "Rebooting..", PROMPTCOLOR);
 		display_blat(dev, (char *)hijack_displaybuf);
 		hijack_last_moved = jiffies;
+		state_cleanse();	// Ensure flash savearea is updated
 		if (remount_drives(0))
 			wait = 0;	// no need for a delay if remount did nothing
 	}
@@ -2976,7 +3011,7 @@ hijack_handle_button (unsigned int button, unsigned long delay, int any_ui_is_ac
 	if (hijack_status == HIJACK_ACTIVE) {
 #if 1 //fixme someday
 		// special case to allow embedding PopUp's
-		if ((button & ~BUTTON_FLAGS) < IR_FAKE_NEXTSRC || (button & ~BUTTON_FLAGS) > IR_FAKE_POPUP3)
+		if ((button & ~BUTTON_FLAGS) < IR_FAKE_HIJACKMENU || (button & ~BUTTON_FLAGS) > IR_FAKE_POPUP3)
 #endif
 		{
 			if (hijack_buttonlist && hijack_check_buttonlist(button, delay)) {
@@ -2988,7 +3023,19 @@ hijack_handle_button (unsigned int button, unsigned long delay, int any_ui_is_ac
 			goto done;	// just pass all buttons straight through to userland
 	}
 	switch (button) {
-		case IR_FAKE_VOLADJ:
+		case IR_FAKE_HIJACKMENU:
+			activate_dispfunc(menu_display, menu_move);
+			hijacked = 1;
+			break;
+		case IR_FAKE_VOLADJOFF:
+		case IR_FAKE_VOLADJ1:
+		case IR_FAKE_VOLADJ2:
+		case IR_FAKE_VOLADJ3:
+			hijack_voladj_enabled = (button - IR_FAKE_VOLADJOFF);
+			hijack_set_voladj_parms();
+			hijacked = 1;
+			break;
+		case IR_FAKE_VOLADJMENU:
 			activate_dispfunc(voladj_prefix_display, voladj_move);
 			hijacked = 1;
 			break;
@@ -3218,7 +3265,7 @@ input_append_code2 (unsigned int rawbutton)
 		if (ir_downkey == rawbutton || rawbutton == IR_NULL_BUTTON)
 			return;	// ignore repeated press with no intervening release
 		if (rawbutton != IR_KNOB_LEFT && rawbutton != IR_KNOB_RIGHT) {
-			if (rawbutton > IR_NULL_BUTTON || rawbutton < IR_FAKE_NEXTSRC)
+			if (rawbutton > IR_NULL_BUTTON || rawbutton < IR_FAKE_HIJACKMENU)
 				ir_downkey = rawbutton;
 		}
 	}
@@ -3699,7 +3746,7 @@ ir_setup_translations2 (unsigned char *s, unsigned int *table, int *had_errors)
 			old = PRESSCODE(old) | (old & BUTTON_FLAGS_ALTNAME);
 			if (old >= IR_FAKE_POPUP0 && old <= IR_FAKE_POPUP3) {
 				old |= IR_FLAGS_POPUP;
-			} else if (old >= IR_FAKE_INITIAL || old < IR_FAKE_NEXTSRC) {
+			} else if (old >= IR_FAKE_INITIAL || old < IR_FAKE_HIJACKMENU) {
 				if (*s == '.') {
 					ir_flags_t *f;
 					do {
@@ -4199,11 +4246,32 @@ get_option_vals (int syntax_only, unsigned char **s, const hijack_option_t *opt)
 	return rc; // success
 }
 
+int
+hijack_get_set_option (unsigned char **s_p)
+{
+	const hijack_option_t *opt;
+	unsigned char *s = *s_p;
+
+	for (opt = &hijack_option_table[0]; (opt->name); ++opt) {
+		if (!strxcmp(s, opt->name, 1)) {
+			s += strlen(opt->name);
+			if (match_char(&s, '=')) {
+				unsigned char *test = s;
+				if (!get_option_vals(1, &test, opt))	// first pass validates
+					return -EINVAL;
+				(void)get_option_vals(0, &s, opt);	// second pass saves
+				*s_p = s;
+				return 0;
+			}
+		}
+	}
+	return -EINVAL;
+}
+
 static int
 hijack_get_options (unsigned char *buf)
 {
 	static const char menu_delete[] = "menu_remove=";
-	const hijack_option_t *opt;
 	int errors;
 	unsigned char *s;
 
@@ -4228,18 +4296,6 @@ hijack_get_options (unsigned char *buf)
 		char *line = s;
 		if (*s == ';')
 			goto nextline;
-		for (opt = &hijack_option_table[0]; (opt->name); ++opt) {
-			if (!strxcmp(s, opt->name, 1)) {
-				s += strlen(opt->name);
-				if (match_char(&s, '=')) {
-					unsigned char *test = s;
-					if (!get_option_vals(1, &test, opt))	// first pass validates
-						goto error;
-					(void)get_option_vals(0, &s, opt);	// second pass saves
-					goto nextline;
-				}
-			}
-		}
 		if (!strxcmp(s, "dance=", 1)) {
 			unsigned char *name = s += 6;
 			s = findchars(s, " \n;\r");
@@ -4275,9 +4331,10 @@ hijack_get_options (unsigned char *buf)
 				goto nextline;
 			}
 		}
-	error:
-		printline("[hijack] ERROR: ", line);
-		errors = 1;
+		if (hijack_get_set_option(&s)) {
+			printline("[hijack] ERROR: ", line);
+			errors = 1;
+		}
 	nextline:
 		s = findchars(s, "\n");
 	}
@@ -4501,36 +4558,56 @@ hijack_fix_visuals (unsigned char *buf)
 	}
 }
 
-#define HIJACK_SAVEAREA_OFFSET (128 - 2 - sizeof(hijack_savearea_t))
+// This version number should be incremented ONLY when existing fields
+// in the savearea are moved or resized.  It should NOT be incremented
+// when we're just converting "spare" space into saved data (or vice versa).
+#define LAYOUT_VERSION		1
+#define SAVEAREA_LAYOUT		((LAYOUT_VERSION << 4) | (0xf & ~LAYOUT_VERSION))
 
-// format of eight-byte flash memory savearea used for our hijack'd settings
-typedef struct hijack_savearea_s {
-	unsigned voladj_ac_power	: VOLADJ_BITS;		// 2 bits
-	unsigned blanker_timeout	: BLANKER_BITS;		// 6 bits
+// As of v2beta11, the player software uses 88/128 bytes, plus 2-byte checksum.
+// Hijack (v234) now "steals" 16 bytes from the end, just before the checksum.
 
-	unsigned voladj_dc_power	: VOLADJ_BITS;		// 2 bits
-	unsigned hightemp_threshold	: HIGHTEMP_BITS;		// 5 bits
-	unsigned restore_visuals	: 1;			// 1 bit
-
-	unsigned fsck_disabled		: 1;			// 1 bit
-	unsigned onedrive		: 1;			// 1 bit
-	unsigned timer_action		: TIMERACTION_BITS;	// 1 bit
-	unsigned force_power		: FORCEPOWER_BITS;	// 2 bits
-	unsigned byte3_leftover1	: 1;			// 1 bits (was seek)
-	unsigned homework		: 1;			// 1 bits
-	unsigned byte3_leftover		: 1;			// 1 bits
-
-	unsigned knob_ac		: 1+KNOBDATA_BITS;	// 4 bits
-	unsigned knob_dc		: 1+KNOBDATA_BITS;	// 4 bits
-
+// This substruct is for data that MUST be kept independently for AC/DC power modes
+typedef struct hijack_savearea_acdc_s {	// 32-bits total
 	signed 	 delaytime		: 8;			// 8 bits
-	unsigned fix_beta11		: 1;			// 1 bits
+
+	unsigned knob			: 1+KNOBDATA_BITS;	// 4 bits
 	unsigned buttonled_level	: BUTTONLED_BITS;	// 3 bits
-	unsigned byte6_leftover		: 1;			// 4 bit
+	unsigned spare1			: 1;			// 1 bit
+
+	unsigned voladj			: VOLADJ_BITS;		// 2 bits
+	unsigned spare6			: 6;			// 6 bits
+
+	unsigned spare8			: 8;			// 8 bits
+} hijack_savearea_acdc_t;
+
+// The "master" 16-byte savearea struct, with AC/DC substructs, and common data fields:
+typedef struct hijack_savearea_s {
+	hijack_savearea_acdc_t ac;				// 32 bits
+	hijack_savearea_acdc_t dc;				// 32 bits
+
+	unsigned blanker_timeout	: BLANKER_BITS;		// 6 bits
+	unsigned force_power		: FORCEPOWER_BITS;	// 2 bits
+
+	unsigned blanker_sensitivity	: SENSITIVITY_BITS;	// 3 bits
+	unsigned hightemp_threshold	: HIGHTEMP_BITS;	// 5 bits
 
 	unsigned menu_item		: MENU_BITS;		// 5 bits
-	unsigned blanker_sensitivity	: SENSITIVITY_BITS;	// 3 bits
+	unsigned restore_visuals	: 1;			// 1 bit
+	unsigned fsck_disabled		: 1;			// 1 bit
+	unsigned onedrive		: 1;			// 1 bit
+
+	unsigned timer_action		: TIMERACTION_BITS;	// 1 bit
+	unsigned homework		: 1;			// 1 bits
+	unsigned fix_beta11		: 1;			// 1 bits
+	unsigned spare5			: 5;			// 5 bits
+
+	unsigned spare16		: 16;			// 16 bits
+	unsigned spare8			:  8;			//  8 bits
+	unsigned layout_version		:  8;			//  8 bits
 } hijack_savearea_t;
+
+#define HIJACK_SAVEAREA_OFFSET (128 - 2 - sizeof(hijack_savearea_t))
 
 hijack_savearea_t savearea;	// MUST be static for AC/DC options to persist in opposite mode!
 
@@ -4538,35 +4615,37 @@ void	// invoked from empeg_state.c
 hijack_save_settings (unsigned char *buf)
 {
 	unsigned int knob;
+	hijack_savearea_acdc_t	*acdc, preserved;
+
+	// preserve the alternate power mode settings while we clear the "spare" fields:
+	preserved = empeg_on_dc_power ? savearea.ac : savearea.dc;
+	memset(&savearea, 0, sizeof(savearea));	// ensure all "spare" fields are zeroed
+	if (empeg_on_dc_power) {
+		savearea.ac = preserved;
+		acdc = &savearea.dc;
+	} else {
+		savearea.dc = preserved;
+		acdc = &savearea.ac;
+	}
 
 	// save state
-	if (empeg_on_dc_power)
-		savearea.voladj_dc_power = hijack_voladj_enabled;
-	else
-		savearea.voladj_ac_power = hijack_voladj_enabled;
+	knob = (knobdata_index == 1) ? (1<<KNOBDATA_BITS) | popup0_index : knobdata_index;
+	acdc->knob			= knob;
+	acdc->delaytime			= hijack_delaytime;
+	acdc->buttonled_level		= hijack_buttonled_on_level;
+	acdc->voladj			= hijack_voladj_enabled;
 	savearea.blanker_timeout	= blanker_timeout;
-	savearea.hightemp_threshold	= hightemp_threshold;
-	savearea.onedrive		= hijack_onedrive;
-	if (knobdata_index == 1)
-		knob = (1 << KNOBDATA_BITS) | popup0_index;
-	else
-		knob = knobdata_index;
-	if (empeg_on_dc_power)
-		savearea.knob_dc	= knob;
-	else
-		savearea.knob_ac	= knob;
+	savearea.force_power		= hijack_force_power;
 	savearea.blanker_sensitivity	= blanker_sensitivity;
-	savearea.timer_action		= timer_action;
+	savearea.hightemp_threshold	= hightemp_threshold;
 	savearea.menu_item		= menu_item;
 	savearea.restore_visuals	= carvisuals_enabled;
-	savearea.fix_beta11		= homevisuals_enabled;
 	savearea.fsck_disabled		= hijack_fsck_disabled;
-	savearea.force_power		= hijack_force_power;
+	savearea.onedrive		= hijack_onedrive;
+	savearea.timer_action		= timer_action;
 	savearea.homework		= hijack_homework;
-	savearea.byte3_leftover		= 0;
-	savearea.delaytime		= hijack_delaytime;
-	savearea.buttonled_level	= hijack_buttonled_on_level;
-	savearea.byte6_leftover		= 0;
+	savearea.fix_beta11		= homevisuals_enabled;
+	savearea.layout_version		= SAVEAREA_LAYOUT;
 	memcpy(buf+HIJACK_SAVEAREA_OFFSET, &savearea, sizeof(savearea));
 }
 
@@ -4574,25 +4653,34 @@ static int
 hijack_restore_settings (char *buf)
 {
 	extern int empeg_state_restore(unsigned char *);	// arch/arm/special/empeg_state.c
+	hijack_savearea_acdc_t	*acdc;
 	unsigned int knob, failed;
 
+	// retrieve the savearea, reverting to all zeros if the layout has changed
+	memset(&savearea, 0, sizeof(savearea));
 	failed = empeg_state_restore(buf);
-        memcpy(&savearea, buf+HIJACK_SAVEAREA_OFFSET, sizeof(savearea));
+	buf += HIJACK_SAVEAREA_OFFSET;
+	if (!failed) {
+		unsigned char layout_version = ((hijack_savearea_t *)buf)->layout_version;
+		if (layout_version == SAVEAREA_LAYOUT) // valid layout_version?
+        		memcpy(&savearea, buf, sizeof(savearea));
+		else
+			failed = 2;
+	}
+
+	// first priority is getting/overriding the unit's AC/DC power mode
 	hijack_force_power		= savearea.force_power;
 	if (hijack_force_power & 2)
 		empeg_on_dc_power	= hijack_force_power & 1;
 	else
 		empeg_on_dc_power	= ((GPLR & EMPEG_EXTPOWER) != 0);
-	if (empeg_on_dc_power)
-		hijack_voladj_enabled	= savearea.voladj_dc_power;
-	else
-		hijack_voladj_enabled	= savearea.voladj_ac_power;
-	hijack_homework			= savearea.homework;
-	blanker_timeout			= savearea.blanker_timeout;
-	hightemp_threshold		= savearea.hightemp_threshold;
-	hijack_buttonled_on_level	= savearea.buttonled_level;
-	hijack_onedrive			= savearea.onedrive;
-	knob = empeg_on_dc_power ? savearea.knob_dc : savearea.knob_ac;
+
+	// Now that the powermode (AC/DC) is set, we can deal with everything else
+	acdc = empeg_on_dc_power ? &savearea.dc : &savearea.ac;
+	knob				= acdc->knob;
+	hijack_delaytime		= acdc->delaytime;
+	hijack_buttonled_on_level	= acdc->buttonled_level;
+	hijack_voladj_enabled		= acdc->voladj;
 	if ((knob & (1 << KNOBDATA_BITS)) == 0) {
 		popup0_index		= 0;
 		knobdata_index		= knob;
@@ -4600,14 +4688,17 @@ hijack_restore_settings (char *buf)
 		popup0_index		= knob & ((1 << KNOBDATA_BITS) - 1);
 		knobdata_index		= 1;
 	}
+
+	blanker_timeout			= savearea.blanker_timeout;
 	blanker_sensitivity		= savearea.blanker_sensitivity;
-	timer_action			= savearea.timer_action;
+	hightemp_threshold		= savearea.hightemp_threshold;
 	menu_item			= savearea.menu_item;
-	menu_init();
 	carvisuals_enabled		= savearea.restore_visuals;
-	homevisuals_enabled		= savearea.fix_beta11;
 	hijack_fsck_disabled		= savearea.fsck_disabled;
-	hijack_delaytime		= savearea.delaytime;
+	hijack_onedrive			= savearea.onedrive;
+	timer_action			= savearea.timer_action;
+	hijack_homework			= savearea.homework;
+	homevisuals_enabled		= savearea.fix_beta11;
 
 	return failed;
 }
@@ -4623,16 +4714,18 @@ hijack_init (void *animptr)
 	hijack_game_animptr = animptr;
 	hijack_buttonled_level = 0;	// turn off button LEDs
 	failed = hijack_restore_settings(buf);
+	menu_init();
 	reset_hijack_options();
 	init_temperature(1);
 	hijack_initq(&hijack_inputq);
 	hijack_initq(&hijack_playerq);
 	hijack_initq(&hijack_userq);
-	menu_init();
 	hijack_notify_init();
-	if (failed)
-		show_message("Settings have been lost", HZ*7);
-	else
+	if (!failed)
 		show_message(hijack_vXXX_by_Mark_Lord, animstart);
+	else if (failed == 2)
+		show_message("Hijack Settings Reset", HZ*7);
+	else
+		show_message("Player Settings Lost", HZ*7);
 	return animstart;
 }

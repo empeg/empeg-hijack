@@ -32,6 +32,8 @@
 #define KFTPD	"kftpd"
 
 extern int hijack_reboot;
+extern void hijack_set_voladj_parms(void);
+extern int hijack_get_set_option (unsigned char **s_p);
 extern unsigned char * do_button (unsigned char *s, int raw);
 extern int remount_drives (int writeable);
 extern void hijack_serial_insert (const char *buf, int size, int port);	// drivers/char/serial_sa1100.c
@@ -109,7 +111,7 @@ typedef struct server_parms_s {
 	unsigned char		tmp3[768];
 } server_parms_t;
 
-extern int get_number (char **src, int *val, int base, const char *nextchars);	// hijack.c
+extern int get_number (unsigned char **src, int *val, int base, const char *nextchars);	// hijack.c
 
 static const char *
 inet_ntop2 (struct sockaddr_in *addr, char *ipaddr)
@@ -128,7 +130,7 @@ inet_ntop2 (struct sockaddr_in *addr, char *ipaddr)
 // then copies the network address structure to dst.
 //
 static int
-inet_pton (int af, char **src, void *dst)
+inet_pton (int af, unsigned char **src, void *dst)
 {
 	unsigned char	*d = dst;
 	int		i;
@@ -146,7 +148,7 @@ inet_pton (int af, char **src, void *dst)
 }
 
 static int
-extract_portaddr (struct sockaddr_in *addr, char *s)
+extract_portaddr (struct sockaddr_in *addr, unsigned char *s)
 {
 	memset(addr, 0, sizeof(struct sockaddr_in));
 	addr->sin_family = AF_INET;
@@ -1071,7 +1073,7 @@ cleanup_file_xfer (server_parms_t *parms, file_xfer_t *xfer)
 }
 
 static unsigned int
-str_val (char *str)
+str_val (unsigned char *str)
 {
 	unsigned int val = 0;
 	(void)get_number(&str, &val, 10, NULL);
@@ -1162,7 +1164,7 @@ send_playlist (server_parms_t *parms, char *path)
 {
 	http_response_t	*response = NULL;
 	unsigned int	secs = 0, entries = 0;
-	char		*p, subpath[] = "/drive0/fids/XXXXXXXXXX", artist_title[128], fidtype;
+	unsigned char	*p, subpath[] = "/drive0/fids/XXXXXXXXXX", artist_title[128], fidtype;
 	int		pfid, fid, size, used = 0, xmit_threshold, fidfiles[16], fidx = -1;	// up to 16 levels of nesting
 	static const char *playlist_format[3] = {text_html, audio_m3u, text_xml};
 	static char	*tagtypes[2] = {"playlist", "tune"};
@@ -1222,7 +1224,7 @@ send_playlist (server_parms_t *parms, char *path)
 			used += encode_url(xfer.buf+used, artist_title, 1);
 			used += sprintf(xfer.buf+used,".m3u?FID=%x&EXT=.m3u\"><B>Stream</B></A> ", pfid);
 			if (hijack_khttpd_commands)
-				used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?FID=%x&SERIAL=%%23%x&EXT=.htm\"><B>Play</B></A> ", pfid, pfid^1);
+				used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?NODATA&SERIAL=%%23%x\"><B>Play</B></A> ", pfid^1);
 			if (hijack_khttpd_files)
 				used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?FID=%x\"><B>Tags</B></A> ", pfid);
 			used += sprintf(xfer.buf+used, "<TD ALIGN=CENTER> <FONT SIZE=+2><B><EM>%s</EM></B></FONT> <TD> <B>Length</B> "
@@ -1327,7 +1329,7 @@ open_fidfile:
 					used += encode_url(xfer.buf+used, artist_title, 1);
 					used += sprintf(xfer.buf+used, "?FID=%x&EXT=.m3u\"><em>Stream</em></A> ", fid);
 					if (hijack_khttpd_commands)
-						used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?FID=%x&SERIAL=%%23%x&EXT=.htm\"><em>Play</em></A> ", pfid, fid^1);
+						used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?NODATA&SERIAL=%%23%x\"><em>Play</em></A> ", fid^1);
 					if (hijack_khttpd_files)
 						used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?FID=%x\"><EM>Tags</EM></A> ", fid);
 					if (fidtype == 'T') {
@@ -1614,7 +1616,7 @@ hijack_do_command (void *sparms, char *buf)
 
 	while (!rc && *nextline) {
 		int nocache = 1;
-		char c, *s;
+		unsigned char c, *s;
 		for (s = nextline; (c = *nextline); ++nextline) {
 			if (c == '+') {
 				*nextline = ' ';
@@ -1649,6 +1651,11 @@ hijack_do_command (void *sparms, char *buf)
 					show_message(s, secs * HZ);
 				else
 					rc = -EINVAL;
+				goto next;
+			} else if (!strxcmp(s, "VOLADJLOW=", 1) || !strxcmp(s, "VOLADJMED=", 1) || !strxcmp(s, "VOLADJHIGH=", 1)) {
+				rc = hijack_get_set_option(&s);
+				if (!rc)
+					hijack_set_voladj_parms();
 				goto next;
 			} else if (!strxcmp(s, "SERIAL=", 1) && *(s += 7)) {
 				hijack_serial_insert(s, strlen(s), 1);
@@ -1829,7 +1836,7 @@ kftpd_handle_command (server_parms_t *parms)
 	} else if (!strxcmp(buf, "PWD", 0)) {
 		quit = kftpd_dir_response(parms, 257, parms->cwd, NULL);
 	} else if (!strxcmp(buf, "SITE CHMOD ", 1)) {
-		char *p = &buf[11];
+		unsigned char *p = &buf[11];
 		int mode;
 		if (!get_number(&p, &mode, 8, " ") || !*p++ || !*p) {
 			response = 501;
@@ -1849,7 +1856,7 @@ kftpd_handle_command (server_parms_t *parms)
 			response = 200;
 		}
 	} else if (!strxcmp(buf, "MKD ", 1) || !strxcmp(buf, "XMKD ", 1)) {
-		char *p = &buf[4 + (buf[3] != ' ')];
+		unsigned char *p = &buf[4 + (buf[3] != ' ')];
 		if (!*p) {
 			response = 501;
 		} else {
@@ -1858,7 +1865,7 @@ kftpd_handle_command (server_parms_t *parms)
 			response = kftpd_do_mkdir(parms, path);
 		}
 	} else if (!strxcmp(buf, "RMD ", 1) || !strxcmp(buf, "XRMD ", 1)) {
-		char *p = &buf[4 + (buf[3] != ' ')];
+		unsigned char *p = &buf[4 + (buf[3] != ' ')];
 		if (!*p) {
 			response = 501;
 		} else {
@@ -1894,7 +1901,7 @@ kftpd_handle_command (server_parms_t *parms)
 			response = sys_rename(rnfr_name, path) ? 451 : 250;
 		}
 	} else if (!strxcmp(buf, "REST ", 1)) {
-		char *p = &buf[5];
+		unsigned char *p = &buf[5];
 		int offset;
 		if (!get_number(&p, &offset, 10, "\r\n") || *p) {
 			response = 501;
@@ -1930,9 +1937,9 @@ got_response:
 static void
 khttpd_handle_connection (server_parms_t *parms)
 {
-	char	*buf = parms->buf, *cmds = NULL, c, *path, *p, *x;
-	int	buflen = sizeof(parms->buf) - 1, pathlen;
-	int	size = 0, use_index = 1;	// look for index.html?
+	unsigned char	*buf = parms->buf, *cmds = NULL, c, *path, *p, *x;
+	int		buflen = sizeof(parms->buf) - 1, pathlen;
+	int		size = 0, use_index = 1;	// look for index.html?
 	const http_response_t *response = NULL;
 
 	parms->show_dotfiles = hijack_khttpd_show_dotfiles;
@@ -1973,7 +1980,7 @@ khttpd_handle_connection (server_parms_t *parms)
 			} else if (!strxcmp(x, "\nIcy-MetaData:1", 1)) {
 				parms->icy_metadata = 1;
 			} else if (!strxcmp(x, Host, 1) && *(x += sizeof(Host) - 1)) {
-				char *h = x;
+				unsigned char *h = x;
 				while ((c = *x) && c != '\n' && c != '\r')
 					++x;
 				if ((x - h) < sizeof(parms->hostname)) {

@@ -602,6 +602,16 @@ hijack_voladj_update_history (int multiplier)
 }
 
 static void
+hijack_set_voladj_parms (void)
+{
+	empeg_state_dirty = 1;
+	if (hijack_voladj_enabled) {
+		unsigned const int *p = hijack_voladj_parms[hijack_voladj_enabled - 1];
+		hijack_voladj_intinit(p[0],p[1],p[2],p[3],p[4]);	
+	}
+}
+
+static void
 voladj_move (int direction)
 {
 	unsigned int old = hijack_voladj_enabled;
@@ -611,13 +621,8 @@ voladj_move (int direction)
 		hijack_voladj_enabled = 0;
 	else if (hijack_voladj_enabled >= ((1<<VOLADJ_BITS)-1))
 		hijack_voladj_enabled   = ((1<<VOLADJ_BITS)-1);
-	if (hijack_voladj_enabled != old) {
-		empeg_state_dirty = 1;
-		if (hijack_voladj_enabled) {
-			unsigned const int *p = hijack_voladj_parms[hijack_voladj_enabled - 1];
-			hijack_voladj_intinit(p[0],p[1],p[2],p[3],p[4]);	
-		}
-	}
+	if (hijack_voladj_enabled != old)
+		hijack_set_voladj_parms();
 }
 
 static int
@@ -1090,7 +1095,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v73 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v74 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -2440,6 +2445,7 @@ hijack_restore_settings (const unsigned char *buf)
 	blankerfuzz_amount		= hijack_savearea.blankerfuzz_amount;
 	timer_action			= hijack_savearea.timer_action;
 	menu_item			= hijack_savearea.menu_item;
+	hijack_set_voladj_parms();
 	menu_init();
 }
 

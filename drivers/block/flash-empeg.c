@@ -113,8 +113,8 @@ static struct semaphore flash_busy = MUTEX;
 #define ERROR_PROGRAMMING    0x0010
 #define STATUS_BUSY          0x0080
 
-#define ERASE_TIME_LIMIT	5000
-#define WRITE_TIME_LIMIT	10
+#define ERASE_TIME_LIMIT	10000
+#define WRITE_TIME_LIMIT	20
 
 
 /*********************************************************************
@@ -211,7 +211,7 @@ static int erase_flash_sector(unsigned short *ptr)
 	while (!(*flash_ptr & STATUS_BUSY)) {
 		//udelay(1000L);
 		current->state = TASK_INTERRUPTIBLE;
-		schedule_timeout(1*HZ);
+		schedule_timeout(HZ/2);
 
 		if(++erase_loop_ctr == ERASE_TIME_LIMIT) {
 			panic("Flash seems dead... too bad!\n");
@@ -286,7 +286,7 @@ static int write_flash_sector(unsigned short *ptr,const char* data,const int siz
 
 		while (!(*flash_ptr&STATUS_BUSY)) {
 			schedule();
-			udelay(10L);
+			udelay(5L);
 
 			if(++write_loop_ctrl==WRITE_TIME_LIMIT) {
 				panic("Flash seems dead... to bad!\n");

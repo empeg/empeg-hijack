@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v195"
+#define HIJACK_VERSION	"v196"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -239,22 +239,6 @@ static button_name_t button_names[] = {
 	{IR_NULL_BUTTON,		"\0"}		// end-of-table-marker
 	};
 #undef ALT
-
-static char *get_button_name (unsigned int button, char *buf)
-{
-	button_name_t *bn = button_names;
-
-	button &= ~(BUTTON_FLAGS^BUTTON_FLAGS_ALTNAME);
-	if (button <= 0xf && button != IR_KNOB_LEFT)
-		button &= ~1;
-	for (bn = button_names; bn->name[0]; ++bn) {
-		if (button == bn->code) {
-			return bn->name;
-		}
-	}
-	sprintf(buf, "0%x", button);
-	return buf;
-}
 
 #define KNOBDATA_BITS 3
 #define KNOBDATA_SIZE (1 << KNOBDATA_BITS)
@@ -837,6 +821,15 @@ hijack_initq (hijack_buttonq_t *q)
 }
 
 static unsigned long
+PRESSCODE (unsigned int button)
+{
+	button &= ~BUTTON_FLAGS;
+	if (button > 0xf || button == IR_KNOB_LEFT || button == IR_KNOB_RIGHT)
+		return button;
+	return button & ~1;
+}
+
+static unsigned long
 RELEASECODE (unsigned int button)
 {
 	button &= ~BUTTON_FLAGS;
@@ -856,6 +849,20 @@ IS_RELEASE (unsigned int rawbutton)
 			return (button & 1);
 	}
 	return 0;
+}
+
+static char *get_button_name (unsigned int button, char *buf)
+{
+	button_name_t *bn = button_names;
+
+	button = PRESSCODE(button) | (button & BUTTON_FLAGS_ALTNAME);
+	for (bn = button_names; bn->name[0]; ++bn) {
+		if (button == bn->code) {
+			return bn->name;
+		}
+	}
+	sprintf(buf, "0%x", button);
+	return buf;
 }
 
 static void
@@ -914,7 +921,7 @@ static void
 hijack_enq_translations (ir_translation_t *t)
 {
 	unsigned int *newp = &t->new[0];
-	int count = t->count, waitrelease = (t->old < IR_FAKE_NEXTSRC);
+	int count = t->count, waitrelease = (t->old < IR_FAKE_NEXTSRC) && t->old != IR_KNOB_LEFT && t->old != IR_KNOB_RIGHT;
 
 	while (count--) {
 		unsigned long code = *newp++;
@@ -2924,11 +2931,10 @@ input_append_code2 (unsigned int rawbutton)
 		unsigned short	flags		= mixer | carhome | shifted;
 		int		delayed_send	= 0;
 		int		was_waiting	= (ir_current_longpress != NULL);
-		unsigned int	button		= rawbutton & ~BUTTON_FLAGS;
 		ir_translation_t *t		= NULL;
+		unsigned int	button;
 
-		if (released && button <= 0xf)
-			button &= ~1;
+		button = PRESSCODE(rawbutton);
 		ir_current_longpress = NULL;
 		while (NULL != (t = ir_next_match(t, button))) {
 			unsigned short t_flags = t->flags;
@@ -3373,9 +3379,7 @@ ir_setup_translations2 (unsigned char *s, unsigned int *table, int *had_errors)
 			good = 1; // ignore the comment
 		} else if (get_button_code(&s, &old, 0, ".=")) {
 			unsigned short irflags = 0, flagmask, *defaults;
-			old &= ~(BUTTON_FLAGS^BUTTON_FLAGS_ALTNAME);
-			if (old <= 0xf)
-				old &= ~1;
+			old = PRESSCODE(old) | (old & BUTTON_FLAGS_ALTNAME);
 			if (old >= IR_FAKE_POPUP0 && old <= IR_FAKE_POPUP3) {
 				old |= IR_FLAGS_POPUP;
 			} else if (old >= IR_FAKE_INITIAL || old < IR_FAKE_NEXTSRC) {
@@ -3407,9 +3411,7 @@ ir_setup_translations2 (unsigned char *s, unsigned int *table, int *had_errors)
 						index = saved; // error: completely ignore this line
 						break;
 					}
-					new &= ~(BUTTON_FLAGS^BUTTON_FLAGS_ALTNAME);
-					if (new <= 0xf && new != IR_KNOB_LEFT)
-						new &= ~1;
+					new = PRESSCODE(new) | (new & BUTTON_FLAGS_ALTNAME);
 					if (*s == '.') {
 						do {
 							char c = *++s;

@@ -90,7 +90,7 @@ static struct flash_sect_cache_struct {
 
 static struct semaphore flash_busy = MUTEX;
 #define WP_ON()		do {down(&flash_busy); GPCR = EMPEG_FLASHWE;} while (0)
-#define WP_OFF()	do {up(&flash_busy); GPSR = EMPEG_FLASHWE;} while (0)
+#define WP_OFF()	do {GPSR = EMPEG_FLASHWE; up(&flash_busy);} while (0)
 
 /* Flash commands.. */
 #define FlashCommandRead            0x00FF

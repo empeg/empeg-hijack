@@ -1044,7 +1044,7 @@ prepare_file_xfer (server_parms_t *parms, char *path, file_xfer_t *xfer, int wri
 		}
 	} else if (end_offset != -1 && (xfer->st.st_size && end_offset >= xfer->st.st_size)) {
 		response = parms->use_http ? 416 : 553;
-	} else if (start_offset && (start_offset >= xfer->st.st_size || start_offset != lseek(fd, start_offset, 0))) {
+	} else if (start_offset && ((xfer->st.st_size && start_offset > xfer->st.st_size) || start_offset != lseek(fd, start_offset, 0))) {
 		printk("%s: lseek(%s,%lu/%lu) failed\n", parms->servername, path, start_offset, xfer->st.st_size);
 		response = parms->use_http ? 416 : 553;
 	} else {

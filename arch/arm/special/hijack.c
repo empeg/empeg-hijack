@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v409"
+#define HIJACK_VERSION	"v410"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -1956,7 +1956,6 @@ menuexec_display (int firsttime)
 	rowcol = draw_string(ROWCOL(0,0), "Execute this Command? ", PROMPTCOLOR);
 	(void)   draw_string_spaced(rowcol, no_yes[!hijack_menuexec_no], ENTRYCOLOR);
 	rowcol = draw_string(ROWCOL(2,0), (char *)hijack_userdata, PROMPTCOLOR);
-printk("menuexec_display: ir_sel=%lu exec_no=%u\n", ir_selected, hijack_menuexec_no);
 	return NEED_REFRESH;
 }
 
@@ -5407,6 +5406,7 @@ hijack_restore_settings (char *buf, char *msg)
 	return failed;
 }
 
+char hijack_zoneinfo[128];
 
 static long
 lswap (void *z)
@@ -5442,12 +5442,11 @@ hijack_get_time_offset (int fd, long curtime)
 			z += timecnt * 4;
 			z += timecnt + (z[i] * 6);
 			hijack_time_offset = lswap(z);
+			printk("Timezone: %s\n", hijack_zoneinfo+20);
 		}
 		free_page(zbuf);
 	}
 }
-
-char hijack_zoneinfo[128];
 
 void
 hijack_init_zoneinfo (void)
@@ -5479,8 +5478,8 @@ hijack_init_zoneinfo (void)
 		strcat(hijack_zoneinfo, "/");
 		strcat(hijack_zoneinfo, de.d_name);
 	}
+	hijack_zoneinfo[0] = '\0';
 done:
-	printk("Timezone: %s\n", hijack_zoneinfo);
 	set_fs(old_fs);
 }
 

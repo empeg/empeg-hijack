@@ -126,7 +126,7 @@ int hijack_exec (char *cwd, char *cmdline)
 	} else {
 		rc = 0;
 	}
-	printk("hijack_exec(\"%s\", \"%s\"), rc=%d (%s)\n", cwd ? cwd : "", cmdline, rc, rc ? "ERROR" : "okay");
+	//printk("hijack_exec(\"%s\", \"%s\"), rc=%d (%s)\n", cwd ? cwd : "", cmdline, rc, rc ? "ERROR" : "okay");
 	return rc;
 }
 

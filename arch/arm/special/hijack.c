@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v234"
+#define HIJACK_VERSION	"v235"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -1858,7 +1858,7 @@ dimmer_is_active (void)
 			dimmer = sense;
 		}
 	}
-	return dimmer;
+	return !dimmer;
 }
 
 static void	// invoked from empeg_display.c
@@ -1947,6 +1947,8 @@ buttonled_display (int firsttime)
 		(void) draw_string_spaced(rowcol,"[max]", ENTRYCOLOR);
 	else
 		(void) draw_number(rowcol, level, "%2u", ENTRYCOLOR);
+	//(void) draw_string(ROWCOL(3,20), 
+	//	dimmer_is_active() ? "Dimmer is On" : "Dimmer is Off", PROMPTCOLOR);
 	return NEED_REFRESH;
 }
 

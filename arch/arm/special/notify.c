@@ -318,8 +318,25 @@ static struct proc_dir_entry proc_screen_entry = {
 	&hijack_proc_screen_read, /* get_info() */
 };
 
+extern struct file_operations  flash_fops;
+static struct inode_operations kflash_ops = {
+	&flash_fops,
+	NULL,
+};
+
+static struct proc_dir_entry proc_kflash_entry = {
+	0,			/* inode (dynamic) */
+	12,			/* length of name */
+	"empeg_kernel",		/* name */
+	S_IFBLK|S_IRUSR|S_IWUSR,/* mode */
+	1, 0, 0, 		/* links, owner, group */
+	MKDEV(60,8),		/* size holds device number */
+	&kflash_ops,		/* inode operations */
+};
+
 void hijack_notify_init (void)
 {
 	proc_register(&proc_root, &proc_notify_entry);
 	proc_register(&proc_root, &proc_screen_entry);
+	proc_register(&proc_root, &proc_kflash_entry);
 }

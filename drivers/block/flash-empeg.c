@@ -154,10 +154,10 @@ static inline int full_status_check( unsigned short status_reg )
 		printk("Flash driver: programming voltage error!\n");
 		return FALSE;
 	}
-	//if( status_reg & ERROR_DEVICE_PROTECT ) {
-	//	printk("Flash driver: device is write protect!\n");
-	//	return FALSE;
-	//}
+	if( status_reg & ERROR_DEVICE_PROTECT ) {
+		printk("Flash driver: device is write protect!\n");
+		return FALSE;
+	}
 	if( status_reg & ERROR_PROGRAMMING ) {
 		printk("Flash driver: programming error!\n");
 		return FALSE;
@@ -181,6 +181,7 @@ static int erase_flash_sector(unsigned short *ptr)
 	volatile unsigned short *flash_ptr;
 	int erase_loop_ctr;
 	unsigned short status;
+	int rc;
 
 	flash_ptr = ptr;
 
@@ -223,9 +224,10 @@ static int erase_flash_sector(unsigned short *ptr)
 
 	*flash_ptr =  FlashCommandClear;
 	*flash_ptr =  FlashCommandRead;
+	rc = full_status_check(status);
 	WP_OFF();
 
-   	return(full_status_check(status));
+   	return rc;
 }
 
 
@@ -647,7 +649,7 @@ static int flash_release(struct inode * inode, struct file * filp)
  *		function for the flash driver
  *********************************************************************/
 
-static struct file_operations flash_fops = {
+struct file_operations flash_fops = {
 	NULL,			/* lseek */
 	block_read,		/* read */
 	block_write,		/* write */

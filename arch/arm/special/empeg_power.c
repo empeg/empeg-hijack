@@ -181,13 +181,11 @@ int getbitset(void)
 	
 	if (empeg_hardwarerevision()<6) {
 		/* Mk1 */
-		//if (gplr&EMPEG_EXTPOWER)  bitset|=EMPEG_POWER_FLAG_DC;
 		if (powerfail_enabled())  bitset|=EMPEG_POWER_FLAG_FAILENABLED;
 		/* Accessory ON */        bitset|=EMPEG_POWER_FLAG_ACCESSORY;
 		if (dev->displaystate)	  bitset|=EMPEG_POWER_FLAG_DISPLAY;
 	} else {
 		/* Mk2 */
-		//if (gplr&EMPEG_EXTPOWER)  bitset|=EMPEG_POWER_FLAG_DC;
 		if (powerfail_enabled())  bitset|=EMPEG_POWER_FLAG_FAILENABLED;
 		if (gplr&EMPEG_ACCSENSE)  bitset|=EMPEG_POWER_FLAG_ACCESSORY;
 		if (power_firstboot)      bitset|=EMPEG_POWER_FLAG_FIRSTBOOT;
@@ -243,7 +241,6 @@ static int power_read_procmem(char *buf, char **start, off_t offset,
 {
 	int state=getbitset();
 	len = 0;
-	//if (state & EMPEG_POWER_FLAG_DC)
 	if (empeg_on_dc_power)
 		len += sprintf(buf + len, "1 (Battery Power)\n");
 	else

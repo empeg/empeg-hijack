@@ -835,6 +835,7 @@ static void handle_splash(struct display_dev *dev)
 	animation_time=HZ;
 	while(*ani_ptr++) animation_time+=(HZ/ANIMATION_FPS);
 #endif
+
 	/* Setup timer to display user's image (if present) in 4 seconds */
 	if (logo_type & LOGO_CUSTOM) {
 		printk("Scheduling custom logo.\n");
@@ -852,6 +853,7 @@ static void handle_splash(struct display_dev *dev)
 		add_timer(&display_timer);
 	}
 }
+
 
 
 /* This handles the mmap call. To be able to mmap RAM we need to swing
@@ -1274,6 +1276,7 @@ void __init empeg_display_init(void)
 	*lcd_command1=0xaf;
 	udelay(1);
 #endif
+
 {
 	extern int empeg_state_restore (unsigned char *);
 	extern void hijack_restore_settings(unsigned char *, int);

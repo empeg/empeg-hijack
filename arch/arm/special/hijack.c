@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v123"
+#define HIJACK_VERSION "v124"
 
 #include <linux/sched.h>
 #include <linux/kernel.h>
@@ -3535,8 +3535,11 @@ hijack_read_config_file (const char *path)
 		printk("hijack.c: open(%s) failed (errno=%d)\n", path, rc);
 	} else if (rc > 0 && buf && *buf) {
 		get_hijack_options(buf);
-		if (ide_hwifs[0].drives[1].present || (MAX_HWIFS > 1 && ide_hwifs[1].drives[0].present))
+		if (ide_hwifs[0].drives[1].present || (MAX_HWIFS > 1 && ide_hwifs[1].drives[0].present)) {
 			remove_menu_entry(onedrive_menu_label);
+			hijack_onedrive = 0;
+			empeg_state_dirty = 1;
+		}
 		if (hijack_old_style) {
 			PROMPTCOLOR		=  COLOR2;
 			ENTRYCOLOR		=  COLOR3;

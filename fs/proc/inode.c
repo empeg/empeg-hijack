@@ -272,7 +272,9 @@ printk("proc_iget: using deleted entry %s, count=%d\n", de->name, de->count);
 			inode->i_uid = de->uid;
 			inode->i_gid = de->gid;
 		}
-		if (de->size)
+		if ((inode->i_mode & S_IFMT) == S_IFBLK || (inode->i_mode & S_IFMT) == S_IFCHR)
+			inode->i_rdev = de->size;
+		else if (de->size)
 			inode->i_size = de->size;
 		if (de->ops)
 			inode->i_op = de->ops;

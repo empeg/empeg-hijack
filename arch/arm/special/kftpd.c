@@ -38,7 +38,6 @@ extern struct semaphore hijack_khttpd_startup_sem;	// from arch/arm/special/hija
 extern struct semaphore hijack_kftpd_startup_sem;	// from arch/arm/special/hijack.c
 extern int sys_rmdir(const char *path); // fs/namei.c
 extern int sys_readlink(const char *path, char *buf, int bufsiz);
-extern int skip_atoi(char **s);	// from lib/vsprintf.c
 extern int sys_chmod(const char *path, mode_t mode); // fs/open.c
 extern int sys_mkdir(const char *path, int mode); // fs/namei.c
 extern int sys_unlink(const char *path);
@@ -121,42 +120,34 @@ inet_pton (int af, unsigned char *src, void *dst)
 }
 
 static int
-site_exec (void *data)
+site_exec2 (void *command)
 {
-	char *commandline = data;
-	static char *envp[] = { "HOME=/", "TERM=linux", "PATH=/bin:/sbin:/usr/bin", NULL };
-	static char *argv[32];
-	char **args = argv, *arg, *p;
+	int  rc;
+	char *envp[] = {"HOME=/", "PATH=/sbin:/bin", "TERM=linux", NULL};
+	char *argv[] = {"/bin/sh", "-c", command, NULL};
 
 	// kthread setup
 	current->session = 1;
 	current->pgrp = 1;
-	strcpy(current->comm, "siteexec");
+	strcpy(current->comm, argv[0]);
 	sigfillset(&current->blocked);
-	p = arg = commandline;
-	while (1) {
-		if (!*p || *p == ' ' || *p == '\t') {
-			*args++ = arg;
-			if (!*p)
-				break;
-			*p = '\0';
-			arg = p + 1;
-		}
-		++p;
-	}
-	*args++ = NULL;
-	if (argv[0]) {
-		close(0);close(1);close(2);
-		setsid();
-		(void) open("/dev/console",O_RDWR,0);
-		(void) dup(0);
-		(void) dup(0);
-		//printk("invoking execve('%s')\n", argv[0]);
-		//for (args = argv; *args; ++args)
-		//	printk("*arv[] = '%s'\n", *args);
-		execve(argv[0], argv, envp);	// never returns
-	}
+
+	close(0);close(1);close(2);
+	setsid();
+	(void) open("/dev/console",O_RDWR,0);
+	(void) dup(0);
+	(void) dup(0);
+	rc = execve(argv[0], argv, envp);	// never returns
 	return 0;
+}
+
+static int
+site_exec (char *command)
+{
+	pid_t pid = kernel_thread(site_exec2, command, CLONE_FS|CLONE_SIGHAND);
+	if (pid < 0)
+		printk("site_exec(%s) failed, rc=%d\n", command, pid);
+	return 200;
 }
 
 // This  function  converts  the  network  address structure src
@@ -316,7 +307,7 @@ send_help_response (server_parms_t *parms, char *type, char *commands)
 	char	buf[128];
 	int	rc, len;
 
-	len = sprintf(buf, "214-The following %scommands are recognized (* =>'s unimplemented)\r\n", type);
+	len = sprintf(buf, "214-The following %scommands are recognized%s\r\n", type, type ? "" : "(* =>'s unimplemented)");
 	if (parms->verbose)
 		printk("%s: %s%s", parms->servername, buf, commands);
 	if (len != (rc = ksock_rw(parms->clientsock, buf, len, -1))
@@ -901,8 +892,8 @@ static const mime_type_t mime_types[] = {
 	{"*.gz",		"application/x-gzip"		},
 	{"*.tar",		 application_x_tar		},
 	{"*.tgz",		 application_x_tar		},
-	{"/var/config.ini",	 text_plain			},
-	{"/var/tags",		 text_plain			},
+	{"*/config.ini",	 text_plain			},
+	{"*/tags",		 text_plain			},
 	{"/etc/*",		 text_plain			},
 	{"/proc/*",		 text_plain			},
 	{"/drive?/fids/*1",	 text_plain			},
@@ -1217,7 +1208,7 @@ kftpd_handle_command (server_parms_t *parms)
 	} else if (!strxcmp(buf, "PWD", 0)) {
 		quit = send_dir_response(parms, 257, parms->cwd, NULL);
 	} else if (!strxcmp(buf, "SITE HELP", 0)) {
-		quit = send_help_response(parms, "SITE ", "   CHMOD   HELP    \r\n");
+		quit = send_help_response(parms, "SITE ", "   CHMOD   HELP    RO    RW    REBOOT  EXEC    \r\n");
 		response = 214;
 	} else if (!strxcmp(buf, "SITE CHMOD ", 1)) {
 		unsigned char *p = &buf[11];
@@ -1229,17 +1220,26 @@ kftpd_handle_command (server_parms_t *parms)
 			append_path(path, p);
 			response = do_chmod(parms, mode, path);
 		}
+	} else if (!strxcmp(buf, "SITE REBOOT", 0)) {
+		extern int hijack_reboot;
+		hijack_reboot = 1;
+		response = 200;
+	} else if (!strxcmp(buf, "SITE RO", 0)) {
+		char ro[] =	"[ -e /proc/ide/hdb ] && mount -n -o remount,ro /drive1;"
+				"mount -n -o remount,ro /drive0; mount -n -o remount,ro /";
+		response = site_exec(ro);
+	} else if (!strxcmp(buf, "SITE RW", 0)) {
+		char rw[] =	"mount -n -o remount,rw /; mount -n -o remount,rw /drive0;"
+				"[ -e /proc/ide/hdb ] && mount -n -o remount,rw /drive1";
+		response = site_exec(rw);
+	} else if (!strxcmp(buf, "SITE EXEC ", 1)) {
+		response = site_exec(&buf[10]);
 	} else if (n == 2 && buf[0] == 0xff && buf[1] == 0xf4) {
 		response = 0;	// Ignore the telnet escape sequence
 	} else if (n == 5 && buf[0] == 0xf2 && !strxcmp(buf+1, "ABOR", 0)) {
 		response = 226;
 	} else if (!strxcmp(buf, "ABOR", 0)) {
 		response = 226;
-	} else if (!strxcmp(buf, "SITE EXEC ", 1)) {
-		static char commandline[256];		// fixme.. static buffer is bad!
-		strcpy(commandline, &buf[10]);
-		kernel_thread(site_exec, commandline, CLONE_FS|CLONE_SIGHAND);
-		response = 200;	//response = 502;	// fixme.. pipe output of command back to user
 	} else if (!strxcmp(buf, "PORT ", 1)) {
 		parms->have_portaddr = 0;
 		if (extract_portaddr(&parms->portaddr, &buf[5])) {
@@ -1357,12 +1357,18 @@ khttpd_handle_connection (server_parms_t *parms)
 			printk("%s: '%s'\n", parms->servername, buf);
 		// fixme? (maybe):  need to translate incoming char sequences of "%2F" to slashes
 		if (path[n] == '/') {
+			struct stat statbuf;
+			extern int sys_newstat(char *, struct stat *);
 			while (n > 0 && path[n] == '/')
 				path[n--] = '\0';
-			response = send_dirlist(parms, path, 1);
-		} else {
-			response = send_file(parms, path);
+			strcat(path, "/index.html");
+			if (0 > sys_newstat(path, &statbuf) || (statbuf.st_mode & S_IFMT) != S_IFREG) {
+				path[n+1] = '\0';
+				response = send_dirlist(parms, path, 1);
+				return 0;
+			}
 		}
+		response = send_file(parms, path);
 		if (response) {
 			sprintf(buf, "(%d)", response);
 			khttpd_bad_request(parms, 404, "Error retrieving file", buf);
@@ -1463,7 +1469,7 @@ kftpd_daemon (unsigned long use_http)	// invoked twice from init/main.c
 		set_fs(KERNEL_DS);
 		if (make_socket(parms, &parms->servsock, server_port)) {
 			printk("%s: make_socket(port=%d) failed\n", parms->servername, server_port);
-		} else if (parms->servsock->ops->listen(parms->servsock, use_http ? 5 : 1) < 0) { // queued: http:5, ftp:1
+		} else if (parms->servsock->ops->listen(parms->servsock, 10) < 0) {	// queued=10
 			printk("%s: listen(port=%d) failed\n", parms->servername, server_port);
 		} else {
 			printk("%s: listening on port %d\n", parms->servername, server_port);

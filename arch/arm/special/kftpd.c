@@ -87,10 +87,14 @@ typedef struct server_parms_s {
 	char			have_portaddr;		// bool
 	char			icy_metadata;		// bool
 	char			apple_iTunes;		// bool
-	char			need_password;		// bool
+	char			need_password;		// bool, FTP only
 	char			rename_pending;		// bool
 	char			nocache;		// bool
 	char			show_dotfiles;		// bool
+	char			no_data;		// bool
+	char			spare2;
+	char			spare1;
+	char			spare0;
 	unsigned short		data_port;
 	off_t			start_offset;		// starting offset for next FTP/HTTP file transfer
 	off_t			end_offset;		// for current HTTP file read
@@ -1162,8 +1166,8 @@ send_playlist (server_parms_t *parms, char *path)
 	int		pfid, fid, size, used = 0, xmit_threshold, fidfiles[16], fidx = -1;	// up to 16 levels of nesting
 	static const char *playlist_format[3] = {text_html, audio_m3u, text_xml};
 	static char	*tagtypes[2] = {"playlist", "tune"};
-	static char	*labels[] = {"type=", "artist=", "title=", "codec=", "duration=", "source=", "length=", "genre=", "year=", "comment=", "tracknr=", "offset=", "options=", "bitrate=", "samplerate=", "play_count=", "skipped_count=", "play_last=", NULL};
-	struct 		{char *type, *artist, *title, *codec, *duration, *source, *length, *genre, *year, *comment, *tracknr, *offset, *options, *bitrate, *samplerate, *play_count, *skipped_count, *play_last;} tags;
+	static char	*labels[] = {"type=", "artist=", "title=", "codec=", "duration=", "source=", "length=", "genre=", "year=", "comment=", "tracknr=", "offset=", "options=", "bitrate=", "samplerate=", NULL};
+	struct 		{char *type, *artist, *title, *codec, *duration, *source, *length, *genre, *year, *comment, *tracknr, *offset, *options, *bitrate, *samplerate;} tags;
 	const char	*tagtype;
 	file_xfer_t	xfer;
 
@@ -1374,12 +1378,8 @@ open_fidfile:
 							"\t\t\t<codec>%s</codec>\r\n"
 							"\t\t\t<duration>%u:%02u</duration>\r\n"
 							"\t\t\t<offset>%s</offset>\r\n"
-							"\t\t\t<play_count>%s</play_count>\r\n"
-							"\t\t\t<play_last>%s</play_last>\r\n"
-							"\t\t\t<skipped_count>%s</skipped_count>\r\n"
 							"\t\t</item>\r\n",
-							tags.length, tags.tracknr, tags.bitrate, tags.samplerate, tags.codec, secs/60, secs%60,
-							tags.offset, tags.play_count, tags.play_last, tags.skipped_count);
+							tags.length, tags.tracknr, tags.bitrate, tags.samplerate, tags.codec, secs/60, secs%60, tags.offset);
 					} else { // (fidtype == 'P') {
 						used += sprintf(xfer.buf+used,
 							"\t\t\t<length>%u</length>\r\n"
@@ -1660,7 +1660,9 @@ hijack_do_command (void *sparms, char *buf)
 			rc = -EINVAL;
 		} else {
 			nocache = 0;
-			if (!strxcmp(s, "FID=", 1)) {
+			if (!strxcmp(s, "NODATA", 0)) {
+				parms->no_data = 1;
+			} else if (!strxcmp(s, "FID=", 1)) {
 				sprintf(parms->cwd, "/drive0/fids/%s", s+4);
 			} else if (!strxcmp(s, "STYLE=", 1) && *(s += 6) && strlen(s) < sizeof(parms->style)) {
 				strcpy(parms->style, s);
@@ -2028,8 +2030,8 @@ khttpd_handle_connection (server_parms_t *parms)
 				response = send_playlist(parms, path);
 			goto quit;
 		}
-		if (!*path) {
-			const char r204[] = "HTTP/1.1 204 No Response\r\nConnection: close\r\n\r\n";
+		if (!*path || parms->no_data) {
+			const char r204[] = "HTTP/1.1 204 No Data\r\nConnection: close\r\n\r\n";
 			ksock_rw(parms->clientsock, r204, sizeof(r204)-1, -1);
 			return;
 		}

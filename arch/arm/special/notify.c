@@ -20,12 +20,10 @@
 
 #define IR_INTERNAL		((void *)-1)
 
-extern int sys_sync(void);
 extern int hijack_player_started;
 extern int hijack_do_command (void *sparms, char *buf);
 extern int strxcmp (const char *str, const char *pattern, int partial);					// hijack.c
 extern int get_button_code (unsigned char **s_p, unsigned int *button, int eol_okay, const char *nextchars); // hijack.c
-extern int hijack_reboot;										// hijack.c
 extern int do_remount(const char *dir,int flags,char *data);						// fs/super.c
 extern int get_filesystem_info(char *);									// fs/super.c
 extern int hijack_supress_notify, hijack_reboot;							// hijack.c
@@ -190,9 +188,6 @@ remount_drives (int writeable)
 		while (*b && *b++ != '\n');
 	}
 	unlock_kernel();
-	sys_sync();
-	sys_sync();
-	sys_sync();
 	show_message("Done", HZ);
 	return 0;
 }

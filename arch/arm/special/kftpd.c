@@ -68,6 +68,7 @@ extern int sys_rename(const char * oldname, const char * newname);
 extern int sys_newstat(char *, struct stat *);
 extern int sys_newfstat(int, struct stat *);
 extern int sys_fsync(int);
+extern int sys_sync(void);
 extern pid_t kernel_thread(int (*fn)(void *), void *arg, unsigned long flags);
 extern int sys_wait4 (pid_t pid,unsigned int * stat_addr, int options, struct rusage * ru);
 
@@ -1635,9 +1636,11 @@ hijack_do_command (void *sparms, char *buf)
 				goto next;
 			} else if (!strxcmp(s, "RO", 0)) {
 				rc = remount_drives(0);
+				sys_sync();
 				goto next;
 			} else if (!strxcmp(s, "REBOOT", 0)) {
-				(void) remount_drives(0);
+				rc = remount_drives(0);
+				sys_sync();
 				hijack_reboot = 1;
 				goto next;
 			} else if (!strxcmp(s, "POPUP ", 1) && *(s += 6)) {
@@ -2183,4 +2186,3 @@ kftpd_daemon (unsigned long use_http)	// invoked twice from init/main.c
 	}
 	return 0;
 }
-

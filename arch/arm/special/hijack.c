@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v228"
+#define HIJACK_VERSION	"v229"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -1303,6 +1303,7 @@ get_drive_size (int hwif, int unit)
 	return (capacity + (1000 * 1000)) / (2 * 1000 * 1000);
 }
 
+#ifdef DEBUG_JIFFIES
 static int
 debug_display (int firsttime)
 {
@@ -1350,6 +1351,7 @@ debug_display (int firsttime)
 	draw_string(ROWCOL(1,0), buf, PROMPTCOLOR);
 	return NEED_REFRESH;
 }
+#endif // DEBUG_JIFFIES
 
 static int
 vitals_display (int firsttime)
@@ -2432,6 +2434,25 @@ calculator_display (int firsttime)
 	return NEED_REFRESH;
 }
 
+static void
+do_reboot (struct display_dev *dev)
+{
+	if (hijack_reboot++ == 1) {
+		hijack_last_moved = jiffies;
+		clear_hijack_displaybuf(COLOR0);
+		(void) draw_string(ROWCOL(2,32), "Rebooting..", PROMPTCOLOR);
+		display_blat(dev, (char *)hijack_displaybuf);
+		state_cleanse();		// Ensure flash savearea is updated
+		remount_drives(0);
+	} else {
+		if (jiffies_since(hijack_last_moved) >= HZ) {
+			unsigned long flags;
+			save_flags_clif(flags);	// clif is necessary for machine_restart
+			machine_restart(NULL);	// never returns
+		}
+	}
+}
+
 static int
 reboot_display (int firsttime)
 {
@@ -2556,7 +2577,9 @@ static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 	{ blanker_menu_label,		blanker_display,	blanker_move,		0},
 	{"Show Flash Savearea",		savearea_display,	savearea_move,		0},
 	{"Vital Signs",			vitals_display,		NULL,			0},
+#ifdef DEBUG_JIFFIES
 	{"Vitals v2beta11",		debug_display,		NULL,			0},
+#endif // DEBUG_JIFFIES
 	{NULL,				NULL,			NULL,			0},};
 
 static void
@@ -2578,7 +2601,7 @@ menu_move (int direction)
 	}
 	empeg_state_dirty = 1;
 }
-#if 1 //fixme
+
 static int
 menu_display (int firsttime)
 {
@@ -2607,76 +2630,6 @@ menu_display (int firsttime)
 	}
 	return NO_REFRESH;
 }
-#else //fixme
-static int
-menu_display (int firsttime)
-{
-	static int old_menu_item, moving;
-	static const hijack_geom_t geom = {2, 2+6+KFONT_HEIGHT, 0, EMPEG_SCREEN_COLS-0};
-	unsigned int rowcol = (geom.first_row+4)|((geom.first_col+6)<<16);
-
-	if (firsttime) {
-		moving = 0;
-		create_overlay(&geom);
-		hijack_last_moved = jiffies ? jiffies : -1;
-		old_menu_item = menu_item;
-		(void)draw_string_spaced(rowcol, menu_table[old_menu_item].label, ENTRYCOLOR);
-	}
-	if (moving || menu_item != old_menu_item) {
-		static char buf[1024];
-		const char *old, *new;
-		static int direction, end, pos, new_menu_item;
-		if (!moving) {
-			moving = 1;
-			new_menu_item = menu_item;
-			if (old_menu_item == 0 && new_menu_item != 1)
-				direction = -1;
-			else if (new_menu_item == 0 && old_menu_item != 1)
-				direction =  1;
-			else if (new_menu_item > old_menu_item)
-				direction =  1;
-			else
-				direction = -1;
-			old = menu_table[old_menu_item].label;
-			new = menu_table[new_menu_item].label;
-			if (direction == -1) {
-				end = 0;
-				strcpy(buf, new);
-				pos = strlen(new);
-				buf[pos++] = ' ';
-				buf[pos++] = ' ';
-				strcpy(buf+pos, old);
-			} else {
-				pos = 0;
-				strcpy(buf, old);
-				end = strlen(old);
-				buf[end++] = ' ';
-				buf[end++] = ' ';
-				strcpy(buf+end, new);
-			}
-		}
-		menu_item = new_menu_item;
-		clear_hijack_displaybuf(COLOR0);
-		pos += direction;
-		if (pos == end) {
-			moving = 0;
-			old_menu_item = menu_item;
-			(void)draw_string_spaced(rowcol|0x4000, menu_table[new_menu_item].label, ENTRYCOLOR);
-		} else {
-			(void)draw_string_spaced(rowcol|0x4000, &buf[pos], COLOR3);
-		}
-		draw_frame(&geom);
-		return NEED_REFRESH;
-	}
-	if (ir_selected) {
-		menu_item_t *item = &menu_table[menu_item];
-		activate_dispfunc(item->dispfunc, item->movefunc);
-	} else if (jiffies_since(hijack_last_moved) > (HZ*5)) {
-		hijack_deactivate(HIJACK_IDLE_PENDING); // menu timed-out
-	}
-	return NO_REFRESH;
-}
-#endif //fixme
 
 static int userland_display_updated = 0;
 
@@ -3400,21 +3353,6 @@ check_screen_grab (unsigned char *buf)
 #endif // CONFIG_NET_ETHERNET
 }
 
-static void
-hijack_reboot_now (void *dev)
-{
-	unsigned long flags;
-
-	clear_hijack_displaybuf(COLOR0);
-	(void) draw_string(ROWCOL(2,32), "Rebooting..", PROMPTCOLOR);
-	display_blat(dev, (unsigned char *)hijack_displaybuf);
-
-	(void) remount_drives(0);	// ensure things are unmounted properly
-	state_cleanse();		// Ensure flash savearea is updated first
-	save_flags_clif(flags);		// clif is necessary for machine_restart
-	machine_restart(NULL);		// never returns
-}
-
 // This routine covertly intercepts all display updates,
 // giving us a chance to substitute our own display.
 //
@@ -3426,6 +3364,11 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	unsigned long flags;
 	int refresh = NEED_REFRESH;
 
+	if (hijack_reboot) {
+		do_reboot(dev);
+		return;
+	}
+#ifdef DEBUG_JIFFIES
 	// fixme: lockup detection logic
 	static unsigned long oldjiffies = 0, oldcount = 0;
 	if (jiffies == oldjiffies) {
@@ -3442,9 +3385,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 		oldjiffies = jiffies;
 		oldcount = 0;
 	}
-
-	if (hijack_reboot)
-		hijack_reboot_now(dev);
+#endif // DEBUG_JIFFIES
 
 #ifdef EMPEG_KNOB_SUPPORTED
 {

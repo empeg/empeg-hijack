@@ -31,10 +31,6 @@ extern __inline__ unsigned long gettimeoffset (void)
 	return (offset*tick)/LATCH;
 }
 
-//#define CLOCK_TICK_RATE         3686400
-//#define CLOCK_TICK_FACTOR       80
-//#define LATCH  ((CLOCK_TICK_RATE + HZ/2) / HZ) // 36864
-
 /*
  * Reset the timer every time to get centisecond interrupts
  */

@@ -234,6 +234,48 @@ asmlinkage ssize_t sys_read(unsigned int fd, char * buf, size_t count)
 	return do_sys_read(fd, buf, count);
 }
 
+static __u16 ratings_crc16 (const unsigned char *buffer, unsigned length)
+{
+	extern unsigned short crctab[];
+	unsigned short crc = 0;
+	
+	while(length--)
+		crc = (crctab[((crc >> 8) & 255)] ^ (crc << 8) ^ (*buffer++));
+	return crc;
+}
+
+static void preserve_song_rating (struct file *file, __u16 *user_buf)
+{
+	// Code for handling song ratings in hda3.
+	// If the player is writing to hda3 past 0x200000, we munge the buffer it writes a little bit.
+	// We take the existing song rating (offset 0x14 within the sector being written)
+	// and stick it into the buffer the player wants to write and recalculate the CRC.
+
+	__u16 kbuf[256], rating, length;
+	loff_t f_pos = file->f_pos;
+	ssize_t ret;
+
+	mm_segment_t old_fs = get_fs();
+	set_fs(KERNEL_DS);
+	ret = file->f_op->read(file, (void *)kbuf, sizeof(kbuf), &f_pos);
+	set_fs(old_fs);
+	if (ret == sizeof(kbuf)) {
+		rating = kbuf[10];
+		if (get_user(length, user_buf) == 0 && length) {
+			length += 2 * sizeof(__u16);
+			if (length <= sizeof(kbuf) && length >= (11 * sizeof(__u16))) {
+				if (0 == copy_from_user(kbuf, user_buf, length) && kbuf[10] != rating) {
+					kbuf[10] = rating;
+					kbuf[ 1] = ratings_crc16((void *)(kbuf + 2), kbuf[0]);
+					// A slight faux pas, but it keeps things simple here:
+					// reinsert the rating ("skips") field into the userland buffer.
+					copy_to_user(user_buf, kbuf, 11 * sizeof(__u16));
+				}
+			}
+		}
+	}
+}
+
 asmlinkage ssize_t sys_write(unsigned int fd, const char * buf, size_t count)
 {
 	ssize_t ret;
@@ -274,6 +316,10 @@ asmlinkage ssize_t sys_write(unsigned int fd, const char * buf, size_t count)
 	ret = -EINVAL;
 	if (!file->f_op || !(write = file->f_op->write))
 		goto out;
+
+	if (count == 512 && inode->i_rdev == MKDEV(3,3) && file->f_pos >= 0x200000 && !strcmp(current->comm, "player")) {
+		preserve_song_rating(file, (void *)buf);
+	}
 
 	down(&inode->i_sem);
 	ret = write(file, buf, count, &file->f_pos);

@@ -47,6 +47,13 @@
  * 2000/09/19 MAC Complete overhaul to send button up and button down
  *                codes rather that doing all the repeat stuff here.
  *
+ * 2001/10/24 MAC Added anti-glitch support for rotary control. It's a
+ *                bit of a hack but it might just work. See later for
+ *                full details of * the problem.
+ *
+ * 2001/10/25 MAC Honed rotary anti-glitch support by testing against
+ *                a player that suffered from it.
+ *
  * */
 
 /* Output format.
@@ -170,6 +177,10 @@ struct input_dev
 	unsigned long current_button_down;
 	unsigned long last_code_received;
 
+	/* Rotary deglitching support */
+	unsigned long last_rotary_jiffies;
+	input_code last_rotary_code;
+	
 	/* Statistics */
 	unsigned long count_valid;
 	unsigned long count_repeat;
@@ -181,6 +192,17 @@ struct input_dev
 	unsigned long timings_hwm;
 #endif
 };
+
+/* Rotary control deglitching support. When the rotary controls get
+ * hold and worn out they start giving false codes in the opposite
+ * direction at the end or possibly in the middle of rotation - this
+ * causes odd behaviour. So we arrange to ignore the codes indicating
+ * an opposite direction if they occur within a certain time of the
+ * previous one. */
+
+#define ROTARY_CLOCKWISE_CODE (0xa)
+#define ROTARY_ANTICLOCKWISE_CODE (0xb)
+#define ROTARY_GLITCH_TIMEOUT_JIFFIES (HZ/8)
 
 static struct input_dev input_devices[1];
 
@@ -309,7 +331,7 @@ static void dump_entries(struct recent_entry *e, int start, int end)
 #endif
 
 static inline void input_buttons_interrupt(struct input_dev *dev, int level,
-					unsigned long span)
+					   unsigned long span)
 {
 	static int state = IR_STATE_IDLE;
 	static int unit_time = 1; /* not zero in case we accidentally use it */
@@ -384,8 +406,6 @@ retry:
 		/* Going high, that should be after 4T */
 		unit_time = span / 4;
 		if (unit_time > US_TO_TICKS(50) && unit_time < US_TO_TICKS(550))
-		//if (unit_time > US_TO_TICKS(150) && unit_time < US_TO_TICKS(350)) << original
-		//if (unit_time > 225 && unit_time < 275)
 			state = IR_STATE_START2;
 		else
 			state = IR_STATE_IDLE; /* There's no point in recovering immediately
@@ -459,6 +479,39 @@ retry:
 			{
 				/* We don't do anything with repeats so go
 				   straight to the real code */
+
+				input_code code = (data >> 4);
+
+				if ((code == ROTARY_CLOCKWISE_CODE) || (code == ROTARY_ANTICLOCKWISE_CODE)) {
+					/* We need to do special
+					 * handling here 'cos when the
+					 * rotary controls get old and
+					 * worn out they start giving
+					 * false codes in the opposite
+					 * direction sometimes.
+					 */
+					
+					input_code previous_rotary_code = dev->last_rotary_code;
+					unsigned long previous_rotary_jiffies = dev->last_rotary_jiffies;
+
+					/* We want to do multiple
+                                         * codes within the timeout
+                                         * because it appears that
+                                         * now I've seen a player
+                                         * that really suffered from
+                                         * the problem it may
+                                         * generate up to two bad
+                                         * codes in a row.
+					 */
+					dev->last_rotary_jiffies = jiffies;
+					
+					if ((code != previous_rotary_code)
+					    && (jiffies_since(previous_rotary_jiffies) < ROTARY_GLITCH_TIMEOUT_JIFFIES)) {
+						/* Don't use the code then. */
+						break;
+					}
+					dev->last_rotary_code = code;
+				}
 				input_append_code(dev, data >> 4);
 				ON_VALID;
 			        state = IR_STATE_IDLE;
@@ -1024,6 +1077,13 @@ void __init empeg_input_init(void)
 	dev->wq = NULL;
 	dev->remote_type = IR_TYPE_DEFAULT;
 
+	dev->last_ir_jiffies = 0;
+	dev->current_button_down = 0;
+	dev->last_code_received = 0;
+	
+	dev->last_rotary_jiffies = 0;
+	dev->last_rotary_code = 0;
+	
 	dev->count_valid = 0;
 	dev->count_repeat = 0;
 	dev->count_badrepeat = 0;

@@ -1,4 +1,5 @@
 #undef CONFIG_EMPEG_LCD
+#undef COMPOSITE_BOARD 
 
 /*
  * linux/arch/arm/drivers/char/console-empeg.c
@@ -66,6 +67,8 @@
  * 2000/10/27 HBF Display power on/off now uses empeg_displaypower() -
  *                (in the empeg_power driver) as issue 9 boards no longer
  *                use a GPIO to control this.
+ *
+ * 2001/11/08 MAC Added minimal support for Patrick's composite board.
  *
  * This is the very basic console mapping code: we only provide a mmap()able
  * area at the moment - there is no linkup with the VT code.
@@ -375,6 +378,249 @@ static void lcd(unsigned char *source_buffer)
 }
 #endif
 
+#ifdef COMPOSITE_BOARD
+#define COMPOSITE_IDE_BASE ((volatile __u16 *)(0xe0000020))
+static volatile __u16 *const composite_command = COMPOSITE_IDE_BASE + 0;
+static volatile __u16 *const composite_data = COMPOSITE_IDE_BASE + 2;
+#define OPTION_COMPOSITE_HANDSHAKE 1
+
+static char convert_lookup[255];
+
+static char twobpp_buffer[1024];
+
+static void make_pixel_lookup()
+{
+    int a, b;
+    for (a=0; a<16; a++)
+    {
+	for (b=0; b<16; b++)
+	{
+	    convert_lookup[(a*16)+b] = (((b&3)<<2)|(a&3));
+	    printk("lookup[%d] = %d | %d\n", (a*16)+b, b&3, a&3);
+	}
+    }
+}
+
+static void convert_to_2bpp(unsigned char *source_buffer, unsigned char *dest_buffer)
+{
+    int p;
+    char o, c, l;
+    for (p=0; p<((EMPEG_SCREEN_WIDTH/2)*EMPEG_SCREEN_HEIGHT); p+=2)
+    {
+	o = source_buffer[p];
+	c = convert_lookup[o];
+	o = source_buffer[p+1];
+	l = convert_lookup[o];
+	c = (c<<4)|l;
+	dest_buffer[p/2] = c;
+    }
+}
+
+
+#ifdef OPTION_COMPOSITE_HANDSHAKE
+
+// This version uses a simple handshaking system to talk to the board
+
+
+
+static void composite_board_output(unsigned char *source_buffer)
+{
+	const __u16 START_SEQUENCE = 1;
+	const __u16 END_SEQUENCE = 2;
+	const __u16 DATA_UNAVAILABLE = 3;
+	const __u16 DATA_AVAILABLE = 4;
+	const __u16 START_HLINE = 5;
+
+	const __u16 MAGIC_COMMAND = 0xdead;
+	const __u16 MAGIC_DATA = 0xbead;
+
+	const int TIMEOUT = 0xff;
+
+	u16 icom = *composite_command;
+	u16 idat = *composite_data;
+//	__u16 *word_buffer = (__u16 *)source_buffer;
+	u32 *int_buffer = (u32 *)&twobpp_buffer;
+	u32 x, y, timeout, chunk;
+	u16 com, data;
+	char extra1, extra2;
+
+	// Check for presence of the board
+	// This actually checks whether the board is ready and waiting for a frame
+	// Therefore if the board software is slow, the result is missed frames
+	if ((icom != MAGIC_COMMAND) || (idat != MAGIC_DATA)) 
+	    return;
+
+	convert_to_2bpp(source_buffer, &twobpp_buffer); 
+
+	// Send start sequence command
+	*composite_command = START_SEQUENCE;
+	// Wait for start sequence to be acknowledged
+	com = *composite_command;
+	timeout = 0;
+	while (com != START_SEQUENCE && timeout < TIMEOUT)
+	{
+	    com = *composite_command;
+	    timeout += 1;
+	}
+
+	// This loop sends an entire frame
+	for(y = 0; y < 32; ++y) {
+	    for(x = 0; x < EMPEG_SCREEN_WIDTH/16; ++x) {
+		// Prepare the data
+		chunk = int_buffer[y * (EMPEG_SCREEN_WIDTH/16) + x];
+		data = ((chunk>>8) & 0xffff);   // This goes through the data register
+		extra1 = chunk>>24;             // This goes through the upper 8 bits of the command register
+		extra2 = (chunk & 0xff);        // This also passed through upper 8 bits of command register
+		// Send data unavailable command and 8 bits of data
+		*composite_command = (DATA_UNAVAILABLE | (extra1<<8));
+		// Send the data
+		*composite_data = data;
+		// Wait for data unavailable to be acknowledged
+		com = *composite_command;
+		timeout = 0;
+		while (com != DATA_UNAVAILABLE && timeout < TIMEOUT)
+		{
+		    com = *composite_command;
+		    timeout += 1;
+		}
+		
+		// Send data available command and 8 bits of data
+		*composite_command = (DATA_AVAILABLE | (extra2<<8));
+		// Wait for the data available to be acknowledged
+		com = *composite_command;
+		timeout = 0;
+		while (com != DATA_AVAILABLE && timeout < TIMEOUT)
+		{
+		    com = *composite_command;
+		    timeout += 1;
+		}
+	    }
+	}
+	// Send end sequence command
+	*composite_command = END_SEQUENCE;
+//	com = *composite_command;
+//	while (com != END_SEQUENCE)
+//	    com = *composite_command;
+}
+
+#else
+#if 1
+
+static int seqnum_lookup[512];
+
+static void composite_board_output(unsigned char *source_buffer)
+{
+	const __u16 START_SEQUENCE = 1;
+	const __u16 END_SEQUENCE = 2;
+	const __u16 DATA_UNAVAILABLE = 3;
+	const __u16 DATA_AVAILABLE = 4;
+
+	const __u16 MAGIC_COMMAND = 0xdead;
+	const __u16 MAGIC_DATA = 0xbead;
+
+	__u16 *word_buffer = (__u16 *)twobpp_buffer;
+//	__u16 *word_buffer = (__u16 *)source_buffer;
+
+	const int TIMEOUT = 0xf00;
+
+	int x, y, timeout, seqnum, badseqnums;
+	u16 com, dat;
+//	printk("Composite board frame sent blind\n");
+
+	*composite_command = START_SEQUENCE;
+	com = *composite_command;
+	timeout = 0;
+	while (com != START_SEQUENCE && timeout < TIMEOUT)  // Wait for START_SEQUENCE ack
+	{
+	    com= *composite_command;
+	    timeout += 1;
+	}
+	if (com != START_SEQUENCE)
+	    return;
+//	printk("Sending frame via IRQ mechanism\n");
+	badseqnums = 0;
+	convert_to_2bpp(source_buffer, &twobpp_buffer);
+	for(y = 0; y < 32; ++y) {
+		for(x = 0; x < EMPEG_SCREEN_WIDTH/8; ++x) {
+		    seqnum = (y * (EMPEG_SCREEN_WIDTH/8)) + x;
+		    dat = word_buffer[seqnum];
+		    *composite_data = dat;
+		    *composite_command = (seqnum<<4) | DATA_UNAVAILABLE;
+		    com = *composite_command;
+		    timeout = 0;
+		    while (com != seqnum && timeout<TIMEOUT)
+		    {
+			com = *composite_command;
+			timeout += 1;
+		    }
+		    if (com != seqnum)
+		    {
+			seqnum_lookup[badseqnums] = seqnum;
+			badseqnums += 1;
+		    }
+		}
+	}
+	if (badseqnums > 0)
+	{
+	    printk("%d bad seqnums\n", badseqnums);
+	    y = 0;
+	    for(x=0; x<badseqnums; ++x) {
+		seqnum = seqnum_lookup[x];
+		dat = word_buffer[seqnum];
+		*composite_data = dat;
+		*composite_command = (seqnum<<4) | DATA_UNAVAILABLE;
+		com = *composite_command;
+		timeout = 0;
+		while (com != seqnum && timeout<TIMEOUT)
+		{
+		    com = *composite_command;
+		    timeout += 1;
+		}
+		if (com != seqnum)
+		{
+		    y += 1;
+		}
+	    }
+	    printk("%d bad seqnums after retry\n", y);
+	}
+	*composite_command = END_SEQUENCE;
+}
+
+#else
+// This version sends the data blindly to the board (useful to test writing to the ide does't have side effects)
+
+static void composite_board_output(unsigned char *source_buffer)
+{
+	const __u16 START_SEQUENCE = 1;
+	const __u16 END_SEQUENCE = 2;
+	const __u16 DATA_UNAVAILABLE = 3;
+	const __u16 DATA_AVAILABLE = 4;
+
+	const __u16 MAGIC_COMMAND = 0xdead;
+	const __u16 MAGIC_DATA = 0xbead;
+
+	__u16 *word_buffer = (__u16 *)source_buffer;
+
+	int x, y;
+	u16 com;
+//	printk("Composite board frame sent blind\n");
+
+	*composite_command = START_SEQUENCE;
+	for(y = 0; y < 32; ++y) {
+		for(x = 0; x < EMPEG_SCREEN_WIDTH/4; ++x) {
+		    *composite_command = DATA_UNAVAILABLE;
+		    *composite_data = word_buffer[y * (EMPEG_SCREEN_WIDTH/4) + x];		    
+		    *composite_command = DATA_AVAILABLE;			
+		    udelay(1);
+		}
+	}
+	*composite_command = END_SEQUENCE;
+
+}
+#endif
+#endif       // OPTION_COMPOSITE_HANDSHAKE
+#endif
+
 /* Do a direct refresh straight to the screen */
 
 /* Plot a pixel on the actual display */
@@ -409,6 +655,9 @@ static void display_blat(struct display_dev *dev, unsigned char *source_buffer)
 
 #ifdef CONFIG_EMPEG_LCD
 	lcd(source_buffer);
+#endif
+#ifdef COMPOSITE_BOARD
+	composite_board_output(source_buffer);
 #endif
 
 	/* The main body of the screen is logical */
@@ -997,6 +1246,10 @@ void __init empeg_display_init(void)
 {
 	struct display_dev *dev = devices;
 	int result,delay;
+
+#ifdef COMPOSITE_BOARD
+	make_pixel_lookup();
+#endif
 	
 	/* Firstly, we need to locate the LCD DMA buffer to a 4k page
 	   boundary to ensure that the SA1100 DMA controller can do

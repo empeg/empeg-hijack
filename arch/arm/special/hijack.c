@@ -941,10 +941,38 @@ forcedc_display (int firsttime)
 	(void)draw_string(ROWCOL(0,0), "Force DC/Car Operation", PROMPTCOLOR);
 	rowcol = draw_string(ROWCOL(1,0), "Current Mode: ", PROMPTCOLOR);
 	(void)draw_string(rowcol, empeg_on_dc_power() ? "DC/Car" : "AC/Home", PROMPTCOLOR);
-	rowcol = draw_string(ROWCOL(3,0), "Next reboot: ", PROMPTCOLOR);
+	rowcol = draw_string(ROWCOL(3,0), "On reboot: ", PROMPTCOLOR);
 	(void)draw_string(rowcol, hijack_savearea.force_dcpower ? " Force DC/Car " : " [Normal] ", ENTRYCOLOR);
 	return NEED_REFRESH;
 }
+
+#ifdef STYLE_SELECT
+static void
+style_move (int direction)
+{
+	if (PROMPTCOLOR == COLOR3) {
+		PROMPTCOLOR		=  COLOR2;
+		ENTRYCOLOR		=  COLOR3;
+	} else {
+		PROMPTCOLOR		=  COLOR3;
+		ENTRYCOLOR		= -COLOR3;
+	}
+}
+
+static int
+style_display (int firsttime)
+{
+	unsigned int rowcol;
+
+	if (!firsttime && !hijack_last_moved)
+		return NO_REFRESH;
+	hijack_last_moved = 0;
+	clear_hijack_displaybuf(COLOR0);
+	(void)draw_string(ROWCOL(0,0), "Select Menu Style:", PROMPTCOLOR);
+	rowcol = draw_string(ROWCOL(2,48), (PROMPTCOLOR == COLOR3) ? "Modern" : "Classic", ENTRYCOLOR);
+	return NEED_REFRESH;
+}
+#endif // STYLE_SELECT
 
 static unsigned int
 draw_hhmmss (unsigned int rowcol, unsigned int seconds, int color)
@@ -1301,7 +1329,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v80 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v81 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1495,7 +1523,7 @@ maxtemp_display (int firsttime)
 		rowcol = draw_string(rowcol, " [Off] ", ENTRYCOLOR);
 	rowcol = draw_string(ROWCOL(2,0), "Currently: ", PROMPTCOLOR);
 	(void)draw_temperature(rowcol, read_temperature(), 32, PROMPTCOLOR);
-	rowcol = draw_string(ROWCOL(3,0), "Corrected by ", PROMPTCOLOR);
+	rowcol = draw_string(ROWCOL(3,0), "Corrected by: ", PROMPTCOLOR);
 	(void)draw_temperature(rowcol, hijack_temperature_correction, 0, PROMPTCOLOR);
 	return NEED_REFRESH;
 }
@@ -1715,6 +1743,9 @@ static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 #ifdef EMPEG_KNOB_SUPPORTED
 	{" Knob Press Redefinition ",	knobdata_display,	knobdata_move,		0},
 #endif // EMPEG_KNOB_SUPPORTED
+#ifdef STYLE_SELECT
+	{" Menu Style ",		style_display,		style_move,		0},
+#endif // STYLE_SELECT
 	{" Reboot Machine ",		reboot_display,		NULL,			0},
 	{" Screen Blanker Timeout ",	blanker_display,	blanker_move,		0},
 	{" Screen Blanker Sensitivity ", blankerfuzz_display,	blankerfuzz_move,	0},
@@ -1754,6 +1785,7 @@ menu_display (int firsttime)
 		save_flags_cli(flags);
 		for (text_row = 0; text_row < EMPEG_TEXT_ROWS; ++text_row) {
 			unsigned int index = (menu_top + text_row) % menu_size;
+			//unsigned int color = (index == menu_item) ? ENTRYCOLOR : PROMPTCOLOR;
 			unsigned int color = (index == menu_item) ? ENTRYCOLOR : COLOR2;
 			(void)draw_string(ROWCOL(text_row,0), menu_table[index].label, color);
 		}

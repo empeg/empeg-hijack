@@ -912,25 +912,6 @@ static int empeg_audio_ioctl(struct inode *inode, struct file *file,
 		                    dev->buffers[pretail].data,
 				    AUDIO_BUFFER_SIZE);
         }	
-	case EMPEG_DSP_VOLADJ: {
-		int factor_per_second, minvol, headroom,
-                  real_silence, fake_silence;
-		int *ptr = (int *)arg;
-		get_user_ret(factor_per_second, ptr, -EFAULT);
-		get_user_ret(minvol, ptr + 1, -EFAULT);
-		get_user_ret(headroom, ptr + 2, -EFAULT);
-		get_user_ret(real_silence, ptr + 3, -EFAULT);
-		get_user_ret(fake_silence, ptr + 4, -EFAULT);
-                voladj_intinit( &(dev->voladj),
-                    AUDIO_BUFFER_SIZE,
-                    factor_per_second >> (16 - MULT_POINT),
-                    (minvol << MULT_POINT) / MAXSAMPLES,
-                    headroom >> (16 - MULT_POINT),
-                    real_silence,
-                    fake_silence
-                    );
-		return 0;
-	}
 	}
 
 	/* invalid command */

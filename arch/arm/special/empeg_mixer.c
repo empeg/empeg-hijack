@@ -492,7 +492,6 @@ static int empeg_mixer_ioctl(struct inode *inode, struct file *file,
 		return 0;
 	}
 	case EMPEG_MIXER_READ_SOURCE:
-		dev->input=SOUND_MASK_PCM;
 		put_user_ret(dev->input, (int *)arg, -EFAULT);
 #if MIXER_DEBUG
 		printk(MIXER_NAME

@@ -1237,7 +1237,7 @@ void __init mount_root(void)
 			panic("VFS: add_vfsmnt failed for root fs");
 		}
 	}
-#ifdef CONFIG_SA1100_EMPEG
+#ifdef CONFIG_EMPEG_DISPLAY
 	display_bootfail();
 #endif
 	panic("VFS: Unable to mount root fs on %s",

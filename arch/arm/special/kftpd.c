@@ -31,6 +31,7 @@
 #define KHTTPD	"khttpd"
 #define KFTPD	"kftpd"
 
+extern int hijack_glob_match (const char *n, const char *p);
 extern tm_t *hijack_convert_time(time_t, tm_t *);	// from arch/arm/special/notify.c
 extern void sys_exit(int);
 extern char hijack_khttpd_style[];			// from arch/arm/special/hijack.c
@@ -401,27 +402,6 @@ append_string (char *b, const char *s, int quoted)
 	return b;
 }
 
-
-// Pattern matching: returns 1 if n(ame) matches p(attern), 0 otherwise
-static int
-glob_match (const char *n, const char *p)
-{
-	while (*n && (*n == *p || *p == '?')) {
-		++n;
-		++p;
-	}
-	if (*p == '*') {
-		while (*++p == '*');
-		while (*n) {
-			while (*n && (*n != *p && *p != '?'))
-				++n;
-			if (*n && glob_match(n++, p))
-				return 1;
-		}
-	}
-	return (!(*n | *p));
-}
-
 typedef struct filldir_parms_s {
 	unsigned short		current_year;	// current calendar year (YYYY), according to the Empeg
 	unsigned short		full_listing;	// 0 == names only, 1 == "ls -l"
@@ -474,7 +454,7 @@ filldir (void *data, const char *name, int namelen, off_t offset, ino_t ino)
 		*n++ = *name++;
 	*n = '\0';
 	// now we can do pattern matching on the copied name:
-	if (!p->pattern || glob_match(zname, p->pattern))
+	if (!p->pattern || hijack_glob_match(zname, p->pattern))
 		p->nam_used = len;	// accept this entry; otherwise it gets overwritten next time thru
 	return 0;			// continue reading directory entries
 }
@@ -863,7 +843,7 @@ get_mime_type (const char *path, const char **mimetype)
 {
 	const char		*pattern;
 	const mime_type_t	*m = mime_types;
-	while ((pattern = m->pattern) && !glob_match(path, pattern))
+	while ((pattern = m->pattern) && !hijack_glob_match(path, pattern))
 		++m;
 	if (mimetype)
 		*mimetype = m->mime;
@@ -948,7 +928,7 @@ khttp_send_file_header (server_parms_t *parms, char *path, off_t length, char *b
 	char		artist_title[128];
 
 	artist_title[0] = '\0';
-	if (glob_match(path, "/drive?/fids/*0")) {
+	if (hijack_glob_match(path, "/drive?/fids/*0")) {
 		char c, *lastc = path + strlen(path) - 1;
 		int		fd, size;
 
@@ -1029,7 +1009,7 @@ prepare_file_xfer (server_parms_t *parms, char *path, file_xfer_t *xfer, int wri
 		flags = O_RDONLY;
 
 	fd = open(path, flags, 0666 & ~parms->umask);
-	if (fd < 0 && !writing && parms->use_http && glob_match(path, "/drive?/fids/*")) {
+	if (fd < 0 && !writing && parms->use_http && hijack_glob_match(path, "/drive?/fids/*")) {
 		path[6] ^= 1;	// try the other drive; we cannot use httpd_redirect() here
 		if (0 > (fd = open(path, flags, 0))) 
 			path[6] ^= 1;	// restore original path
@@ -2003,7 +1983,7 @@ khttpd_handle_connection (server_parms_t *parms)
 		if (parms->generate_playlist) {
 			if (!hijack_khttpd_playlists)
 				response = &access_not_permitted;
-			else if (!glob_match(path, "/drive?/fids/??*1"))
+			else if (!hijack_glob_match(path, "/drive?/fids/??*1"))
 				response = &invalid_playlist_path;
 			else if (!*path)
 				response = &(http_response_t){400, "Missing Pathname"};

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v207"
+#define HIJACK_VERSION	"v208"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -257,11 +257,12 @@ static button_name_t button_names[] = {
 
 #define KNOBDATA_BITS 3
 #define KNOBDATA_SIZE (1 << KNOBDATA_BITS)
-static int knobdata_index = 0, hijack_knobseek = 0;
+static int knobdata_index = 0;
 static int popup0_index = 0;		// (PopUp0) saved/restored index
 
 #ifdef EMPEG_KNOB_SUPPORTED
 
+static int hijack_knobseek = 0;
 static unsigned long ir_knob_busy = 0, ir_knob_down = 0;
 
 // Mmm.. this *could* be eliminated entirely, in favour of IR-translations and PopUp's..
@@ -3855,6 +3856,54 @@ int hijack_ioctl  (struct inode *inode, struct file *filp, unsigned int cmd, uns
 	}
 }
 
+// Pattern matching: returns 1 if n(ame) matches p(attern), 0 otherwise
+int
+hijack_glob_match (const char *n, const char *p)
+{
+	while (*n && (*n == *p || *p == '?')) {
+		++n;
+		++p;
+	}
+	if (*p == '*') {
+		while (*++p == '*');
+		while (*n) {
+			while (*n && (*n != *p && *p != '?'))
+				++n;
+			if (*n && hijack_glob_match(n++, p))
+				return 1;
+		}
+	}
+	return (!(*n | *p));
+}
+
+#define HIJACK_MAX_DANCES 10	// must be <= than 32
+static int   hijack_num_dances = 0, hijack_dancemap = 0;
+static char *hijack_dances[HIJACK_MAX_DANCES] = {NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL};
+
+const char *
+hijack_pick_dancefile (const char *dance)
+{
+	static unsigned int seed = 0;
+	int i, num;
+
+	if (hijack_num_dances > 0) {
+		if (!seed)
+			seed = (jiffies ^ CURRENT_TIME);
+		seed = (seed * 65339) & 0x7fffffff;
+		num = seed % hijack_num_dances;
+		for (i = 0; i < HIJACK_MAX_DANCES; ++i) {
+			if (!(hijack_dancemap & (1<<i)) && !num--) {
+				hijack_dancemap |= (1<<i);	// mark slot as "used"
+				--hijack_num_dances;
+				dance = hijack_dances[i];
+				break;
+			}
+		}
+	}
+	printk("Loading dancefile: \"%s\"\n", dance);
+	return dance;
+}
+
 static int
 get_option_vals (int syntax_only, unsigned char **s, const hijack_option_t *opt)
 {
@@ -3895,6 +3944,7 @@ hijack_get_options (unsigned char *buf)
 	int errors;
 	unsigned char *s;
 
+	hijack_num_dances = hijack_dancemap = 0;
 	// look for [kenwood] disabled=0
 	kenwood_disabled = 0;
 	if ((s = find_header(buf, "[kenwood]"))) {
@@ -3925,6 +3975,30 @@ hijack_get_options (unsigned char *buf)
 					(void)get_option_vals(0, &s, opt);	// second pass saves
 					goto nextline;
 				}
+			}
+		}
+		if (!strxcmp(s, "dance=", 1)) {
+			unsigned char *name = s += 6;
+			s = findchars(s, "\n;\r");
+			if (s != name && hijack_num_dances < HIJACK_MAX_DANCES) {
+				int size;
+				char *dance, *prefix, saved = *s;
+				*s = '\0';
+				prefix = (name[0] == '/') ? "" : "/empeg/lib/visuals/";
+				size = strlen(name) + strlen(prefix) + 1;
+				dance = hijack_dances[hijack_num_dances];
+				if (dance && (strlen(dance) + 1) != size) {
+					kfree(dance);
+					dance = NULL;
+				}
+				if (!dance)
+					dance = kmalloc(size, GFP_KERNEL);
+				if (dance) {
+					sprintf(dance, "%s%s", prefix, name);
+					hijack_dances[hijack_num_dances++] = dance;
+				}
+				*s = saved;
+				goto nextline;
 			}
 		}
 		if (!strxcmp(s, menu_delete, 1)) {

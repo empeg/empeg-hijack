@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v354"
+#define HIJACK_VERSION	"v355"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -48,6 +48,7 @@ extern int empeg_inittherm(volatile unsigned int *timerbase, volatile unsigned i
 
 #ifdef CONFIG_SMC9194_TIFON	// Mk2 or later? (Mk1 has no ethernet chip)
 #define EMPEG_KNOB_SUPPORTED	// Mk2 and later have a front-panel knob
+#define EMPEG_STALK_SUPPORTED	// Mk2 and later have a front-panel knob
 #endif
 int	kenwood_disabled;		// used by Nextsrc button
 int	empeg_on_dc_power;		// used in arch/arm/special/empeg_power.c
@@ -96,6 +97,7 @@ static void (*hijack_movefunc)(int) = NULL;
 
 #define LONGPRESS_DELAY		(HZ+(HZ/3))	// delay between press/release for emulated longpresses
 
+#ifdef EMPEG_STALK_SUPPORTED
 // Sony Stalk packets look like this:
 //
 //	0x02 0x0S 0xBB 0xCC
@@ -167,6 +169,7 @@ static min_max_t lhs_stalk_default[] = {
 	{0x7e, 0x8a},	// IR_KVOLUP_PRESSED
 	{0x94, 0xa0},	// IR_KFRONT_PRESSED
 	{0xa0, 0xb5}};	// IR_KBOTTOM_PRESSED
+#endif // EMPEG_STALK_SUPPORTED
 
 static unsigned long ir_lastevent = 0, ir_lasttime = 0, ir_selected = 0;
 static unsigned int ir_releasewait = IR_NULL_BUTTON, ir_trigger_count = 0;;
@@ -360,6 +363,7 @@ static button_name_t button_names[] = {
 	{"CDMDCH",	IR_KW_CDMDCH_PRESSED},
 	{"DNPP",	IR_KW_DNPP_PRESSED},
 
+#ifdef EMPEG_STALK_SUPPORTED
 	{"KOff",	IR_KOFF_PRESSED},	// Stalk
 	{"KSource",	IR_KSOURCE_PRESSED},	// Stalk
 	{"KAtt",	IR_KATT_PRESSED},	// Stalk
@@ -381,6 +385,7 @@ static button_name_t button_names[] = {
 	{"KSVolDown",	IR_KSVOLDOWN_PRESSED},	// Stalk
 	{"KSRear",	IR_KSREAR_PRESSED},	// Stalk
 	{"KSBottom",	IR_KSBOTTOM_PRESSED},	// Stalk
+#endif // EMPEG_STALK_SUPPORTED
 
 	{"NextVisual",	IR_RIO_VISUAL_PRESSED|ALT},
 	{"PrevVisual",	IR_PREV_VISUAL_PRESSED},// v2-rc1
@@ -490,6 +495,9 @@ static	int hijack_dc_servers;			// 1 == allow kftpd/khttpd when on DC power
 static	int hijack_spindown_seconds;		// drive spindown timeout in seconds
 	int hijack_fake_tuner;			// pretend we have a tuner, when we really don't have one
 	int hijack_trace_tuner;			// dump incoming tuner/stalk packets onto console
+#ifdef EMPEG_STALK_SUPPORTED
+static	int hijack_stalk_debug;			// trace button in/out actions to/from Stalk?
+#endif // EMPEG_STALK_SUPPORTED
 #ifdef HIJACK_MOD_TUNER
 	int hijack_tuner_offset;		// FIXME
 #endif
@@ -512,7 +520,6 @@ static	int hijack_spindown_seconds;		// drive spindown timeout in seconds
 static	int nextsrc_aux_enabled;		// "1" == include "AUX" when doing NextSrc
 static	int hijack_old_style;			// 1 == don't highlite menu items
 static	int hijack_quicktimer_minutes;		// increment size for quicktimer function
-static	int hijack_stalk_debug;			// trace button in/out actions to/from Stalk?
 static	int hijack_standby_minutes;		// number of minutes after screen blanks before we go into standby
 	int hijack_suppress_notify;		// 1 == suppress player "notify" and "dhcp" text on serial port
 	int hijack_time_offset;			// adjust system time-of-day clock by this many minutes
@@ -631,9 +638,11 @@ static const hijack_option_t hijack_option_table[] =
 {button_names[2].name,		button_names[2].name,		(int)"PopUp2",		0,	0,	8},
 {button_names[3].name,		button_names[3].name,		(int)"PopUp3",		0,	0,	8},
 {"quicktimer_minutes",		&hijack_quicktimer_minutes,	30,			1,	1,	120},
+#ifdef EMPEG_STALK_SUPPORTED
 {"stalk_debug",			&hijack_stalk_debug,		0,			1,	0,	1},
 {"stalk_lhs",			lhs_stalk_vals,			(int)lhs_stalk_default,	20,	0,	0xff},
 {"stalk_rhs",			rhs_stalk_vals,			(int)rhs_stalk_default,	20,	0,	0xff},
+#endif // EMPEG_STALK_SUPPORTED
 {"standbyLED_on",		&hijack_standbyLED_on,		-1,			1,	-1,	HZ*60},
 {"standbyLED_off",		&hijack_standbyLED_off,		10*HZ,			1,	0,	HZ*60},
 {"standby_minutes",		&hijack_standby_minutes,	30,			1,	0,	240},
@@ -1182,6 +1191,7 @@ hijack_enq_translations (ir_translation_t *t)
 	}
 }
 
+#ifdef EMPEG_STALK_SUPPORTED
 static void
 inject_stalk_button (unsigned int button)
 {
@@ -1214,6 +1224,7 @@ inject_stalk_button (unsigned int button)
 	hijack_serial_rx_insert(pkt, sizeof(pkt), 0);
 #endif // CONFIG_HIJACK_TUNER
 }
+#endif // EMPEG_STALK_SUPPORTED
 
 static int
 hijack_button_deq (hijack_buttonq_t *q, hijack_buttondata_t *rdata, int nowait)
@@ -1266,6 +1277,7 @@ hijack_playerq_deq (unsigned int *rbutton)	// for use by empeg_input.c
 		dmsg = 0;
 
 		button = data->button;
+#ifdef EMPEG_STALK_SUPPORTED
 		if ((button & IR_STALK_MASK) == IR_STALK_MATCH) {
 			//
 			// Dequeue/issue the stalk button, and loop again
@@ -1277,7 +1289,9 @@ hijack_playerq_deq (unsigned int *rbutton)	// for use by empeg_input.c
 			restore_flags(flags);
 			inject_stalk_button(button);
 			save_flags_clif(flags);
-		} else {
+		} else
+#endif // EMPEG_STALK_SUPPORTED
+		{
 			//
 			// If caller gave us a pointer, then deq/return button,
 			// otherwise leave button on the queue for now.
@@ -2998,8 +3012,10 @@ showbutton_display (int firsttime)
 		}
 	}
 	restore_flags(flags);
+#ifdef EMPEG_STALK_SUPPORTED
 	if (firsttime)
 		most_recent_stalk_code = 0xff;
+#endif // EMPEG_STALK_SUPPORTED
 	if (firsttime || prev[0] != IR_NULL_BUTTON) {
 		unsigned long rowcol;
 		clear_hijack_displaybuf(COLOR0);
@@ -3007,13 +3023,15 @@ showbutton_display (int firsttime)
 		rowcol += (6<<16);
 		(void) draw_number(rowcol, counter, " %02d ", ENTRYCOLOR);
 		(void) draw_string(ROWCOL(1,0), "Repeat any button to exit", PROMPTCOLOR);
+#ifdef EMPEG_STALK_SUPPORTED
 		if (most_recent_stalk_code != 0xff) {
 			unsigned char buf[16];
 			sprintf(buf, "Stalk=%02x", most_recent_stalk_code);
 			(void)draw_string(ROWCOL(2,4), buf, PROMPTCOLOR);
-		} else if (prev[3] != IR_NULL_BUTTON) {
+		} else
+#endif // EMPEG_STALK_SUPPORTED
+		if (prev[3] != IR_NULL_BUTTON)
 			(void)draw_number(ROWCOL(2,4), prev[3], "%08X", PROMPTCOLOR);
-		}
 		if (prev[2] != IR_NULL_BUTTON)
 			(void)draw_number(ROWCOL(2,(EMPEG_SCREEN_COLS/2)), prev[2], " %08X ", PROMPTCOLOR);
 		if (prev[1] != IR_NULL_BUTTON)
@@ -3830,8 +3848,7 @@ input_append_code(void *dev, unsigned int button)  // empeg_input.c
 	restore_flags(flags);
 }
 
-#ifdef CONFIG_HIJACK_TUNER
-
+#ifdef EMPEG_STALK_SUPPORTED
 static int
 handle_stalk_packet (unsigned char *pkt)
 {
@@ -3889,7 +3906,7 @@ hijack_intercept_stalk (unsigned int packet)
 		hijack_serial_rx_insert((unsigned char *)&packet, sizeof(packet), 0);
 	}
 }
-#endif // CONFIG_HIJACK_TUNER
+#endif // EMPEG_STALK_SUPPORTED
 
 static void
 check_screen_grab (unsigned char *buf)
@@ -3984,7 +4001,9 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 
 	save_flags_cli(flags);
 	if (!dev->power) {  // do (almost) nothing else if unit is in standby mode
+#ifdef EMPEG_STALK_SUPPORTED
 		hijack_stalk_enabled = 0;
+#endif // EMPEG_STALK_SUPPORTED
 		hijack_deactivate(HIJACK_IDLE);
 		(void)timer_check_expiry(dev);
 		restore_flags(flags);
@@ -3992,7 +4011,9 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 		display_blat(dev, player_buf);
 		return;
 	}
+#ifdef EMPEG_STALK_SUPPORTED
 	hijack_stalk_enabled = 1;
+#endif // EMPEG_STALK_SUPPORTED
 
 #ifdef EMPEG_KNOB_SUPPORTED
 	if (ir_knob_down && jiffies_since(ir_knob_down) > (HZ*2)) {
@@ -4812,7 +4833,9 @@ hijack_get_options (unsigned char *buf)
 
 	// look for certain player options we use internally:
 	kenwood_disabled = hijack_find_player_option(buf, "[kenwood]",  "disabled=1");
+#ifdef EMPEG_STALK_SUPPORTED
 	stalk_on_left    = hijack_find_player_option(buf, "[controls]", "stalk_side=left");
+#endif // EMPEG_STALK_SUPPORTED
 
 	// look for [hijack] options:
 	if (!(s = find_header(buf, "[hijack]")))
@@ -4922,9 +4945,11 @@ reset_hijack_options (void)
 {
 	const hijack_option_t *h = hijack_option_table;
 	kenwood_disabled = 0;
+#ifdef EMPEG_STALK_SUPPORTED
 	stalk_on_left = 0;
 	lhs_stalk_vals[10] = (min_max_t){-1,-1};	// mark end of table (not part of "options").
 	rhs_stalk_vals[10] = (min_max_t){-1,-1};	// mark end of table (not part of "options").
+#endif // EMPEG_STALK_SUPPORTED
 	while (h->name) {
 		int n = h->num_items, *val = h->target;
 		if (n == 1) {

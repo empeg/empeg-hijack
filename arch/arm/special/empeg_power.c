@@ -164,7 +164,7 @@ int empeg_on_dc_power (void)
 }
 
 /* Bitset of current power state */
-static int getbitset(void)
+int getbitset(void)
 {
 	struct power_dev *dev=power_devices;
 
@@ -199,6 +199,7 @@ static int getbitset(void)
 		if (!(gplr&EMPEG_SERIALCTS)) bitset|=EMPEG_POWER_FLAG_LIGHTS; /* Dimmer sense - inverted */
 		if (dev->displaystate)	  bitset|=EMPEG_POWER_FLAG_DISPLAY;
 	}
+
 	if (hijack_force_dcpower)
 		bitset|=EMPEG_POWER_FLAG_DC;
 	if (saved_unstable == (bitset & unstable_bits)) {

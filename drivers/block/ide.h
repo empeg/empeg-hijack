@@ -41,6 +41,8 @@
 #define FAKE_FDISK_FOR_EZDRIVE	0
 #define FANCY_STATUS_DUMPS	0
 #define REALLY_FAST_IO		1
+#undef  INITIAL_MULT_COUNT
+#define INITIAL_MULT_COUNT	4
 #endif
 
 #ifndef SUPPORT_SLOW_DATA_PORTS		/* 1 to support slow data ports */

@@ -944,7 +944,7 @@ int display_ioctl(struct inode *inode, struct file *filp, unsigned int cmd,
 		break;	
 
 	default:
-		return -EINVAL;
+		return(-EINVAL);
 	}
 	
 	return 0;
@@ -1122,10 +1122,10 @@ void __init empeg_display_init(void)
 	udelay(1);
 #endif
 {
-	unsigned char buffer[128];
+	unsigned char ignored[128];
 	extern int state_fetch(unsigned char *);
 	hijack_init();
-	state_fetch(buffer);
+	state_fetch(ignored);
 }
 	handle_splash(dev);
 	printk("empeg display initialised.\n");

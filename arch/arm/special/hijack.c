@@ -716,7 +716,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v45 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v46 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1429,7 +1429,6 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 	int hijacked = 0;
 	unsigned long flags;
 
-	printk("data=%08lx, status=%d, rwait=%08lx\n", data, hijack_status, ir_releasewait);
 	save_flags_cli(flags);
 	blanker_activated = 0;
 	if (hijack_buttonlist && hijack_status == HIJACK_ACTIVE) {

@@ -761,11 +761,12 @@ static void display_animation(unsigned long animation_base)
 	animation_timer.data=animation_base;
 	animation_timer.function=display_animation;
 	if (framenr >= 0) {
-		animation_timer.expires=(jiffies+((framenr==0)?(HZ/2):(HZ/ANIMATION_FPS)));
+		animation_timer.expires = framenr ? (HZ/ANIMATION_FPS) : (HZ/2);
 	} else {
 		extern unsigned long hijack_init (void *);
-		animation_timer.expires = jiffies + hijack_init(frameptr);
+		animation_timer.expires = hijack_init(frameptr);
 	}
+	animation_timer.expires += jiffies;
 	add_timer(&animation_timer);
 
 	/* Next frame */

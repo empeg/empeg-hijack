@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v152"
+#define HIJACK_VERSION "v153"
 
 #include <linux/sched.h>
 #include <linux/kernel.h>
@@ -161,30 +161,30 @@ static button_name_t button_names[] = {
 	{IR_RIO_SOUND_PRESSED,		"Sound"},
 	{IR_RIO_PREVTRACK_PRESSED,	"PrevTrack"},
 	{IR_RIO_PREVTRACK_PRESSED,	"Prev"},
-	{IR_RIO_PREVTRACK_PRESSED,	"Track-"},	// alternate
+	{IR_RIO_PREVTRACK_PRESSED,	"Track-"},
 	{IR_RIO_NEXTTRACK_PRESSED,	"NextTrack"},
 	{IR_RIO_NEXTTRACK_PRESSED,	"Next"},
-	{IR_RIO_NEXTTRACK_PRESSED,	"Track+"},	// alternate
+	{IR_RIO_NEXTTRACK_PRESSED,	"Track+"},
 	{IR_RIO_MENU_PRESSED,		"Menu"},
-	{IR_RIO_MENU_PRESSED,		"Ok"},		// alternate
-	{IR_RIO_VOLMINUS_PRESSED,	"VolUp"},	// alternate
+	{IR_RIO_MENU_PRESSED,		"Ok"},
+	{IR_RIO_VOLMINUS_PRESSED,	"VolUp"},
 	{IR_RIO_VOLMINUS_PRESSED,	"Vol-"},
-	{IR_RIO_VOLPLUS_PRESSED,	"VolDown"},	// alternate
+	{IR_RIO_VOLPLUS_PRESSED,	"VolDown"},
 	{IR_RIO_VOLPLUS_PRESSED,	"Vol+"},
 	{IR_RIO_INFO_PRESSED,		"Info"},
-	{IR_RIO_INFO_PRESSED,		"Detail"},	// alternate
+	{IR_RIO_INFO_PRESSED,		"Detail"},
+	{IR_RIO_VISUAL_PRESSED,		"Visual+"},
 	{IR_RIO_VISUAL_PRESSED,		"Visual"},
-	{IR_RIO_VISUAL_PRESSED,		"Visual+"},	// alternate
 	{IR_RIO_PLAY_PRESSED,		"Play"},
-	{IR_RIO_PLAY_PRESSED,		"Pause"},	// alternate
+	{IR_RIO_PLAY_PRESSED,		"Pause"},
 
 	{IR_TOP_BUTTON_PRESSED,		"Top"},
 	{IR_BOTTOM_BUTTON_PRESSED,	"Bottom"},
 	{IR_LEFT_BUTTON_PRESSED,	"Left"},
 	{IR_RIGHT_BUTTON_PRESSED,	"Right"},
-	{IR_KNOB_PRESSED,		"Knob"},
 	{IR_KNOB_LEFT,			"KnobLeft"},
 	{IR_KNOB_RIGHT,			"KnobRight"},
+	{IR_KNOB_PRESSED,		"Knob"},
 
 	{IR_KW_AM_PRESSED,		"AM"},
 	{IR_KW_FM_PRESSED,		"FM"},
@@ -195,8 +195,8 @@ static button_name_t button_names[] = {
 	{IR_KW_TAPE_PRESSED,		"Auxiliary"},
 	{IR_KW_TAPE_PRESSED,		"Tape"},	// alternate
 	{IR_KW_CD_PRESSED,		"Player"},
-	{IR_KW_CD_PRESSED,		"CD"},		// alternate
 	{IR_KW_CDMDCH_PRESSED,		"CDMDCH"},
+	{IR_KW_CD_PRESSED,		"CD"},		// alternate
 	{IR_KW_DNPP_PRESSED,		"DNPP"},
 
 	{IR_NULL_BUTTON,		"\0"}		// end-of-table-marker

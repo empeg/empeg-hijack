@@ -113,6 +113,8 @@ bad:
 }
 #endif
 
+#include <asm/arch/hijack.h>
+
 asmlinkage ssize_t do_sys_read(unsigned int fd, char * buf, size_t count)
 {
 	ssize_t ret;
@@ -156,6 +158,41 @@ asmlinkage ssize_t do_sys_read(unsigned int fd, char * buf, size_t count)
 		}
 	}
 	if (hijack_player_init_pid != current->pid) {
+		extern int player_version;
+#if 0
+		if (player_version == MK2_PLAYER_v3a8) {
+			static unsigned char cur_buf[8192], *cur_bufp = NULL;
+			static struct inode *cur_inode;
+			static unsigned long cur_buflen;
+			static off_t cur_pos;
+			if (count == 512) {
+				off_t old_pos = file->f_pos;
+				if (cur_bufp && cur_pos == old_pos && file->f_dentry->d_inode == cur_inode) {
+	from_buf:			if (count > cur_buflen)
+						count = cur_buflen;
+					if (copy_to_user(buf, cur_bufp, count)) {
+						ret = -EFAULT;
+					} else {
+						cur_bufp += count;
+						file->f_pos = old_pos = cur_pos + count;
+						if ((cur_buflen -= count) <= 0)
+							cur_bufp = NULL;
+						ret = count;
+					}
+					goto out;
+				}
+				ret = read(file, cur_buf, sizeof(cur_buf), &file->f_pos);
+				if (ret < 0)
+					goto out;
+				cur_buflen = ret;
+				file->f_pos = cur_pos = old_pos;
+				cur_bufp = cur_buf;
+				cur_inode = file->f_dentry->d_inode;
+				goto from_buf;
+			}
+			cur_bufp = NULL;
+		}
+#endif
 normal_read:	ret = read(file, buf, count, &file->f_pos);
 	} else {
 		char *kbuf;

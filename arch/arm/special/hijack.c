@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v290"
+#define HIJACK_VERSION	"v291"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -50,7 +50,6 @@ extern int empeg_inittherm(volatile unsigned int *timerbase, volatile unsigned i
 #ifdef CONFIG_NET_ETHERNET	// Mk2 or later? (Mk1 has no ethernet)
 #define EMPEG_KNOB_SUPPORTED	// Mk2 and later have a front-panel knob
 #endif
-int	hijack_standby_time = 0;	// jiffies since we entered standby (max 12 hours)
 int	kenwood_disabled;		// used by Nextsrc button
 int	empeg_on_dc_power;		// used in arch/arm/special/empeg_power.c
 int	empeg_tuner_present = 0;	// used by NextSrc button, perhaps has other uses
@@ -93,7 +92,7 @@ static void (*hijack_movefunc)(int) = NULL;
 #define BUTTON_FLAGS		(0xff000000)
 #define IR_NULL_BUTTON		(~BUTTON_FLAGS)
 
-#define LONGPRESS_DELAY		((HZ)+((HZ)*2/3)) // delay between press/release for emulated longpresses
+#define LONGPRESS_DELAY		(HZ+(HZ/3))	// delay between press/release for emulated longpresses
 
 // Sony Stalk packets look like this:
 //
@@ -3786,6 +3785,7 @@ enum {poweringup, booting, booted, waiting, started} player_state = booting;
 void	// invoked from empeg_display.c
 hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 {
+	static unsigned int old_power = 0, power_changed = 0;	// jiffies since most recent change of dev->power, or 0 = none
 	unsigned char *buf = player_buf;
 	unsigned long flags;
 	int refresh = NEED_REFRESH;
@@ -3793,17 +3793,6 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	if (hijack_reboot) {
 		do_reboot(dev);
 		return;
-	}
-
-	// Keep rough track of how long the power has been off
-	if (dev->power)
-		hijack_standby_time = 0;
-	else if (!hijack_standby_time)
-		hijack_standby_time = JIFFIES();
-	else if (jiffies_since(hijack_standby_time) >= (60*60*13)) {
-		hijack_standby_time += (60*60);	// prevent wraparound from eventually screwing us
-		if (hijack_standby_time == 0)
-			hijack_standby_time = -1;
 	}
 
 	// Wait for the player software to start up before doing certain tasks
@@ -3836,9 +3825,16 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	}
 
 	// Adjust ButtonLED levels
+	if (dev->power != old_power) {
+		old_power = dev->power;
+		power_changed = jiffies;
+	}
+
 	if (player_state != poweringup) {
-		if (buttonled_command || !hijack_standby_time || jiffies_since(hijack_standby_time) > (HZ/2))
+		if (buttonled_command || !power_changed || jiffies_since(power_changed) > (3*HZ/2)) {
+			power_changed = 0;
 			hijack_adjust_buttonled(dev->power);
+		}
 	}
 
 	save_flags_cli(flags);

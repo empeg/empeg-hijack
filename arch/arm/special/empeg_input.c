@@ -215,9 +215,9 @@ unsigned long jiffies_since(unsigned long past_jiffies)
 	}
 }
 
-extern int hijacked_input(unsigned long);
+extern void input_append_code(void *dev, unsigned long data); /* in hijack.c */
 
-static void input_append_code(struct input_dev *dev, input_code data)
+void real_input_append_code(struct input_dev *dev, input_code data)  // invoked from hijack.c
 {
 	/* Now this is called from the bottom half we need to make
 	   sure that noone else is fiddling with stuff while we
@@ -225,8 +225,6 @@ static void input_append_code(struct input_dev *dev, input_code data)
 	input_code *new_wp;
 	unsigned long flags;
 
-	if (hijacked_input(data))
-		return;
 	save_flags_cli(flags);
 	
 	new_wp = dev->buf_wp + 1;

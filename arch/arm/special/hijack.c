@@ -1542,7 +1542,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v88 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v89 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -3043,18 +3043,21 @@ hijack_restore_settings (unsigned char *buf)
 				restore_carvisuals = 2;
 				break;
 			case 0x000005: // off (beta7)
+			case 0x000003: // off (beta7)
 				restore_carvisuals = 3;
 				break;
 			case 0x010004: // line (beta3, beta6)
 				restore_carvisuals = 3;
 				break;
 			case 0x010005: // line (beta7)
+			case 0x010003: // line (beta7)
 				restore_carvisuals = 4;
 				break;
 			case 0x020004: // transient (beta3, beta6)
 				restore_carvisuals = 4;
 				break;
 			case 0x020005: // transient (beta7)
+			case 0x020003: // transient (beta7)
 			case 0x021105: // transient (beta7)
 				restore_carvisuals = 5;
 				break;
@@ -3062,12 +3065,13 @@ hijack_restore_settings (unsigned char *buf)
 		  //	case 0x020404: // now&next (beta3, beta6)
 		  //	case 0x020405: // now&next (beta7)
 		  //	case 0x021505: // now&next (beta7)
-		  //	case 0x020404: // infoseek (beta7)
+		  //	case 0x020404: // seek    (beta7)
+		  // Note that the "Details" setting is not saved in flash.
 		}
 		if (restore_carvisuals) {
 #else // not so obvious, but tiny and fast
 		if ((buf[0x4c] & 0x04) == 0) {	// visuals visible ?
-			restore_carvisuals = (buf[0x40] & 3) + (buf[0x4d] & 5) - 2;
+			restore_carvisuals = (buf[0x40] & 3) + 2 + (buf[0x4d] & 1);
 #endif // 0
 			// switch to "track" mode on startup (because it's easy to detect later one),
 			// and then restore the original mode when the track info appears in the screen buffer.

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v415"
+#define HIJACK_VERSION	"v416"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -2380,6 +2380,22 @@ knobdata_display (int firsttime)
 
 int player_version = 0, buggy_v3alpha = 0;		// also referenced in drivers/char/serial_sa1100.c
 
+static int
+undo_lavatory_floor_visual (unsigned char *statebuf)
+{
+	int was_bad = 0;
+	unsigned char offset;
+
+	for (offset = 0x1c ; offset <= 0x1f; ++offset) {
+		unsigned char *vis = statebuf + offset;
+		if (*vis == 0x19 || *vis == 0x18) {	// lavatory floor visual -- badly broken!
+			*vis = 0x1a;
+			was_bad = 1;
+		}
+	}
+	return was_bad;
+}
+
 static void
 get_player_version (void)
 {
@@ -2405,11 +2421,8 @@ get_player_version (void)
 			break;
 	}
 	if (player_version == MK2_PLAYER_v3a8) {
-		unsigned char *empeg_statebuf = *empeg_state_writebuf;
-		if (empeg_statebuf[0x1c] == 0x19 || empeg_statebuf[0x1c] == 0x18) {	// lavatory floor visual -- badly broken!
-			empeg_statebuf[0x1c] = 0x1a;
-			empeg_statebuf = hijack_get_state_read_buffer();
-			empeg_statebuf[0x1c] = 0x1a;
+		if (undo_lavatory_floor_visual(*empeg_state_writebuf)) {
+			undo_lavatory_floor_visual(hijack_get_state_read_buffer());
 		}
 	}
 }

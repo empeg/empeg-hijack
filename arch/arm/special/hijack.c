@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v249"
+#define HIJACK_VERSION	"v250"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -21,6 +21,7 @@ const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 #include <linux/soundcard.h>		// for SOUND_MASK_*
 #include "../../../drivers/block/ide.h"	// for ide_hwifs[]
 #include "empeg_display.h"
+#include "empeg_mixer.h"
 
 extern void display_sendcontrol_part1(void);				// arch/arm/special/empeg_display.c
 extern void display_sendcontrol_part2(int);				// arch/arm/special/empeg_display.c
@@ -39,7 +40,6 @@ extern unsigned long jiffies_since(unsigned long past_jiffies);		// arch/arm/spe
 extern void display_blat(struct display_dev *dev, unsigned char *source_buffer); // empeg_display.c
 extern tm_t *hijack_convert_time(time_t, tm_t *);			// from arch/arm/special/notify.c
 
-extern int get_current_mixer_input(void);				// arch/arm/special/empeg_mixer.c
 extern void empeg_mixer_select_input(int input);			// arch/arm/special/empeg_mixer.c
 extern void hijack_tone_set(int, int, int, int, int, int);					// arch/arm/special/empeg_mixer.c
 extern int empeg_readtherm(volatile unsigned int *timerbase, volatile unsigned int *gpiobase);	// arch/arm/special/empeg_therm.S
@@ -3015,17 +3015,18 @@ static unsigned short
 get_current_mixer_source (void)
 {
 	unsigned short source;
-	int input = get_current_mixer_input();
+	extern int hijack_current_mixer_input;
+	int input = hijack_current_mixer_input;
 
 	switch (input) {
-		case SOUND_MASK_LINE:	// Aux in
+		case INPUT_AUX:	// Aux in
 			source = IR_FLAGS_AUX;
 			break;
-		case SOUND_MASK_PCM:	// Main/mp3
+		case INPUT_PCM:	// Main/mp3
 			source = IR_FLAGS_MAIN;
 			break;
-		//case SOUND_MASK_RADIO:// FM Tuner
-		//case SOUND_MASK_LINE1:// AM Tuner
+		//case INPUT_RADIO_FM:// FM Tuner
+		//case INPUT_RADIO_AM:// AM Tuner
 		default:
 			source = IR_FLAGS_TUNER;
 			break;
@@ -4749,32 +4750,31 @@ static void
 hijack_fix_homevisuals (unsigned char *buf)
 {
 	if (!empeg_on_dc_power && homevisuals_enabled) {
-		switch (buf[0x0e] & 7) { // examine the saved mixer source
-			case 1: // Tuner FM
+		switch ((buf[0x0e] & 7) - 1) { // examine the saved mixer source
+			case INPUT_RADIO_FM: // Tuner FM
 				if ((buf[0x4c] & 0x10) && !(buf[0x42] & 3)) {	// Radio visual supposed to be active?
 					info_screenrow = 8;
 					restore_visuals = 1;			// comes up as OFF: restore it
 				}
 				break;
-			case 2: // Main/Mp3
+			case INPUT_PCM: // Main/Mp3
 				if ((buf[0x4c] & 0x04)) {			// Track, Seek, or Now&Next ?
 					info_screenrow = 8;
 					restore_visuals = (buf[0x4d] & 7) - 2; // comes up as TRANSIENT: restore it
 				}
 				break;
-			case 3: // Aux
+			case INPUT_AUX: // Aux
 				if ((buf[0x4c] & 0x08) && (buf[0x41] & 3) == 2) {	// Aux visual supposed to be active?
 					info_screenrow = 8;
 					restore_visuals = 1;			// comes up as TRANSIENT: restore it
 				}
 				break;
-			case 4: // Tuner AM
+			case INPUT_RADIO_AM: // Tuner AM
 				if ((buf[0x4c] & 0x20) && !(buf[0x43] & 3)) {	// Radio visual supposed to be active?
 					info_screenrow = 8;
 					restore_visuals = 1;			// comes up as OFF: restore it
 				}
 				break;
-			default:
 		}
 	}
 }
@@ -4785,8 +4785,8 @@ hijack_fix_visuals (unsigned char *buf)
 	restore_visuals = 0;
 	hijack_fix_homevisuals(buf);	// fixme: temporary work-around for v2.00-beta11 bug
 	if (empeg_on_dc_power && carvisuals_enabled) {
-		switch (buf[0x0e] & 7) { // examine the saved mixer source
-			case 1: // Tuner FM
+		switch ((buf[0x0e] & 7) - 1) { // examine the saved mixer source
+			case INPUT_RADIO_FM: // Tuner FM
 				if ((buf[0x4c] & 0x10) == 0) {	// FM visuals visible ?
 					info_screenrow = 0;	// "chickenfoot"
 					restore_visuals = (buf[0x42] - 1) & 3;
@@ -4794,7 +4794,7 @@ hijack_fix_visuals (unsigned char *buf)
 					buf[0x42] = buf[0x42] & ~0x03;
 				}
 				break;
-			case 2: // Main/Mp3
+			case INPUT_PCM: // Main/Mp3
 				if ((buf[0x4c] & 0x04) == 0) {	// MP3 visuals visible ?
 					info_screenrow = 15;
 					restore_visuals = (buf[0x40] & 3) + 2 + (buf[0x4d] & 1);
@@ -4807,7 +4807,7 @@ hijack_fix_visuals (unsigned char *buf)
 					//printk("2restore=%d, x40=%02x, x4c=%02x, x4d=%02x\n", restore_visuals, buf[0x40], buf[0x4c], buf[0x4d]);
 				}
 				break;
-			case 3: // Aux
+			case INPUT_AUX: // Aux
 				if ((buf[0x4c] & 0x08) == 0) {	// AUX visuals visible ?
 					info_screenrow = 8;
 					restore_visuals = (buf[0x41] & 3) + 1;
@@ -4815,7 +4815,7 @@ hijack_fix_visuals (unsigned char *buf)
 					buf[0x4c] =  buf[0x4c]          | 0x08;
 				}
 				break;
-			case 4: // Tuner AM
+			case INPUT_RADIO_AM: // Tuner AM
 				if ((buf[0x4c] & 0x20) == 0) {	// AM visuals visible ?
 					info_screenrow = 0;	// "chickenfoot"
 					restore_visuals = (buf[0x43] - 1) & 3;

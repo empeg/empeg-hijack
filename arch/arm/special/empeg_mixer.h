@@ -17,4 +17,10 @@ void empeg_mixer_clear_stereo(void);
 void empeg_mixer_set_stereo(int on);
 int empeg_mixer_get_multipath(void);
 
+/* Input channels */
+#define INPUT_RADIO_FM			0
+#define INPUT_PCM			1
+#define INPUT_AUX			2
+#define INPUT_RADIO_AM			3
+
 #endif

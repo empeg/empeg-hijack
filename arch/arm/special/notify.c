@@ -12,14 +12,17 @@
 #include <linux/unistd.h>
 #include <asm/smplock.h>
 #include <asm/arch/hijack.h>
-
 #include <linux/proc_fs.h>
 
 #include "fast_crc32.c"					// 10X the CPU usage of non-table-lookup version
 //extern unsigned long crc32 (char *buf, int len);	// drivers/net/smc9194_tifon.c (10X slower, 1KB smaller)
 
+#include "empeg_mixer.h"
+
 #define IR_INTERNAL		((void *)-1)
 
+extern int hijack_current_mixer_input;
+extern int hijack_current_mixer_volume;
 extern int hijack_player_started;
 extern int hijack_do_command (void *sparms, char *buf);
 extern int strxcmp (const char *str, const char *pattern, int partial);					// hijack.c
@@ -33,16 +36,18 @@ extern void show_message (const char *message, unsigned long time);					// hijac
 extern long sleep_on_timeout(struct wait_queue **p, long timeout);					// kernel/sched.c
 extern signed long schedule_timeout(signed long timeout);						// kernel/sched.c
 
-unsigned char notify_labels[] = "#AFGLMNSTV";	// 'F' must match next line
-#define NOTIFY_FIDLINE		2		// index of 'F' in notify_labels[]
-#define NOTIFY_MAX_LINES	(sizeof(notify_labels)) // gives one extra for '\0'
+#define NOTIFY_MAX_LINES	11		// number of chars in notify_chars[] below
+const
+unsigned char *notify_names[NOTIFY_MAX_LINES] = {"FidTime", "Artist", "FID", "Genre", "MixerInput", "Track", "Sound", "Title", "Volume", "L", "Other"};
+unsigned char  notify_chars[NOTIFY_MAX_LINES] = "#AFGMNSTVLO";
+#define NOTIFY_FIDLINE		2		// index of 'F' in notify_chars[]
 #define NOTIFY_MAX_LENGTH	64
 static char notify_data[NOTIFY_MAX_LINES][NOTIFY_MAX_LENGTH] = {{0,},};
 
 const char *
 notify_fid (void)
 {
-	return &notify_data[NOTIFY_FIDLINE][3];
+	return &notify_data[NOTIFY_FIDLINE][2];
 }
 
 int
@@ -78,15 +83,16 @@ hijack_serial_notify (const unsigned char *s, int size)
 				size -= 3;
 				while (size > 0 && (s[size-1] <= ' ' || s[size-1] > '~'))
 					--size;
-				if (size > (NOTIFY_MAX_LENGTH - 1))
-					size = (NOTIFY_MAX_LENGTH - 1);
+				if (size > NOTIFY_MAX_LENGTH)
+					size = NOTIFY_MAX_LENGTH;
 				if (size > 0) {
 					unsigned char i, c = *s;
-					notify_labels[sizeof(notify_labels)-1] = c;
-					for (i = 0; c != notify_labels[i]; ++i);
-					line = notify_data[i];
+					notify_chars[sizeof(notify_chars)-1] = c;	// overwrite 'O' to simplify search
+					for (i = 0; c != notify_chars[i]; ++i);	// search for correct entry
+					line = notify_data[i];			
 					save_flags_cli(flags);
-					memcpy(line, s, size);
+					if (--size > 0)
+						memcpy(line, s+1, size);
 					line[size] = '\0';
 					restore_flags(flags);
 				}
@@ -416,17 +422,34 @@ static struct proc_dir_entry proc_kernel_entry = {
 static int
 proc_notify_read (char *buf, char **start, off_t offset, int len, int unused)
 {
-	int	i;
+	int i;
 
 	len = 0;
 	for (i = 0; i < NOTIFY_MAX_LINES; ++i) {
-		char *n = notify_data[i];
-		if (*n) {
-			unsigned long flags;
-			save_flags_cli(flags);
-			len += sprintf(buf+len, "%s\n", n);
-			restore_flags(flags);
+		const char *name;
+		char *data, tmp[16];
+		unsigned long flags;
+		save_flags_cli(flags);	// protect access to notify_data[]
+		data = notify_data[i];
+		name = notify_names[i];
+		switch (name[0]) {
+			case 'M':	// mixer input is not notified until modified
+				switch (hijack_current_mixer_input) {
+					case INPUT_RADIO_FM: data = "FM" ; break;
+					case INPUT_PCM:      data = "PCM"; break;
+					case INPUT_AUX:      data = "AUX"; break;
+					case INPUT_RADIO_AM: data = "AM" ; break;
+					default:             data = ""   ; break;
+				}
+				break;
+			case 'V':	// volume is not notified until adjusted up/down
+				data = tmp;
+				sprintf(data, "%u", hijack_current_mixer_volume);
+				break;
+			//case 'S':	// mute is not always correct until adjusted after boot
 		}
+		len += sprintf(buf+len, "notify_%s = \"%s\";\n", name, data);
+		restore_flags(flags);
 	}
 	return len;
 }

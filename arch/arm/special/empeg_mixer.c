@@ -60,12 +60,6 @@
 #define MIXER_DEVMASK			SOUND_MASK_VOLUME
 #define MIXER_STEREODEVS		MIXER_DEVMASK
 
-/* Input channels */
-#define INPUT_RADIO_FM			0
-#define INPUT_PCM			1
-#define INPUT_AUX			2
-#define INPUT_RADIO_AM			3
-
 typedef struct
 {
 	int input;
@@ -125,7 +119,8 @@ static unsigned int eq_reg_last = 0;
 static unsigned int radio_sensitivity;
 static int radio_fm_level_p1 = 512, radio_fm_level_q1 = 0;
 static int radio_fm_deemphasis = 50;
-static int hijack_mixer_input;
+       int hijack_current_mixer_input;
+       int hijack_current_mixer_volume;
 extern int hijack_volboost[];
 static int hijack_current_vol_request;
 static int hijack_current_vol_boost;
@@ -170,11 +165,6 @@ static struct file_operations mixer_fops =
 	release:	empeg_mixer_release
 };
 
-int get_current_mixer_input (void)	// used in hijack.c
-{
-	return mixer_global.input;
-}
-
 int __init empeg_mixer_init(void)
 {
 	mixer_dev *dev = &mixer_global;
@@ -213,7 +203,7 @@ int __init empeg_mixer_init(void)
 	empeg_mixer_mute(1);
 
 	/* Set volume */
-	empeg_mixer_setvolume(dev,90);
+	empeg_mixer_setvolume(dev,VOLUME_ZERO_DB);
 
 	/* try doing this last thing */
 	empeg_mixer_select_input(INPUT_PCM);
@@ -939,7 +929,7 @@ void empeg_mixer_select_input(int input)
 	/* POM low - hardware mute */ 
 	empeg_mixer_mute(1);
 
-	hijack_mixer_input = input;
+	hijack_current_mixer_input = input;
 	hijack_volume_boost_reapply (dev); // apply boost whilst muted to avoid pops.
 
 	switch(input) {
@@ -1168,7 +1158,7 @@ static int hijack_volume_boost_w(int requested)
 {
 	int boosted;
 	hijack_current_vol_request = requested;    // keep tabs on what the player thinks the volume is
-	boosted = requested + hijack_volboost[hijack_mixer_input];
+	boosted = requested + hijack_volboost[hijack_current_mixer_input];
 	if ( boosted > 100 ) 
 	{  // desired volume exceeds max. Limit volume, and keep tabs on what the applied boost actually is.
 		hijack_current_vol_boost = 100 - requested;  
@@ -1184,7 +1174,7 @@ static int hijack_volume_boost_w(int requested)
 #endif
 			return 0;
 	} else {  // desired volume is within allowable range.
-		hijack_current_vol_boost = hijack_volboost[hijack_mixer_input];
+		hijack_current_vol_boost = hijack_volboost[hijack_current_mixer_input];
 #if HIJACK_VOLBOOST_DEBUG
 		printk("VOLBOOST: Req: %d,  Boosted: %d,  Appl. Boost: %d,  Appl. Vol: %d\n", requested, boosted, hijack_current_vol_boost, boosted);
 #endif
@@ -1214,6 +1204,7 @@ static void hijack_volume_boost_reapply(mixer_dev *dev)
 
 static int empeg_mixer_setvolume(mixer_dev *dev, int vol)
 {
+	hijack_current_mixer_volume = vol;
 	dsp_write(Y_VAT, volume_table[vol].vat);
 	dsp_write(Y_VGA, volume_table[vol].vga);
 	dev->volume = vol;

@@ -1144,6 +1144,19 @@ convert_rcode (int rcode)
 	return response;
 }
 
+static char *
+spaces_to_underscores (char *url)
+{
+	char *s;
+
+	for (s = url; *s; ++s) {
+		char c = *s;
+		if (c == ' ')
+			*s = '_';
+	}
+	return url;
+}
+
 static const http_response_t *
 send_playlist (server_parms_t *parms, char *path)
 {
@@ -1186,9 +1199,16 @@ send_playlist (server_parms_t *parms, char *path)
 		path[strlen(path)-1] = '0';
 		if (!strxcmp(tags.codec, "mp3", 0)) {
 			secs = str_val(tags.duration) / 1000;
-			size  = sprintf(xfer.buf, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s\r\n\r\n#EXTM3U\r\n"
+#if 0
+			used  = sprintf(xfer.buf, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s\r\n\r\n#EXTM3U\r\n"
 				"#EXTINF:%u,%s\r\nhttp://%s%s\r\n", audio_m3u, secs, artist_title, parms->hostname, path);
-			(void)ksock_rw(parms->datasock, xfer.buf, size, -1);
+#else
+			used  = sprintf(xfer.buf, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s\r\n\r\n"
+				"#EXTM3U\r\n#EXTINF:%u,%s\r\n", audio_m3u, secs, artist_title);
+			used += sprintf(xfer.buf+used, "http://%s/%s/?FID#%x.%s\r\n",
+				parms->hostname, spaces_to_underscores(artist_title), fid^1, tags.codec);
+#endif
+			(void)ksock_rw(parms->datasock, xfer.buf, used, -1);
 		} else { // wma, wav
 			khttpd_redirect(parms, path);
 		}
@@ -1227,7 +1247,7 @@ open_fidfile:
 	}
 	while (fidx >= 0) {
 		while (sizeof(fid) == read(fidfiles[fidx], (char *)&fid, sizeof(fid))) {
-			int	sublen, fd;
+			int sublen, fd;
 
 			if (used >= (xfer.buf_size - 512) && (used -= ksock_rw(parms->datasock, xfer.buf, used, -1)))
 				goto cleanup;
@@ -1292,9 +1312,14 @@ open_fidfile:
 			} else if (fidtype == 'T') {
 				combine_artist_title(tags.artist, tags.title, artist_title, sizeof(artist_title));
 				subpath[sublen - 1] = '0';
-				//fixme: Get rid of everything after '#' if iTunes is not any better with it
+#if 0
 				used += sprintf(xfer.buf+used, "#EXTINF:%u,%s\r\nhttp://%s%s\r\n",
 					secs, artist_title, parms->hostname, subpath);
+#else
+				used += sprintf(xfer.buf+used, "#EXTINF:%u,%s\r\n", secs, artist_title);
+				used += sprintf(xfer.buf+used, "http://%s/%s?FID#%x.%s\r\n",
+					parms->hostname, spaces_to_underscores(artist_title), fid^1, tags.codec);
+#endif
 			}
 		}
 		close(fidfiles[fidx--]);
@@ -1812,7 +1837,7 @@ khttpd_handle_connection (server_parms_t *parms)
 		printk(KHTTPD": GET '%s'\n", path);
 	path = khttpd_fix_hexcodes(path);
 	// a useful shortcut
-	if (!strxcmp(path, "/?playlists", 0)) {
+	if (!strxcmp(path, "/?playlists", 1)) {
 		khttpd_redirect(parms, "/drive0/fids/101?.html");
 		return;
 	}
@@ -1831,10 +1856,15 @@ khttpd_handle_connection (server_parms_t *parms)
 			else if (c == '&')
 				*p = ';';
 		}
-		if (!strxcmp(cmds, ".html", 1))
+		if (!strxcmp(cmds, ".html", 1)) {
 			parms->generate_playlist = 1;
-		else if (!strxcmp(cmds, ".m3u", 1))
+		} else if (!strxcmp(cmds, ".m3u", 1)) {
 			parms->generate_playlist = 2;
+		} else if (!strxcmp(cmds, "FID#", 1)) {	// in .m3u files:  http://host/some_tune_name?FID#xxx.mp3
+			for (p = cmds += 4; *p && *p != '.'; ++p);
+			*p = '\0';
+			sprintf(path, "/drive0/fids/%s", cmds);
+		}
 		if (parms->generate_playlist) {
 			// fixme someday: the tail portion could be used to hold the "parent fid chain"
 			// that we embed back into the outgoing html, allowing up/sideways browser links,

@@ -1,0 +1,135 @@
+***************
+*** 668,674 ****
+  {
+  	/* Buffers */
+  	audio_buf *buffers;
+- 	int used,free,head,tail;
+  
+  	/* Buffer management */
+  	struct wait_queue *waitq;
+--- 1085,1094 ----
+  {
+  	/* Buffers */
+  	audio_buf *buffers;
++ 	int used,free,head,tail,prevhead;
++ 
++         /* current state of volume adjuster */
++         struct voladj_state voladj;   
+  
+  	/* Buffer management */
+  	struct wait_queue *waitq;
+***************
+*** 839,844 ****
+  	audio_dev *dev = &audio[0];
+  	int total = 0;
+  	int ret;
+  	
+  #if AUDIO_DEBUG_VERBOSE
+  	printk(AUDIO_NAME ": audio_write: count=%d\n", count);
+--- 1278,1284 ----
+  	audio_dev *dev = &audio[0];
+  	int total = 0;
+  	int ret;
++         int thisbufind=0;
+  	
+  #if AUDIO_DEBUG_VERBOSE
+  	printk(AUDIO_NAME ": audio_write: count=%d\n", count);
+***************
+*** 352,374 ****
+  		dev->free--;
+  		restore_flags(flags);
+  
+  		/* Copy chunk of data from user-space. We're safe updating the
+  		   head when not in cli() as this is the only place the head
+  		   gets twiddled */
+- 		copy_from_user(dev->buffers[dev->head++].data, buffer,
+- 			       AUDIO_BUFFER_SIZE);
+  		if (dev->head == AUDIO_NOOF_BUFFERS)
+  			dev->head = 0;
+  		total += AUDIO_BUFFER_SIZE;
+  		/* Oops, we missed this in previous versions */
+  		buffer += AUDIO_BUFFER_SIZE;
+  		dev->stats.samples += AUDIO_BUFFER_SIZE;
+  		count -= AUDIO_BUFFER_SIZE;
+  		/* Now the buffer is ready, we can tell the IRQ section
+  		   there's new data */
+- 		save_flags_cli(flags);
+  		dev->used++;
+  		restore_flags(flags);
+  	}
+  
+  	/* Update hwm */
+--- 795,850 ----
+  		dev->free--;
+  		restore_flags(flags);
+  
++                 thisbufind = dev->head;
+  		/* Copy chunk of data from user-space. We're safe updating the
+  		   head when not in cli() as this is the only place the head
+  		   gets twiddled */
++ 
++                 dev->head++;
+  		if (dev->head == AUDIO_NOOF_BUFFERS)
+  			dev->head = 0;
++ 
++ 		copy_from_user(dev->buffers[thisbufind].data,buffer,AUDIO_BUFFER_SIZE);
+  		total += AUDIO_BUFFER_SIZE;
+  		/* Oops, we missed this in previous versions */
+  		buffer += AUDIO_BUFFER_SIZE;
+  		dev->stats.samples += AUDIO_BUFFER_SIZE;
+  		count -= AUDIO_BUFFER_SIZE;
++ 
++               if (hijack_voladj_enabled) {
++                 multiplier = voladj_check( &(dev->voladj), 
++                         (short *) (dev->buffers[thisbufind].data) );
++               } else {
++                 multiplier = (1 << MULT_POINT);
++               }
++               dev->voladj.desired_multiplier = multiplier;
++               hijack_voladj_update_history(multiplier);
++ #if AUDIO_DEBUG_VERBOSE
++ 	printk("mults: des=%x,out=%x\n", dev->voladj.desired_multiplier, dev->voladj.output_multiplier);
++ #endif
++ 
++ 
++ 		save_flags_cli(flags);
++               if (hijack_voladj_enabled) {
++                 if (dev->used > 1) {
++                     dev->used--;
++                     restore_flags(flags);
++                     voladj_scale( &(dev->voladj), 
++                         dev->voladj.desired_multiplier,
++                         (short *) (dev->buffers[ dev->prevhead ].data) );
++                     save_flags_cli(flags);
++                     dev->used++;
++                 } else {
++                     dev->voladj.output_multiplier = 1 << MULT_POINT;
++                 }
++               }
++ 
+  		/* Now the buffer is ready, we can tell the IRQ section
+  		   there's new data */
+  		dev->used++;
+  		restore_flags(flags);
++ 
++                 dev->prevhead = thisbufind;
+  	}
+  
+  	/* Update hwm */
+***************
+*** 440,446 ****
+  				    AUDIO_BUFFER_SIZE);
+          }	
+  	}
+- 	
+  	/* invalid command */
+  	return -EINVAL;
+  }
+--- 916,922 ----
+  				    AUDIO_BUFFER_SIZE);
+          }	
+  	}
++ 
+  	/* invalid command */
+  	return -EINVAL;
+  }

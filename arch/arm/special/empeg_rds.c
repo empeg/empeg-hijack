@@ -677,7 +677,7 @@ static int rds_open(struct inode *inode, struct file *flip)
 
         /* Write data to the second RDS device */
         fs = get_fs();
-        set_fs(KERNEL_DS);	//set_fs(get_ds());
+        set_fs(get_ds());
         if (secondRDSDev>=0) {
           close(secondRDSDev);
           secondRDSDev=-1;
@@ -736,7 +736,7 @@ ssize_t rds_read(struct file *flip, char *dest, size_t count, loff_t *ppos)
 
         if (secondRDSDev>=0) {
           fs = get_fs();
-          set_fs(KERNEL_DS);	//set_fs(get_ds());
+          set_fs(get_ds());
           write(secondRDSDev, rdscopy, count);
           set_fs(fs);
         }

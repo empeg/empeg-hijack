@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v342"
+#define HIJACK_VERSION	"v343"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -1695,10 +1695,11 @@ vitals_display (int firsttime)
 
 static char *acdc_text[2] = {"AC/Home", "DC/Car"};
 
-#define FORCE_NORMAL	0
-#define FORCE_AC	1
-#define FORCE_DC	2
-#define FORCE_TUNER	3	// and higher..
+#define FORCE_NORMAL		0
+#define FORCE_AC		1
+#define FORCE_DC		2
+#define FORCE_TUNER		3	// and higher..
+#define FORCE_NOLOOPBACK	((1<<FORCEPOWER_BITS)-1)
 
 static void
 forcepower_move (int direction)
@@ -1734,6 +1735,9 @@ forcepower_display (int firsttime)
 			sprintf(msg, "If tuner=%d, Force %s", force_power >> 1, acdc_text[force_power & 1]);
 			break;
 #endif
+		case FORCE_NOLOOPBACK:
+			msg = "No-Loopback";
+			break;
 		case FORCE_NORMAL:
 			msg = "Normal";
 			break;
@@ -5205,14 +5209,16 @@ hijack_restore_settings (char *buf, char *msg)
 		tuner_id = 0;	// we use "0" to mean "no tuner" in the Force_Power menu
 	else
 		empeg_tuner_present = 1;
-	if (force_power != FORCE_AC && force_power != FORCE_DC) {
-		if (empeg_on_dc_power && loopback) {
-			force_power = FORCE_AC;
-			no_popup = 1;
-		} else if (force_power >= FORCE_TUNER) {
-			force_power -= FORCE_TUNER;
-			if ((force_power >> 1) == tuner_id) {
-				force_power = (force_power & 1) ? FORCE_DC : FORCE_AC;
+	if (force_power != FORCE_NOLOOPBACK) {
+		if (force_power != FORCE_AC && force_power != FORCE_DC) {
+			if (empeg_on_dc_power && loopback) {
+				force_power = FORCE_AC;
+				no_popup = 1;
+			} else if (force_power >= FORCE_TUNER) {
+				force_power -= FORCE_TUNER;
+				if ((force_power >> 1) == tuner_id) {
+					force_power = (force_power & 1) ? FORCE_DC : FORCE_AC;
+				}
 			}
 		}
 	}

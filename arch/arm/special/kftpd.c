@@ -1529,6 +1529,8 @@ send_file (server_parms_t *parms, char *path)
 	}
 	cleanup_file_xfer(parms, &xfer);
 	return response;
+
+
 }
 
 static int

@@ -1844,19 +1844,21 @@ kftpd_handle_command (server_parms_t *parms)
 			response = 200;
 		}
 	} else if (!strxcmp(buf, "MKD ", 1) || !strxcmp(buf, "XMKD ", 1)) {
-		if (!buf[4]) {
+		char *p = &buf[4 + (buf[3] == ' ')];
+		if (!*p) {
 			response = 501;
 		} else {
 			strcpy(path, parms->cwd);
-			append_path(path, &buf[4], parms->tmp3);
+			append_path(path, p, parms->tmp3);
 			response = kftpd_do_mkdir(parms, path);
 		}
 	} else if (!strxcmp(buf, "RMD ", 1) || !strxcmp(buf, "XRMD ", 1)) {
-		if (!buf[4]) {
+		char *p = &buf[4 + (buf[3] == ' ')];
+		if (!*p) {
 			response = 501;
 		} else {
 			strcpy(path, parms->cwd);
-			append_path(path, &buf[4], parms->tmp3);
+			append_path(path, p, parms->tmp3);
 			response = kftpd_do_rmdir(parms, path);
 		}
 	} else if (!strxcmp(buf, "DELE ", 1)) {

@@ -994,14 +994,14 @@ unsigned int input_poll(struct file *filp, poll_table *wait)
 {
 	struct input_dev *dev = filp->private_data;
 
-	/* Add ourselves to the wait queue */
-	poll_wait(filp, &dev->wq, wait);
-
 	if (!hijack_got_config_file) {
 		extern void hijack_read_config_file(const char *);
 		hijack_got_config_file = 1;
 		hijack_read_config_file("/empeg/var/config.ini");
 	}
+
+	/* Add ourselves to the wait queue */
+	poll_wait(filp, &dev->wq, wait);
 
 	/* Check if we've got data to read */
 	if (dev->buf_rp != dev->buf_wp)

@@ -156,7 +156,7 @@ static struct file_operations mixer_fops =
 	release:	empeg_mixer_release
 };
 
-unsigned char get_current_mixer_input (void)
+int get_current_mixer_input (void)	// used in hijack.c
 {
 	return mixer_global.input;
 }

@@ -342,7 +342,7 @@ void hijack_serial_rx_insert (const char *buf, int size, int port)
 #endif // CONFIG_HIJACK_TUNER
 }
 
-extern int hijack_trace_tuner;
+extern int hijack_fake_tuner, hijack_trace_tuner;
 
 static _INLINE_ void receive_chars(struct async_struct *info,
 				 int *status0, int *status1)
@@ -457,6 +457,71 @@ static _INLINE_ void receive_chars(struct async_struct *info,
 	  }
 }
 
+#ifdef CONFIG_HIJACK_TUNER
+
+static char cmd4[] = {0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,0x18,0x39,0x43,0x4a,0x4e,0x51,0x3f,0x40,0x48,0x00};
+static char rsp4[] = {0x07,0x00,0x35,0x22,0x3a,0x44,0x40,0x66,0x48,0x89,0x51,0xab,0x5a,0xcd,0x66,0x64,0x74,0x36,0x07,0x08,0x03,0xde,0x6c,0x00};
+
+static void
+fake_tuner (unsigned char c)
+{
+	static unsigned char state = 0, ctype = 0, eat = 0;
+	unsigned int response, i;
+
+	if (hijack_trace_tuner) {
+		if (state != 0)
+			printk("%02x", c);
+		else if (c == 0x01)
+			printk("fake_tuner: out=%02x", c);
+	}
+	switch (state) {
+		case 0:
+			if (c == 0x01)
+				state = 1;
+			return;
+		case 1:
+			state = 2;
+			ctype = c;
+			switch (ctype) {
+				default:
+					printk(" unknown msg type\n");
+					state = 0;
+					return;
+				case 0x04: eat = 2; break;
+				case 0x05: eat = 1; break;
+				case 0x03: eat = 4; break;
+				case 0x01: eat = 9; break;
+				case 0x00: eat =10; break; // read module id, and set LED on/off
+				case 0xff: eat = 1; break;
+				case 0x09: eat = 1; break; // read tuner dial (tuner ID)
+			}
+			// fall thru
+		default:
+			if (--eat)
+				return;
+			state = 0;
+			switch (ctype) {
+				case 0x04:
+					cmd4[sizeof(cmd4)-1] = c;
+					for (i = 0; cmd4[i] != c; ++i);
+					c = rsp4[i];
+					response = 0x00000401 | (c << 16);
+					break;
+				case 0x05: response = 0x00000501; break;
+				case 0x03: response = 0x00000301; break;
+				case 0x01: response = 0x00000101; break;
+				case 0x00: response = 0x00030001; break; // read module id, and set LED on/off: tuner == 0x03
+				case 0xff: response = 0x0027ff01; break;
+				case 0x09: response = 0x00080901; break; // read tuner dial: pretend it's set to '8'
+			}
+			response |= ((response >> 16) + (response >> 8)) << 24;
+			hijack_serial_rx_insert ((char *)&response, 4, 0);
+			if (hijack_trace_tuner)
+				printk("\nfake_tuner: in=%08x\n", ntohl(response));
+	}
+}
+#endif CONFIG_HIJACK_TUNER
+
 static _INLINE_ void transmit_chars(struct async_struct *info, int *intr_done)
 {
 	int count;
@@ -488,8 +553,12 @@ static _INLINE_ void transmit_chars(struct async_struct *info, int *intr_done)
 	while(serial_inp(info, UTSR1) & UTSR1_TNF) {
 		char ch = info->xmit_buf[info->xmit_tail++];
 #ifdef CONFIG_HIJACK_TUNER
-		if (info == IRQ_ports[15] && hijack_trace_tuner)
-			printk("tuner:out=%02x\n", ch);
+		if (info == IRQ_ports[15]) {
+			if (hijack_trace_tuner)
+				printk("tuner:out=%02x\n", ch);
+			if (hijack_fake_tuner)
+				fake_tuner(ch);
+		}
 #endif // CONFIG_HIJACK_TUNER
 		serial_out(info, UART_TX, ch);
 		info->xmit_tail &= (SERIAL_XMIT_SIZE-1);
@@ -539,7 +608,7 @@ hijack_read_serial (volatile unsigned long *tuner_port, unsigned long interval)
 }
 
 void
-hijack_read_tuner_id (unsigned int *loopback, unsigned int *tuner_id)
+hijack_read_tuner_id (int *loopback, int *tuner_id)
 {
 	int			rc;
 	const unsigned char	pattern = 0x5a;

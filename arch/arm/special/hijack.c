@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v331"
+#define HIJACK_VERSION	"v332"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -487,6 +487,7 @@ static	int hijack_dc_servers;			// 1 == allow kftpd/khttpd when on DC power
 	int hijack_extmute_on;			// buttoncode to inject when EXT-MUTE goes active
 	int hijack_ir_debug;			// printk() for every ir press/release code
 static	int hijack_spindown_seconds;		// drive spindown timeout in seconds
+	int hijack_fake_tuner;			// pretend we have a tuner, when we really don't have one
 	int hijack_trace_tuner;			// dump incoming tuner/stalk packets onto console
 #ifdef HIJACK_MOD_TUNER
 	int hijack_tuner_offset;		// FIXME
@@ -594,6 +595,7 @@ static const hijack_option_t hijack_option_table[] =
 {"spindown_seconds",		&hijack_spindown_seconds,	30,			1,	0,	(239 * 5)},
 {"extmute_off",			&hijack_extmute_off,		0,			1,	0,	IR_NULL_BUTTON},
 {"extmute_on",			&hijack_extmute_on,		0,			1,	0,	IR_NULL_BUTTON},
+{"fake_tuner",			&hijack_fake_tuner,		0,			1,	0,	1},
 #ifdef CONFIG_EMPEG_I2C_FAN_CONTROL
 {"fan_control",			&fan_control_enabled,		0,			1,	0,	1},
 {"fan_low",			&fan_control_low,		45,			1,	0,	100},
@@ -3273,7 +3275,7 @@ do_nextsrc (void)
 				button = IR_KW_TAPE_PRESSED;
 			break;
 		case IR_FLAGS_MAIN:
-			if (empeg_tuner_present)
+			if (empeg_tuner_present || hijack_fake_tuner)
 				button = IR_RIO_TUNER_PRESSED;
 			break;
 	}
@@ -3871,6 +3873,10 @@ hijack_intercept_stalk (unsigned int packet)
 	empeg_tuner_present = 1;
 	if (hijack_trace_tuner)
 		printk("stalk: in=%08x\n", htonl(packet));
+	if (hijack_fake_tuner) {
+		hijack_fake_tuner = 0;
+		printk("tuner: \"fake_tuner=0\"\n");
+	} // used to be an "else" here (?)
 	if (!handle_stalk_packet((unsigned char *)&packet)) {
 		hijack_serial_rx_insert((unsigned char *)&packet, sizeof(packet), 0);
 	}
@@ -5133,11 +5139,17 @@ hijack_restore_settings (char *buf)
 	empeg_on_dc_power = ((GPLR & EMPEG_EXTPOWER) != 0);
 	hijack_force_power = force_power = savearea.force_power;
 #ifdef EMPEG_KNOB_SUPPORTED
+{
+	extern void hijack_read_tuner_id (int *, int *);	// drivers/char/serial_sa1100.c
+	int	loopback = 0, tuner_id = -1;
+
+	hijack_read_tuner_id(&loopback, &tuner_id);
+	printk("Tuner: loopback=%d, ID=%d\n", loopback, tuner_id);
+	if (tuner_id == -1)
+		tuner_id = 0;	// we use "0" to mean "no tuner" in the Force_Power menu
+	else
+		empeg_tuner_present = 1;
 	if (force_power != FORCE_AC && force_power != FORCE_DC) {
-		extern void hijack_read_tuner_id (unsigned int *, unsigned int *); // drivers/char/serial_sa1100.c
-		unsigned int loopback = 0, tuner_id = 0;
-		hijack_read_tuner_id(&loopback, &tuner_id);
-		printk("Tuner: loopback=%d, ID=%d\n", loopback, tuner_id);
 		if (empeg_on_dc_power && loopback) {
 			force_power = FORCE_AC;
 		} else if (force_power >= FORCE_TUNER) {
@@ -5147,6 +5159,7 @@ hijack_restore_settings (char *buf)
 			}
 		}
 	}
+}
 #endif // EMPEG_KNOB_SUPPORTED
 	if (force_power == FORCE_AC || force_power == FORCE_DC) {
 		empeg_on_dc_power = (force_power == FORCE_AC) ? 0 : 1;

@@ -342,7 +342,7 @@ void hijack_serial_rx_insert (const char *buf, int size, int port)
 #endif // CONFIG_HIJACK_TUNER
 }
 
-extern int hijack_fake_tuner, hijack_trace_tuner, empeg_tuner_present;
+extern int hijack_fake_tuner, hijack_trace_tuner;
 static int tuner_loopback = 0;
 
 static _INLINE_ void receive_chars(struct async_struct *info,
@@ -366,7 +366,8 @@ static _INLINE_ void receive_chars(struct async_struct *info,
 		if (info == IRQ_ports[15]) {	// Tuner interface (ttyS0)
 			static int pktlen = 0;
 			static unsigned int stalk = 0;
-			if (tuner_loopback)
+			extern int hijack_stalk_enabled;
+			if (tuner_loopback || !hijack_stalk_enabled)
 				goto ignore_char;
 			if (hijack_trace_tuner)
 				printk("tuner: in=%02x\n", ch);
@@ -627,7 +628,7 @@ void
 hijack_read_tuner_id (int *loopback, int *tuner_id)
 {
 	int			rc;
-	const unsigned char	pattern = 0x5a;
+	unsigned char		pattern = 0x5a;
 	volatile unsigned long	*tuner_port = (unsigned long *)&Ser1UTCR0;
 
 	//
@@ -644,8 +645,16 @@ hijack_read_tuner_id (int *loopback, int *tuner_id)
 	//
 	tuner_port[UART_TX] = pattern;
 	rc = hijack_read_serial(tuner_port, HZ/4);
+	if (rc == pattern) {
+		//
+		// first loopback appeared to work, try it again to make sure
+		//
+		pattern = 0x33;
+		tuner_port[UART_TX] = pattern;
+		rc = hijack_read_serial(tuner_port, HZ/4);
+	}
 	//
-	// If we got our data echoed back, then we've found a docking station
+	// If we get our data echoed back, then we've found a docking station
 	//
 	if (rc == pattern) {
 		*loopback = 1;
@@ -1284,12 +1293,6 @@ static int rs_write(struct tty_struct * tty, int from_user,
 	save_flags(flags);
 
 	if (from_user) {
-		if (info == IRQ_ports[15]) {	// Tuner interface (ttyS0)
-			extern int hijack_tuner_rds_disable;
-			//printk("count=%d, data=0x%02x 0x%02x\n", count, buf[0], (count>1)?buf[1]:0);
-			if (count == 1 && buf[0] == 0xf1 && hijack_tuner_rds_disable)
-				return count;
-		}
 		down(&tmp_buf_sem);
 		while (1) {
 			c = MIN(count,

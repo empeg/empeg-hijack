@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v340"
+#define HIJACK_VERSION	"v341"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -58,7 +58,6 @@ int	hijack_volumelock_enabled = 0;	// used by arch/arm/special/empeg_state.c
 int	hijack_fsck_disabled = 0;	// used in fs/ext2/super.c
 int	hijack_onedrive = 0;		// used in drivers/block/ide-probe.c
 int	hijack_saveserial = 0;		// set to "1" to pass "-s-" to player on startup
-int	hijack_tuner_rds_disable = 0;	// set to "1" to block AF messages to Tuner
 int	hijack_reboot = 0;		// set to "1" to cause reboot on next display refresh
 pid_t	hijack_player_init_pid;		// used in fs/read_write.c, fs/exec.c
 unsigned int hijack_player_started = 0;	// set to jiffies when player startup is detected on serial port (notify.c)
@@ -141,6 +140,7 @@ typedef struct min_max_s {
 	int	max;
 } min_max_t;
 
+       int hijack_stalk_enabled = 0;	// used to ignore stalk input when in standby
 static int stalk_on_left = 0;
 static min_max_t rhs_stalk_vals[11];	// 10 sets of values, followed by {-1,-1} terminator.
 static min_max_t lhs_stalk_vals[11];	// 10 sets of values, followed by {-1,-1} terminator.
@@ -678,7 +678,6 @@ static const char blankerfuzz_menu_label[] = "Screen Blanker Sensitivity";
 static const char blanker_menu_label	[] = "Screen Blanker Timeout";
 static const char blankeraction_menu_label[] = "Screen Blanker Action";
 static const char saveserial_menu_label	[] = "Serial Port Assignment";
-static const char tuner_rds_disable_menu_label	[] = "Tuner RDS Control";
 static const char bass_menu_label       [] = "Tone: Bass Adjust";
 static const char treble_menu_label     [] = "Tone: Treble Adjust";
 static const char volumelock_menu_label	[] = "Volume Level on Boot";
@@ -706,7 +705,7 @@ static int blanker_sensitivity = 0;
 static int hightemp_threshold = 0;
 
 #define FORCEPOWER_BITS 4
-static int hijack_force_power = 0;
+static unsigned int hijack_force_power = 0;
 
 #define TIMERACTION_BITS 1
 static int timer_timeout = 0, timer_started = 0, timer_action = 0;
@@ -1955,28 +1954,6 @@ saveserial_display (int firsttime)
 }
 
 static void
-tuner_rds_disable_move (int direction)
-{
-	hijack_tuner_rds_disable = !hijack_tuner_rds_disable;
-	empeg_state_dirty = 1;
-}
-
-static int
-tuner_rds_disable_display (int firsttime)
-{
-	unsigned int rowcol;
-
-	if (!firsttime && !hijack_last_moved)
-		return NO_REFRESH;
-	hijack_last_moved = 0;
-	clear_hijack_displaybuf(COLOR0);
-	(void)draw_string(ROWCOL(0,0), tuner_rds_disable_menu_label, PROMPTCOLOR);
-	rowcol = draw_string(ROWCOL(2,0), "Tuner RDS/AF: ", PROMPTCOLOR);
-	(void)   draw_string_spaced(rowcol, disabled_enabled[!hijack_tuner_rds_disable], ENTRYCOLOR);
-	return NEED_REFRESH;
-}
-
-static void
 carvisuals_move (int direction)
 {
 	carvisuals_enabled = !carvisuals_enabled;
@@ -3088,7 +3065,6 @@ static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 	{"Show Flash Savearea",		savearea_display,	savearea_move,		0},
 	{ bass_menu_label,		bass_display,		tone_move,		0},
 	{ treble_menu_label,		treble_display,		tone_move,		0},
-	{ tuner_rds_disable_menu_label, tuner_rds_disable_display, tuner_rds_disable_move, 0},
 	{"Vital Signs",			vitals_display,		NULL,			0},
 	{ volumelock_menu_label,	volumelock_display,	volumelock_move,	0},
 	{NULL,				NULL,			NULL,			0},};
@@ -4021,6 +3997,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 
 	save_flags_cli(flags);
 	if (!dev->power) {  // do (almost) nothing else if unit is in standby mode
+		hijack_stalk_enabled = 0;
 		hijack_deactivate(HIJACK_IDLE);
 		(void)timer_check_expiry(dev);
 		restore_flags(flags);
@@ -4028,6 +4005,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 		display_blat(dev, player_buf);
 		return;
 	}
+	hijack_stalk_enabled = 1;
 
 #ifdef EMPEG_KNOB_SUPPORTED
 	if (ir_knob_down && jiffies_since(ir_knob_down) > (HZ*2)) {
@@ -5041,9 +5019,6 @@ hijack_process_config_ini (char *buf, off_t f_pos)
 		hijack_onedrive = 0;
 		empeg_state_dirty = 1;
 	}
-	if (!empeg_tuner_present) {
-		remove_menu_entry(tuner_rds_disable_menu_label);
-	}
 	if (!empeg_on_dc_power) {
 		remove_menu_entry(saveserial_menu_label);
 	}
@@ -5102,7 +5077,7 @@ typedef struct hijack_savearea_s {
 
 	unsigned blanker_timeout	: BLANKER_BITS;		// 6 bits
 	unsigned spare1			: 1;			// 1 bits
-	unsigned tuner_rds_disable	: 1;			// 1 bits
+	unsigned spare1a		: 1;			// was rds_disable
 
 	unsigned blanker_sensitivity	: SENSITIVITY_BITS;	// 3 bits
 	unsigned hightemp_threshold	: HIGHTEMP_BITS;	// 5 bits
@@ -5162,7 +5137,6 @@ hijack_save_settings (unsigned char *buf)
 	savearea.fsck_disabled		= hijack_fsck_disabled;
 	savearea.onedrive		= hijack_onedrive;
 	savearea.saveserial		= hijack_saveserial;
-	savearea.tuner_rds_disable	= hijack_tuner_rds_disable;
 	savearea.timer_action		= timer_action;
 	savearea.blanker_action		= blanker_action;
 	savearea.homework		= hijack_homework;
@@ -5252,7 +5226,6 @@ hijack_restore_settings (char *buf, char *msg)
 	hijack_fsck_disabled		= savearea.fsck_disabled;
 	hijack_onedrive			= savearea.onedrive;
 	hijack_saveserial		= savearea.saveserial;
-	hijack_tuner_rds_disable	= savearea.tuner_rds_disable;
 	timer_action			= savearea.timer_action;
 	blanker_action			= savearea.blanker_action;
 	hijack_homework			= savearea.homework;

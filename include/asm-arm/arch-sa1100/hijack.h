@@ -35,10 +35,8 @@
 #ifdef __KERNEL__
 static inline unsigned long JIFFIES (void)
 {
-	unsigned long j = jiffies;
-	if (j == 0)
-		j = -1;
-	return j;
+	unsigned long jiff = jiffies;
+	return jiff ? jiff : ~0UL;
 }
 #endif
 

@@ -229,7 +229,7 @@ static response_t response_table[] = {
 		"   USER    PORT    STOR    NLST    MKD     CDUP    PASS    ABOR*\r\n"
 		"   SITE    TYPE*   DELE    SYST*   RMD     STRU*   CWD     MODE*\r\n"
 		"   HELP    PWD     QUIT    RETR    LIST    NOOP    XMKD    XRMD\r\n"
-		"   REST\r\n"
+		"   REST    SIZE\r\n"
 		"214 Okay"},
 	{216,	"-The following SITE commands are recognized\r\n"
 		"   BUTTON  CHMOD   HELP    POPUP   REBOOT  RO      RW\r\n"
@@ -259,22 +259,28 @@ static response_t response_table[] = {
 	};
 
 static int
-kftpd_send_response (server_parms_t *parms, int rcode)
+kftpd_send_response2 (server_parms_t *parms, int rcode, const char *text, const char *extra)
 {
 	char		buf[512];
 	int		len, rc;
-	response_t	*r = response_table;
 
-	while (r->rcode && r->rcode != rcode)
-		++r;
 	if (parms->verbose)
-		printk(KFTPD": %d%s.\n", rcode, r->text);
-	len = sprintf(buf, "%d%s.\r\n", rcode, r->text);
+		printk(KFTPD": %d%s%s\n", rcode, text, extra);
+	len = sprintf(buf, "%d%s%s\r\n", rcode, text, extra);
 	if ((rc = ksock_rw(parms->clientsock, buf, len, -1)) != len) {
 		printk(KFTPD": ksock_rw(response) failed, rc=%d\n", rc);
 		return -1;
 	}
 	return 0;
+}
+static int
+kftpd_send_response (server_parms_t *parms, int rcode)
+{
+	response_t	*r = response_table;
+
+	while (r->rcode && r->rcode != rcode)
+		++r;
+	return kftpd_send_response2(parms, rcode, r->text, ".");
 }
 
 static int
@@ -1831,6 +1837,7 @@ hijack_do_command (void *sparms, char *buf)
 //	GPASS	give special group access password. Eg. SITE GPASS bar
 //	EXEC	execute a program.	Eg. SITE EXEC program params
 //		  --> output should be captured (pipe) and returned using a set of "200" responses
+//	SIZE	returns status 213 and bytecount of the specified file
 //
 /////////////////////////////////////////////////////////////////////////////////
 
@@ -2024,6 +2031,22 @@ kftpd_handle_command (server_parms_t *parms)
 				response = 226;
 		}
 		parms->start_offset = 0;
+	} else if (!strxcmp(buf, "SIZE ", 1)) {
+		struct stat st;
+		if (!buf[5]) {
+			response = 501;
+		} else {
+			strcpy(path, parms->cwd);
+			append_path(path, &buf[5], parms->tmp3);
+			if (0 > sys_newstat(path, &st)) {
+				response = 550;
+			} else {
+				char text[32];
+				sprintf(text, " %lu", (unsigned long)(st.st_size));
+				kftpd_send_response2(parms, 213, text, "");
+				response = 0;
+			}
+		}
 	} else {
 		response = 500;
 	}

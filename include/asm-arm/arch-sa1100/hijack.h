@@ -14,6 +14,7 @@
 //       IR_KW_NEXTTRACK_PRESSED,
 //       IR_KW_NEXTTRACK_RELEASED};
 //    unsigned char screenbuf[EMPEG_SCREEN_BYTES] = {0,};
+//    hijack_geom_t geom = {8,24,32,100}, fullscreen = {0,EMPEG_SCREEN_ROWS-1,0,EMPEG_SCREEN_COLS-1};
 //
 //    fd = open("/dev/display");
 //    top: while (1) {
@@ -21,6 +22,7 @@
 //       rc = ioctl(fd, EMPEG_HIJACK_WAITMENU, mymenu);
 //       if (rc < 0) perror(rc) else menu_index = rc;
 //       rc = ioctl(fd,EMPEG_HIJACK_BINDBUTTONS, buttons);
+//       rc = ioctl(fd,EMPEG_HIJACK_SETGEOM, &geom);
 //       while (looping) {
 //          rc = ioctl(fd,EMPEG_HIJACK_DISPWRITE, screenbuf); /* or ioctl(fd,EMPEG_HIJACK_DISPTEXT, "Some\nText"); */
 //          rc = ioctl(fd,EMPEG_HIJACK_WAITBUTTONS, &data);
@@ -29,6 +31,18 @@
 //    }
 //
 
+
+// Parameter format for SETGEOM (pass a pointer to one of these)
+// When used, the hijack kernel will display ONLY these rows/cols
+// from your fullsize display buffer (when using DISPWRITE ioctl),
+// with the regular player display on the rest of the screen.
+typedef struct hijack_geom_s {
+	unsigned short first_row;	// 0 .. EMPEG_SCREEN_ROWS-1
+	unsigned short last_row;	// 0 .. EMPEG_SCREEN_ROWS-1, must be > first_row
+	unsigned short first_col;	// 0 .. EMPEG_SCREEN_COLS-1; must be multiple of 2
+	unsigned short last_col;	// 0 .. EMPEG_SCREEN_COLS-1; must be multiple of 2; must be > first_col
+} hijack_geom_t;
+
 #define EMPEG_HIJACK_WAITMENU		_IO(EMPEG_DISPLAY_MAGIC, 80)	// Create menu item and wait for it to be selected
 #define EMPEG_HIJACK_DISPWRITE		_IO(EMPEG_DISPLAY_MAGIC, 82)	// Copy buffer to screen
 #define EMPEG_HIJACK_BINDBUTTONS	_IO(EMPEG_DISPLAY_MAGIC, 83)	// Specify IR codes to be hijacked
@@ -36,8 +50,9 @@
 #define EMPEG_HIJACK_WAITBUTTONS	_IO(EMPEG_DISPLAY_MAGIC, 85)	// Wait for next hijacked IR code
 #define EMPEG_HIJACK_DISPCLEAR		_IO(EMPEG_DISPLAY_MAGIC, 86)	// Clear screen
 #define EMPEG_HIJACK_DISPTEXT		_IO(EMPEG_DISPLAY_MAGIC, 87)	// Write text to screen
-#define EMPEG_HIJACK_DISPGEOM		_IO(EMPEG_DISPLAY_MAGIC, 88)	// Set screen overlay geometry (ignored for now)
+#define EMPEG_HIJACK_SETGEOM		_IO(EMPEG_DISPLAY_MAGIC, 88)	// Set screen overlay geometry
 #define EMPEG_HIJACK_POLLBUTTONS	_IO(EMPEG_DISPLAY_MAGIC, 89)	// Read next IR code; EBUSY if none available
+#define EMPEG_HIJACK_INJECTBUTTONS	_IO(EMPEG_DISPLAY_MAGIC, 90)	// Inject button codes into player's input queue
 
 #define EMPEG_SCREEN_ROWS		32				// pixels
 #define EMPEG_SCREEN_COLS		128				// pixels

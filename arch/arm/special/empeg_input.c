@@ -217,13 +217,14 @@ unsigned long jiffies_since(unsigned long past_jiffies)
 
 extern void input_append_code(void *dev, unsigned long data); /* in hijack.c */
 
-void real_input_append_code(struct input_dev *dev, input_code data)  // invoked from hijack.c
+int real_input_append_code(struct input_dev *dev, input_code data)  // invoked from hijack.c
 {
 	/* Now this is called from the bottom half we need to make
 	   sure that noone else is fiddling with stuff while we
 	   do it. */
 	input_code *new_wp;
 	unsigned long flags;
+	int rc = 0;
 
 	save_flags_cli(flags);
 	
@@ -237,12 +238,14 @@ void real_input_append_code(struct input_dev *dev, input_code data)  // invoked 
 		dev->buf_wp = new_wp;
 		/* Now we've written, wake up anyone who's reading */
 		wake_up_interruptible(&dev->wq);
-	}
+	} else {
 #if IR_DEBUG
-	else
 		printk("Infra-red buffer is full.\n");
+		rc = -ENOMEM;
 #endif
+	}
 	restore_flags(flags);
+	return rc;
 }
 
 static void input_on_remote_repeat(struct input_dev *dev)

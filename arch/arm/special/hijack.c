@@ -30,7 +30,7 @@ static int  (*hijack_dispfunc)(int) = NULL;
 static void (*hijack_movefunc)(int) = NULL;
 static unsigned int ir_lasttime = 0, ir_selected = 0, ir_releasewait = 0, ir_knob_down = 0, ir_left_down = 0, ir_right_down = 0, ir_trigger_count = 0;
 static unsigned long ir_delayed_knob_release = 0;
-void real_input_append_code(void *dev, unsigned long data); // empeg_input.c
+extern int real_input_append_code(void *dev, unsigned long data); // empeg_input.c
 static int hijack_player_menu_is_active = 0, hijack_sound_adjust_is_active = 0;
 static unsigned char *hijack_player_buf = NULL;
 
@@ -187,30 +187,64 @@ draw_pixel (unsigned short pixel_row, unsigned short pixel_col, int color)
 	*pixel_pair = (*pixel_pair & ~pixel_mask) ^ (color & pixel_mask);
 }
 
-static void
-draw_box (unsigned short first_row, unsigned short last_row, unsigned short first_col, unsigned short last_col)
-{
-	unsigned short row;
+static hijack_geom_t *hijack_overlay_geom = NULL;
 
-	// for simplicity, we only draw pixels in pairs
-	first_col /= 2;
-	last_col  /= 2;
-	for (row = first_row; row <= last_row; ++row) {
-		unsigned short col = first_col;
-		unsigned char *buf = &hijack_displaybuf[row][0];
-		unsigned char color;
-		buf[first_col] = buf[last_col] = 0x00;
-		color = 0x11;
-		if (row == first_row || row == last_row)
-			color = 0x00;
-		buf[first_col+1] = buf[last_col-1] = color;
-		color = 0x00;
-		if (row == (first_row+1) || row == (last_row-1))
-			color = 0x11;
-		for (col = first_col+2; col < (last_col-1); ++col)
-			buf[col] = color;
+static void
+draw_frame (unsigned char *dest, const hijack_geom_t *geom)
+{
+	// draw a frame inside geom, one pixel smaller all around
+	// for simplicity, we only do pixels in pairs
+	unsigned short offset, top_or_bottom = 1;
+	short row, last_byte_offset = (geom->last_col - geom->first_col - 4) / 2;
+	offset = ((geom->first_row + 1) * (EMPEG_SCREEN_COLS / 2)) + (geom->first_col / 2) + 1;
+	for (row = (geom->last_row - geom->first_row - 2); row >= 0;) {
+		short col;
+		dest[offset + 0] = dest[offset + last_byte_offset] = 0x11;
+		if (top_or_bottom)
+			for (col = last_byte_offset-1; col > 0; --col)
+				dest[offset + col] = 0x11;
+		offset += (EMPEG_SCREEN_COLS / 2);
+		top_or_bottom = (--row > 0) ? 0 : 1;
 	}
 }
+
+static void
+hijack_do_overlay (unsigned char *dest, unsigned char *src, const hijack_geom_t *geom)
+{
+	// for simplicity, we only do pixels in pairs
+	unsigned short offset;
+	short row = geom->first_row, last_col = (geom->last_col - geom->first_col) / 2;
+	offset = (row * (EMPEG_SCREEN_COLS / 2)) + (geom->first_col / 2);
+	for (row = geom->last_row - row; row >= 0; --row) {
+		short col;
+		for (col = last_col; col >= 0; --col)
+			dest[offset + col] = src[offset + col];
+		offset += (EMPEG_SCREEN_COLS / 2);
+	}
+}
+
+static void
+clear_text_row(unsigned int rowcol, unsigned short last_col)
+{
+	unsigned short pixel_row, num_cols, row = (rowcol & 0xffff), pixel_col = (rowcol >> 16);
+
+	num_cols = 1 + last_col - pixel_col;
+	if (row & 0x8000)
+		row = (row & ~0x8000) * KFONT_HEIGHT;
+	for (pixel_row = 0; pixel_row < KFONT_HEIGHT; ++pixel_row) {
+		unsigned char *displayrow, pixel_mask = (pixel_col & 1) ? 0xf0 : 0x0f;
+		unsigned int offset = 0;
+		if ((row + pixel_row) >= EMPEG_SCREEN_ROWS)
+			return;
+		displayrow = &hijack_displaybuf[row + pixel_row][0];
+		do {
+			unsigned char new_pixel   = 0;
+			unsigned char *pixel_pair = &displayrow[(pixel_col + offset) >> 1];
+			*pixel_pair = ((*pixel_pair & (pixel_mask = ~pixel_mask))) ^ new_pixel;
+		} while (++offset < num_cols);
+	}
+}
+	
 
 static unsigned char kfont_spacing = 0;  // 0 == proportional
 
@@ -221,7 +255,7 @@ draw_char (unsigned short pixel_row, short pixel_col, unsigned char c, unsigned 
 	const unsigned char *font_entry;
 	unsigned char *displayrow;
 
-	if (pixel_row > EMPEG_SCREEN_ROWS)
+	if (pixel_row >= EMPEG_SCREEN_ROWS)
 		return 0;
 	displayrow = &hijack_displaybuf[pixel_row][0];
 	if (c > '~' || c < ' ')
@@ -300,6 +334,7 @@ activate_dispfunc (int (*dispfunc)(int), void (*movefunc)(int))
 {
 	ir_selected = 0;
 	ir_trigger_count = 0;
+	hijack_overlay_geom = NULL;
 	if (dispfunc != NULL) {
 		hijack_dispfunc = dispfunc;
 		hijack_movefunc = movefunc;
@@ -313,6 +348,7 @@ hijack_deactivate (void)
 {
 	hijack_movefunc = NULL;
 	hijack_dispfunc = NULL;
+	hijack_overlay_geom = NULL;
 	hijack_status = HIJACK_INACTIVE_PENDING;
 }
 
@@ -417,22 +453,24 @@ voladj_display (int firsttime)
 }
 
 static int
-voladj_overlay (int firsttime)
+voladj_prefix (int firsttime)
 {
-	unsigned int rowcol;
+	static const hijack_geom_t geom = {8, 8+6+KFONT_HEIGHT, 16, EMPEG_SCREEN_COLS-16};
 
 	ir_selected = 0; // paranoia?
 	if (firsttime) {
 		hijack_last_moved = jiffies ? jiffies : 1;
+		clear_hijack_displaybuf(COLOR0);
+		draw_frame((unsigned char *)hijack_displaybuf, &geom);
+		hijack_overlay_geom = (hijack_geom_t *)&geom;
 	} else if (jiffies_since(hijack_last_moved) >= (HZ*2)) {
 		hijack_deactivate();
 		ir_selected = 0;
 		hijack_status = HIJACK_INACTIVE;
 	} else if (hijack_player_buf) {
-		unsigned row = 8;
-		memcpy(hijack_displaybuf, hijack_player_buf, EMPEG_SCREEN_BYTES);
-		draw_box(row, row+6+KFONT_HEIGHT, 16, EMPEG_SCREEN_COLS-17);
-		rowcol = draw_string((row+3)|(21<<16), "Auto VolAdj: ", COLOR3);
+		unsigned int rowcol = (geom.first_row+4)|((geom.first_col+6)<<16);
+		rowcol = draw_string(rowcol, "Auto VolAdj: ", COLOR3);
+		clear_text_row(rowcol, geom.last_col-4);
 		rowcol = draw_string(rowcol, voladj_names[voladj_enabled], COLOR3);
 		return NEED_REFRESH;
 	}
@@ -569,18 +607,18 @@ blanker_display (int firsttime)
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
 	(void)draw_string(ROWCOL(0,0), "Screen Inactivity Timeout", COLOR2);
-	rowcol = draw_string(ROWCOL(2,0), "Blank ", COLOR2);
+	rowcol = draw_string(ROWCOL(2,0), "Blank", COLOR2);
 	if (blanker_timeout) {
-		rowcol = draw_string(rowcol, "after ", COLOR2);
+		rowcol = draw_string(rowcol, " after ", COLOR2);
 		rowcol = draw_number(rowcol, blanker_timeout * SCREEN_BLANKER_MULTIPLIER, "%u", COLOR3);
 		(void)   draw_string(rowcol, " secs", COLOR2);
 	} else {
-		(void)draw_string(rowcol, "[Off]", COLOR3);
+		(void)draw_string(rowcol, ":  [Off]", COLOR3);
 	}
 	return NEED_REFRESH;
 }
 
-#define BLANKERFUZZ_BITS 2
+#define BLANKERFUZZ_BITS 3
 static int blankerfuzz_5pcts = 0;
 
 static void
@@ -682,7 +720,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v41 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v42 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -876,18 +914,19 @@ maxtemp_display (int firsttime)
 
 #define CALCULATOR_BUTTONS_SIZE	(1 + (14 * 4))
 unsigned long calculator_buttons[CALCULATOR_BUTTONS_SIZE] = {CALCULATOR_BUTTONS_SIZE,
-	IR_KW_0_PRESSED,       IR_KW_0_RELEASED,       IR_RIO_0_PRESSED,         IR_RIO_0_RELEASED,
-	IR_KW_1_PRESSED,       IR_KW_1_RELEASED,       IR_RIO_1_PRESSED,         IR_RIO_1_RELEASED,
-	IR_KW_2_PRESSED,       IR_KW_2_RELEASED,       IR_RIO_2_PRESSED,         IR_RIO_2_RELEASED,
-	IR_KW_3_PRESSED,       IR_KW_3_RELEASED,       IR_RIO_3_PRESSED,         IR_RIO_3_RELEASED,
-	IR_KW_4_PRESSED,       IR_KW_4_RELEASED,       IR_RIO_4_PRESSED,         IR_RIO_4_RELEASED,
-	IR_KW_5_PRESSED,       IR_KW_5_RELEASED,       IR_RIO_5_PRESSED,         IR_RIO_5_RELEASED,
-	IR_KW_6_PRESSED,       IR_KW_6_RELEASED,       IR_RIO_6_PRESSED,         IR_RIO_6_RELEASED,
-	IR_KW_7_PRESSED,       IR_KW_7_RELEASED,       IR_RIO_7_PRESSED,         IR_RIO_7_RELEASED,
-	IR_KW_8_PRESSED,       IR_KW_8_RELEASED,       IR_RIO_8_PRESSED,         IR_RIO_8_RELEASED,
-	IR_KW_9_PRESSED,       IR_KW_9_RELEASED,       IR_RIO_9_PRESSED,         IR_RIO_9_RELEASED,
-	IR_KW_CD_PRESSED,      IR_KW_CD_RELEASED,      IR_RIO_MENU_PRESSED,      IR_RIO_MENU_RELEASED,
-	IR_KW_STAR_RELEASED,   IR_KW_STAR_PRESSED,     IR_RIO_CANCEL_RELEASED,   IR_RIO_CANCEL_PRESSED};
+	IR_KW_0_PRESSED,	IR_KW_0_RELEASED,	IR_RIO_0_PRESSED,	IR_RIO_0_RELEASED,
+	IR_KW_1_PRESSED,	IR_KW_1_RELEASED,	IR_RIO_1_PRESSED,	IR_RIO_1_RELEASED,
+	IR_KW_2_PRESSED,	IR_KW_2_RELEASED,	IR_RIO_2_PRESSED,	IR_RIO_2_RELEASED,
+	IR_KW_3_PRESSED,	IR_KW_3_RELEASED,	IR_RIO_3_PRESSED,	IR_RIO_3_RELEASED,
+	IR_KW_4_PRESSED,	IR_KW_4_RELEASED,	IR_RIO_4_PRESSED,	IR_RIO_4_RELEASED,
+	IR_KW_5_PRESSED,	IR_KW_5_RELEASED,	IR_RIO_5_PRESSED,	IR_RIO_5_RELEASED,
+	IR_KW_6_PRESSED,	IR_KW_6_RELEASED,	IR_RIO_6_PRESSED,	IR_RIO_6_RELEASED,
+	IR_KW_7_PRESSED,	IR_KW_7_RELEASED,	IR_RIO_7_PRESSED,	IR_RIO_7_RELEASED,
+	IR_KW_8_PRESSED,	IR_KW_8_RELEASED,	IR_RIO_8_PRESSED,	IR_RIO_8_RELEASED,
+	IR_KW_9_PRESSED,	IR_KW_9_RELEASED,	IR_RIO_9_PRESSED,	IR_RIO_9_RELEASED,
+	IR_KW_CD_PRESSED,	IR_KW_CD_RELEASED,	IR_RIO_MENU_PRESSED,	IR_RIO_MENU_RELEASED,
+	IR_KW_STAR_RELEASED,	IR_KW_STAR_PRESSED,	IR_RIO_CANCEL_RELEASED,	IR_RIO_CANCEL_PRESSED,
+	IR_TOP_BUTTON_RELEASED,	IR_TOP_BUTTON_PRESSED,	IR_KNOB_PRESSED,	IR_KNOB_RELEASED};
 
 static const unsigned char calculator_operators[] = {'=','+','-','*','/'};
 
@@ -907,7 +946,9 @@ calculator_do_op (long total, long value, long operator)
 static int
 calculator_display (int firsttime)
 {
-	static long total, value, operator, prev;
+	static long total, value;
+	static unsigned char operator, prev;
+	long new;
 	unsigned int i;
 	unsigned long flags, button;
 	unsigned char opstring[3] = {' ','\0'};
@@ -938,16 +979,21 @@ calculator_display (int firsttime)
 				case 11: // * or CANCEL: CE,CA,Quit
 					if (value) {
 						value = 0;
-					} else if (total) {
-						total = 0;
-					} else {
-						hijack_buttonlist = NULL;
-						ir_selected = 1; // return to main menu
+						break;
 					}
+					if (total) {
+						total = 0;
+						break;
+					}
+					// fall thru
+				case 12: // TOP or KNOB: Quit
+					hijack_buttonlist = NULL;
+					ir_selected = 1; // return to main menu
 					break;
 				default: // 0,1,2,3,4,5,6,7,8,9
-					if ((value / 1000000000) == 0)
-						value = (value * 10) + ((value < 0) ? -i : i);
+					new = (value * 10) + i;
+					if (new > value)
+						value = new;
 					break;
 			}
 			prev = i;
@@ -1172,8 +1218,7 @@ hijack_display (struct display_dev *dev, unsigned char *player_buf)
 		case HIJACK_INACTIVE:
 			if (!dev->power) {  // do not activate menu if unit is in standby mode!
 				buf = player_buf;
-			} else if (ir_trigger_count >= 3 || (ir_knob_down && jiffies_since(ir_knob_down) >= HZ)) {
-				//menu_item = menu_top = 0;
+			} else if (ir_trigger_count >= 6 || (ir_knob_down && jiffies_since(ir_knob_down) >= HZ)) {
 				activate_dispfunc(menu_display, menu_move);
 			} else if (jiffies_since(ir_lasttime) < (HZ*5) || !maxtemp_threshold || read_temperature() < (maxtemp_threshold + MAXTEMP_OFFSET)) {
 				buf = player_buf;
@@ -1189,7 +1234,6 @@ hijack_display (struct display_dev *dev, unsigned char *player_buf)
 		case HIJACK_ACTIVE:
 			if (hijack_dispfunc == NULL) {  // userland app finished?
 				activate_dispfunc(menu_display, menu_move);
-				//hijack_deactivate();
 			} else {
 				if (hijack_movefunc != NULL)
 					hijack_move_repeat();
@@ -1199,6 +1243,10 @@ hijack_display (struct display_dev *dev, unsigned char *player_buf)
 				save_flags_cli(flags);
 				if (ir_selected && hijack_dispfunc != userland_display)
 					activate_dispfunc(menu_display, menu_move);
+			}
+			if (hijack_overlay_geom) {
+				hijack_do_overlay (player_buf, (unsigned char *)hijack_displaybuf, hijack_overlay_geom);
+				buf = player_buf;
 			}
 			break;
 		case HIJACK_PENDING:
@@ -1220,7 +1268,7 @@ hijack_display (struct display_dev *dev, unsigned char *player_buf)
 	}
 	// Use screen-scraping to keep track of some of the player states:
 	hijack_player_menu_is_active = hijack_sound_adjust_is_active = 0;
-	if (buf == player_buf) {
+	if (buf == player_buf && !hijack_overlay_geom) {
 		hijack_player_menu_is_active = check_if_player_menu_is_active(buf);
 		if (!hijack_player_menu_is_active)
 			hijack_sound_adjust_is_active = check_if_sound_adjust_is_active(buf);
@@ -1277,11 +1325,13 @@ void  // invoked from multiple places in empeg_input.c
 input_append_code(void *dev, unsigned long data)  // empeg_input.c
 {
 	static unsigned long ir_lastpressed = 0;
-	int i, hijacked = 0, overlay_was_active;
+	int i, hijacked = 0, knob_prefix_was_active;
 	unsigned long flags;
 
+	if (data == IR_KNOB_RELEASED && data == ir_lastpressed)
+		return;	// we sometimes get two of these in a row (??)
 	save_flags_cli(flags);
-	overlay_was_active = (hijack_dispfunc == voladj_overlay);
+	knob_prefix_was_active = (hijack_dispfunc == voladj_prefix);
 	blanker_activated = 0;
 	if (ir_delayed_knob_release && jiffies_since(ir_delayed_knob_release) > (HZ+(HZ/4))) {
 		ir_delayed_knob_release = 0;
@@ -1315,7 +1365,7 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 				case IR_RIO_MENU_PRESSED:
 				case IR_KW_CD_PRESSED:
 				case IR_KNOB_PRESSED:
-					if (!overlay_was_active)
+					if (!knob_prefix_was_active)
 						ir_selected = 1;
 					break;
 				case IR_KW_NEXTTRACK_PRESSED:
@@ -1331,7 +1381,7 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 						hijacked = hijack_move(-1);
 					break;
 				case IR_KNOB_RELEASED:  // note: this one often arrives in pairs, so check knob_down first!
-					if (ir_knob_down && overlay_was_active && hijack_status == HIJACK_ACTIVE) { 
+					if (ir_knob_down && knob_prefix_was_active && hijack_status == HIJACK_ACTIVE) { 
 						hijack_deactivate();
 						ir_selected = 0;
 						hijack_status = HIJACK_INACTIVE;
@@ -1356,7 +1406,7 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 		}
 	} else if (devices[0].power && data == IR_KW_CD_PRESSED) {
 		// ugly Kenwood remote hack: press/release CD quickly 3 times to activate menu
-		if (ir_lastpressed == data && jiffies_since(ir_lasttime) < HZ)
+		if ((ir_lastpressed & 0x7fffffff) == data && jiffies_since(ir_lasttime) < HZ)
 			++ir_trigger_count;
 		else
 			ir_trigger_count = 1;
@@ -1369,8 +1419,7 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 		ir_releasewait = data | ((((int)data) > 16) ? 0x80000000 : 0x00000001);
 	}
 	// save button PRESSED codes in ir_lastpressed
-	if ((data & 0x80000001) == 0 || ((int)data) > 16)
-		ir_lastpressed = data;
+	ir_lastpressed = data;
 	ir_lasttime = jiffies;
 	switch (data) {
 		case IR_RIO_MENU_PRESSED:
@@ -1396,8 +1445,8 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 				int index = hijack_player_menu_is_active ? 0 : knobdata_index;
 				data = knobdata_released[index];	// substitute our translation
 				if (jiffies_since(ir_knob_down) < (HZ/2)) {	// short press?
-					if (!(hijack_player_menu_is_active | index | overlay_was_active | hijack_sound_adjust_is_active)) {
-						activate_dispfunc(voladj_overlay, voladj_move);
+					if (!(hijack_player_menu_is_active | index | knob_prefix_was_active | hijack_sound_adjust_is_active)) {
+						activate_dispfunc(voladj_prefix, voladj_move);
 						hijacked = 1;
 					} else {
 						real_input_append_code(dev, knobdata_pressed[index]);
@@ -1478,7 +1527,7 @@ static struct sa_struct {
 	unsigned maxtemp_threshold	: MAXTEMP_BITS;
 	unsigned knobdata_index		: KNOBDATA_BITS;
 	unsigned blankerfuzz_5pcts	: BLANKERFUZZ_BITS;
-	unsigned leftover		: 4;
+	unsigned leftover		: (8 - (KNOBDATA_BITS + BLANKERFUZZ_BITS));
 	unsigned byte4			: 8;
 	unsigned byte5			: 8;
 	unsigned byte6			: 8;
@@ -1578,6 +1627,28 @@ hijack_wait_on_menu (char *argv[])
 	return rc;
 }
 
+static int
+copy_buttonlist_from_user (unsigned long arg, unsigned long **buttonlist, unsigned long max_size)
+{
+	// data[0] specifies TOTAL number of table entries data[0..?]
+	// data[0] cannot be zero; data[0]==1 means "capture everything"
+	unsigned long *list = NULL, size;
+	long nbuttons;
+	if (copy_from_user(&nbuttons, (void *)arg, sizeof(nbuttons)))
+		return -EFAULT;
+	if (nbuttons <= 0 || nbuttons > max_size)
+		return -EINVAL;
+	size = nbuttons * sizeof(nbuttons);
+	if (!(list = kmalloc(size, GFP_KERNEL)))
+		return -ENOMEM;
+	if (copy_from_user(list, (void *)arg, size)) {
+		kfree(list);
+		return -EFAULT;
+	}
+	*buttonlist = list;
+	return 0;
+}
+
 static int  // invoked from empeg_display.c::ioctl()
 hijack_ioctl (struct inode *inode, struct file *filp, unsigned int cmd, unsigned long arg)
 {
@@ -1597,7 +1668,8 @@ hijack_ioctl (struct inode *inode, struct file *filp, unsigned int cmd, unsigned
 		case EMPEG_HIJACK_DISPWRITE:	// copy buffer to screen
 		{
 			// Invocation:  rc = ioctl(fd, EMPEG_HIJACK_DISPWRITE, (unsigned char *)displaybuf); // sizeof(displaybuf)==2048
-			if (copy_from_user(hijack_displaybuf, (void *)arg, sizeof(hijack_displaybuf))) return -EFAULT;
+			if (copy_from_user(hijack_displaybuf, (void *)arg, sizeof(hijack_displaybuf)))
+				return -EFAULT;
 			userland_display_updated = 1;
 			return 0;
 		}
@@ -1606,15 +1678,9 @@ hijack_ioctl (struct inode *inode, struct file *filp, unsigned int cmd, unsigned
 			// Invocation:  rc = ioctl(fd, EMPEG_HIJACK_DISPWRITE, (unsigned long *)data[]);
 			// data[0] specifies TOTAL number of table entries data[0..?]
 			// data[0] cannot be zero; data[0]==1 means "capture everything"
-			unsigned long size, nbuttons = 0, *buttonlist = NULL;
-			if (copy_from_user(&nbuttons, (void *)arg, sizeof(nbuttons))) return -EFAULT;
-			if (nbuttons == 0 || nbuttons > 256) return -EINVAL;	// 256 is an arbitrary limit for safety
-			size = nbuttons * sizeof(nbuttons);
-			if (!(buttonlist = kmalloc(size, GFP_KERNEL))) return -ENOMEM;
-			if (copy_from_user(buttonlist, (void *)arg, size)) {
-				kfree(buttonlist);
-				return -EFAULT;
-			}
+			unsigned long *buttonlist = NULL;
+			if ((rc = copy_buttonlist_from_user(arg, &buttonlist, 256)))
+				return rc;
 			save_flags_cli(flags);
 			if (hijack_buttonlist) {
 				restore_flags(flags);
@@ -1687,6 +1753,48 @@ hijack_ioctl (struct inode *inode, struct file *filp, unsigned int cmd, unsigned
 			return put_user(button, (int *)arg);
 
 		}
+		case EMPEG_HIJACK_INJECTBUTTONS:	// Insert button codes into player's input queue (bypasses hijack)
+		{					// same args/usage as EMPEG_HIJACK_BINDBUTTONS
+			unsigned long *buttonlist = NULL;
+			int i;
+			if ((rc = copy_buttonlist_from_user(arg, &buttonlist, 256)))
+				return rc;
+			save_flags_cli(flags);
+			for (i = 1; i < buttonlist[0]; ++i) {
+				extern void *input_devices;
+				while (!signal_pending(current) && real_input_append_code(input_devices, buttonlist[i])) {
+					// no room in input queue, so wait 1/10sec and try again
+					restore_flags(flags);
+					current->state = TASK_INTERRUPTIBLE;
+					schedule_timeout(HZ/10);
+					current->state = TASK_RUNNING;
+					save_flags_cli(flags);
+				}
+			}
+			restore_flags(flags);
+			kfree(buttonlist);
+			return signal_pending(current) ? -EINTR : 0;
+			
+		}
+		case EMPEG_HIJACK_SETGEOM:	// Set window overlay geometry
+		{
+			// Invocation:  rc = ioctl(fd, EMPEG_HIJACK_DISPCLEAR, (hijack_geom_t *)&geom);
+			static hijack_geom_t geom; // static is okay here cuz only one app can be active at a time
+			if (copy_from_user(&geom, (hijack_geom_t *)arg, sizeof(geom)))
+				return -EFAULT;
+			if (geom.first_row >= EMPEG_SCREEN_ROWS || geom.last_row >= EMPEG_SCREEN_ROWS
+			 || geom.first_row >= geom.last_row     || geom.first_col >= geom.last_col
+			 || geom.first_col >= EMPEG_SCREEN_COLS || geom.last_col >= EMPEG_SCREEN_COLS
+			 || (geom.first_col & 1) || (geom.last_col & 1))
+				return -EINVAL;
+			save_flags_cli(flags);
+			if (geom.first_row != 0 || geom.last_row != (EMPEG_SCREEN_ROWS-1) || geom.first_col != 0 || geom.last_col != (EMPEG_SCREEN_COLS-1))
+				hijack_overlay_geom = &geom;	// partial overlay
+			else
+				hijack_overlay_geom = NULL;	// full screen
+			restore_flags(flags);
+			return 0;
+		}
 		case EMPEG_HIJACK_DISPCLEAR:	// Clear screen
 		{
 			// Invocation:  rc = ioctl(fd, EMPEG_HIJACK_DISPCLEAR, NULL);
@@ -1700,7 +1808,8 @@ hijack_ioctl (struct inode *inode, struct file *filp, unsigned int cmd, unsigned
 			int size = 0;
 			unsigned char color = COLOR3, buf[256] = {0,}, *text = (unsigned char *)arg;
 			do {
-				if (copy_from_user(&buf[size], text+size, 1)) return -EFAULT;
+				if (copy_from_user(&buf[size], text+size, 1))
+					return -EFAULT;
 			} while (buf[size++] && size < sizeof(buf));
 			buf[size-1] = '\0';
 			text = buf;
@@ -1715,9 +1824,6 @@ hijack_ioctl (struct inode *inode, struct file *filp, unsigned int cmd, unsigned
 			userland_display_updated = 1;
 			return 0;
 		}
-		case EMPEG_HIJACK_DISPGEOM:	// Set screen overlay geometry
-			return -ENOSYS;		// not implemented
-
 		default:			// Everything else
 			return -EINVAL;
 	}

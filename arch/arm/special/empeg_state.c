@@ -322,14 +322,14 @@ static int state_fetch(unsigned char *buffer)
 	}
 
 	/* Later empegs have an RTC */
-	/* Before we go: the first 4 bytes of the block are the elapsed
-	   unixtime: set it */
-	// We steal the LS-bit to store the voladj state
+	// We steal the two least-significant bits to store the voladj state
 	ttime = *((unsigned int*)buffer);
 	voladj_enabled = (ttime & 3);
 	ttime &= ~3;
 	
 	if (empeg_hardwarerevision()<6) {
+		/* Before we go: the first 4 bytes of the block are the elapsed
+		   unixtime: set it */
 		unixtime=t.tv_sec=ttime;
 		t.tv_usec=0;
 		do_settimeofday(&t);
@@ -348,7 +348,7 @@ static inline int state_store(void)
 	volatile unsigned short *from=(volatile unsigned short*)state_devices[0].read_buffer;
 	
 	/* Store current unixtime */
-	// We steal the LS-bit to store the voladj state
+	// We steal the two least-significant bits to store the voladj state
 	*((unsigned int*)from)=(xtime.tv_sec & ~3) | (voladj_enabled & 3);
 
 	/* Store current power-on time */

@@ -50,7 +50,7 @@ static unsigned char blanker_lastbuf[EMPEG_SCREEN_BYTES] = {0,}, blanker_is_blan
 
 static int  (*hijack_dispfunc)(int) = NULL;
 static void (*hijack_movefunc)(int) = NULL;
-static unsigned long ir_lasttime = 0, ir_selected = 0, ir_releasewait = 0, ir_trigger_count = 0;;
+static unsigned long ir_lastevent = 0, ir_lasttime = 0, ir_selected = 0, ir_releasewait = 0, ir_trigger_count = 0;;
 static unsigned long ir_menu_down = 0, ir_left_down = 0, ir_right_down = 0;
 static unsigned long ir_move_repeat_delay, ir_shifted = 0;
 static int *ir_numeric_input = NULL, player_menu_is_active = 0, player_sound_adjust_is_active = 0;
@@ -63,6 +63,8 @@ typedef struct ir_translation_s {
 	unsigned char	source;		// (T)uner,(A)ux,(M)ain, or '\0'(any)
 	unsigned long	new[1];		// start of macro table
 } ir_translation_t;
+
+#define IR_NULL_BUTTON	(0x3fffffff)
 
 static ir_translation_t *ir_current_longpress = NULL;
 static unsigned long *ir_translate_table = NULL;
@@ -104,8 +106,42 @@ typedef struct hijack_buttonq_s {
 	hijack_buttondata_t	data[HIJACK_BUTTONQ_SIZE];
 } hijack_buttonq_t;
 
+// Automatic volume adjustment parameters
+#define MULT_POINT		12
+#define MULT_MASK		((1 << MULT_POINT) - 1)
+#define VOLADJ_THRESHSIZE	16
+#define VOLADJ_HISTSIZE		128	/* must be a power of two */
+#define VOLADJ_FIXEDPOINT(whole,fraction) ((((whole)<<MULT_POINT)|((unsigned int)((fraction)*(1<<MULT_POINT))&MULT_MASK)))
+#define VOLADJ_BITS 2
+int hijack_voladj_enabled = 0; // used by voladj code in empeg_audio3.c
+static const char  *voladj_names[] = {"[Off]", "Low", "Medium", "High"};
+static unsigned int voladj_history[VOLADJ_HISTSIZE] = {0,}, voladj_last_histx = 0, voladj_histx = 0;
+static unsigned int hijack_voladj_parms[(1<<VOLADJ_BITS)-1][5] = { // Values as suggested by Richard Lovejoy
+	{0x1800,	 100,	0x1000,	25,	60},  // Low
+	{0x2000,	 409,	0x1000,	27,	70},  // Medium (Normal)
+	{0x2000,	3000,	0x0c00,	30,	80}}; // High
+
+// Externally tuneable parameters for config.ini; the voladj_parms are also tuneable
 static hijack_buttonq_t hijack_inputq, hijack_playerq, hijack_userq;
-static int hijack_button_pacing = 4;	// minimum spacing between press/release pairs within playerq
+static int hijack_button_pacing			=  4;	// minimum spacing between press/release pairs within playerq
+static int hijack_temperature_correction	= -4;	// adjust all h/w temperature readings by this celcius amount
+
+typedef struct hijack_option_s {
+	const char	*name;
+	int		*target;
+	int		num_items;
+	int		min;
+	int		max;
+} hijack_option_t; 
+
+static const hijack_option_t hijack_option_table[] = {
+	{"temperature_correction",	&hijack_temperature_correction,	1,	-20,	+20},
+	{"button_pacing",		&hijack_button_pacing,		1,	0,	HZ},
+	{"voladj_low",			&hijack_voladj_parms[0][0],	5,	0,	0x7ffe},
+	{"voladj_medium",		&hijack_voladj_parms[1][0],	5,	0,	0x7ffe},
+	{"voladj_high",			&hijack_voladj_parms[2][0],	5,	0,	0x7ffe},
+	{NULL,NULL,0,0,0} // end-of-list
+	};
 
 #define HIJACK_USERQ_SIZE	8
 static const unsigned long intercept_all_buttons[] = {1};
@@ -113,18 +149,6 @@ static const unsigned long *hijack_buttonlist = NULL;
 //static unsigned long hijack_userq[HIJACK_USERQ_SIZE];
 //static unsigned short hijack_userq_head = 0, hijack_userq_tail = 0;
 static struct wait_queue *hijack_userq_waitq = NULL, *hijack_menu_waitq = NULL;
-
-#define MULT_POINT		12
-#define MULT_MASK		((1 << MULT_POINT) - 1)
-#define VOLADJ_THRESHSIZE	16
-#define VOLADJ_HISTSIZE		128	/* must be a power of two */
-#define VOLADJ_FIXEDPOINT(whole,fraction) ((((whole)<<MULT_POINT)|((unsigned int)((fraction)*(1<<MULT_POINT))&MULT_MASK)))
-#define VOLADJ_BITS 2
-
-int hijack_voladj_enabled = 0; // used by voladj code in empeg_audio3.c
-
-static const char *voladj_names[] = {"[Off]", "Low", "Medium", "High"};
-static unsigned int voladj_history[VOLADJ_HISTSIZE] = {0,}, voladj_last_histx = 0, voladj_histx = 0;
 
 #define SCREEN_BLANKER_MULTIPLIER 15
 #define BLANKER_BITS (8 - VOLADJ_BITS)
@@ -577,11 +601,6 @@ hijack_voladj_update_history (int multiplier)
 	restore_flags(flags);
 }
 
-static unsigned int hijack_voladj_parms[(1<<VOLADJ_BITS)-1][5] = { // Values as suggested by Richard Lovejoy
-	{0x1800,	 100,	0x1000,	25,	60},  // Low
-	{0x2000,	 409,	0x1000,	27,	70},  // Medium (Normal)
-	{0x2000,	3000,	0x0c00,	30,	80}}; // High
-
 static void
 voladj_move (int direction)
 {
@@ -669,22 +688,27 @@ kfont_display (int firsttime)
 	return NEED_REFRESH;
 }
 
-static int hijack_temperature_correction = -4;
-static void
+static int
 init_temperature (void)
 {
+	static unsigned long inittherm_lasttime = 0;
 	unsigned long flags;
 
+	// restart the thermometer once every five minutes or so
+	if (inittherm_lasttime && jiffies_since(inittherm_lasttime) < (HZ*5*60))
+		return 0;
+	inittherm_lasttime = jiffies ? jiffies : -1;
 	save_flags_clif(flags);
 	(void)empeg_inittherm(&OSMR0,&GPLR);
 	restore_flags(flags);
+	return 1;
 }
 
-static unsigned long temp_lasttime = 0;
 static int
 read_temperature (void)
 {
-	static int temp = 0;
+	static unsigned long readtherm_lasttime = 0;
+	static int temperature = 0;
 	unsigned long flags;
 
 	// Hugo (altman) writes:
@@ -706,18 +730,16 @@ read_temperature (void)
 	// so we may still need the odd call to empeg_inittherm() just to ensure
 	// it is running.  -ml
 
-	if (temp_lasttime && jiffies_since(temp_lasttime) < (HZ*4))
-		return temp;
+	if ((readtherm_lasttime && jiffies_since(readtherm_lasttime) < (HZ*5)) || init_temperature())
+		return temperature;
+	readtherm_lasttime = jiffies ? jiffies : -1;
 	save_flags_clif(flags);
-	temp = empeg_readtherm(&OSMR0,&GPLR);
+	temperature = empeg_readtherm(&OSMR0,&GPLR);
 	restore_flags(flags);
-	temp_lasttime = jiffies ? jiffies : -1;
-	if (((temp_lasttime / (HZ*5)) & 0x3f) == 0) // restart the thermometer once every five minutes or so
-		init_temperature();
 	/* Correct for negative temperatures (sign extend) */
-	if (temp & 0x80)
-		temp = -(128 - (temp ^ 0x80));
-	return temp + hijack_temperature_correction;
+	if (temperature & 0x80)
+		temperature = -(128 - (temperature ^ 0x80));
+	return temperature + hijack_temperature_correction;
 }
 
 static unsigned int
@@ -890,11 +912,11 @@ timeraction_display (int firsttime)
 
 static int maxtemp_check_threshold (void)
 {
-	static unsigned long beeping;
-	unsigned int elapsed = jiffies_since(ir_lasttime) / HZ;
+	static unsigned long beeping, elapsed;
  
 	if (!maxtemp_threshold || read_temperature() < (maxtemp_threshold + MAXTEMP_OFFSET))
 		return 0;
+	elapsed = jiffies_since(ir_lasttime) / HZ;
 	if (elapsed < 1) {
 		beeping = 0;
 	} else if (((elapsed >> 2) & 7) == (beeping & 7)) {
@@ -1068,7 +1090,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v70 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v72 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1320,7 +1342,7 @@ calculator_display (int firsttime)
 			if (data.button == calculator_buttons[i])
 				break;
 		}
-		if ((i & 1)) { // very clever:  if (first_or_third_column_from_table) {
+		if (i & 1) { // very clever:  if (first_or_third_column_from_table) {
 			i = (i - 1) / 4;
 			switch (i) {
 				case 10: // CD or MENU: toggle operators
@@ -1514,6 +1536,7 @@ menu_display (int firsttime)
 	unsigned long flags;
 	if (firsttime || hijack_last_moved) {
 		unsigned int text_row;
+		ir_lasttime = jiffies;	// prevent premature exit from menu
 		hijack_last_moved = 0;
 		clear_hijack_displaybuf(COLOR0);
 		save_flags_cli(flags);
@@ -1638,9 +1661,9 @@ static int
 timer_check_expiry (struct display_dev *dev)
 {
 	static unsigned long beeping;
-	int color, elapsed = (jiffies_since(timer_started) / HZ) - timer_timeout;
+	int color, elapsed;
 
-	if (!timer_timeout || elapsed < 0)
+	if (!timer_timeout || 0 > (elapsed = (jiffies_since(timer_started) / HZ) - timer_timeout))
 		return 0;
 	if (dev->power) {
 		if (timer_action == 0) {  // Toggle Standby?
@@ -1876,6 +1899,43 @@ hijack_handle_buttons (void)
 	}
 }
 
+// Send a translated replacement sequence, except for the final release code
+static void
+ir_send_release (unsigned long button, int final)
+{
+	unsigned long new, delay = 0;
+
+	if (button != IR_NULL_BUTTON) {
+		if (!final && (button & 0x80000000))
+			delay = HZ;
+		//printk("%8lu: SENDREL(%ld): %08lx\n", jiffies, delay, button);
+		new = button & ~0xc0000000; // mask off the special flags bits
+		new |= (new > 0xf) ? 0x80000000 : 1;	// front panel is weird
+		hijack_button_enq(&hijack_inputq, new, delay);
+	}
+}
+
+// Send a translated replacement sequence, except for the final release code
+static void
+ir_send_buttons (ir_translation_t *t)
+{
+	unsigned long *newp = &t->new[0];
+	int count = t->count;
+
+	while (count--) {
+		unsigned long button = *newp++;
+		if (button != IR_NULL_BUTTON) {
+			unsigned long new = button & ~0xc0000000; // mask off the special flag bits
+			if (button & 0x40000000)
+				ir_shifted = !ir_shifted;
+			hijack_button_enq(&hijack_inputq, new, 0);
+			//printk("%8lu: SENDBUT: %08lx\n", jiffies, button);
+			if (count || !(button & 0x80000000))
+				ir_send_release(button, 0);
+		}
+	}
+}
+
 // This routine covertly intercepts all display updates,
 // giving us a chance to substitute our own display.
 //
@@ -1889,13 +1949,10 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	int refresh = NEED_REFRESH;
 
 	save_flags_cli(flags);
-	if (ir_current_longpress) {
-		if (jiffies_since(ir_lasttime) >= HZ) {
-			unsigned long release = ir_current_longpress->old;
-			release |= (release > 0xf) ? 0x80000000 : 1;	// front panel is weird
-			//printk("%8lu: longpress triggered, sending %08lx\n", jiffies, release);
-			input_append_code(NULL, release);
-		}
+	if (ir_current_longpress && jiffies_since(ir_lastevent) >= HZ) {
+		//printk("%8lu: LPEXP: %08lx\n", jiffies, ir_current_longpress->old);
+		ir_send_buttons(ir_current_longpress);
+		ir_current_longpress = NULL;
 	}
 	restore_flags(flags);
 
@@ -1961,7 +2018,6 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 			buf = (unsigned char *)hijack_displaybuf;
 			if (!ir_releasewait) {
 				ir_selected = 0;
-				ir_lasttime = jiffies; // prevents premature exit from menu reentry
 				hijack_status = HIJACK_ACTIVE;
 			}
 			break;
@@ -2031,23 +2087,6 @@ match_char (unsigned char **s, unsigned char c)
 	}
 	return 0; // match failed
 }
-
-typedef struct hijack_option_s {
-	const char	*name;
-	int		*target;
-	int		num_items;
-	int		min;
-	int		max;
-} hijack_option_t; 
-
-static const hijack_option_t hijack_option_table[] = {
-	{"temperature_correction",	&hijack_temperature_correction,	1,	-20,	+20},
-	{"button_pacing",		&hijack_button_pacing,		1,	0,	HZ},
-	{"voladj_low",			&hijack_voladj_parms[0][0],	5,	0,	0x7ffe},
-	{"voladj_medium",		&hijack_voladj_parms[1][0],	5,	0,	0x7ffe},
-	{"voladj_high",			&hijack_voladj_parms[2][0],	5,	0,	0x7ffe},
-	{NULL,NULL,0,0,0} // end-of-list
-	};
 
 static int
 get_number (unsigned char **src, int *target, unsigned int base, const char *nextchars)
@@ -2256,49 +2295,16 @@ ir_setup_translations (unsigned char *buf)
 	}
 }
 
-#define MIN_BUTTON_DELAY 0
-
-// Send a translated replacement sequence, except for the final release code
-static void
-ir_send_release (unsigned long button)
-{
-	unsigned long new, delay;
-
-	delay = (button & 0x80000000) ? HZ : 0;
-	new = button & ~0xc0000000; // mask off the special flags bits
-	new |= (new > 0xf) ? 0x80000000 : 1;	// front panel is weird
-	hijack_button_enq(&hijack_inputq, new, delay);
-}
-
-// Send a translated replacement sequence, except for the final release code
-static void
-ir_send_buttons (ir_translation_t *t)
-{
-	unsigned long *newp = &t->new[0];
-	int count = t->count;
-
-	while (count--) {
-		unsigned long button = *newp++;
-		unsigned long new = button & ~0xc0000000; // mask off the special flag bits
-		if ((button & 0x40000000))
-			ir_shifted = !ir_shifted;
-		hijack_button_enq(&hijack_inputq, new, 0);
-		if (count)
-			ir_send_release(button);
-	}
-}
-
 void  // invoked from multiple places (time-sensitive code) in empeg_input.c
 input_append_code(void *ignored, unsigned long button)  // empeg_input.c
 {
 	static unsigned long ir_downkey = 0;
-	unsigned long flags, common_bits, old, released = 0, *table = ir_translate_table;
+	unsigned long flags, *table = ir_translate_table;
 
 	save_flags_cli(flags);
 	//printk("\n%8ld: IAC(%08lx)\n", jiffies, button);
-	if (table && button > 0xf) {	// we cannot correctly handle front-panel here
-		ir_current_longpress = NULL;
-		released = button >> 31;
+	if (button > 0xf) {	// we cannot correctly handle front-panel here
+		int released = button >> 31;
 		if (released) {
 			if (!ir_downkey)
 				goto done;	// already taken care of (we hope)
@@ -2308,41 +2314,46 @@ input_append_code(void *ignored, unsigned long button)  // empeg_input.c
 				goto done;	// ignore repeated press with no intervening release
 			ir_downkey = button;
 		}
-		old = button & ~0xc0000000;
-		common_bits = *table++;
-		if ((old & common_bits) == common_bits) {	// saves time (usually) on large tables
-			int delayed_send = 0;
-			while (*table != -1) {
-				ir_translation_t *t = (ir_translation_t *)table;
-				table += (sizeof(ir_translation_t) / sizeof(unsigned long) - 1) + t->count;
-				if (old == t->old
-				 && (!t->source  || t->source == get_current_mixer_source())
-				 && (!t->shifted || ir_shifted)) {
-					if (released) {	// button release?
-						if (t->longpress) {
-							delayed_send = 1;
-							if (jiffies_since(ir_lasttime) < HZ)
+		ir_current_longpress = NULL;
+		//printk("%8lu: %08lx\n", jiffies, button);
+		if (table) {
+			unsigned long old = button & ~0xc0000000, common_bits = *table++;
+			if ((old & common_bits) == common_bits) {	// saves time (usually) on large tables
+				int delayed_send = 0;
+				while (*table != -1) {
+					ir_translation_t *t = (ir_translation_t *)table;
+					table += (sizeof(ir_translation_t) / sizeof(unsigned long) - 1) + t->count;
+					if (old == t->old
+					 && (!t->source  || t->source == get_current_mixer_source())
+					 && (!t->shifted || ir_shifted)) {
+						if (released) {	// button release?
+							unsigned long final_button;
+							if (t->longpress && jiffies_since(ir_lastevent) < HZ) {
+								delayed_send = 1;
 								continue; // look for shortpress instead
+							}
+							if (delayed_send)
+								ir_send_buttons(t);
+							final_button = t->new[t->count - 1];
+							if (final_button & 0x80000000)	// not already sent?
+								ir_send_release(final_button, 1);
+						} else { // button press?
+							if (t->longpress)
+								ir_current_longpress = t;
+							else
+								ir_send_buttons(t);
 						}
-						if (delayed_send)
-							ir_send_buttons(t);
-						ir_send_release(t->new[t->count - 1]);
-					} else { // button press?
-						if (t->longpress)
-							ir_current_longpress = t;
-						else
-							ir_send_buttons(t);
+						ir_lasttime = ir_lastevent = jiffies;
+						goto done;
 					}
-					ir_lasttime = jiffies;
-					goto done;
 				}
+				if (delayed_send)
+					hijack_button_enq(&hijack_inputq, old, 0);
 			}
-			if (delayed_send)
-				hijack_button_enq(&hijack_inputq, old, 0);
 		}
 	}
+	ir_lasttime = ir_lastevent = jiffies;
 	hijack_button_enq(&hijack_inputq, button, 0);
-	ir_lasttime = jiffies;
 done:
 	restore_flags(flags);
 }
@@ -2793,7 +2804,7 @@ hijack_init (void)
 
 	if (!initialized) {
 		initialized = 1;
-		init_temperature();
+		(void)init_temperature();
 		hijack_initq(&hijack_inputq);
 		hijack_initq(&hijack_playerq);
 		hijack_initq(&hijack_userq);

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v267"
+#define HIJACK_VERSION	"v268"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -4296,9 +4296,10 @@ hijack_wait_on_menu (char *argv[])
 	if (rc < 0) {
 		if (hijack_dispfunc == userland_display && (menu_table[menu_item].userdata & ~0xff) == userdata)
 			hijack_dispfunc = NULL;		// restart the main menu
-		for (i = 0; i < num_items; ++i)	{	// disable our menu items until next time
+		for (i = num_items - 1; i >= 0; --i)	{	// disable our menu items until next time
 			menu_item_t *item = &menu_table[indexes[i]];
-			item->dispfunc = NULL;		// disable the menu item
+			remove_menu_entry(item->label);
+			//item->dispfunc = NULL;		// disable the menu item
 		}
 	}
 	current->state = TASK_RUNNING;

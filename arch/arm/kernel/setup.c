@@ -451,6 +451,65 @@ static struct machine_desc machine_desc[] __initdata = {
 	}
 };
 
+#ifdef CONFIG_EMPEG_EXTRA_RAM
+static unsigned long check_for_extra_dram (unsigned long mem_end)
+{
+	// The arch/arm/kernel/head-armv.S entry code sets up temporary MMU mappings
+	// for the 1MB section at virtual=0xc0f00000 (physical=0xc0c00000)
+	// and for the 1MB section at virtual=0xc1000000 (physical=0xc8000000).
+	// This allows us to access and test for the existance of extended memory here.
+	//
+	// Upgraded players must have the newer e000 ROM which enables additional banks.
+	//
+	// The code below does a rudimentry memory test of 1MB, and enables use of the
+	// extra memory size if that test succeeds.  Oddly enough, even though we mapped
+	// this as unbuffered and uncacheable, an immediate readback works even when
+	// memory is not present, so we have to be a little more complicated than otherwise.
+
+	#define ONE_MB		(1024 * 1024)
+	#define _16MB		(PAGE_OFFSET + (16 * ONE_MB))
+	#define NPATTERNS	4	// must be an even power of two
+
+	unsigned int p, i;
+	volatile unsigned long *memctl = (void *)0xfc000000, *test, *end;
+	unsigned long patterns[NPATTERNS] = {0x00000000, 0x55555555, 0xaaaaaaaa, 0xffffffff};
+
+	// Access the memory controller and turn on all 4 DRAM banks:
+	*memctl = (*memctl) | 15;
+
+	// Figure out where the "extra" 1MB will appear, based on player type:
+	if (mem_end < _16MB)
+		test = (void *)(_16MB - ONE_MB);	// Mk1, Mk2
+	else
+		test = (void *)(_16MB);			// Mk2a
+
+	// Walk over 1MB of theoretical extra memory, testing to see if it exists and works:
+	for (end = test + (ONE_MB / sizeof(long)); test != end; test += NPATTERNS) {
+		for (p = 0; p < NPATTERNS; ++p) {
+			for (i = 0; i < NPATTERNS; ++i) {
+				unsigned int tp = (i + p) & (NPATTERNS-1); 
+				test[i] = patterns[tp];
+			}
+			for (i = 0; i < NPATTERNS; ++i) {
+				unsigned int tp = (i + p) & (NPATTERNS-1); 
+				if (test[i] != patterns[tp]) {
+					// Try and make the error message not look "alarming":
+					printk("Checking for extra DRAM at %p: wrote %08lx, read %08lx\n",
+						&(test[i]), patterns[tp], test[i]);
+					return mem_end;		// exit, no change in memory size
+				}
+			}
+		}
+	}
+	if (mem_end < _16MB)
+		mem_end = _16MB;			// Mk1, Mk2: 16MB total
+	else
+		mem_end = _16MB + (16 * ONE_MB);	// Mk2a: 32MB total
+	return mem_end;
+}
+#endif
+
+
 void __init
 setup_arch(char **cmdline_p, unsigned long * memory_start_p, unsigned long * memory_end_p)
 {
@@ -556,61 +615,7 @@ setup_arch(char **cmdline_p, unsigned long * memory_start_p, unsigned long * mem
 		empeg_setup_bank_mapping(9);
 
 #ifdef CONFIG_EMPEG_EXTRA_RAM
-	//
-	// Above, we used the cmdline parameter (mem=12m / mem=16m) from the boot ROM
-	// to select the correct size bank mappings above, which is fine since the
-	// mapping tables allow for up to 16m (Mk1/Mk2), or 64m (Mk2a).
-	//
-	// But now we need a way to correctly determine the real amount of memory..
-	//
-	// The arch/arm/kernel/head-armv.S entry code sets up temporary MMU mappings
-	// for the 1MB section at virtual=0xc0f00000 (physical=0xc0c00000)
-	// and for the 1MB section at virtual=0xc1000000 (physical=0xc8000000).
-	// This allows us to access and test for the existance of extended memory here.
-	//
-	// Upgraded players must have the newer e000 ROM which enables additional banks.
-	//
-	// The code below does a rudimentry memory test of 1MB, and enables use of the
-	// extra memory size if that test succeeds.  Oddly enough, even though we mapped
-	// this as unbuffered and uncacheable, an immediate readback works even when
-	// memory is not present, so we walk over the full 1MB twice to eliminate cache effects.
-{
-	unsigned int i;
-	volatile unsigned long *memctl_p, memctl, *test;
-
-	#define ONE_MB		(1024 * 1024)
-	#define LONG_1MB	(ONE_MB / sizeof(unsigned long))
-	#define _16MB		(PAGE_OFFSET + (16 * ONE_MB))
-
-	// Access the memory controller and turn on all 4 DRAM banks:
-	memctl_p = (void *)0xfc000000;
-	memctl = *memctl_p;
-	memctl |= 15;
-	*memctl_p = memctl;
-
-	// Figure out where any "extra" memory will be, based on player type:
-	if (mem_end < _16MB)
-		test = (void *)(_16MB - ONE_MB);	// Mk1/Mk2
-	else
-		test = (void *)(_16MB);			// Mk2a
-
-	// Walk over 1MB of theoretical extra memory, first writing, then reading:
-	for (i = 0; i < LONG_1MB; ++i) {
-		test[i] = ~i;
-	}
-	for (i = 0; i < LONG_1MB; ++i) {
-		if (test[i] != ~i)
-			break;
-	}
-
-	// If the test passed, then modify mem_end appropriately:
-	if (i == LONG_1MB) {
-		if (mem_end < _16MB)
-			mem_end = _16MB;
-		else
-			mem_end = _16MB + (16 * ONE_MB);
-	}
-}
+	mem_end = check_for_extra_dram(mem_end);
 #endif
 	init_task.mm->start_code = (unsigned long) &_text;
 	init_task.mm->end_code	 = (unsigned long) &_etext;

@@ -160,20 +160,23 @@ __create_page_tables:
 		 */
 		add	r0, r4, #(TEXTADDR - 0x8000) >> 18	@ c000_0000
 		add	r0, r0, #15 << 2	@ virtual  = c0f0_0000
-		add	r3, r5, #15 << 20	@ physical = c0f0_0000 (first bank of 128MB)
-		orr	r3, r3, r8		@ MMU flags
+		add	r3, r5, r8		@ combine MMU flags + physical RAM c000_0000
+		bic	r3, r3, #0x0c		@ clear C&B (Cachable and Bufferable) bits
+
+		add	r3, r3, #15 << 20	@ physical = c0f0_0000 (last MB of first 16MB)
 		str	r3, [r0], #4		@ save page table entry; increment virtual = c100_0000
-		add	r3, r5, #128 << 20	@ physical = c800_0000 (second bank of 128MB)
-		orr	r3, r3, r8		@ MMU flags
+
+		add	r3, r3, #113 << 20	@ physical = c800_0000 (first MB of second 128MB bank)
 		str	r3, [r0]		@ save page table entry
 
 		/*
 		 * We also need early access to the memory controller registers,
 		 * so that the kernel can enable the bank selects for extra DRAM.
 		 */
-		add	r0, r4, #0xfc000000 >> 18	@ virtual  = fc00_0000 (same as what main kernel uses later)
+		add	r0, r4, #0xfc000000 >> 18	@ virtual  = fc00_0000 (same as main kernel uses)
 		mov	r3, #0xa0000000			@ physical = a000_0000
 		orr	r3, r3, r8			@ MMU flags
+		bic	r3, r3, #0x0c			@ clear C&B (Cachable and Bufferable) bits
 		str	r3, [r0]			@ save page table entry
 
 		/*

@@ -881,7 +881,7 @@ int ideprobe_init (void)
 	unsigned int index;
 	int probe[MAX_HWIFS];
 #ifdef CONFIG_SA1100_EMPEG
-	int retries=0,on_if0=0,on_if1=0;
+	int retries=0,on_if0=0;
 #endif
 
 	MOD_INC_USE_COUNT;
@@ -914,11 +914,29 @@ int ideprobe_init (void)
 				retries=15;
 			}
 		} while(on_if0<2 && retries<20);
-
+#if 0
+		if (on_if0 == 0) {
+			ide_hwif_t *hwif = &ide_hwifs[0];
+			ide_drive_t *drive = &hwif->drives[0];
+			unsigned long i, timestamp;
+			for (i = 0; i < 999; ++i) {
+				unsigned short data = 0xffff;
+				printk("\nSTROBING IDE DATA PORT: 0x%02x\n",data);
+				timestamp = jiffies;
+				while (jiffies < (timestamp + (HZ+HZ)))
+					outw_p(data, IDE_DATA_REG);
+				printk("\nSTROBING IDE DATA PORT: 0x00--\n");
+				timestamp = jiffies;
+				while (jiffies < (timestamp + (HZ+HZ)))
+					outw_p(0x00, IDE_DATA_REG);
+			}
+		}
+#endif
 		/* Initialise drives */
 		hwif_init(&ide_hwifs[0]);
 #ifndef CONFIG_NET_ETHERNET
 	} else {
+		int on_if1=0;
 		/* Dual if/unknown number of drives: wait for all */
 		
 		/* Check for drives. As the empeg boots in less time than the

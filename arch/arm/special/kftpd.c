@@ -58,11 +58,9 @@ extern int hijack_rootdir_dotdot;			// from arch/arm/special/hijack.c
 extern int hijack_kftpd_show_dotfiles;			// from arch/arm/special/hijack.c
 extern int hijack_khttpd_show_dotfiles;			// from arch/arm/special/hijack.c
 extern int hijack_max_connections;			// from arch/arm/special/hijack.c
-extern int hijack_khttpd_commands;			// from arch/arm/special/hijack.c
-extern int hijack_khttpd_dirs;				// from arch/arm/special/hijack.c
-extern int hijack_khttpd_files;				// from arch/arm/special/hijack.c
-extern int hijack_khttpd_playlists;			// from arch/arm/special/hijack.c
 extern char hijack_kftpd_password[];			// from arch/arm/special/hijack.c
+extern char hijack_khttpd_basic[];			// from arch/arm/special/hijack.c
+extern char hijack_khttpd_full[];			// from arch/arm/special/hijack.c
 extern struct semaphore hijack_khttpd_startup_sem;	// from arch/arm/special/hijack.c
 extern struct semaphore hijack_kftpd_startup_sem;	// from arch/arm/special/hijack.c
 extern int sys_rmdir(const char *path); // fs/namei.c
@@ -93,14 +91,13 @@ typedef struct server_parms_s {
 	char			have_portaddr;		// bool
 	char			icy_metadata;		// bool
 	char			streaming;		// bool
-	//char			apple_iTunes;		// bool
-	char			need_password;		// bool, FTP only
+	char			need_password;		// bool
 	char			rename_pending;		// bool
 	char			nocache;		// bool
 	char			show_dotfiles;		// bool
 	char			nodata;			// bool
 	char			method_head;		// bool
-	char			spare0;
+	char			auth;			// khttpd_auth_t
 	unsigned short		data_port;
 	off_t			start_offset;		// starting offset for next FTP/HTTP file transfer
 	off_t			end_offset;		// for current HTTP file read
@@ -477,8 +474,8 @@ filldir (void *data, const char *name, int namelen, off_t offset, ino_t ino)
 	return 0;			// continue reading directory entries
 }
 
-static const char dirlist_html_trailer1[] = "</PRE><HR>\r\n%s<FONT SIZE=-2>%s</FONT></BODY></HTML>\r\n";
-static const char dirlist_html_trailer2[] = "<A HREF=\"/?FID=101&EXT=.htm\"><FONT SIZE=-1>[Click here for playlists]</FONT></A><BR>\r\n";
+static const char dirlist_html_trailer1[] = "</pre><hr>\r\n%s<font size=-2>%s</font></body></html>\r\n";
+static const char dirlist_html_trailer2[] = "<a href=\"/?FID=101&EXT=.htm\"><font size=-1>[Click here for playlists]</font></a><br>\r\n";
 #define DIRLIST_TRAILER_MAX (sizeof(dirlist_html_trailer1) + sizeof(dirlist_html_trailer1) + 25) // 25 is for version string
 
 static int
@@ -488,10 +485,7 @@ send_dirlist_buf (server_parms_t *parms, filldir_parms_t *p, int send_trailer)
 
 	if (p->full_listing && send_trailer) {
 		if (parms->use_http) {
-			const char *pl = "";
-			if (hijack_khttpd_playlists)
-				pl = dirlist_html_trailer2;
-			p->buf_used += sprintf(p->buf + p->buf_used, dirlist_html_trailer1, pl, hijack_vXXX_by_Mark_Lord);
+			p->buf_used += sprintf(p->buf + p->buf_used, dirlist_html_trailer1, dirlist_html_trailer2, hijack_vXXX_by_Mark_Lord);
 		} else {
 			p->buf_used += sprintf(p->buf + p->buf_used, "total %lu\r\n", p->blockcount);
 		}
@@ -648,11 +642,11 @@ static const char dirlist_header[] =
 	"Connection: close\r\n"
 	"Content-Type: text/html\r\n\r\n"
 	"<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 3.2 Final//EN\">\r\n"
-	"<HTML>\r\n"
-	"<HEAD><TITLE>Index of %s</TITLE></HEAD>\r\n"
-	"<BODY>\r\n"
-	"<FONT SIZE=+1><B>Index of %s</B></FONT>\r\n"
-	"<HR><PRE>\r\n";
+	"<html>"
+	"<head><title>Index of %s</title></head>"
+	"<body>"
+	"<font size=+1><b>Index of %s</b></font>"
+	"<hr><pre>\r\n";
 
 static int
 send_dirlist (server_parms_t *parms, char *path, int full_listing)
@@ -763,31 +757,63 @@ send_dirlist (server_parms_t *parms, char *path, int full_listing)
 	return response;
 }
 
+typedef enum {auth_none, auth_basic, auth_full} khttpd_auth_t;
+static char *khttpd_basic_base64, *khttpd_full_base64;
+
+static int
+khttpd_check_auth (server_parms_t *parms, khttpd_auth_t authtype)
+{
+	static const char khttpd_response[] =
+		"HTTP/1.1 401 Unauthorized\r\n"
+		"Connection: close\r\n"
+		"WWW-Authenticate: Basic realm=\"Empeg-%s\"\r\n"
+		"Content-Type: text/html\r\n\r\n"
+		"<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\">\r\n"
+		"<html><head>"
+		"<title>401 Unauthorized</title>"
+		"</head><body>"
+		"<h1>401 Unauthorized</h1>"
+		"%s Authorization Required<p>"
+		"</body></html>\r\n";
+
+	if (parms->auth >= authtype || (!khttpd_basic_base64 && !khttpd_full_base64)) {
+		return 0;
+	} else {
+		char		*buf = parms->cwd, *auths = (authtype == auth_full) ? "Full" : "Basic";
+		unsigned int	len, rc;
+
+		len = sprintf(buf, khttpd_response, auths, auths);
+		rc = ksock_rw(parms->clientsock, buf, len, -1);
+		if (rc != len && parms->verbose)
+			printk(KHTTPD": respond(): ksock_rw(%d) returned %d, data=\"%s\"\n", len, rc, buf);
+		return 1;
+	}
+}
+
 static void
 khttpd_respond (server_parms_t *parms, int rcode, const char *title, const char *text)
 {
-	static const char kttpd_response[] =
+	static const char khttpd_response[] =
 		"HTTP/1.1 %d %s\r\n"
 		"Connection: close\r\n"
 		"Allow: GET, HEAD\r\n"
 		"Content-Type: text/html\r\n\r\n"
 		"<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\">\r\n"
-		"<HTML><HEAD>\r\n"
-		"<TITLE>%d %s</TITLE>\r\n"
-		"</HEAD><BODY>\r\n"
-		"<H1>%d %s</H1>\r\n"
-		"%s<P>\r\n"
-		"</BODY></HTML>\r\n";
+		"<html><head>"
+		"<title>%d %s</title>"
+		"</head><body>"
+		"<h1>%d %s</h1>"
+		"%s<p>"
+		"</body></html>\r\n";
 
 	char		*buf = parms->cwd;
 	unsigned int	len, rc;
 
-	len = sprintf(buf, kttpd_response, rcode, title, rcode, title, rcode, title, text ? text : "");
+	len = sprintf(buf, khttpd_response, rcode, title, rcode, title, rcode, title, text ? text : "");
 	rc = ksock_rw(parms->clientsock, buf, len, -1);
 	if (rc != len && parms->verbose)
 		printk(KHTTPD": respond(): ksock_rw(%d) returned %d, data=\"%s\"\n", len, rc, buf);
 }
-
 
 static void
 khttpd_redirect (server_parms_t *parms, const char *path, char *slash)
@@ -798,12 +824,12 @@ khttpd_redirect (server_parms_t *parms, const char *path, char *slash)
 		"Connection: close\r\n"
 		"Content-Type: text/html\r\n\r\n"
 		"<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\">\r\n"
-		"<HTML><HEAD>\r\n"
-		"<TITLE>301 Moved</TITLE>\r\n"
-		"</HEAD><BODY>\r\n"
-		"<H1>Moved</H1>\r\n"
-		"The document has moved <A HREF=\"%s%s\">here</A>.<P>\r\n"
-		"</BODY></HTML>\r\n";
+		"<html><head>"
+		"<title>301 Moved</title>"
+		"</head><body>"
+		"<h1>Moved</h1>"
+		"The document has moved <a href=\"%s%s\">here</a>.<p>"
+		"</body></html>\r\n";
 	char *buf = parms->tmp3;
 
 	unsigned int	len, rc;
@@ -1228,7 +1254,6 @@ send_playlist (server_parms_t *parms, char *path)
 			secs = str_val(tags.duration) / 1000;
 			used  = sprintf(xfer.buf, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s\r\n\r\n"
 				"#EXTM3U\r\n#EXTINF:%u,%s\r\nhttp://%s/", audio_m3u, secs, artist_title, parms->hostname);
-			//used += encode_url(xfer.buf+used, artist_title, parms->apple_iTunes);
 			used += encode_url(xfer.buf+used, artist_title, 0);
 			used += sprintf(xfer.buf+used, ".%s?FID=%x&EXT=.%s\r\n", tags.codec, pfid^1, tags.codec);
 			(void)ksock_rw(parms->datasock, xfer.buf, used, -1);
@@ -1243,33 +1268,33 @@ send_playlist (server_parms_t *parms, char *path)
 	switch (parms->generate_playlist) {
 		case html:
 			used += sprintf(xfer.buf+used,
-				"<HTML><HEAD><TITLE>%s playlists: %s</TITLE></HEAD>\r\n"
-				"<BODY><TABLE BGCOLOR=\"WHITE\" BORDER=\"2\"><THEAD>\r\n"
-				"<TR><TD> <A HREF=\"/", parms->hostname, artist_title);
+				"<html><head><title>%s playlists: %s</title></head>\r\n"
+				"<body><table bgcolor=\"WHITE\" border=\"2\"><thead>\r\n"
+				"<tr><td> <a href=\"/", parms->hostname, artist_title);
 			used += encode_url(xfer.buf+used, artist_title, 1);
-			used += sprintf(xfer.buf+used,".m3u?FID=%x&EXT=.m3u\"><B>Stream</B></A> ", pfid);
-			if (hijack_khttpd_commands) {
-				used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?NODATA&SERIAL=%%23%x\"><B>Play</B></A> ", pfid^1);
-				used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?NODATA&SERIAL=%%23%x-\"><B>Insert</B></A> ", pfid^1);
-				used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?NODATA&SERIAL=%%23%x%%2B\"><B>Append</B></A> ", pfid^1);
+			used += sprintf(xfer.buf+used,".m3u?FID=%x&EXT=.m3u\"><b>Stream</b></a> ", pfid);
+			if (parms->auth == auth_full) {
+				used += sprintf(xfer.buf+used, "<td> <a href=\"/?NODATA&SERIAL=%%23%x\"><b>Play</b></a> ", pfid^1);
+				used += sprintf(xfer.buf+used, "<td> <a href=\"/?NODATA&SERIAL=%%23%x-\"><b>Insert</b></a> ", pfid^1);
+				used += sprintf(xfer.buf+used, "<td> <a href=\"/?NODATA&SERIAL=%%23%x%%2B\"><b>Append</b></a> ", pfid^1);
+				used += sprintf(xfer.buf+used, "<td> <a href=\"/?FID=%x\"><b>Tags</b></a> ", pfid);
 			}
-			if (hijack_khttpd_files)
-				used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?FID=%x\"><B>Tags</B></A> ", pfid);
-			used += sprintf(xfer.buf+used, "<TD ALIGN=CENTER> <FONT SIZE=+2><B><EM>%s</EM></B></FONT> <TD> <B>Length</B> "
-				"<TD> <B>Type</B> <TD> <B>Artist</B> <TD> <B>Source</B><TBODY>\r\n", tags.title);
+			used += sprintf(xfer.buf+used, "<td align=center> <font size=+2><b><em>%s</em></b></font> <td> <b>Length</b> "
+				"<td> <b>Type</b> <td> <b>Artist</b> <td> <b>Source</b><tbody>\r\n", tags.title);
 			break;
 		case m3u:
 			used += sprintf(xfer.buf+used, "#EXTM3U\r\n");
 			break;
 		case xml: // xml
+		{	int full_access = parms->auth == auth_full;
 			used += sprintf(xfer.buf+used,
 				"<?xml version=\"1.0\" encoding=\"iso-8859-1\"?>\r\n"
 				"<?xml-stylesheet type=\"text/xsl\" href=\"%s\"?>\r\n"
 				"<%s stylesheet=\"%s\" host=\"%s\" allow_files=\"%d\" allow_commands=\"%d\" "
 				"type=\"%s\" tagfid=\"%x\" fid=\"%x\" length=\"%s\" "
 				"year=\"%s\" options=\"%s\"",
-				parms->style, (fidtype == 'T' ? "item" : "playlist"), parms->style, parms->hostname, hijack_khttpd_files,
-				hijack_khttpd_commands, tagtype, pfid, pfid^1, tags.length, tags.year, tags.options);
+				parms->style, (fidtype == 'T' ? "item" : "playlist"), parms->style, parms->hostname, full_access,
+				full_access, tagtype, pfid, pfid^1, tags.length, tags.year, tags.options);
 			used += encode_tag1(xfer.buf+used, "genre",   tags.genre);
 			used += encode_tag1(xfer.buf+used, "title",   tags.title);
 			used += encode_tag1(xfer.buf+used, "artist",  tags.artist);
@@ -1290,6 +1315,7 @@ send_playlist (server_parms_t *parms, char *path)
 			}
 			used += sprintf(xfer.buf+used, ">\r\n\t<items>\r\n");
 			break;
+		}
 		default:
 	}
 
@@ -1297,7 +1323,7 @@ open_fidfile:
 	// Read the playlist's fidfile, and process each fid in turn:
 	if (++fidx >= (sizeof(fidfiles) / sizeof(fidfiles[0]))) {
 		--fidx;
-		used += sprintf(xfer.buf+used, "<FONT COLOR=RED>playlists nested too deep</FONT>\n");
+		used += sprintf(xfer.buf+used, "<font color=red>playlists nested too deep</font>\n");
 		goto aborted;
 	}
 	sprintf(subpath+13, "%x", fid^1);
@@ -1305,7 +1331,7 @@ open_fidfile:
 	if (fidfiles[fidx] < 0) {
 		int rc = fidfiles[fidx--];
 		if (rc != -ENOENT) {
-			used += sprintf(xfer.buf+used, "<FONT COLOR=RED>open(\"%s\") failed, rc=%d</FONT>\n", subpath, rc);
+			used += sprintf(xfer.buf+used, "<font color=red>open(\"%s\") failed, rc=%d</font>\n", subpath, rc);
 			goto aborted;
 		} // else: empty playlist; just continue..
 	}
@@ -1358,7 +1384,7 @@ open_fidfile:
 				secs = str_val(tags.duration) / 1000;
 			} else {
 				if (parms->generate_playlist == html)
-					used += sprintf(xfer.buf+used, "<TR><TD COLSPAN=7><FONT COLOR=RED>%s: invalid 'type=%s'</FONT>\n",
+					used += sprintf(xfer.buf+used, "<tr><td colspan=7><font color=red>%s: invalid 'type=%s'</font>\n",
 						subpath, tags.type);
 				continue;
 			}
@@ -1369,29 +1395,28 @@ open_fidfile:
 			// spit out an appropriately formed representation for this fid:
 			switch (parms->generate_playlist) {
 				case html:
-					used += sprintf(xfer.buf+used, "<TR><TD> <A HREF=\"/");
+					used += sprintf(xfer.buf+used, "<tr><td> <a href=\"/");
 					used += encode_url(xfer.buf+used, artist_title, 1);
-					used += sprintf(xfer.buf+used, ".m3u?FID=%x&EXT=.m3u\"><em>Stream</em></A> ", fid);
-					if (hijack_khttpd_commands) {
-						used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?NODATA&SERIAL=%%23%x\"><em>Play</em></A> ", fid^1);
-						used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?NODATA&SERIAL=%%23%x-\"><em>Insert</em></A> ", fid^1);
-						used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?NODATA&SERIAL=%%23%x%%2B\"><em>Append</em></A> ", fid^1);
+					used += sprintf(xfer.buf+used, ".m3u?FID=%x&EXT=.m3u\"><em>Stream</em></a> ", fid);
+					if (parms->auth == auth_full) {
+						used += sprintf(xfer.buf+used, "<td> <a href=\"/?NODATA&SERIAL=%%23%x\"><em>Play</em></a> ", fid^1);
+						used += sprintf(xfer.buf+used, "<td> <a href=\"/?NODATA&SERIAL=%%23%x-\"><em>Insert</em></a> ", fid^1);
+						used += sprintf(xfer.buf+used, "<td> <a href=\"/?NODATA&SERIAL=%%23%x%%2B\"><em>Append</em></a> ", fid^1);
+						used += sprintf(xfer.buf+used, "<td> <a href=\"/?FID=%x\"><em>Tags</em></a> ", fid);
 					}
-					if (hijack_khttpd_files)
-						used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?FID=%x\"><EM>Tags</EM></A> ", fid);
 					if (fidtype == 'T') {
-						if (hijack_khttpd_files) {
-							used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/");
+						if (parms->auth == auth_full) {
+							used += sprintf(xfer.buf+used, "<td> <a href=\"/");
 							used += encode_url(xfer.buf+used, artist_title, 1);
-							used += sprintf(xfer.buf+used, ".%s?FID=%x&EXT=.%s\">%s</A> ", tags.codec, fid^1, tags.codec, tags.title);
+							used += sprintf(xfer.buf+used, ".%s?FID=%x&EXT=.%s\">%s</a> ", tags.codec, fid^1, tags.codec, tags.title);
 						} else {
-							used += sprintf(xfer.buf+used, "<TD> %s ", tags.title);
+							used += sprintf(xfer.buf+used, "<td> %s ", tags.title);
 						}
-						used += sprintf(xfer.buf+used, "<TD ALIGN=CENTER> %u:%02u <TD> %s <TD> %s&nbsp <TD> %s&nbsp \r\n",
+						used += sprintf(xfer.buf+used, "<td align=center> %u:%02u <td> %s <td> %s&nbsp <td> %s&nbsp \r\n",
 							secs/60, secs%60, tags.type, tags.artist, tags.source);
 					} else {
-						used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?FID=%x&EXT=.htm\">%s</A> "
-							"<TD ALIGN=CENTER> %u <TD> %s <TD> %s&nbsp <TD> %s&nbsp \r\n",
+						used += sprintf(xfer.buf+used, "<td> <a href=\"/?FID=%x&EXT=.htm\">%s</a> "
+							"<td align=center> %u <td> %s <td> %s&nbsp <td> %s&nbsp \r\n",
 							fid, tags.title, entries, tags.type, tags.artist, tags.source);
 					}
 					break;
@@ -1400,7 +1425,6 @@ open_fidfile:
 						combine_artist_title(tags.artist, tags.title, artist_title, sizeof(artist_title));
 						subpath[sublen - 1] = '0';
 						used += sprintf(xfer.buf+used, "#EXTINF:%u,%s\r\nhttp://%s/", secs, artist_title, parms->hostname);
-						//used += encode_url(xfer.buf+used, artist_title, parms->apple_iTunes);
 						used += encode_url(xfer.buf+used, artist_title, 0);
 						used += sprintf(xfer.buf+used, ".%s?FID=%x&EXT=.%s\r\n", tags.codec, fid^1, tags.codec);
 					}
@@ -1445,7 +1469,7 @@ open_fidfile:
 aborted:
 	switch (parms->generate_playlist) {
 		case html:
-			used += sprintf(xfer.buf+used, "</TABLE><FONT SIZE=-2>%s</FONT></BODY></HTML>\r\n", hijack_vXXX_by_Mark_Lord);
+			used += sprintf(xfer.buf+used, "</table><font size=-2>%s</font></body></html>\r\n", hijack_vXXX_by_Mark_Lord);
 			break;
 		case xml:
 			used += sprintf(xfer.buf+used, "\t</items>\r\n</playlist>\r\n");
@@ -1710,7 +1734,7 @@ hijack_do_command (void *sparms, char *buf)
 			}
 		}
 		khttpd_fix_hexcodes(s);		// process %xx escapes
-		if (!parms || hijack_khttpd_commands) {
+		if (!parms || parms->auth == auth_full) {
 			if (!strxcmp(s, "BUTTON=", 1)) {
 				s = do_button(s+7, 0);
 				goto next;
@@ -2106,14 +2130,24 @@ khttpd_handle_connection (server_parms_t *parms)
 	for (x = p; *x; ++x) {
 		static const char Range[] = "\nRange: bytes=";
 		static const char Host[] = "\nHost: ";
+		static const char Auth[] = "\nAuthorization: Basic ";
 		if (*x == '\n') {
 			if (!strxcmp(x, "\nUser-Agent: NSPlayer", 1) || !strxcmp(x, "\nUser-Agent: Windows-Media-Player", 1) || !strxcmp(x, "\nUser-Agent: iTunes", 1)) {
 				parms->streaming = 1;
-			//} else if (!strxcmp(x, "\nUser-Agent: iTunes", 1) || !strxcmp(x, "\nUA-OS: MacOS", 1)) {
-			//	parms->apple_iTunes = 1;
 			} else if (!strxcmp(x, "\nIcy-MetaData:1", 1)) {
 				parms->streaming = 1;
 				parms->icy_metadata = 1;
+			} else if (!strxcmp(x, Auth, 1)) {
+				char *user_passwd = x + sizeof(Auth) - 1;	// "user:passwd" in base64 encoding
+				x = user_passwd;
+				while ((c = *x) && c != ' ' && c != '\r' && c != '\n')
+					++x;
+				*x = '\0';
+				if (0 == strcmp(user_passwd, khttpd_basic_base64))
+					parms->auth = auth_basic;
+				if (0 == strcmp(user_passwd, khttpd_full_base64))
+					parms->auth = auth_full;
+				*x = c;
 			} else if (!strxcmp(x, Host, 1) && *(x += sizeof(Host) - 1)) {
 				unsigned char *h = x;
 				while ((c = *x) && c != '\n' && c != '\r')
@@ -2141,8 +2175,9 @@ khttpd_handle_connection (server_parms_t *parms)
 	*p = '\0'; // zero-terminate the GET line
 	if (parms->verbose)
 		printk(KHTTPD": GET \"%s\"\n", path);
-	// a useful shortcut
-	if (!strxcmp(path, "/?playlists", 1)) {
+	if (khttpd_check_auth(parms, auth_basic))
+		return;
+	if ((parms->auth == auth_basic && (!*path || !strcmp(path, "/"))) || !strxcmp(path, "/?playlists", 1)) {
 		khttpd_redirect(parms, "/?FID=101&EXT=.htm", "");
 		return;
 	}
@@ -2162,9 +2197,7 @@ khttpd_handle_connection (server_parms_t *parms)
 			goto quit;
 		}
 		if (parms->generate_playlist) {
-			if (!hijack_khttpd_playlists)
-				response = &access_not_permitted;
-			else if (!hijack_glob_match(path, "/empeg/fids?/??*1"))
+			if (!hijack_glob_match(path, "/empeg/fids?/??*1"))
 				response = &invalid_playlist_path;
 			else if (!*path)
 				response = &(http_response_t){400, "Missing Pathname"};
@@ -2182,14 +2215,14 @@ khttpd_handle_connection (server_parms_t *parms)
 		response = &(http_response_t){400, "Missing Pathname"};
 	} else if (path[pathlen-1] == '/' && (!use_index || !strcpy(path+pathlen, hijack_khttpd_root_index) || 1 != classify_path(path))) {
 		path[pathlen] = '\0';	// remove the index.html path suffix
-		if (hijack_khttpd_dirs)
-			response = convert_rcode(send_dirlist(parms, path, 1));
-		else
-			response = &access_not_permitted;
-	} else if (hijack_khttpd_files || get_mime_type(path, NULL) || (hijack_khttpd_playlists && parms->streaming)) {
-		response = convert_rcode(send_file(parms, path));
+		if (khttpd_check_auth(parms, auth_full))
+			return;
+		response = convert_rcode(send_dirlist(parms, path, 1));
+	//} else if (!get_mime_type(path, NULL) && !parms->streaming && khttpd_check_auth(parms, auth_full)) {
+	} else if (!parms->streaming && khttpd_check_auth(parms, auth_full)) {
+		return;
 	} else {
-		response = &access_not_permitted;
+		response = convert_rcode(send_file(parms, path));
 	}
 quit:
 	if (response)
@@ -2252,6 +2285,46 @@ child_thread (void *arg)
 	return 0;
 }
 
+static char *
+encode_base64 (const char *s)
+{
+	static const unsigned char base64[64] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+	unsigned char c, tmp = 0, *result, *rp, state = 0;
+
+	if (!s || !*s)
+		return NULL;
+	rp = result = kmalloc((strlen(s) + 2) * 4 / 3, GFP_KERNEL);
+	if (!result)
+		return NULL;
+	while ((c = *s++) != '\0') {
+		switch (state) {
+			case 0:
+				*rp++ = base64[c >> 2];
+				tmp = (c << 4) & 63;
+				state = 1;
+				break;
+			case 1:
+				*rp++ = base64[tmp | c >> 4];
+				tmp = (c << 2) & 63;
+				state = 2;
+				break;
+			case 2:
+				*rp++ = base64[tmp | c >> 6];
+				*rp++ = base64[c & 63];
+				state = 0;
+				break;
+		}
+	}
+	if (state) {
+		*rp++ = base64[tmp];
+		while (++state < 4)
+			*rp++ = '=';
+	}
+	*rp = '\0';
+	return result;
+}
+
+
 int
 kftpd_daemon (unsigned long use_http)	// invoked twice from init/main.c
 {
@@ -2287,9 +2360,12 @@ kftpd_daemon (unsigned long use_http)	// invoked twice from init/main.c
 	if (*hijack_kftpd_password)
 		parms.need_password = 1;
 	if (use_http) {
+		parms.need_password = 1;	//FIXME
 		server_port	= hijack_khttpd_port;
 		parms.verbose	= hijack_khttpd_verbose;
 		parms.use_http	= 1;
+		khttpd_basic_base64 = encode_base64(hijack_khttpd_basic);
+		khttpd_full_base64 = encode_base64(hijack_khttpd_full);
 	} else {
 		server_port	= hijack_kftpd_control_port;
 		parms.data_port	= hijack_kftpd_data_port;

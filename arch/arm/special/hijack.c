@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v380"
+#define HIJACK_VERSION	"v381"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -511,6 +511,8 @@ static	int hijack_stalk_debug;			// trace button in/out actions to/from Stalk?
 #endif // EMPEG_STALK_SUPPORTED
 #ifdef CONFIG_NET_ETHERNET
 	char hijack_kftpd_password[16];		// kftpd password
+	char hijack_khttpd_basic[20];		// khttpd "user:password" for basic web streaming
+	char hijack_khttpd_full[20];		// khttpd "user:password" for unrestricted web access
 	int hijack_kftpd_control_port;		// kftpd control port
 	int hijack_kftpd_data_port;		// kftpd data port
 	int hijack_kftpd_verbose;		// kftpd verbosity
@@ -520,10 +522,6 @@ static	int hijack_stalk_debug;			// trace button in/out actions to/from Stalk?
 	int hijack_max_connections;		// restricts memory use
 	int hijack_khttpd_port;			// khttpd port
 	int hijack_khttpd_verbose;		// khttpd verbosity
-	int hijack_khttpd_dirs;			// 1 == enable directory listings
-	int hijack_khttpd_files;			// 1 == enable file downloads, except "streaming"
-	int hijack_khttpd_playlists;		// 1 == enable "?.html" or "?.m3u" functionality
-	int hijack_khttpd_commands;		// 1 == enable "?commands" capability
 #endif // CONFIG_NET_ETHERNET
 static	int nextsrc_aux_enabled;		// "1" == include "AUX" when doing NextSrc
 static	int hijack_old_style;			// 1 == don't highlite menu items
@@ -628,14 +626,12 @@ static const hijack_option_t hijack_option_table[] =
 {"kftpd_verbose",		&hijack_kftpd_verbose,		0,			1,	0,	1},
 {"rootdir_dotdot",		&hijack_rootdir_dotdot,		0,			1,	0,	1},
 {"kftpd_show_dotfiles",		&hijack_kftpd_show_dotfiles,	0,			1,	0,	1},
+{"khttpd_basic",		&hijack_khttpd_basic,		(int)"",		0,	0,	sizeof(hijack_khttpd_basic)-1},
+{"khttpd_full",			&hijack_khttpd_full,		(int)"",		0,	0,	sizeof(hijack_khttpd_full)-1},
 {"khttpd_show_dotfiles",	&hijack_khttpd_show_dotfiles,	1,			1,	0,	1},
 {"khttpd_root_index",		&hijack_khttpd_root_index,	(int)"/index.html",	0,	0,	sizeof(hijack_khttpd_root_index)-1},
 {"khttpd_port",			&hijack_khttpd_port,		80,			1,	0,	65535},
 {"khttpd_verbose",		&hijack_khttpd_verbose,		0,			1,	0,	2},
-{"khttpd_dirs",			&hijack_khttpd_dirs,		1,			1,	0,	1},
-{"khttpd_files",		&hijack_khttpd_files,		1,			1,	0,	1},
-{"khttpd_playlists",		&hijack_khttpd_playlists,	1,			1,	0,	1},
-{"khttpd_commands",		&hijack_khttpd_commands,	1,			1,	0,	1},
 {"khttpd_style",		&hijack_khttpd_style,		(int)"/default.xsl",	0,	0,	sizeof(hijack_khttpd_style)-1},
 {"max_connections",		&hijack_max_connections,	4,			1,	0,	20},
 #endif // CONFIG_NET_ETHERNET

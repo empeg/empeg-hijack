@@ -227,7 +227,6 @@ int real_input_append_code(input_code data)  // invoked from hijack.c
 	unsigned long flags;
 	int rc = 0;
 
-	printk("PLAYER: %08lx\n", data);
 	save_flags_cli(flags);
 	
 	new_wp = dev->buf_wp + 1;
@@ -243,8 +242,8 @@ int real_input_append_code(input_code data)  // invoked from hijack.c
 	} else {
 #if IR_DEBUG
 		printk("Infra-red buffer is full.\n");
-		rc = -ENOMEM;
 #endif
+		rc = -ENOMEM;
 	}
 	restore_flags(flags);
 	return rc;

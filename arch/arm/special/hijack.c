@@ -11,6 +11,7 @@
 //           Simple integer calculator
 //           Knob-Press re-definition
 //           IR Button Press Display
+//           Reboot Machine from menu
 //
 
 #include <asm/arch/hijack.h>
@@ -24,7 +25,8 @@
 #define HIJACK_ACTIVE		3
 
 static unsigned int hijack_status = HIJACK_INACTIVE;
-static unsigned long hijack_last_moved = 0, hijack_last_refresh = 0, blanker_activated = 0;
+static unsigned long hijack_last_moved = 0, hijack_last_refresh = 0, blanker_triggered = 0, blanker_lastpoll = 0;
+static unsigned char blanker_lastbuf[EMPEG_SCREEN_BYTES] = {0,}, blanker_is_blanked = 0;
 
 static int  (*hijack_dispfunc)(int) = NULL;
 static void (*hijack_movefunc)(int) = NULL;
@@ -33,7 +35,6 @@ static unsigned long ir_menu_down = 0, ir_knob_down = 0, ir_left_down = 0, ir_ri
 static unsigned long ir_delayed_knob_release = 0;
 extern int real_input_append_code(unsigned long data); // empeg_input.c
 static int player_menu_is_active = 0, player_sound_adjust_is_active = 0;
-static unsigned char *hijack_player_buf = NULL;
 
 #define KNOBDATA_BITS 2
 static const unsigned long knobdata_pressed [] = {IR_KNOB_PRESSED, IR_RIO_SHUFFLE_PRESSED, IR_RIO_INFO_PRESSED, IR_RIO_INFO_PRESSED};
@@ -178,7 +179,7 @@ clear_hijack_displaybuf (int color)
 static void
 draw_pixel (unsigned short pixel_row, unsigned short pixel_col, int color)
 {
-	unsigned char pixel_mask, *pixel_pair;
+	unsigned char *pixel_pair, pixel_mask;
 	if (color < 0)
 		color = -color;
 	color &= 3;
@@ -233,15 +234,14 @@ clear_text_row(unsigned int rowcol, unsigned short last_col)
 	if (row & 0x8000)
 		row = (row & ~0x8000) * KFONT_HEIGHT;
 	for (pixel_row = 0; pixel_row < KFONT_HEIGHT; ++pixel_row) {
-		unsigned char *displayrow, pixel_mask = (pixel_col & 1) ? 0xf0 : 0x0f;
 		unsigned int offset = 0;
+		unsigned char *displayrow, pixel_mask = (pixel_col & 1) ? 0xf0 : 0x0f;
 		if ((row + pixel_row) >= EMPEG_SCREEN_ROWS)
 			return;
 		displayrow = &hijack_displaybuf[row + pixel_row][0];
 		do {
-			unsigned char new_pixel   = 0;
 			unsigned char *pixel_pair = &displayrow[(pixel_col + offset) >> 1];
-			*pixel_pair = ((*pixel_pair & (pixel_mask = ~pixel_mask))) ^ new_pixel;
+			*pixel_pair &= (pixel_mask = ~pixel_mask);
 		} while (++offset < num_cols);
 	}
 }
@@ -418,13 +418,14 @@ voladj_move (int direction)
 		voladj_enabled  = sizeof(voladj_names) / sizeof(voladj_names[0]) - 1;
 }
 
+static unsigned long last_histx = -1;
+
 static int
 voladj_display (int firsttime)
 {
 	unsigned int i, rowcol, mult, prev = -1;
 	unsigned char buf[32];
 	unsigned long flags;
-	static unsigned long last_histx = -1;
 
 	if (firsttime) {
 		memset(voladj_history, 0, sizeof(voladj_history));
@@ -463,7 +464,7 @@ voladj_prefix (int firsttime)
 		hijack_overlay_geom = (hijack_geom_t *)&geom;
 	} else if (jiffies_since(hijack_last_moved) >= (HZ*2)) {
 		hijack_deactivate(HIJACK_INACTIVE);
-	} else if (hijack_player_buf) {
+	} else {
 		unsigned int rowcol = (geom.first_row+4)|((geom.first_col+6)<<16);
 		rowcol = draw_string(rowcol, "Auto VolAdj: ", COLOR3);
 		clear_text_row(rowcol, geom.last_col-4);
@@ -507,10 +508,11 @@ init_temperature (void)
 	restore_flags(flags);
 }
 
+static unsigned long temp_lasttime = 0;
 static int
 read_temperature (void)
 {
-	static unsigned long lastread = 0;
+
 	static int temp = 0;
 	unsigned long flags;
 
@@ -533,13 +535,13 @@ read_temperature (void)
 	// so we may still need the odd call to empeg_inittherm() just to ensure
 	// it is running.  -ml
 
-	if (lastread && jiffies_since(lastread) < (HZ*2))
+	if (temp_lasttime && jiffies_since(temp_lasttime) < (HZ*2))
 		return temp;
 	save_flags_clif(flags);			//  power cyles without inittherm()
 	temp = empeg_readtherm(&OSMR0,&GPLR);
 	restore_flags(flags);
-	lastread = jiffies ? jiffies : 1;
-	if (((lastread / HZ) & 0x63) == 0) // restart the thermometer once a minute or so
+	temp_lasttime = jiffies ? jiffies : 1;
+	if (((temp_lasttime / HZ) & 0x63) == 0) // restart the thermometer once a minute or so
 		init_temperature();
 	/* Correct for negative temperatures (sign extend) */
 	if (temp & 0x80)
@@ -570,7 +572,7 @@ vitals_display (int firsttime)
 	rowcol = draw_string(ROWCOL(0,0), buf, COLOR2);
 	(void)draw_temperature(rowcol, read_temperature(), COLOR2);
 	si_meminfo(&si);
-	sprintf(buf, "FreeMem: %lu/%lu kB\nLoadAvg: ", si.freeram/1024, si.totalram/1024);
+	sprintf(buf, "Free: %lukB/%lukB\nLoadAvg: ", si.freeram/1024, si.totalram/1024);
 	rowcol = draw_string(ROWCOL(2,0), buf, COLOR2);
 	(void)get_loadavg(buf);
 	count = 0;
@@ -649,6 +651,7 @@ screen_compare (unsigned long *screen1, unsigned long *screen2)
 	const unsigned char bitcount4[16] = {0,1,1,2, 1,2,2,3, 1,2,3,4, 2,3,3,4};
 	unsigned long *end = (unsigned long *)(((unsigned char *)screen1) + EMPEG_SCREEN_BYTES);
 	int allowable_fuzz = blankerfuzz_5pcts * (5 * (2 * EMPEG_SCREEN_BYTES) / 100);
+
 	do {	// compare 8 pixels at a time for speed
 		unsigned long x = *screen1 ^ *screen2++;
 		if (x) { // Now figure out how many of the 8 pixels didn't match
@@ -716,7 +719,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v46 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v47 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1319,7 +1322,6 @@ hijack_display (struct display_dev *dev, unsigned char *player_buf)
 				if (hijack_movefunc != NULL)
 					hijack_move_repeat();
 				restore_flags(flags);
-				hijack_player_buf = player_buf;
 				refresh = hijack_dispfunc(0);
 				save_flags_cli(flags);
 				if (ir_selected && hijack_dispfunc != userland_display && hijack_dispfunc != voladj_prefix)
@@ -1359,26 +1361,22 @@ hijack_display (struct display_dev *dev, unsigned char *player_buf)
 
 	// Prevent screen burn-in on an inactive/unattended player:
 	if (blanker_timeout) {
-		static unsigned long blanker_lastpoll = 0;
-		static unsigned char blanked = 0, last_buf[EMPEG_SCREEN_BYTES] = {0,};
-		if (!blanker_activated)
-			blanked = 0;
+		if (!blanker_triggered)
+			blanker_is_blanked = 0;
 		if (jiffies_since(blanker_lastpoll) >= (4*HZ/3)) {  // use an oddball interval to avoid patterns
 			blanker_lastpoll = jiffies;
-			if (screen_compare((unsigned long *)last_buf, (unsigned long *)buf)) {
-				memcpy(last_buf, buf, EMPEG_SCREEN_BYTES);
-				blanker_activated = 0;
-			} else {
-				refresh = NO_REFRESH;
-				if (!blanker_activated)
-					blanker_activated = jiffies ? jiffies : 1;
+			save_flags_clif(flags);
+			if (screen_compare((unsigned long *)blanker_lastbuf, (unsigned long *)buf)) {
+				memcpy(blanker_lastbuf, buf, EMPEG_SCREEN_BYTES);
+				blanker_triggered = 0;
+			} else if (!blanker_triggered) {
+				blanker_triggered = jiffies ? jiffies : 1;
 			}
+			restore_flags(flags);
 		}
-		if (blanker_activated) {
-			if (jiffies_since(blanker_activated) > jiffies_since(ir_lasttime)) {
-				blanker_activated = 0;
-			} else if (jiffies_since(blanker_activated) > (blanker_timeout * (SCREEN_BLANKER_MULTIPLIER * HZ))) {
-				if (!blanked) {
+		if (blanker_triggered) {
+			if (jiffies_since(blanker_triggered) > (blanker_timeout * (SCREEN_BLANKER_MULTIPLIER * HZ))) {
+				if (!blanker_is_blanked) {
 					buf = player_buf;
 					memset(buf,0x00,EMPEG_SCREEN_BYTES);
 					refresh = NEED_REFRESH;
@@ -1430,7 +1428,7 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 	unsigned long flags;
 
 	save_flags_cli(flags);
-	blanker_activated = 0;
+	blanker_triggered = 0;
 	if (hijack_buttonlist && hijack_status == HIJACK_ACTIVE) {
 		if ((hijacked = hijack_check_buttonlist(data)))
 			goto done;

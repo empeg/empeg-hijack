@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v371"
+#define HIJACK_VERSION	"v372"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -2392,7 +2392,7 @@ knobseek_move_visuals (int direction)
 
 	button = (direction > 0) ? IR_RIO_VISUAL_PRESSED : IR_PREV_VISUAL_PRESSED;
 #ifdef EMPEG_KNOB_SUPPORTED
-	if (button == IR_PREV_VISUAL_PRESSED && player_version > MK2_PLAYER_v2final) {
+	if (button == IR_PREV_VISUAL_PRESSED && player_version >= MK2_PLAYER_v3a1) {
 		if ((empeg_tuner_present || hijack_fake_tuner) && get_current_mixer_source() != IR_FLAGS_TUNER) {
 			button = IR_KSNEXT_PRESSED;
 		}
@@ -5013,7 +5013,7 @@ reset_hijack_options (void)
 		++h;
 	}
 #ifdef EMPEG_KNOB_SUPPORTED
-	if (player_version > MK2_PLAYER_v2final)
+	if (player_version >= MK2_PLAYER_v3a1)
 		hijack_spindown_seconds /= 2;
 #endif
 }

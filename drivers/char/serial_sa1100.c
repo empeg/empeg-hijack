@@ -1293,7 +1293,7 @@ static int rs_write(struct tty_struct * tty, int from_user,
 	//
 	// v3alphas seem to have console/notify streams reversed from v2final.  Weird.
 	//
-	if (from_user == (player_version > MK2_PLAYER_v2final) && hijack_serial_notify(buf, count))
+	if (from_user == (player_version >= MK2_PLAYER_v3a1) && hijack_serial_notify(buf, count))
 		ret = count;
 	else
 #endif

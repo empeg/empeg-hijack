@@ -229,7 +229,7 @@ static int
 remount_drives (int writeable, int which)
 {
 	int rc0 = 0, rc1, flags = writeable ? (MS_NODIRATIME | MS_NOATIME) : MS_RDONLY;
-	char *mount_opts = NULL;	// "nocheck";
+	char *mount_opts = "nocheck";
 
 	show_message(writeable ? "Remounting read-write.." : "Remounting read-only..", 99*HZ);
 

@@ -590,7 +590,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v32 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v33 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -755,11 +755,14 @@ game_display (int firsttime)
 static void
 maxtemp_move (int direction)
 {
-	maxtemp_threshold += direction;
-	if (maxtemp_threshold < 0)
-		maxtemp_threshold = 0;
-	else if (maxtemp_threshold > ((1<<MAXTEMP_BITS)-1))
-		maxtemp_threshold  = ((1<<MAXTEMP_BITS)-1);
+	if (maxtemp_threshold == 0) {
+		if (direction > 0)
+			++maxtemp_threshold;
+	} else if (direction < 0) {
+		--maxtemp_threshold;
+	} else if (maxtemp_threshold < ((1<<MAXTEMP_BITS)-1)) {
+		++maxtemp_threshold;
+	}
 }
 
 static int
@@ -1024,7 +1027,9 @@ hijack_display (struct display_dev *dev, unsigned char *player_buf)
 	save_flags_cli(flags);
 	switch (hijack_status) {
 		case HIJACK_INACTIVE:
-			if (ir_trigger_count >= 3 || (ir_knob_down && jiffies_since(ir_knob_down) >= HZ)) {
+			if (!dev->power) {  // do not activate menu if unit is in standby mode!
+				buf = player_buf;
+			} else if (ir_trigger_count >= 3 || (ir_knob_down && jiffies_since(ir_knob_down) >= HZ)) {
 				menu_item = menu_top = 0;
 				activate_dispfunc(0, menu_display, menu_move);
 			} else if (jiffies_since(ir_lasttime) < (HZ*5) || !maxtemp_threshold || read_temperature() < (maxtemp_threshold + MAXTEMP_OFFSET)) {
@@ -1071,7 +1076,7 @@ hijack_display (struct display_dev *dev, unsigned char *player_buf)
 	restore_flags(flags);
 
 	// Prevent screen burn-in on an inactive/unattended player:
-	if (blanker_timeout) {
+	if (dev->power && blanker_timeout) {
 		static unsigned long blanker_lastpoll = 0;
 		static unsigned char blanked = 0, last_buf[EMPEG_SCREEN_BYTES] = {0,};
 		if (!blanker_activated)
@@ -1177,7 +1182,7 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 					break;
 			}
 		}
-	} else if (data == IR_KW_CD_PRESSED) {
+	} else if (devices[0].power && data == IR_KW_CD_PRESSED) {
 		// ugly Kenwood remote hack: press/release CD quickly 3 times to activate menu
 		if (ir_lastbutton == data && jiffies_since(ir_lasttime) < HZ)
 			++ir_trigger_count;

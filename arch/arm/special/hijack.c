@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v232"
+#define HIJACK_VERSION	"v233"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -2445,19 +2445,21 @@ calculator_display (int firsttime)
 static void
 do_reboot (struct display_dev *dev)
 {
+	unsigned long wait = HZ;
+
 	if (hijack_reboot++ == 1) {
-		hijack_last_moved = jiffies;
 		clear_hijack_displaybuf(COLOR0);
 		(void) draw_string(ROWCOL(2,32), "Rebooting..", PROMPTCOLOR);
 		display_blat(dev, (char *)hijack_displaybuf);
-		state_cleanse();		// Ensure flash savearea is updated
-		remount_drives(0);
-	} else {
-		if (jiffies_since(hijack_last_moved) >= HZ) {
-			unsigned long flags;
-			save_flags_clif(flags);	// clif is necessary for machine_restart
-			machine_restart(NULL);	// never returns
-		}
+		hijack_last_moved = jiffies;
+		if (remount_drives(0))
+			wait = 0;	// no need for a delay if remount did nothing
+	}
+	if (jiffies_since(hijack_last_moved) >= HZ) {
+		unsigned long flags;
+		state_cleanse();	// Ensure flash savearea is updated
+		save_flags_clif(flags);	// clif is necessary for machine_restart
+		machine_restart(NULL);	// never returns
 	}
 }
 

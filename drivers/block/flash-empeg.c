@@ -61,7 +61,7 @@ static int flash_length[FLASH_PARTITIONS] = {
 	0x02000, /* 0x06000 - unit configuration
 		    +0x00 - number of drives (0/1/2) */
 	0x02000, /* 0x08000 - unused */
-	0x02000, /* 0x0a000 - unused */
+	0x02000, /* 0x0a000 - 4-bit Empeg/Rio ID, followed by AC/DC boot logos, 2048 bytes each */
 	0x02000, /* 0x0c000 - watchdog power up code */
 	0x02000, /* 0x0e000 - linux loader */
 	0xa0000, /* 0x10000 - linux kernel */

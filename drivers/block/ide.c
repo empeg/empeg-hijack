@@ -2121,7 +2121,7 @@ int ide_read_setting(ide_drive_t *drive, ide_settings_t *setting)
 int ide_spin_wait_hwgroup (ide_drive_t *drive, unsigned long *flags)
 {
 	ide_hwgroup_t *hwgroup = HWGROUP(drive);
-	unsigned long timeout = jiffies + (3 * HZ);
+	unsigned long timeout = jiffies + (6 * HZ);
 
 	spin_lock_irqsave(&io_request_lock, *flags);
 	while (hwgroup->busy) {

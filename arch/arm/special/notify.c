@@ -154,7 +154,7 @@ hijack_convert_time (time_t time, tm_t *tm)
 int
 remount_drives (int writeable)
 {
-	int	len, flags;
+	int	did_something = 0, len, flags;
 	char	buf[256], *b, *message, *match, mount_opts[] = "nocheck";
 
 	if (writeable) {
@@ -167,7 +167,6 @@ remount_drives (int writeable)
 		match = "ext2 rw";
 	}
 		
-	show_message(message, 99*HZ);
 	lock_kernel();
 	len = get_filesystem_info(buf);
 	buf[len] = '\0';
@@ -182,14 +181,19 @@ remount_drives (int writeable)
 		while (*++b != ' ');
 		*b++ = '\0';
 		if (!strxcmp(fstype, match, 1)) {
+			if (!did_something) {
+				did_something = 1;
+				show_message(message, 99*HZ);
+			}
 			printk("hijack: %s: %s\n", message, fsname); 
 			(void)do_remount(fsname, flags, mount_opts);
 		}
 		while (*b && *b++ != '\n');
 	}
 	unlock_kernel();
-	show_message("Done", HZ);
-	return 0;
+	if (did_something)
+		show_message("Done", HZ);
+	return !did_something;
 }
 
 #ifdef CONFIG_NET_ETHERNET
@@ -383,7 +387,17 @@ static struct inode_operations kflash_ops = {
 	NULL,
 };
 
-static struct proc_dir_entry proc_kflash_entry = {
+static struct proc_dir_entry proc_bootlogos_entry = {
+	0,			/* inode (dynamic) */
+	15,			/* length of name */
+	"empeg_bootlogos",	/* name */
+	S_IFBLK|S_IRUSR|S_IWUSR,/* mode */
+	1, 0, 0,		/* links, owner, group */
+	MKDEV(60,5),		/* size holds device number */
+	&kflash_ops,		/* inode operations */
+};
+
+static struct proc_dir_entry proc_kernel_entry = {
 	0,			/* inode (dynamic) */
 	12,			/* length of name */
 	"empeg_kernel",		/* name */
@@ -445,6 +459,7 @@ void hijack_notify_init (void)
 #endif // CONFIG_NET_ETHERNET
 	proc_register(&proc_root, &proc_notify_entry);
 #ifdef CONFIG_NET_ETHERNET
-	proc_register(&proc_root, &proc_kflash_entry);
+	proc_register(&proc_root, &proc_bootlogos_entry);
+	proc_register(&proc_root, &proc_kernel_entry);
 #endif // CONFIG_NET_ETHERNET
 }

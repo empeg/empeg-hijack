@@ -91,7 +91,7 @@ typedef struct server_parms_s {
 	char			rename_pending;		// bool
 	char			nocache;		// bool
 	char			show_dotfiles;		// bool
-	char			no_data;		// bool
+	char			nodata;		// bool
 	char			spare2;
 	char			spare1;
 	char			spare0;
@@ -826,7 +826,7 @@ static const mime_type_t mime_types[] = {
 	{"*.png",		"image/png",		1},
 	{"*.htm",		 text_html,		1},
 	{"*.xml",		 text_xml,		1},
-	{"*.xsl",		 text_xml,		1},	// was NONE
+	{"*.xsl",		 NULL,			1},	// text/xml ??
 	{"*.css",		 text_css,		1},
 	{"*.js",		 NULL,			1},
 	{"*.jar",		 NULL,			1},
@@ -1661,7 +1661,7 @@ hijack_do_command (void *sparms, char *buf)
 		} else {
 			nocache = 0;
 			if (!strxcmp(s, "NODATA", 0)) {
-				parms->no_data = 1;
+				parms->nodata = 1;
 			} else if (!strxcmp(s, "FID=", 1)) {
 				sprintf(parms->cwd, "/drive0/fids/%s", s+4);
 			} else if (!strxcmp(s, "STYLE=", 1) && *(s += 6) && strlen(s) < sizeof(parms->style)) {
@@ -2030,7 +2030,7 @@ khttpd_handle_connection (server_parms_t *parms)
 				response = send_playlist(parms, path);
 			goto quit;
 		}
-		if (!*path || parms->no_data) {
+		if (parms->nodata) {
 			const char r204[] = "HTTP/1.1 204 No Data\r\nConnection: close\r\n\r\n";
 			ksock_rw(parms->clientsock, r204, sizeof(r204)-1, -1);
 			return;

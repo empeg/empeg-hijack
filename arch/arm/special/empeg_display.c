@@ -991,6 +991,7 @@ int display_mmap(struct file *filp, struct vm_area_struct *vma)
 int display_ioctl(struct inode *inode, struct file *filp, unsigned int cmd,
 		  unsigned long arg)
 {
+	extern int hijack_buttonhack_enabled;
 	struct display_dev *dev =
 		(struct display_dev *)filp->private_data;
 
@@ -1036,7 +1037,8 @@ int display_ioctl(struct inode *inode, struct file *filp, unsigned int cmd,
 			empeg_displaypower(1);
 			
 			/* Turn on button LEDs, Hack by Brian Mihulka bmihulka@hulkster.net */
-			display_sendcontrol(244);
+			if (hijack_buttonhack_enabled)
+				display_sendcontrol(244);
 
 			/* Wait for a while for it to come to life */
 			udelay(POWERFAIL_DISABLED_DELAY);
@@ -1049,7 +1051,8 @@ int display_ioctl(struct inode *inode, struct file *filp, unsigned int cmd,
 			dev->power = FALSE;
 			
 			/* Turn off button LEDs, Hack by Brian Mihulka bmihulka@hulkster.net */
-			display_sendcontrol(242);
+			if (hijack_buttonhack_enabled)
+				display_sendcontrol(242);
 			
 			/* Turning display off */
 			empeg_displaypower(0);

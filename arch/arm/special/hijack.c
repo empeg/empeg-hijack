@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v216"
+#define HIJACK_VERSION	"v217"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -346,6 +346,7 @@ static hijack_buttonq_t hijack_inputq, hijack_playerq, hijack_userq;
 
 // Externally tuneable parameters for config.ini; the voladj_parms are also tuneable
 //
+       int hijack_buttonhack_enabled;		// 1 == turn illuminated buttons on/off
 static int hijack_button_pacing;		// minimum spacing between press/release pairs within playerq
 static int hijack_dc_servers;			// 1 == allow kftpd/khttpd when on DC power
        int hijack_disable_emplode;		// 1 == block TCP port 8300 (Emplode/Emptool)
@@ -393,6 +394,7 @@ static const hijack_option_t hijack_option_table[] =
 {
 // config.ini string		address-of-variable		default			howmany	min	max
 //===========================	==========================	=========		=======	===	================
+{"buttonhack_enabled",		&hijack_buttonhack_enabled,	0,			1,	0,	1},
 {"button_pacing",		&hijack_button_pacing,		20,			1,	0,	HZ},
 {"dc_servers",			&hijack_dc_servers,		0,			1,	0,	1},
 {"disable_emplode",		&hijack_disable_emplode,	0,			1,	0,	1},

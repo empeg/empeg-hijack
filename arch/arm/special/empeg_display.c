@@ -593,38 +593,51 @@ void game_move_right (void)
 {
 	unsigned char *paddlerow = game_buffer[GAME_ROWS-3];
 	int i = 3;
+	unsigned long flags;
+	save_flags_cli(flags);
 	while (i-- > 0) {
 		if (game_paddle_col < (GAME_COLS - GAME_PADDLE_SIZE - 1)) {
 			paddlerow[game_paddle_col] = 0;
+			if (paddlerow[game_paddle_col + GAME_PADDLE_SIZE] != 0)
+				--game_row; // scoop up the ball
 			paddlerow[game_paddle_col++ + GAME_PADDLE_SIZE] = GAME_VBOUNCE;
 			game_paddle_lastmove = jiffies;
 			game_paddle_lastdir = 1;
 		}
 	}
+	restore_flags(flags);
 }
 
 void game_move_left (void)
 {
 	unsigned char *paddlerow = game_buffer[GAME_ROWS-3];
 	int i = 3;
+	unsigned long flags;
+	save_flags_cli(flags);
 	while (i-- > 0) {
 		if (game_paddle_col > 1) {
 			paddlerow[--game_paddle_col + GAME_PADDLE_SIZE] = 0;
+			if (paddlerow[game_paddle_col] != 0)
+				--game_row; // scoop up the ball
 			paddlerow[game_paddle_col] = GAME_VBOUNCE;
 			game_paddle_lastmove = jiffies;
 			game_paddle_lastdir = -1;
 		}
 	}
+	restore_flags(flags);
 }
 
 void game_move_ball (void)
 {
+	unsigned long flags;
+
 	if (game_over) {
 		game_finale();
 		return;
 	}
 	if ((jiffies - game_ball_lastmove) < (HZ/game_speed))
 		return;
+	save_flags_cli(flags);
 	game_ball_lastmove = jiffies;
 	game_buffer[game_row][game_col] = 0;
 	game_row += game_vdir;
@@ -651,6 +664,7 @@ void game_move_ball (void)
 	if (game_buffer[game_row][game_col] == GAME_OVER)
 		game_over = 1;
 	game_buffer[game_row][game_col] = GAME_BALL;
+	restore_flags(flags);
 }
 
 /* Display the current top of queue. If there isn't anything in the

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v321"
+#define HIJACK_VERSION	"v322"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -1712,7 +1712,7 @@ forcepower_display (int firsttime)
 #ifdef EMPEG_KNOB_SUPPORTED
 			rowcol = ROWCOL(3,0);
 			force_power -= FORCE_TUNER;
-			sprintf(msg, "If tuner=%d, force %s", force_power >> 1, acdc_text[force_power & 1]);
+			sprintf(msg, "If tuner=%d, Force %s", force_power >> 1, acdc_text[force_power & 1]);
 			break;
 #endif
 		case FORCE_NORMAL:
@@ -1720,7 +1720,7 @@ forcepower_display (int firsttime)
 			break;
 		case FORCE_AC:
 		case FORCE_DC:
-			sprintf(msg, "force %s", acdc_text[force_power == FORCE_DC]);
+			sprintf(msg, "Force %s", acdc_text[force_power == FORCE_DC]);
 			break;
 	}
 	draw_string_spaced(rowcol, msg, ENTRYCOLOR);

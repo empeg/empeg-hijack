@@ -142,19 +142,35 @@ asmlinkage ssize_t sys_read(unsigned int fd, char * buf, size_t count)
 	// and then just assume here that the first sys_read() from the player
 	// will be for "/empeg/var/config.ini" (as shown by running "strace player").
 	//
-	// We could be fancier and check the pathname, but it's hard to obtain at this stage.
-	// We would have to intercept sys_open() and get it there, and save the ino/dev
-	// from it to check against the d_inode ino/dev info in here.  But we don't.  :)
-	//
 	// The ugly part is that, since the file may be too large for a single read
 	// into the player's buffer, we have to kmalloc() our own buffer for the ENTIRE file
 	// each time through, in order to do the macro edits before passing it on to the player.
 	//
 	extern pid_t hijack_player_init_pid;  // set by do_execve("/empeg/bin/player")
 	extern void  hijack_process_config_ini (char *, off_t);
-
+#if 0
+	static int babble = 0;
+	if (++babble < 40) {
+		printk("\nHIJACK: read(%s): PID=%d(%s), offset=%d/%d, count=%d\n",
+			file->f_dentry->d_name.name, current->pid, current->comm,
+			(int)file->f_pos, (int)file->f_dentry->d_inode->i_size, (int)count);
+		//
+		// Here's what we see; note the peculiar first entry in the trace here,
+		// which explains why we now have the check for (file->f_pos == 0) below:
+		//
+		// HIJACK: read(config.ini): PID=9(player), offset=8192/8268, count=76
+		// HIJACK: read(config.ini): PID=9(player), offset=0   /8268, count=4096
+		// HIJACK: read(config.ini): PID=9(player), offset=4096/8268, count=4096
+		// HIJACK: read(config.ini): PID=9(player), offset=8192/8268, count=4096
+		// HIJACK: read(config.ini): PID=9(player), offset=8268/8268, count=4096
+		//
+	}
+#endif
 	if (hijack_player_init_pid == -1 && !strcmp(current->comm, "player")) {
-		hijack_player_init_pid = current->pid;
+		if (file->f_pos == 0 && !strcmp(file->f_dentry->d_name.name, "config.ini")) {
+			hijack_player_init_pid = current->pid;
+			printk("Hijack: intercepting config.ini\n");
+		}
 	}
 	if (hijack_player_init_pid != current->pid) {
 normal_read:	ret = read(file, buf, count, &file->f_pos);

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v356"
+#define HIJACK_VERSION	"v357"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -498,9 +498,6 @@ static	int hijack_spindown_seconds;		// drive spindown timeout in seconds
 #ifdef EMPEG_STALK_SUPPORTED
 static	int hijack_stalk_debug;			// trace button in/out actions to/from Stalk?
 #endif // EMPEG_STALK_SUPPORTED
-#ifdef HIJACK_MOD_TUNER
-	int hijack_tuner_offset;		// FIXME
-#endif
 #ifdef CONFIG_NET_ETHERNET
 	char hijack_kftpd_password[16];		// kftpd password
 	int hijack_kftpd_control_port;		// kftpd control port
@@ -651,9 +648,6 @@ static const hijack_option_t hijack_option_table[] =
 {"time_offset",			&hijack_time_offset,		0,			1,	-24*60,	24*60},
 {"trace_fs",			&hijack_trace_fs,		0,			1,	0,	1},
 {"trace_tuner",			&hijack_trace_tuner,		0,			1,	0,	1},
-#ifdef HIJACK_MOD_TUNER
-{"tuner_offset",		&hijack_tuner_offset,		0,			1,	0,	0x7ffe},
-#endif
 {button_names[4].name,		&hijack_voladj_parms[0][0],	(int)voladj_ldefault,	5,	0,	0x7ffe},
 {button_names[5].name,		&hijack_voladj_parms[1][0],	(int)voladj_mdefault,	5,	0,	0x7ffe},
 {button_names[6].name,		&hijack_voladj_parms[2][0],	(int)voladj_hdefault,	5,	0,	0x7ffe},
@@ -1584,9 +1578,12 @@ savearea_move (int direction)
 static int
 savearea_display (int firsttime)
 {
+	static unsigned int tick;
 	unsigned int rc = NO_REFRESH;
 	unsigned char *empeg_statebuf = *empeg_state_writebuf;
 	if (firsttime) {
+		tick = 0;
+		clear_hijack_displaybuf(COLOR0);
 		if (!last_savearea)
 			last_savearea = kmalloc(128, GFP_KERNEL);
 		if (!last_updated)
@@ -1603,18 +1600,30 @@ savearea_display (int firsttime)
 		rc = NEED_REFRESH;
 	}
 	if (rc == NEED_REFRESH) {
-		unsigned int i, rowcol = ROWCOL(0,0), offset = savearea_display_offset;
-		for (i = 0; i < 32; ++i) {
+		int i;
+		unsigned int rowcol = ROWCOL(0,0), offset = savearea_display_offset;
+		{
+			int updated = 0;
+			unsigned long now = JIFFIES();
+			for (i = 127; i >= 0; --i) {	// Monitor all 128 bytes
+				unsigned char b = empeg_statebuf[i];
+				if (b != last_savearea[i]) {
+					last_savearea[i] = b;
+					last_updated[i] = now;
+					updated = 1;
+				}
+			}
+			if ((++tick & 3) && !updated)
+				return NO_REFRESH;	// defer screen update to a later time
+		}
+		for (i = 0; i < 32; ++i) {	// Show 32 bytes at a time on the screen
 			unsigned long elapsed;
 			unsigned int addr = (offset + i) & 0x7f, color = COLOR2;
 			unsigned char b = empeg_statebuf[addr];
-			if (b != last_savearea[addr])
-				last_updated[addr] = JIFFIES();
-			last_savearea[addr] = b;
 			if (last_updated[addr]) {
 				elapsed = jiffies_since(last_updated[addr]);
-				if (elapsed < (10*HZ))
-					color = (elapsed < (3*HZ)) ? -COLOR3 : COLOR3;
+				if (elapsed < (12*HZ))
+					color = (elapsed < (4*HZ)) ? -COLOR3 : COLOR3;
 				else
 					last_updated[addr] = 0;
 			}
@@ -1715,7 +1724,7 @@ forcepower_move (int direction)
 #ifndef EMPEG_KNOB_SUPPORTED
 	if (hijack_force_power >= FORCE_TUNER)
 		hijack_force_power = (direction < 0) ? FORCE_DC : FORCE_NORMAL;
-#endif
+#endif // EMPEG_KNOB_SUPPORTED
 	empeg_state_dirty = 1;
 }
 
@@ -1741,7 +1750,7 @@ forcepower_display (int firsttime)
 			force_power -= FORCE_TUNER;
 			sprintf(msg, "If tuner=%d, Force %s", force_power >> 1, acdc_text[force_power & 1]);
 			break;
-#endif
+#endif // EMPEG_KNOB_SUPPORTED
 		case FORCE_NOLOOPBACK:
 			msg = "No-Loopback";
 			break;
@@ -2315,10 +2324,27 @@ knobdata_display (int firsttime)
 	return NEED_REFRESH;
 }
 
+static int player_v3alpha = 0;
+
+static void check_for_v3alpha (void)
+{
+	extern int sys_newstat(char *, struct stat *);
+	mm_segment_t old_fs = get_fs();
+	struct stat st;
+
+	set_fs(KERNEL_DS);
+	if (0 == sys_newstat("/empeg/bin/player", &st)) {
+		//printk("player_size = %lu\n", st.st_size);
+		if (st.st_size == 1900988 || st.st_size == 1907572) {
+			player_v3alpha = 1;
+		}
+	}
+	set_fs(old_fs);
+}
+
 #endif // EMPEG_KNOB_SUPPORTED
 
 static unsigned long knobseek_lasttime;
-static int player_v3alpha = 0;
 
 static void
 knobseek_move_visuals (int direction)
@@ -2332,7 +2358,7 @@ knobseek_move_visuals (int direction)
 			button = IR_KSNEXT_PRESSED;
 		}
 	}
-#endif
+#endif // EMPEG_KNOB_SUPPORTED
 	hijack_enq_button_pair(button);
 }
 
@@ -2815,100 +2841,6 @@ hightemp_display (int firsttime)
 	return NEED_REFRESH;
 }
 
-#define CALCULATOR_BUTTONS_SIZE	(1 + (13 * 4))
-static const unsigned int calculator_buttons[CALCULATOR_BUTTONS_SIZE] = {CALCULATOR_BUTTONS_SIZE,
-	IR_KW_0_PRESSED,	IR_KW_0_RELEASED,	IR_RIO_0_PRESSED,	IR_RIO_0_RELEASED,
-	IR_KW_1_PRESSED,	IR_KW_1_RELEASED,	IR_RIO_1_PRESSED,	IR_RIO_1_RELEASED,
-	IR_KW_2_PRESSED,	IR_KW_2_RELEASED,	IR_RIO_2_PRESSED,	IR_RIO_2_RELEASED,
-	IR_KW_3_PRESSED,	IR_KW_3_RELEASED,	IR_RIO_3_PRESSED,	IR_RIO_3_RELEASED,
-	IR_KW_4_PRESSED,	IR_KW_4_RELEASED,	IR_RIO_4_PRESSED,	IR_RIO_4_RELEASED,
-	IR_KW_5_PRESSED,	IR_KW_5_RELEASED,	IR_RIO_5_PRESSED,	IR_RIO_5_RELEASED,
-	IR_KW_6_PRESSED,	IR_KW_6_RELEASED,	IR_RIO_6_PRESSED,	IR_RIO_6_RELEASED,
-	IR_KW_7_PRESSED,	IR_KW_7_RELEASED,	IR_RIO_7_PRESSED,	IR_RIO_7_RELEASED,
-	IR_KW_8_PRESSED,	IR_KW_8_RELEASED,	IR_RIO_8_PRESSED,	IR_RIO_8_RELEASED,
-	IR_KW_9_PRESSED,	IR_KW_9_RELEASED,	IR_RIO_9_PRESSED,	IR_RIO_9_RELEASED,
-	IR_KW_CD_PRESSED,	IR_KW_CD_RELEASED,	IR_RIO_MENU_PRESSED,	IR_RIO_MENU_RELEASED,
-	IR_KW_STAR_RELEASED,	IR_KW_STAR_PRESSED,	IR_RIO_CANCEL_RELEASED,	IR_RIO_CANCEL_PRESSED,
-	IR_TOP_BUTTON_RELEASED,	IR_TOP_BUTTON_PRESSED,	IR_KNOB_PRESSED,	IR_KNOB_RELEASED};
-
-static const unsigned char calculator_operators[] = {'+','-','*','/','%','='};
-
-static long
-calculator_do_op (long total, long value, long operator)
-{
-	switch (calculator_operators[operator]) {
-		case '+': total += value; break;
-		case '-': total -= value; break;
-		case '*': total *= value; break;
-		case '/': total  = value ? total / value : 0; break;
-		case '%': total  = value ? total % value : 0; break;
-		case '=': total  = value; break;
-	}
-	return total;
-}
-
-static int
-calculator_display (int firsttime)
-{
-	static long total, value;
-	static unsigned char operator, prev;
-	long new;
-	unsigned int i;
-	unsigned char opstring[3] = {' ','\0'};
-	hijack_buttondata_t data;
-
-	if (firsttime) {
-		total = value = operator = prev = 0;
-		hijack_buttonlist = calculator_buttons;;
-		hijack_initq(&hijack_userq, 'U');
-	} else while (hijack_button_deq(&hijack_userq, &data, 0)) {
-		for (i = CALCULATOR_BUTTONS_SIZE-1; i > 0; --i) {
-			if (data.button == calculator_buttons[i])
-				break;
-		}
-		if (i & 1) { // very clever:  if (first_or_third_column_from_table) {
-			i = (i - 1) / 4;
-			switch (i) {
-				case 10: // CD or MENU: toggle operators
-					if (prev < 10) {
-						total = calculator_do_op(total, value, operator);
-						value = operator = 0;
-					} else {
-						operator = (operator + 1) % sizeof(calculator_operators);
-					}
-					break;
-				case 11: // * or CANCEL: CE,CA,Quit
-					if (value) {
-						value = 0;
-						break;
-					}
-					if (total) {
-						total = 0;
-						break;
-					}
-					// fall thru
-				case 12: // TOP or KNOB: Quit
-					ir_selected = 1; // return to main menu
-					break;
-				default: // 0,1,2,3,4,5,6,7,8,9
-					new = (value * 10) + i;
-					if ((new / 10) == value)
-						value = new;
-					break;
-			}
-			prev = i;
-		}
-	}
-	clear_hijack_displaybuf(COLOR0);
-	(void) draw_string(ROWCOL(0,0), "Menu/CD: +-*/%=", PROMPTCOLOR);
-	(void) draw_string(ROWCOL(1,0), "Cancel/*: CE,CA,Quit", PROMPTCOLOR);
-	(void) draw_number(ROWCOL(2,8), total, "%11d ", ENTRYCOLOR);
-	opstring[0] = calculator_operators[operator];
-	(void) draw_string(ROWCOL(3,0), opstring, ENTRYCOLOR);
-	(void) draw_number(ROWCOL(3,8), value, "%11d ", ENTRYCOLOR);
-	return NEED_REFRESH;
-}
-
 static void
 do_reboot (struct display_dev *dev)
 {
@@ -3048,7 +2980,6 @@ static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 	{"Break-Out Game",		game_display,		game_move,		0},
 	{ showbutton_menu_label,	showbutton_display,	NULL,			0},
 	{ buttonled_menu_label,		buttonled_display,	buttonled_move,		0},
-	{"Calculator",			calculator_display,	NULL,			0},
 	{ timeraction_menu_label,	timeraction_display,	timeraction_move,	0},
 	{ timer_menu_label,		timer_display,		timer_move,		0},
 	{ fsck_menu_label,		fsck_display,		fsck_move,		0},
@@ -4975,7 +4906,7 @@ int i2c_read8  (unsigned char device, unsigned char command, unsigned char *data
 #define FAN_CONTROL_START	0x51	// start temperature conversions
 #define FAN_CONTROL_STOP	0x22	// stop temperature conversions
 #define FAN_CONTROL_RESET	0x54	// software power-on reset command (no command ACK!)
-#define FAN_CONTROL_HIGH	0xa1	// read/write thermostat "low" temperature
+#define FAN_CONTROL_HIGH	0xa1	// read/write thermostat "high" temperature
 #define FAN_CONTROL_LOW		0xa2	// read/write thermostat "low" temperature
 #define FAN_CONTROL_TEMP	0xaa	// read current temperature
 #define FAN_CONTROL_CONFIG	0xac	// read/write configuration register
@@ -4985,7 +4916,7 @@ set_fan_control (void)
 {
 	unsigned char tmp[2];
 
-	if (i2c_write8(FAN_CONTROL_DEVADDR, FAN_CONTROL_STOP, NULL, 0)) {		// stop conversions
+	if (i2c_write8(FAN_CONTROL_DEVADDR, FAN_CONTROL_STOP, NULL, 0)) {	// stop conversions
 		fan_control_enabled = 0;
 		printk("Fan control error; disabling\n");
 		show_message("Fan control error", 5*HZ);
@@ -4999,32 +4930,14 @@ set_fan_control (void)
 		//tmp[1] = 0;
 		i2c_write8(FAN_CONTROL_DEVADDR, FAN_CONTROL_HIGH,   tmp, 2);	// set high temp threshold
 		i2c_write8(FAN_CONTROL_DEVADDR, FAN_CONTROL_START, NULL, 0);	// (re-)start conversions
-#if 0
+	#if 0
 		i2c_read8(FAN_CONTROL_DEVADDR,  FAN_CONTROL_TEMP,   tmp, sizeof(tmp));	// read current temperature
 		printk("fan control temperature = %d\n", (int)tmp[0]);
-#endif
+	#endif
 	}
 }
 
 #endif // CONFIG_EMPEG_I2C_FAN_CONTROL
-
-#ifdef EMPEG_KNOB_SUPPORTED
-static void check_for_v3alpha (void)
-{
-	extern int sys_newstat(char *, struct stat *);
-	mm_segment_t old_fs = get_fs();
-	struct stat st;
-
-	set_fs(KERNEL_DS);
-	if (0 == sys_newstat("/empeg/bin/player", &st)) {
-		//printk("player_size = %lu\n", st.st_size);
-		if (st.st_size == 1900988 || st.st_size == 1907572) {
-			player_v3alpha = 1;
-		}
-	}
-	set_fs(old_fs);
-}
-#endif
 
 // invoked from fs/read_write.c on each read of config.ini at each player start-up.
 // This could be invoked multiple times if file is too large for a single read,

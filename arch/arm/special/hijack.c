@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v363"
+#define HIJACK_VERSION	"v364"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -1998,7 +1998,7 @@ saveserial_move (int direction)
 	empeg_state_dirty = 1;
 }
 
-static const char *saveserial_msg[2] = {"Player Uses Serial Port", "App's Use Serial Port"};
+static const char *saveserial_msg[2] = {"Player Uses Serial Port", "Apps Use Serial Port"};
 
 static int
 saveserial_display (int firsttime)

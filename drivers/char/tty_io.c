@@ -322,8 +322,10 @@ int tty_check_change(struct tty_struct * tty)
 	if (current->tty != tty)
 		return 0;
 	if (tty->pgrp <= 0) {
-		printk("tty_check_change: tty->pgrp <= 0!\n");
-		return 0;
+		if (MAJOR(tty->device) != TTY_MAJOR || MINOR(tty->device) != (MAX_NR_CONSOLES+2)) {	// allow all pgrps to access ttyS1
+			printk("tty_check_change: tty->pgrp <= 0!\n");
+			return 0;
+		}
 	}
 	if (current->pgrp == tty->pgrp)
 		return 0;

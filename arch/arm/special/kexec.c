@@ -41,8 +41,8 @@ do_kexec (void *arg)
 	char *argv[] = { shell, "-c", parms->cmdline, NULL };
 	int i;
 
-	current->session = 1;
-	current->pgrp = 1;
+	current->session = init_task.session;
+	current->pgrp = init_task.pgrp;
 	use_init_filesystem_context();
 
 	// Block parent process signals

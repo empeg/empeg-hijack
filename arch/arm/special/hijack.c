@@ -706,13 +706,13 @@ read_temperature (void)
 	// so we may still need the odd call to empeg_inittherm() just to ensure
 	// it is running.  -ml
 
-	if (temp_lasttime && jiffies_since(temp_lasttime) < (HZ*2))
+	if (temp_lasttime && jiffies_since(temp_lasttime) < (HZ*4))
 		return temp;
 	save_flags_clif(flags);
 	temp = empeg_readtherm(&OSMR0,&GPLR);
 	restore_flags(flags);
 	temp_lasttime = jiffies ? jiffies : -1;
-	if (((temp_lasttime / HZ) & 0x63) == 0) // restart the thermometer once a minute or so
+	if (((temp_lasttime / (HZ*5)) & 0x3f) == 0) // restart the thermometer once every five minutes or so
 		init_temperature();
 	/* Correct for negative temperatures (sign extend) */
 	if (temp & 0x80)
@@ -1068,7 +1068,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v69 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v70 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1419,13 +1419,14 @@ reboot_display (int firsttime)
 static int
 showbutton_display (int firsttime)
 {
-	static unsigned long *saved_table, prev[4];
+	static unsigned long *saved_table, prev[4], counter;
 	unsigned long flags;
 	hijack_buttondata_t data;
 	int i;
 
 	save_flags_cli(flags);
 	if (firsttime) {
+		counter = 0;
 		prev[0] = prev[1] = prev[2] = prev[3] = -1;
 		hijack_buttonlist = intercept_all_buttons;
 		hijack_initq(&hijack_userq);
@@ -1434,6 +1435,8 @@ showbutton_display (int firsttime)
 		ir_translate_table = NULL;
 	}
 	if (hijack_button_deq(&hijack_userq, &data, 0)) {
+		if (++counter > 99)
+			counter = 0;
 		if (prev[0] == -1 && (data.button & 0x80000000)) {
 			// ignore it: left over from selecting us off the menu
 		} else if (data.button == prev[1] && ((data.button & 0x80000000) || data.button < 0x10)) {
@@ -1448,8 +1451,10 @@ showbutton_display (int firsttime)
 	}
 	restore_flags(flags);
 	if (firsttime || prev[0] != -1) {
+		unsigned long rowcol;
 		clear_hijack_displaybuf(COLOR0);
-		(void) draw_string(ROWCOL(0,0), "Raw Button Codes Display", COLOR3);
+		rowcol=draw_string(ROWCOL(0,0), "Button Codes Display.  ", COLOR3);
+		(void) draw_number(rowcol, counter, "%02d", COLOR2);
 		(void) draw_string(ROWCOL(1,0), "Repeat any button to exit", COLOR2);
 		if (prev[3] != -1)
 			(void)draw_number(ROWCOL(2,4), prev[3], "%08X", COLOR2);
@@ -1779,7 +1784,7 @@ hijack_handle_button(unsigned long data, unsigned long delay)
 				hijacked = ir_selected = 1;
 			} else if (hijack_status == HIJACK_INACTIVE) {
 				// ugly Kenwood remote hack: press/release CD quickly 3 times to activate menu
-				if ((ir_lastpressed & 0x7fffffff) != data || delay > HZ)
+				if ((ir_lastpressed & ~0x80000000) != data || delay > HZ)
 					ir_trigger_count = 1;
 				else if (++ir_trigger_count >= 3)
 					hijacked = 1;
@@ -2328,6 +2333,7 @@ input_append_code(void *ignored, unsigned long button)  // empeg_input.c
 						else
 							ir_send_buttons(t);
 					}
+					ir_lasttime = jiffies;
 					goto done;
 				}
 			}
@@ -2336,8 +2342,8 @@ input_append_code(void *ignored, unsigned long button)  // empeg_input.c
 		}
 	}
 	hijack_button_enq(&hijack_inputq, button, 0);
-done:
 	ir_lasttime = jiffies;
+done:
 	restore_flags(flags);
 }
 
@@ -2787,11 +2793,11 @@ hijack_init (void)
 
 	if (!initialized) {
 		initialized = 1;
+		init_temperature();
 		hijack_initq(&hijack_inputq);
 		hijack_initq(&hijack_playerq);
 		hijack_initq(&hijack_userq);
 		menu_init();
 	}
-	init_temperature();
 }
 

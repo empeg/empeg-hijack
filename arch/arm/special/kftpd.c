@@ -43,6 +43,7 @@ extern int hijack_glob_match (const char *n, const char *p);
 extern tm_t *hijack_convert_time(time_t, tm_t *);	// from arch/arm/special/notify.c
 extern void sys_exit(int);
 extern char hijack_khttpd_style[];			// from arch/arm/special/hijack.c
+extern char hijack_khttpd_root_index[];			// from arch/arm/special/hijack.c
 extern const char hijack_vXXX_by_Mark_Lord[];		// from arch/arm/special/hijack.c
 extern int strxcmp (const char *str, const char *pattern, int partial);	// hijack.c
 extern void show_message (const char *message, unsigned long time);	// hijack.c
@@ -2038,7 +2039,7 @@ khttpd_handle_connection (server_parms_t *parms)
 {
 	unsigned char	*buf = parms->buf, *cmds = NULL, c, *path, *p, *x;
 	int		buflen = sizeof(parms->buf) - 1, pathlen;
-	int		size = 0, use_index = 1;	// look for index.html?
+	int		size = 0, use_index = 1;	// look for index.html
 	const http_response_t *response = NULL;
 
 	parms->show_dotfiles = hijack_khttpd_show_dotfiles;
@@ -2151,8 +2152,8 @@ khttpd_handle_connection (server_parms_t *parms)
 	}
 	if (!(pathlen = strlen(path))) {
 		response = &(http_response_t){400, "Missing Pathname"};
-	} else if (path[pathlen-1] == '/' && (!use_index || !strcpy(path+pathlen, "index.html") || 1 != classify_path(path))) {
-		path[pathlen] = '\0';	// remove the "index.html" suffix
+	} else if (path[pathlen-1] == '/' && (!use_index || !strcpy(path+pathlen, hijack_khttpd_root_index) || 1 != classify_path(path))) {
+		path[pathlen] = '\0';	// remove the index.html path suffix
 		if (hijack_khttpd_dirs)
 			response = convert_rcode(send_dirlist(parms, path, 1));
 		else

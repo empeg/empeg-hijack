@@ -455,7 +455,6 @@ static struct machine_desc machine_desc[] __initdata = {
 
 #define ONE_MB		(1024 * 1024)
 #define _16MB		(PAGE_OFFSET + (16 * ONE_MB))
-#define _8MB		(PAGE_OFFSET + (8 * ONE_MB))
 #define NPATTERNS	8
 
 volatile unsigned long patterns [NPATTERNS]
@@ -517,10 +516,8 @@ static unsigned long check_for_extra_dram (unsigned long mem_end)
 		unsigned long phy;
 		if (is_mk2a)			// mk2a:
 			phy = ((mem_end & 0x03000000) << 3) + 0xc0000000; // 16MB base; 16MB-banks
-		else if (mem_end == _8MB)	// mk1:
-			phy = ((mem_end & 0x00800000) << 5) + 0xc0000000; //  8MB base; 4MB-banks
 		else				// mk2:
-			phy = ((mem_end & 0x00c00000) << 5) + 0xc0000000; // 12MB base; 4MB-banks
+			phy = ((mem_end & 0x00c00000) << 5) + 0xc0000000; // 8MB/12MB base; 4MB-banks
 		t->pgd = phy | mmu_flags;	// map 1MB DRAM section
 		if (test_1MB_dram(mem_end)) {
 			t->pgd = 0;		// unmap failed section

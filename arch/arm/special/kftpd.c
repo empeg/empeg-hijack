@@ -1235,10 +1235,13 @@ send_playlist (server_parms_t *parms, char *path)
 	if (parms->generate_playlist == 1) {
 		used += sprintf(xfer.buf+used, "<HTML><HEAD><TITLE>%s playlists: %s</TITLE></HEAD>\r\n<BODY>"
 			"<TABLE BGCOLOR=\"WHITE\" BORDER=\"2\"><THEAD>\r\n<TR>"
-			"<TD> <A HREF=\"%x.m3u\"><B>Stream</B></A> <TD> <A HREF=\"%x?SERIAL=%%23%x.htm\"><B>Play</B></A> "
-			"<TD> <A HREF=\"%x\"><B>Tags</B></A> <TD ALIGN=CENTER> "
-			"<FONT SIZE=+2><B><EM>%s</EM></B></FONT> <TD> <B>Length</B> <TD> <B>Type</B> <TD> <B>Artist</B> "
-			"<TD> <B>Source</B><TBODY>\r\n", parms->hostname, artist_title, pfid, pfid, pfid^1, pfid, tags.title);
+			"<TD> <A HREF=\"%x.m3u\"><B>Stream</B></A> ", parms->hostname, artist_title, pfid);
+		if (hijack_khttpd_commands)
+			used += sprintf(xfer.buf+used, "<TD> <A HREF=\"%x?SERIAL=%%23%x.htm\"><B>Play</B></A> ", pfid, pfid^1);
+		if (hijack_khttpd_files)
+			used += sprintf(xfer.buf+used, "<TD> <A HREF=\"%x\"><B>Tags</B></A> ", pfid);
+		used += sprintf(xfer.buf+used, "<TD ALIGN=CENTER> <FONT SIZE=+2><B><EM>%s</EM></B></FONT> <TD> <B>Length</B> "
+			"<TD> <B>Type</B> <TD> <B>Artist</B> <TD> <B>Source</B><TBODY>\r\n", tags.title);
 	} else {
 		used += sprintf(xfer.buf+used, "#EXTM3U\r\n");
 	}
@@ -1309,22 +1312,22 @@ open_fidfile:
 			// spit out an appropriately formed representation for this fid:
 			if (parms->generate_playlist == 1) {
 				used += sprintf(xfer.buf+used, "<TR><TD> <A HREF=\"%x?.m3u\"><em>Stream</em></A> ", fid);
-				used += sprintf(xfer.buf+used, "<TD> <A HREF=\"%x?SERIAL=%%23%x.htm\"><em>Play</em></A> ", pfid, fid^1);
+				if (hijack_khttpd_commands)
+					used += sprintf(xfer.buf+used, "<TD> <A HREF=\"%x?SERIAL=%%23%x.htm\"><em>Play</em></A> ", pfid, fid^1);
+				if (hijack_khttpd_files)
+					used += sprintf(xfer.buf+used, "<TD> <A HREF=\"%x\"><EM>Tags</EM></A> ", fid);
 				if (fidtype == 'T') {
-					char href1[24], *href2 = "";
-					href1[0] = '\0';
-					if (hijack_khttpd_files) {
-						href2 = "</A>";
-						sprintf(href1, "<A HREF=\"%x\">", fid^1);
-					}
-					used += sprintf(xfer.buf+used, "<TD> <A HREF=\"%x\"><EM>Tags</EM></A> <TD> %s%s%s "
-						"<TD ALIGN=CENTER> %u:%02u <TD> %s <TD> %s&nbsp <TD> %s&nbsp \r\n",
-						fid, href1, tags.title, href2, secs/60, secs%60, tags.type, tags.artist, tags.source);
+					if (hijack_khttpd_files)
+						used += sprintf(xfer.buf+used, "<TD> <A HREF=\"%x\">%s</A> ", fid^1, tags.title);
+					else
+						used += sprintf(xfer.buf+used, "<TD> %s ", tags.title);
+					used += sprintf(xfer.buf+used, "<TD ALIGN=CENTER> %u:%02u <TD> %s <TD> %s&nbsp <TD> %s&nbsp \r\n",
+						secs/60, secs%60, tags.type, tags.artist, tags.source);
 				} else {
 					unsigned int entries = str_val(tags.length) / 4;
-					used += sprintf(xfer.buf+used, "<TD> <A HREF=\"%x\"><EM>Tags</EM></A> <TD> <A HREF=\"%x?.htm\">%s</A> "
+					used += sprintf(xfer.buf+used, "<TD> <A HREF=\"%x?.htm\">%s</A> "
 						"<TD ALIGN=CENTER> %u <TD> %s <TD> %s&nbsp <TD> %s&nbsp \r\n",
-						fid, fid, tags.title, entries, tags.type, tags.artist, tags.source);
+						fid, tags.title, entries, tags.type, tags.artist, tags.source);
 				}
 			} else if (fidtype == 'T') {
 				combine_artist_title(tags.artist, tags.title, artist_title, sizeof(artist_title));
@@ -1897,18 +1900,20 @@ khttpd_handle_connection (server_parms_t *parms)
 			}
 		}
 		*end = '\0';
-		if (!strxcmp(cmds, "FID#", 1)) {	// in .m3u files:  http://host/some_tune_name?FID#xxx.mp3
-			sprintf(path, "/drive0/fids/%s", cmds+4);
-		} else if (hijack_khttpd_commands) {
-			hijack_do_command(cmds, p - cmds); // ignore errors
-			if (!*path) {
-				const char r204[] = "HTTP/1.1 204 No Response\r\nConnection: close\r\n\r\n";
-				ksock_rw(parms->clientsock, r204, sizeof(r204)-1, -1);
-				return;
+		if (*cmds) {
+			if (!strxcmp(cmds, "FID#", 1)) {	// in .m3u files:  http://host/some_tune_name?FID#xxx.mp3
+				sprintf(path, "/drive0/fids/%s", cmds+4);
+			} else if (hijack_khttpd_commands) {
+				hijack_do_command(cmds, p - cmds); // ignore errors
+				if (!*path) {
+					const char r204[] = "HTTP/1.1 204 No Response\r\nConnection: close\r\n\r\n";
+					ksock_rw(parms->clientsock, r204, sizeof(r204)-1, -1);
+					return;
+				}
+			} else {
+				response = &access_not_permitted;
+				goto quit;
 			}
-		} else {
-			response = &access_not_permitted;
-			goto quit;
 		}
 		parms->nocache = 1;
 		if (parms->generate_playlist) {

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v194"
+#define HIJACK_VERSION	"v195"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -70,6 +70,7 @@ static unsigned int info_screenrow = 0;
 static unsigned int hijack_status = HIJACK_IDLE;
 static unsigned long hijack_last_moved = 0, hijack_last_refresh = 0, blanker_triggered = 0, blanker_lastpoll = 0;
 static unsigned char blanker_lastbuf[EMPEG_SCREEN_BYTES] = {0,};
+const unsigned char hexchars[] = "0123456789ABCDEFabcdef";
 
 static int  (*hijack_dispfunc)(int) = NULL;
 static void (*hijack_movefunc)(int) = NULL;
@@ -3287,7 +3288,6 @@ get_number (unsigned char **src, int *target, unsigned int base, const char *nex
 	int digits;
 	unsigned int data = 0, prev;
 	unsigned char *s = *src, *cp, neg = 0;
-	static const unsigned char hexchars[] = "0123456789abcdefABCDEF";
 
 	if (!s)
 		return 0; // failure

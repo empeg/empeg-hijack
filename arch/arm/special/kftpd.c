@@ -78,11 +78,11 @@ typedef struct server_parms_s {
 	char			use_http;		// bool
 	char			have_portaddr;		// bool
 	char			icy_metadata;		// bool
+	char			apple_iTunes;		// bool
 	char			need_password;		// bool
 	char			rename_pending;		// bool
 	char			nocache;		// bool
 	char			show_dotfiles;		// bool
-	char			filler;
 	unsigned short		data_port;
 	off_t			start_offset;		// starting offset for next FTP/HTTP file transfer
 	off_t			end_offset;		// for current HTTP file read
@@ -1023,7 +1023,6 @@ khttp_send_file_header (server_parms_t *parms, char *path, off_t length, char *b
 	if (mimetype)
 		len += sprintf(buf+len, "Content-Type: %s\r\n", mimetype);
 	if (artist_title[0]) {	// tune title for WinAmp, XMMS, Save-To-Disk, etc..
-		len += sprintf(buf+len, "x-audiocast-name: %s\r\n", artist_title);
 		if (parms->icy_metadata)
 			len += sprintf(buf+len, "icy-name:%s\r\n", artist_title);
 		else
@@ -1144,17 +1143,26 @@ convert_rcode (int rcode)
 	return response;
 }
 
-static char *
-spaces_to_underscores (char *url)
+static unsigned int
+encode_url (server_parms_t *parms, unsigned char *out, unsigned char *s)
 {
-	char *s;
+	unsigned char c, *start = out;
+	int partial_encode = parms->apple_iTunes;
 
-	for (s = url; *s; ++s) {
-		char c = *s;
-		if (c == ' ')
-			*s = '_';
+	while ((c = *s++)) {
+		if (INRANGE(c,'a','z') || INRANGE(c,'A','Z') || c == '_' || INRANGE(c, '0','9')) {
+			*out++ = c;
+		} else if (!partial_encode) {
+			extern const unsigned char hexchars[];
+			*out++ = '%';
+			*out++ = hexchars[c >> 4];
+			*out++ = hexchars[c & 0xf];
+		} else { // for stupid iTunes playlist display
+			*out++ = (c == ' ' || c == '?') ? '_' : c;
+		}
 	}
-	return url;
+	*out = '\0';
+	return out - start;
 }
 
 static const http_response_t *
@@ -1204,9 +1212,9 @@ send_playlist (server_parms_t *parms, char *path)
 				"#EXTINF:%u,%s\r\nhttp://%s%s\r\n", audio_m3u, secs, artist_title, parms->hostname, path);
 #else
 			used  = sprintf(xfer.buf, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s\r\n\r\n"
-				"#EXTM3U\r\n#EXTINF:%u,%s\r\n", audio_m3u, secs, artist_title);
-			used += sprintf(xfer.buf+used, "http://%s/%s/?FID#%x.%s\r\n",
-				parms->hostname, spaces_to_underscores(artist_title), fid^1, tags.codec);
+				"#EXTM3U\r\n#EXTINF:%u,%s\r\nhttp://%s/", audio_m3u, secs, artist_title, parms->hostname);
+			used += encode_url(parms, xfer.buf+used, artist_title);
+			used += sprintf(xfer.buf+used, "?FID#%x.%s\r\n", fid^1, tags.codec);
 #endif
 			(void)ksock_rw(parms->datasock, xfer.buf, used, -1);
 		} else { // wma, wav
@@ -1219,11 +1227,10 @@ send_playlist (server_parms_t *parms, char *path)
 	used += sprintf(xfer.buf+used, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s\r\n\r\n",
 		(parms->generate_playlist == 2) ? audio_m3u : text_html);
 	if (parms->generate_playlist == 1) {
-		//fixme: Get rid of everything after '#' if iTunes is not any better with it
 		used += sprintf(xfer.buf+used, "<HTML><HEAD><TITLE>Playlists: %s</TITLE></HEAD>\r\n<BODY>"
 			"<TABLE BGCOLOR=\"WHITE\" BORDER=\"2\"><THEAD>\r\n<TR>"
-			"<TD> <A HREF=\"%x?.m3u\"><B>Play</B></A> <TD> <A HREF=\"%x\"><B>Tags</B></A> "
-			"<TD ALIGN=CENTER> <FONT SIZE=+2><B><EM>%s</EM></B></FONT> <TD> <B>Length</B> <TD> <B>Type</B> <TD> <B>Artist</B> "
+			"<TD> <A HREF=\"%x?.m3u\"><B>Play</B></A> <TD> <A HREF=\"%x\"><B>Tags</B></A> <TD ALIGN=CENTER> "
+			"<FONT SIZE=+2><B><EM>%s</EM></B></FONT> <TD> <B>Length</B> <TD> <B>Type</B> <TD> <B>Artist</B> "
 			"<TD> <B>Source</B><TBODY>\r\n", artist_title, pfid, pfid, tags.title);
 	} else {
 		used += sprintf(xfer.buf+used, "#EXTM3U\r\n");
@@ -1316,9 +1323,9 @@ open_fidfile:
 				used += sprintf(xfer.buf+used, "#EXTINF:%u,%s\r\nhttp://%s%s\r\n",
 					secs, artist_title, parms->hostname, subpath);
 #else
-				used += sprintf(xfer.buf+used, "#EXTINF:%u,%s\r\n", secs, artist_title);
-				used += sprintf(xfer.buf+used, "http://%s/%s?FID#%x.%s\r\n",
-					parms->hostname, spaces_to_underscores(artist_title), fid^1, tags.codec);
+				used += sprintf(xfer.buf+used, "#EXTINF:%u,%s\r\nhttp://%s/", secs, artist_title, parms->hostname);
+				used += encode_url(parms, xfer.buf+used, artist_title);
+				used += sprintf(xfer.buf+used, "?FID#%x.%s\r\n", fid^1, tags.codec);
 #endif
 			}
 		}
@@ -1806,7 +1813,9 @@ khttpd_handle_connection (server_parms_t *parms)
 		static const char Range[] = "\nRange: bytes=";
 		static const char Host[] = "\nHost: ";
 		if (*x == '\n') {
-			if (!strxcmp(x, "\nIcy-MetaData:1", 1)) {
+			if (!strxcmp(x, "\nUser-Agent: iTunes", 1)) {
+				parms->apple_iTunes = 1;
+			} else if (!strxcmp(x, "\nIcy-MetaData:1", 1)) {
 				parms->icy_metadata = 1;
 			} else if (!strxcmp(x, Host, 1) && *(x += sizeof(Host) - 1)) {
 				char *h = x;

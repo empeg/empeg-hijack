@@ -30,13 +30,14 @@ static int  (*hijack_dispfunc)(int) = NULL;
 static void (*hijack_movefunc)(int) = NULL;
 static int menu_item = 0, menu_size = 0, menu_top = 0;
 static unsigned int ir_lasttime = 0, ir_selected = 0, ir_releasewait = 0, ir_knob_down = 0, ir_left_down = 0, ir_right_down = 0, ir_trigger_count = 0;
-static unsigned long ir_lastbutton = 0, ir_delayed_knob_release = 0;
+static unsigned long ir_delayed_knob_release = 0;
 void real_input_append_code(void *dev, unsigned long data); // empeg_input.c
-static int hijack_player_menu_is_active = 0;
+static int hijack_player_menu_is_active = 0, hijack_sound_adjust_is_active = 0;
+static unsigned char *hijack_player_buf = NULL;
 
 #define KNOBDATA_BITS 2
-static const unsigned long knobdata_pressed [1<<KNOBDATA_BITS] = {IR_KNOB_PRESSED, IR_RIO_SHUFFLE_PRESSED, IR_RIO_INFO_PRESSED, IR_RIO_INFO_PRESSED};
-static const unsigned long knobdata_released[1<<KNOBDATA_BITS] = {IR_KNOB_RELEASED,IR_RIO_SHUFFLE_RELEASED,IR_RIO_INFO_RELEASED,IR_RIO_INFO_PRESSED};
+static const unsigned long knobdata_pressed [] = {IR_KNOB_PRESSED, IR_RIO_SHUFFLE_PRESSED, IR_RIO_INFO_PRESSED, IR_RIO_INFO_PRESSED};
+static const unsigned long knobdata_released[] = {IR_KNOB_RELEASED,IR_RIO_SHUFFLE_RELEASED,IR_RIO_INFO_RELEASED,IR_RIO_INFO_PRESSED};
 static int knobdata_index = 0;
 
 #define HIJACK_DATAQ_SIZE	8
@@ -51,8 +52,9 @@ static struct wait_queue *hijack_dataq_waitq = NULL, *hijack_menu_waitq = NULL;
 #define VOLADJ_FIXEDPOINT(whole,fraction) ((((whole)<<MULT_POINT)|((unsigned int)((fraction)*(1<<MULT_POINT))&MULT_MASK)))
 #define VOLADJ_BITS 2
 extern void voladj_next_preset(int);
-extern unsigned int voladj_enabled, voladj_multiplier;
-static const char *voladj_names[1<<VOLADJ_BITS] = {"Off", "Low", "Medium", "High"};
+extern int voladj_enabled;
+extern unsigned int voladj_multiplier;
+static const char *voladj_names[] = {"[Off]", "Low", "Medium", "High"};
 unsigned int voladj_histx = 0, voladj_history[VOLADJ_HISTSIZE] = {0,};
 
 #define SCREEN_BLANKER_MULTIPLIER 30
@@ -175,27 +177,51 @@ clear_hijack_displaybuf (int color)
 {
 	color &= 3;
 	color |= color << 4;
-	memset(hijack_displaybuf,color,EMPEG_SCREEN_BYTES);
+	memset(hijack_displaybuf, color, EMPEG_SCREEN_BYTES);
 }
 
 static void
-draw_pixel (int pixel_row, unsigned int pixel_col, int color)
+draw_pixel (unsigned short pixel_row, unsigned short pixel_col, int color)
 {
-	unsigned char pixel_mask, *displayrow, *pixel_pair;
+	unsigned char pixel_mask, *pixel_pair;
 	if (color < 0)
 		color = -color;
 	color &= 3;
 	color |= color << 4;
-	displayrow  = ((unsigned char *)hijack_displaybuf) + (pixel_row * (EMPEG_SCREEN_COLS / 2));
-	pixel_pair  = &displayrow[pixel_col >> 1];
+	pixel_pair  = &hijack_displaybuf[pixel_row][pixel_col >> 1];
 	pixel_mask  = (pixel_col & 1) ? 0xf0 : 0x0f;
 	*pixel_pair = (*pixel_pair & ~pixel_mask) ^ (color & pixel_mask);
+}
+
+static void
+draw_box (unsigned short first_row, unsigned short last_row, unsigned short first_col, unsigned short last_col)
+{
+	unsigned short row;
+
+	// for simplicity, we only draw pixels in pairs
+	first_col /= 2;
+	last_col  /= 2;
+	for (row = first_row; row <= last_row; ++row) {
+		unsigned short col = first_col;
+		unsigned char *buf = &hijack_displaybuf[row][0];
+		unsigned char color;
+		buf[first_col] = buf[last_col] = 0x00;
+		color = 0x11;
+		if (row == first_row || row == last_row)
+			color = 0x00;
+		buf[first_col+1] = buf[last_col-1] = color;
+		color = 0x00;
+		if (row == (first_row+1) || row == (last_row-1))
+			color = 0x11;
+		for (col = first_col+2; col < (last_col-1); ++col)
+			buf[col] = color;
+	}
 }
 
 static unsigned char kfont_spacing = 0;  // 0 == proportional
 
 static int
-draw_char (unsigned int pixel_row, int pixel_col, unsigned char c, unsigned char color, unsigned char inverse)
+draw_char (unsigned short pixel_row, short pixel_col, unsigned char c, unsigned char color, unsigned char inverse)
 {
 	unsigned char num_cols;
 	const unsigned char *font_entry;
@@ -229,24 +255,27 @@ draw_char (unsigned int pixel_row, int pixel_col, unsigned char c, unsigned char
 	return num_cols;
 }
 
-#define ROWCOL(text_row,pixel_col)  ((unsigned int)(((pixel_col)<<16)|(text_row)))
+// 0x8000 in rowcol means "text_row"; otherwise "pixel_row"
+#define ROWCOL(text_row,pixel_col)  ((unsigned int)(((pixel_col)<<16)|((text_row)|0x8000)))
 
 static unsigned int
 draw_string (unsigned int rowcol, const unsigned char *s, int color)
 {
-	unsigned int row = (rowcol & 0xffff), col = (rowcol >> 16);
+	unsigned short row = (rowcol & 0xffff), col = (rowcol >> 16);
 	unsigned char inverse = 0;
 
+	if (row & 0x8000)
+		row = (row & ~0x8000) * KFONT_HEIGHT;
 	if (color < 0)
 		color = inverse = -color;
 	color &= 3;
 	color |= color << 4;
 	if (inverse)
 		inverse = color;
-top:	if (s && row < EMPEG_TEXT_ROWS) {
+top:	if (s && row < EMPEG_SCREEN_ROWS) {
 		while (*s) {
 			int col_adj;
-			if (*s++ == '\n' || -1 == (col_adj = draw_char(row * KFONT_HEIGHT, col, *(s-1), color, inverse))) {
+			if (*s++ == '\n' || -1 == (col_adj = draw_char(row, col, *(s-1), color, inverse))) {
 				col  = 0;
 				row += 1;
 				goto top;
@@ -254,7 +283,7 @@ top:	if (s && row < EMPEG_TEXT_ROWS) {
 			col += col_adj;
 		}
 	}
-	return ROWCOL(row,col);
+	return (col << 16) | row;
 }
 
 static unsigned int
@@ -314,10 +343,10 @@ static const unsigned int voladj_thresholds[VOLADJ_THRESHSIZE] = {
 // The effective resolution (height) is tripled by using brighter color shades for the in-between values.
 //
 static unsigned int
-voladj_plot (int text_row, unsigned int pixel_col, unsigned int multiplier, int *prev)
+voladj_plot (unsigned short text_row, unsigned short pixel_col, unsigned int multiplier, int *prev)
 {
 	if (text_row < (EMPEG_TEXT_ROWS - 1)) {
-		unsigned int height = VOLADJ_THRESHSIZE, pixel_row, threshold, color;
+		unsigned short height = VOLADJ_THRESHSIZE, pixel_row, threshold, color;
 		int mdiff, tdiff;
 		do {
 			threshold = voladj_thresholds[--height];
@@ -353,7 +382,11 @@ voladj_plot (int text_row, unsigned int pixel_col, unsigned int multiplier, int 
 static void
 voladj_move (int direction)
 {
-	voladj_enabled = (voladj_enabled + direction) & ((1<<VOLADJ_BITS)-1);
+	voladj_enabled += direction;
+	if (voladj_enabled < 0)
+		voladj_enabled = 0;
+	else if (voladj_enabled > (sizeof(voladj_names) / sizeof(voladj_names[0]) - 1))
+		voladj_enabled  = sizeof(voladj_names) / sizeof(voladj_names[0]) - 1;
 }
 
 static int
@@ -385,6 +418,29 @@ voladj_display (int firsttime)
 		(void)voladj_plot(1, i - 1, voladj_history[(voladj_histx + i) % VOLADJ_HISTSIZE], &prev);
 	restore_flags(flags);
 	return NEED_REFRESH;
+}
+
+static int
+voladj_overlay (int firsttime)
+{
+	unsigned int rowcol;
+
+	ir_selected = 0; // paranoia?
+	if (firsttime) {
+		hijack_last_moved = jiffies ? jiffies : 1;
+	} else if (jiffies_since(hijack_last_moved) >= (HZ*2)) {
+		hijack_deactivate();
+		ir_selected = 0;
+		hijack_status = HIJACK_INACTIVE;
+	} else if (hijack_player_buf) {
+		unsigned row = 8;
+		memcpy(hijack_displaybuf, hijack_player_buf, EMPEG_SCREEN_BYTES);
+		draw_box(row, row+6+KFONT_HEIGHT, 16, EMPEG_SCREEN_COLS-17);
+		rowcol = draw_string((row+3)|(21<<16), "Auto VolAdj: ", COLOR3);
+		rowcol = draw_string(rowcol, voladj_names[voladj_enabled], COLOR3);
+		return NEED_REFRESH;
+	}
+	return NO_REFRESH;
 }
 
 static int
@@ -506,13 +562,13 @@ blanker_display (int firsttime)
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
 	(void)draw_string(ROWCOL(0,0), "Screen inactivity timeout:", COLOR2);
-	rowcol = draw_string(ROWCOL(1,0), "Blank: ", COLOR2);
+	rowcol = draw_string(ROWCOL(2,0), "Blank ", COLOR2);
 	if (blanker_timeout) {
 		rowcol = draw_string(rowcol, "after ", COLOR2);
 		rowcol = draw_number(rowcol, blanker_timeout * SCREEN_BLANKER_MULTIPLIER, "%u", COLOR3);
 		(void)   draw_string(rowcol, " secs", COLOR2);
 	} else {
-		(void)draw_string(rowcol, "Off", COLOR3);
+		(void)draw_string(rowcol, "[Off]", COLOR3);
 	}
 	return NEED_REFRESH;
 }
@@ -520,7 +576,7 @@ blanker_display (int firsttime)
 static void
 knobdata_move (int direction)
 {
-	knobdata_index = (knobdata_index + direction) & ((1<<KNOBDATA_BITS)-1);
+	knobdata_index = (knobdata_index + direction) % (sizeof(knobdata_pressed)/sizeof(unsigned long));
 }
 
 static int
@@ -569,7 +625,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v36 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v37 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -749,16 +805,13 @@ maxtemp_display (int firsttime)
 {
 	unsigned int rowcol;
 
-	//if (!firsttime && !hijack_last_moved)
-	//	return NO_REFRESH;
-	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
 	rowcol = draw_string(ROWCOL(0,0), "Max Temperature Warning", COLOR2);
 	rowcol = draw_string(ROWCOL(1,0), "Threshold: ", COLOR2);
 	if (maxtemp_threshold)
 		(void)draw_temperature(rowcol, maxtemp_threshold + MAXTEMP_OFFSET, COLOR3);
 	else
-		rowcol = draw_string(rowcol, "Off", COLOR3);
+		rowcol = draw_string(rowcol, "[Off]", COLOR3);
 	rowcol = draw_string(ROWCOL(3,0), "Currently: ", COLOR2);
 	(void)draw_temperature(rowcol, read_temperature(), COLOR2);
 	return NEED_REFRESH;
@@ -994,27 +1047,35 @@ hijack_move_repeat (void)
 }
 
 static int
-check_if_player_menu_is_active2 (void *buf, int centre)
+test_row (void *displaybuf, unsigned short row, unsigned char color)
 {
-	int row;
-
-	// look for the menu pattern on the top 3 screen rows
-	for (row = centre-1; row <= centre+1; ++row) {
-		unsigned char menu = (row == centre) ? 0x11 : 0x00;
-		unsigned char *teststart = ((unsigned char *)buf) + (row * (EMPEG_SCREEN_COLS/2)) + 9;
-		unsigned char *screenbyte = teststart + 48;
-		do {
-			if (*--screenbyte != menu)
-				return 0;
-		} while (screenbyte > teststart);
-	}
+	const unsigned int offset = 10;
+	unsigned char *first = ((unsigned char *)displaybuf) + (row * (EMPEG_SCREEN_COLS/2)) + offset;
+	unsigned char *test  = first + ((EMPEG_SCREEN_COLS/2) - offset - offset);
+	do {
+		if (*--test != color)
+			return 0;
+	} while (test > first);
 	return 1;
 }
 
 static int
-check_if_player_menu_is_active (void *buf)
+check_if_player_menu_is_active (void *player_buf)
 {
-	return check_if_player_menu_is_active2(buf,1) || check_if_player_menu_is_active2(buf,3);
+	if (!test_row(player_buf, 2, 0x00))
+		return 0;
+	if (test_row(player_buf, 0, 0x00) && test_row(player_buf, 1, 0x11))
+		return 1;
+	return test_row(player_buf, 3, 0x11) && test_row(player_buf, 4, 0x00);
+}
+
+static int
+check_if_sound_adjust_is_active (void *player_buf)
+{
+	return test_row(player_buf,  8, 0x00)
+	    && test_row(player_buf,  9, 0x11)
+	    && test_row(player_buf, 15, 0x00)
+	    && test_row(player_buf, 16, 0x11);
 }
 
 // This routine covertly intercepts all display updates,
@@ -1054,6 +1115,7 @@ hijack_display (struct display_dev *dev, unsigned char *player_buf)
 				if (hijack_movefunc != NULL)
 					hijack_move_repeat();
 				restore_flags(flags);
+				hijack_player_buf = player_buf;
 				refresh = hijack_dispfunc(0);
 				save_flags_cli(flags);
 				if (ir_selected && hijack_dispfunc != userland_display)
@@ -1076,7 +1138,13 @@ hijack_display (struct display_dev *dev, unsigned char *player_buf)
 			hijack_deactivate();
 			break;
 	}
-	hijack_player_menu_is_active = (buf == player_buf) ? check_if_player_menu_is_active(buf) : 0;
+	// Use screen-scraping to keep track of some of the player states:
+	hijack_player_menu_is_active = hijack_sound_adjust_is_active = 0;
+	if (buf == player_buf) {
+		hijack_player_menu_is_active = check_if_player_menu_is_active(buf);
+		if (!hijack_player_menu_is_active)
+			hijack_sound_adjust_is_active = check_if_sound_adjust_is_active(buf);
+	}
 	restore_flags(flags);
 
 	// Prevent screen burn-in on an inactive/unattended player:
@@ -1124,10 +1192,12 @@ static void hijack_enq_button (unsigned long data)
 void  // invoked from multiple places in empeg_input.c
 input_append_code(void *dev, unsigned long data)  // empeg_input.c
 {
-	int i, hijacked = 0;
+	static unsigned long ir_lastpressed = 0;
+	int i, hijacked = 0, overlay_was_active;
 	unsigned long flags;
 
 	save_flags_cli(flags);
+	overlay_was_active = (hijack_dispfunc == voladj_overlay);
 	blanker_activated = 0;
 	if (ir_delayed_knob_release && jiffies_since(ir_delayed_knob_release) > (HZ+(HZ/4))) {
 		ir_delayed_knob_release = 0;
@@ -1161,7 +1231,8 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 				case IR_RIO_MENU_PRESSED:
 				case IR_KW_CD_PRESSED:
 				case IR_KNOB_PRESSED:
-					ir_selected = 1;
+					if (!overlay_was_active)
+						ir_selected = 1;
 					break;
 				case IR_KW_NEXTTRACK_PRESSED:
 				case IR_RIO_NEXTTRACK_PRESSED:
@@ -1173,12 +1244,20 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 				case IR_KNOB_LEFT:
 					hijacked = hijack_move(-1);
 					break;
+				case IR_KNOB_RELEASED:  // note: this one often arrives in pairs, so check knob_down first!
+					if (ir_knob_down && overlay_was_active && hijack_status == HIJACK_ACTIVE) { 
+						hijack_deactivate();
+						ir_selected = 0;
+						hijack_status = HIJACK_INACTIVE;
+						real_input_append_code(dev, IR_KNOB_PRESSED);
+						real_input_append_code(dev, IR_KNOB_RELEASED);
+					}
+					break;
 				case IR_KW_NEXTTRACK_RELEASED:
 				case IR_KW_PREVTRACK_RELEASED:
 				case IR_RIO_NEXTTRACK_RELEASED:
 				case IR_RIO_PREVTRACK_RELEASED:
 				case IR_RIO_MENU_RELEASED:
-				case IR_KNOB_RELEASED:  // note: this one often arrives in pairs
 					break;
 				case IR_KW_PAUSE_PRESSED:
 				case IR_RIO_PAUSE_PRESSED:
@@ -1191,7 +1270,7 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 		}
 	} else if (devices[0].power && data == IR_KW_CD_PRESSED) {
 		// ugly Kenwood remote hack: press/release CD quickly 3 times to activate menu
-		if (ir_lastbutton == data && jiffies_since(ir_lasttime) < HZ)
+		if (ir_lastpressed == data && jiffies_since(ir_lasttime) < HZ)
 			++ir_trigger_count;
 		else
 			ir_trigger_count = 1;
@@ -1203,9 +1282,9 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 	} else if (hijacked && (data & 0x80000001) == 0 && data != IR_KNOB_LEFT && data != IR_KNOB_RIGHT) {
 		ir_releasewait = data | ((((int)data) > 16) ? 0x80000000 : 0x00000001);
 	}
-	// save button PRESSED codes in ir_lastbutton
+	// save button PRESSED codes in ir_lastpressed
 	if ((data & 0x80000001) == 0 || ((int)data) > 16) {
-		ir_lastbutton = data;
+		ir_lastpressed = data;
 		ir_lasttime = jiffies;
 	}
 	switch (data) {
@@ -1227,15 +1306,20 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 			if (!ir_delayed_knob_release)
 				ir_knob_down = jiffies ? jiffies : 1;
 			break;
-		case IR_KNOB_RELEASED:  // note: this one often arrives in pairs
+		case IR_KNOB_RELEASED:  // note: this one often arrives in pairs, so check knob_down first!
 			if (ir_knob_down && hijack_status == HIJACK_INACTIVE && !hijacked) {
 				int index = hijack_player_menu_is_active ? 0 : knobdata_index;
-				data = knobdata_released[index];
+				data = knobdata_released[index];	// substitute our translation
 				if (jiffies_since(ir_knob_down) < (HZ/2)) {	// short press?
-					real_input_append_code(dev, knobdata_pressed[index]);
-					if (knobdata_pressed[index] == knobdata_released[index]) {
-						hijacked = 1; // eat the released code for now
-						ir_delayed_knob_release = jiffies ? jiffies : 1;
+					if (!(hijack_player_menu_is_active | index | overlay_was_active | hijack_sound_adjust_is_active)) {
+						activate_dispfunc(0, voladj_overlay, voladj_move);
+						hijacked = 1;
+					} else {
+						real_input_append_code(dev, knobdata_pressed[index]);
+						if (knobdata_pressed[index] == knobdata_released[index]) {
+							hijacked = 1; // eat the released code for now
+							ir_delayed_knob_release = jiffies ? jiffies : 1;
+						}
 					}
 				}
 			}
@@ -1357,7 +1441,7 @@ hijack_restore_settings (const unsigned char *buf)
 		voladj_enabled	= hijack_savearea.voladj_ac_power;
 	blanker_timeout		= hijack_savearea.blanker_timeout;
 	maxtemp_threshold	= hijack_savearea.maxtemp_threshold;
-	knobdata_index		= hijack_savearea.knobdata_index;
+	knobdata_index		= hijack_savearea.knobdata_index % (sizeof(knobdata_pressed)/sizeof(unsigned long));
 }
 
 static int  // invoked from empeg_display.c::ioctl()

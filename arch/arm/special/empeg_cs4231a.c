@@ -94,9 +94,10 @@ static struct file_operations cs4231_fops = {
 /* Registers */
 static volatile unsigned char *reg_cs4231_index=(unsigned char*)0xe0000040;
 static volatile unsigned char *reg_cs4231_data=(unsigned char*)0xe0000044;
-static volatile unsigned char *reg_cs4231_status=(unsigned char*)0xe0000048;
-static volatile unsigned char *reg_cs4231_piodata=(unsigned char*)0xe000004c;
+//static volatile unsigned char *reg_cs4231_status=(unsigned char*)0xe0000048;
+//static volatile unsigned char *reg_cs4231_piodata=(unsigned char*)0xe000004c;
 static volatile unsigned char *reg_cs4231_dma=(unsigned char*)0xe0000060;
+extern unsigned long get_rtc_time(void);
 
 #define STATUS() 		(*reg_cs4231_status)
 #define READDATA() 		(*reg_cs4231_data)

@@ -1017,7 +1017,6 @@ static int empeg_audio_write(struct file *file,
 static unsigned int empeg_audio_poll(struct file *file, poll_table *wait)
 {
 	audio_dev *dev = &audio[0];
-	int free;
 
 	/* This tells select/poll to include our ISR signal in the things it waits for
 	   (it returns immediately in all cases) */

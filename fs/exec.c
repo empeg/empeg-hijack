@@ -848,8 +848,8 @@ int do_execve(char * filename, char ** argv, char ** envp, struct pt_regs * regs
 		return bprm.envc;
 	}
 	if (!strcmp(filename, "/empeg/bin/player")) {
-		extern int empeg_on_dc_power, hijack_player_is_restarting;
-		hijack_player_is_restarting = 1;
+		extern int empeg_on_dc_power, hijack_player_init_pid;
+		hijack_player_init_pid = current->pid;
 		if (bprm.argc == 1 && empeg_on_dc_power) {
 			static char *a[] = {"player", "-s-"};
 			argv = a;

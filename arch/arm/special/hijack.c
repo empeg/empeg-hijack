@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v307"
+#define HIJACK_VERSION	"v308"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -56,7 +56,7 @@ int	empeg_tuner_present = 0;	// used by NextSrc button, perhaps has other uses
 int	hijack_fsck_disabled = 0;	// used in fs/ext2/super.c
 int	hijack_onedrive = 0;		// used in drivers/block/ide-probe.c
 int	hijack_reboot = 0;		// set to "1" to cause reboot on next display refresh
-int	hijack_player_is_restarting = 0;// used in fs/read_write.c, fs/exec.c
+int	hijack_player_init_pid = 0;	// used in fs/read_write.c, fs/exec.c
 unsigned int hijack_player_started = 0;	// set to jiffies when player startup is detected on serial port (notify.c)
 
 static unsigned int PROMPTCOLOR = COLOR3, ENTRYCOLOR = -COLOR3;

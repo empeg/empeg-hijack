@@ -1212,7 +1212,6 @@ static unsigned int usb_poll(struct file *filp, poll_table *wait)
 
 static int usb_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, unsigned long arg)
 {
-	struct usb_dev *dev = filp->private_data;
 	unsigned long flags;
 	int state;
 	switch (cmd)

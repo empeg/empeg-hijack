@@ -883,19 +883,21 @@ find_tags (char *buf, int buflen, char *labels[], char *values[])
 {
 	static char	*null_label = "";
 	char		*start = buf;
-	int		n;
+	int		n, remaining;
 
 	for (n = 0; labels[n] != NULL; ++n)
 		values[n] = null_label;
-	
-	while ((buf - start) < buflen) { // allows handling of embedded '\0' characters
+	remaining = n;
+	while (remaining && (buf - start) < buflen) { // allows handling of embedded '\0' characters
 		int	i;
 		char	c;
 		for (i = 0; i < n; ++i) {
 			if (!*values[i] && !strxcmp(buf, labels[i], 1)) {
 				buf += strlen(labels[i]);
-				if ((c = *buf) && c != '\n' && c != '\r')
+				if ((c = *buf) && c != '\n' && c != '\r') {
 					values[i] = buf;
+					--remaining;
+				}
 				break;
 			}
 		}

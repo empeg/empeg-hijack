@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v180"
+#define HIJACK_VERSION	"v181"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -28,6 +28,7 @@ extern void machine_restart(void *);					// arch/arm/kernel/process.c
 extern int real_input_append_code(unsigned long data);			// arch/arm/special/empeg_input.c
 extern int empeg_state_dirty;						// arch/arm/special/empeg_state.c
 extern void state_cleanse(void);					// arch/arm/special/empeg_state.c
+extern void hijack_serial_insert (const char *buf, int size, int port);	// drivers/char/serial_sa1100.c
 extern void hijack_voladj_intinit(int, int, int, int, int);		// arch/arm/special/empeg_audio3.c
 extern void hijack_beep (int pitch, int duration_msecs, int vol_percent);// arch/arm/special/empeg_audio3.c
 extern unsigned long jiffies_since(unsigned long past_jiffies);		// arch/arm/special/empeg_input.c
@@ -344,6 +345,8 @@ static int hijack_dc_servers;			// 1 == allow kftpd/khttpd when on DC power
        int hijack_extmute_on;			// buttoncode to inject when EXT-MUTE goes active
 static int hijack_ir_debug;			// printk() for every ir press/release code
 static int hijack_spindown_seconds;		// drive spindown timeout in seconds
+       int hijack_fake_tuner;			// pretend we have a tuner, when we really don't have one
+       int hijack_trace_tuner;			// dump incoming tuner/stalk packets onto console
 #ifdef CONFIG_NET_ETHERNET
        char hijack_kftpd_password[16];		// kftpd password
        int hijack_kftpd_control_port;		// kftpd control port
@@ -404,6 +407,8 @@ static const hijack_option_t hijack_option_table[] =
 {button_names[3].name,		button_names[3].name,		(int)"PopUp3",		0,	0,	8},
 {"quicktimer_minutes",		&hijack_quicktimer_minutes,	30,			1,	1,	120},
 {"standby_minutes",		&hijack_standby_minutes,	30,			1,	0,	240},
+{"fake_tuner",			&hijack_fake_tuner,		0,			1,	0,	1},
+{"trace_tuner",			&hijack_trace_tuner,		0,			1,	0,	1},
 {"supress_notify",		&hijack_supress_notify,		0,			1,	0,	1},	
 {"temperature_correction",	&hijack_temperature_correction,	-4,			1,	-20,	+20},
 {"voladj_low",			&hijack_voladj_parms[0][0],	(int)voladj_ldefault,	5,	0,	0x7ffe},
@@ -3014,6 +3019,20 @@ input_append_code(void *dev, unsigned int button)  // empeg_input.c
 		ir_lasttime = ir_lastevent = jiffies;
 	}
 	restore_flags(flags);
+}
+
+void
+hijack_intercept_tuner (unsigned int button)
+{
+	if (hijack_trace_tuner)
+		printk("tuner: in=%08x\n", button);
+	button = htonl(button);
+	if (hijack_fake_tuner) {
+		hijack_fake_tuner = 0;
+		printk("tuner: set \"fake_tuner=0\"\n");
+	} else {
+		hijack_serial_insert ((char *)&button, 4, 0);
+	}
 }
 
 #ifdef RESTORE_CARVISUALS

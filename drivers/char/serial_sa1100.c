@@ -313,9 +313,9 @@ static _INLINE_ void rs_sched_event(struct async_struct *info,
 	mark_bh(SERIAL_BH);
 }
 
-void hijack_serial_insert (char *buf, int size)
+void hijack_serial_insert (const char *buf, int size, int port)
 {
-	struct async_struct *info = IRQ_ports[17];
+	struct async_struct *info = port ? IRQ_ports[17] : IRQ_ports[15];
 	struct tty_struct *tty = info->tty;
 	unsigned long flags;
 	struct	async_icount *icount = &info->state->icount;
@@ -334,6 +334,8 @@ void hijack_serial_insert (char *buf, int size)
 	restore_flags(flags);
 }
 
+extern int hijack_fake_tuner, hijack_trace_tuner;
+
 static _INLINE_ void receive_chars(struct async_struct *info,
 				 int *status0, int *status1)
 {
@@ -349,7 +351,23 @@ static _INLINE_ void receive_chars(struct async_struct *info,
 			break;
 		*tty->flip.char_buf_ptr = ch;
 		icount->rx++;
-		
+
+		// Feed Tuner packets into Hijack
+		if (info == IRQ_ports[15]) {	// Tuner interface (ttyS0)
+			static unsigned int button = 0;
+			unsigned char csum = button + (button >> 8);
+			button = (button << 8) | ch;
+			if (ch == csum) {
+				char ptype = button >> 24;
+				if (ptype == 0x02 || ptype == 0x01) {
+					extern void hijack_intercept_tuner(unsigned int);
+					hijack_intercept_tuner(button);
+					button = 0;
+				}
+			}
+			goto ignore_char;
+		}
+
 #ifdef SERIAL_DEBUG_INTR
 		printk("DR%02x:%02x/%02x...", ch, *status0, *status1);
 #endif
@@ -419,10 +437,70 @@ static _INLINE_ void receive_chars(struct async_struct *info,
 	  }
 }
 
+static char cmd4[] = {0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,0x18,0x39,0x43,0x4a,0x4e,0x51,0x3f,0x40,0x48,0x00};
+static char rsp4[] = {0x07,0x00,0x35,0x22,0x3a,0x44,0x40,0x66,0x48,0x89,0x51,0xab,0x5a,0xcd,0x66,0x64,0x74,0x36,0x07,0x08,0x03,0xde,0x6c,0x00};
+
+static void
+fake_tuner (unsigned char c)
+{
+	static unsigned char state = 0, ctype = 0, eat = 0;
+	unsigned int response, i;
+
+	if (hijack_trace_tuner) {
+		if (state != 0)
+			printk("%02x", c);
+		else if (c == 0x01)
+			printk("fake_tuner: out=%02x", c);
+	}
+	switch (state) {
+		case 0:
+			if (c == 0x01)
+				state = 1;
+			return;
+		case 1:
+			state = 2;
+			ctype = c;
+			switch (ctype) {
+				default:
+					printk(" unknown msg type\n");
+					state = 0;
+					return;
+				case 0x04: eat = 2; break;
+				case 0x05: eat = 1; break;
+				case 0x03: eat = 4; break;
+				case 0x01: eat = 9; break;
+				case 0x00: eat =10; break;
+				case 0xff: eat = 1; break;
+			}
+			// fall thru
+		default:
+			if (--eat)
+				return;
+			state = 0;
+			switch (ctype) {
+				case 0x04:
+					cmd4[sizeof(cmd4)-1] = c;
+					for (i = 0; cmd4[i] != c; ++i);
+					c = rsp4[i];
+					response = 0x00000401 | (c << 16);
+					break;
+				case 0x05: response = 0x00000501; break;
+				case 0x03: response = 0x00000301; break;
+				case 0x01: response = 0x00000101; break;
+				case 0x00: response = 0x00030001; break;
+				case 0xff: response = 0x0027ff01; break;
+			}
+			response |= ((response >> 16) + (response >> 8)) << 24;
+			hijack_serial_insert ((char *)&response, 4, 0);
+			if (hijack_trace_tuner)
+				printk("\nfake_tuner: in=%08x\n", ntohl(response));
+	}
+}
+
 static _INLINE_ void transmit_chars(struct async_struct *info, int *intr_done)
 {
 	int count;
-	
+
 	if (info->x_char) {
 		serial_outp(info, UART_TX, info->x_char);
 		info->state->icount.tx++;
@@ -448,7 +526,10 @@ static _INLINE_ void transmit_chars(struct async_struct *info, int *intr_done)
 	 */
 	count = info->xmit_fifo_size;
 	while(serial_inp(info, UTSR1) & UTSR1_TNF) {
-		serial_out(info, UART_TX, info->xmit_buf[info->xmit_tail++]);
+		char ch = info->xmit_buf[info->xmit_tail++];
+		if (info == IRQ_ports[15] && hijack_fake_tuner)
+			fake_tuner(ch);
+		serial_out(info, UART_TX, ch);
 		info->xmit_tail &= (SERIAL_XMIT_SIZE-1);
                 info->state->icount.tx++;
 		if (--info->xmit_cnt <= 0)
@@ -1034,7 +1115,7 @@ static void rs_put_char(struct tty_struct *tty, unsigned char ch)
 		restore_flags(flags);
 		return;
 	}
-
+	
 	info->xmit_buf[info->xmit_head++] = ch;
 	info->xmit_head &= SERIAL_XMIT_SIZE-1;
 	info->xmit_cnt++;

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v298"
+#define HIJACK_VERSION	"v299"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -2165,6 +2165,29 @@ buttonled_display (int firsttime)
 	return NEED_REFRESH;
 }
 
+static unsigned short
+get_current_mixer_source (void)
+{
+	unsigned short source;
+	extern int hijack_current_mixer_input;
+	int input = hijack_current_mixer_input;
+
+	switch (input) {
+		case INPUT_AUX:	// Aux in
+			source = IR_FLAGS_AUX;
+			break;
+		case INPUT_PCM:	// Main/mp3
+			source = IR_FLAGS_MAIN;
+			break;
+		//case INPUT_RADIO_FM:// FM Tuner
+		//case INPUT_RADIO_AM:// AM Tuner
+		default:
+			source = IR_FLAGS_TUNER;
+			break;
+	}
+	return source;
+}
+
 #ifdef EMPEG_KNOB_SUPPORTED
 
 static void
@@ -2194,7 +2217,16 @@ knobdata_display (int firsttime)
 static unsigned long knobseek_lasttime;
 
 static void
-knobseek_move (int direction)
+knobseek_move_tuner (int direction)
+{
+	unsigned int button;
+
+	button = (direction > 0) ? IR_KPREV_PRESSED : IR_KNEXT_PRESSED;
+	hijack_enq_button_pair(button);
+}
+
+static void
+knobseek_move_other (int direction)
 {
 	unsigned int button;
 
@@ -2208,17 +2240,28 @@ knobseek_move (int direction)
 static int
 knobseek_display (int firsttime)
 {
-	static const hijack_geom_t geom = {8, 8+6+KFONT_HEIGHT, 20, EMPEG_SCREEN_COLS-20};
+	static hijack_geom_t geom;
 
 	if (firsttime) {
-		unsigned int rowcol = (geom.first_row+4)|((geom.first_col+6)<<16);
+		unsigned int rowcol;
+		const char *msg;
+		if (get_current_mixer_source() == IR_FLAGS_TUNER) {
+			geom = (hijack_geom_t){8, 8+6+KFONT_HEIGHT, 8, EMPEG_SCREEN_COLS-50};
+			msg  = "Manual Tuning";
+			hijack_movefunc = knobseek_move_tuner;
+		} else {
+			geom = (hijack_geom_t){8, 8+6+KFONT_HEIGHT, 20, EMPEG_SCREEN_COLS-20};
+			msg  = "Knob \"Seek\" Mode";
+			hijack_movefunc = knobseek_move_other;
+		}
+		rowcol = (geom.first_row+4)|((geom.first_col+6)<<16);
 		create_overlay(&geom);
-		rowcol = draw_string(rowcol, "Knob \"Seek\" Mode", COLOR3);
+		rowcol = draw_string(rowcol, msg, COLOR3);
 		hijack_knobseek = 1;
 		knobseek_lasttime = hijack_last_moved = JIFFIES();
-	} else if (jiffies_since(hijack_last_moved) >= (HZ*5)) {
+	} else if (ir_selected || jiffies_since(hijack_last_moved) >= (HZ*5)) {
 		hijack_knobseek = 0;
-		hijack_deactivate(HIJACK_IDLE);
+		hijack_deactivate(HIJACK_IDLE_PENDING);
 	}
 	return NO_REFRESH;	// gets overridden if overlay still active
 }
@@ -3104,29 +3147,6 @@ player_ui_is_active (const unsigned char *buf)
 		 check_if_search_is_active(buf) || check_if_equalizer_is_active(buf));
 }
 
-static unsigned short
-get_current_mixer_source (void)
-{
-	unsigned short source;
-	extern int hijack_current_mixer_input;
-	int input = hijack_current_mixer_input;
-
-	switch (input) {
-		case INPUT_AUX:	// Aux in
-			source = IR_FLAGS_AUX;
-			break;
-		case INPUT_PCM:	// Main/mp3
-			source = IR_FLAGS_MAIN;
-			break;
-		//case INPUT_RADIO_FM:// FM Tuner
-		//case INPUT_RADIO_AM:// AM Tuner
-		default:
-			source = IR_FLAGS_TUNER;
-			break;
-	}
-	return source;
-}
-
 static void
 do_nextsrc (void)
 {
@@ -3403,7 +3423,7 @@ hijack_handle_button (unsigned int button, unsigned long delay, int any_ui_is_ac
 			break;
 #ifdef EMPEG_KNOB_SUPPORTED
 		case IR_FAKE_KNOBSEEK:
-			activate_dispfunc(knobseek_display, knobseek_move);
+			activate_dispfunc(knobseek_display, NULL);
 			hijacked = 1;
 			break;
 		case IR_KNOB_PRESSED:

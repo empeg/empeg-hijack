@@ -289,6 +289,23 @@ strxcmp (const char *str, const char *pattern, int partial)
 	return (!partial && *str);	// 0 == matched; 1 == not matched
 }
 
+static unsigned char *
+do_button (unsigned char *s, int raw)
+{
+	unsigned int button;
+	if (*s && get_number(&s, &button, 16, NULL)) {
+		if (raw) {
+			input_append_code(NULL, button);
+		} else {
+			unsigned int hold_time = 5;
+			if (s[0] == '.' && s[1] == 'L')
+				hold_time = HZ+(HZ/5);
+			insert_button_pair(button, hold_time);
+		}
+	}
+	return s;
+}
+
 int
 hijack_do_command (const char *buffer, unsigned int count)
 {
@@ -309,14 +326,9 @@ hijack_do_command (const char *buffer, unsigned int count)
 		*nextline = '\0';
 
 		if (!strxcmp(s, "BUTTON ", 1)) {
-			unsigned int button;
-			s += 7;
-			if (*s && get_number(&s, &button, 16, NULL)) {
-				unsigned int hold_time = 5;
-				if (s[0] == '.' && s[1] == 'L')
-					hold_time = HZ+(HZ/5);
-				insert_button_pair(button, hold_time);
-			}
+			s = do_button(s+7, 0);
+		} else if (!strxcmp(s, "BUTTONRAW ", 1)) {
+			s = do_button(s+10, 1);
 		} else if (!strxcmp(s, "RW /", 0)) {
 			rc = remount_drives(1, 0);
 		} else if (!strxcmp(s, "RW /drive0", 0)) {

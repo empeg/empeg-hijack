@@ -130,7 +130,6 @@ static inline void do_identify (ide_drive_t *drive, byte cmd)
 		drive->media = type;
 		return;
 	}
-#endif // CONFIG_SA1100_EMPEG
 
 	/*
 	 * Not an ATAPI device: looks like a "regular" hard disk
@@ -146,6 +145,7 @@ static inline void do_identify (ide_drive_t *drive, byte cmd)
 		mate->present = 0;
 		mate->noprobe = 1;
 	}
+#endif // CONFIG_SA1100_EMPEG
 	drive->media = ide_disk;
 	printk("ATA DISK drive\n");
 	return;
@@ -320,6 +320,7 @@ static int do_probe (ide_drive_t *drive, byte cmd)
 	{
 		if ((rc = try_to_identify(drive,cmd)))   /* send cmd and wait */
 			rc = try_to_identify(drive,cmd); /* failed: try again */
+#ifndef CONFIG_SA1100_EMPEG
 		if (rc == 1 && cmd == WIN_PIDENTIFY && drive->autotune != 2) {
 			unsigned long timeout;
 			printk("%s: no response (status = 0x%02x), resetting drive\n", drive->name, GET_STAT());
@@ -332,6 +333,7 @@ static int do_probe (ide_drive_t *drive, byte cmd)
 				delay_50ms();
 			rc = try_to_identify(drive, cmd);
 		}
+#endif // CONFIG_SA1100_EMPEG
 		if (rc == 1)
 			printk("%s: no response (status = 0x%02x)\n", drive->name, GET_STAT());
 		(void) GET_STAT();		/* ensure drive irq is clear */
@@ -376,6 +378,7 @@ static inline byte probe_for_drive (ide_drive_t *drive)
 	return 1;	/* drive was found */
 }
 
+#ifndef CONFIG_SA1100_EMPEG
 /*
  * We query CMOS about hard disks : it could be that we have a SCSI/ESDI/etc
  * controller that is BIOS compatible with ST-506, and thus showing up in our
@@ -433,6 +436,7 @@ static void probe_cmos_for_drives (ide_hwif_t *hwif)
 	}
 #endif
 }
+#endif // CONFIG_SA1100_EMPEG
 
 /*
  * This routine only knows how to look for drive units 0 and 1
@@ -449,8 +453,10 @@ static void probe_hwif (ide_hwif_t *hwif)
 
 	if (hwif->noprobe)
 		return;
+#ifndef CONFIG_SA1100_EMPEG
 	if (hwif->hw.io_ports[IDE_DATA_OFFSET] == (ide_ioreg_t)HD_DATA)
 		probe_cmos_for_drives (hwif);
+#endif // CONFIG_SA1100_EMPEG
 
 	/*
 	 * Calculate the region that this interface occupies,
@@ -521,6 +527,7 @@ static void probe_hwif (ide_hwif_t *hwif)
 
 	}
 	__restore_flags(flags);	/* local CPU only */
+#ifndef CONFIG_SA1100_EMPEG
 	for (unit = 0; unit < MAX_DRIVES; ++unit) {
 		ide_drive_t *drive = &hwif->drives[unit];
 		if (drive->present) {
@@ -529,6 +536,7 @@ static void probe_hwif (ide_hwif_t *hwif)
 				tuneproc(drive, 255);	/* auto-tune PIO mode */
 		}
 	}
+#endif // CONFIG_SA1100_EMPEG
 }
 
 #if MAX_HWIFS > 1
@@ -836,11 +844,9 @@ static ide_module_t ideprobe_module = {
 #ifdef CONFIG_SA1100_EMPEG
 static int release_and_probe(int hwif)
 {
-	int noofdrives=0;
-
 	/* We don't want drive autotuning on the empeg */
-	ide_hwifs[hwif].drives[0].autotune=2;
-	ide_hwifs[hwif].drives[1].autotune=2;
+	//ide_hwifs[hwif].drives[0].autotune=2;
+	//ide_hwifs[hwif].drives[1].autotune=2;
 
 	/* Release IO - this won't do anything if it wasn't claimed */
 	ide_release_region(ide_hwifs[hwif].hw.io_ports[IDE_DATA_OFFSET],
@@ -852,9 +858,7 @@ static int release_and_probe(int hwif)
 	probe_hwif(&ide_hwifs[hwif]);
 
 	/* Count drives */
-	if (ide_hwifs[hwif].drives[0].present) noofdrives++;
-	if (ide_hwifs[hwif].drives[1].present) noofdrives++;
-	return(noofdrives);
+	return ide_hwifs[hwif].drives[0].present + ide_hwifs[hwif].drives[1].present;
 }
 #endif
 
@@ -876,12 +880,14 @@ int ideprobe_init (void)
 	printk("Probing primary interface...\n");
 #ifndef CONFIG_NET_ETHERNET
 	if (empeg_hardwarerevision()>4) {
-#endif
+#endif // CONFIG_NET_ETHERNET
 		/* Single bus: no need to unregister drives after probe */
 		do {
 			/* Check for drives */
 			on_if0=release_and_probe(0);
 			//printk("found %d drives\n",on_if0);
+			if (on_if0 && hijack_onedrive)
+				break;
 			if (on_if0<2) {
 				/* No. Sleep and rescan in 0.125 seconds */
 				int timeout=jiffies+(HZ/8);
@@ -894,7 +900,7 @@ int ideprobe_init (void)
 			if (on_if0==1 && retries<15) {
 				retries=15;
 			}
-		} while(on_if0 < (2 - hijack_onedrive) && retries < 20);
+		} while(on_if0<2 && retries<20);
 
 		/* Initialise drives */
 		hwif_init(&ide_hwifs[0]);
@@ -916,6 +922,8 @@ int ideprobe_init (void)
 			   them */
 			if (on_if0==0) on_if0=release_and_probe(0);
 
+			if (on_if0 && hijack_onedrive)
+				break;
 			/* If we got any on hwif 0, then try hwif 1. Otherwise,
 			   this is pointless */
 			if (on_if0>0) {
@@ -946,15 +954,15 @@ int ideprobe_init (void)
 			if (probe[index])
 				hwif_init(&ide_hwifs[index]);
 	}
-#endif
-#else
+#endif // CONFIG_NET_ETHERNET
+#else // CONFIG_SA1100_EMPEG
 	for (index = 0; index < MAX_HWIFS; ++index)
 	    if (probe[index])
 		probe_hwif(&ide_hwifs[index]);
 	for (index = 0; index < MAX_HWIFS; ++index)
 	    if (probe[index])
 		hwif_init(&ide_hwifs[index]);
-#endif
+#endif // CONFIG_SA1100_EMPEG
 	ide_register_module(&ideprobe_module);
 	MOD_DEC_USE_COUNT;
 	return 0;

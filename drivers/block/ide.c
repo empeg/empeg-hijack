@@ -3102,12 +3102,14 @@ int ide_register_subdriver (ide_drive_t *drive, ide_driver_t *driver, int versio
 	drive->driver = driver;
 	setup_driver_defaults(drive);
 	restore_flags(flags);		/* all CPUs */
+#ifndef CONFIG_SA1100_EMPEG
 	if (drive->autotune != 2) {
 		if (driver->supports_dma && HWIF(drive)->dmaproc != NULL)
 			(void) (HWIF(drive)->dmaproc(ide_dma_check, drive));
 		drive->dsc_overlap = (drive->next != drive && driver->supports_dsc_overlap);
 		drive->nice1 = 1;
 	}
+#endif // CONFIG_SA1100_EMPEG
 	drive->revalidate = 1;
 #ifdef CONFIG_PROC_FS
 	ide_add_proc_entries(drive->proc, generic_subdriver_entries, drive);

@@ -1565,7 +1565,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v93 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v94 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -2989,11 +2989,6 @@ userland_extend_menu (char *label, unsigned long userdata)
 static void
 menu_init (void)
 {
-	extern ide_hwif_t ide_hwifs[];
-
-	if (ide_hwifs[0].drives[1].present)
-		remove_menu_entry(onedrive_menu_label);
-
 	// Initialize menu_size, menu_item, and menu_top
 	for (menu_size = 0; menu_table[menu_size].label != NULL; ++menu_size); // Calculate initial menu size
 	while (menu_table[menu_item].label == NULL)
@@ -3002,36 +2997,6 @@ menu_init (void)
 }
 
 #ifdef RESTORE_CARVISUALS
-//unsigned int b40cd = (buf[0x40] << 16) | (buf[0x4c] << 8) | buf[0x4d];
-//switch (b40cd) {
-//	case 0x000004: // off (beta3, beta6)
-//		restore_carvisuals = 2;
-//		break;
-//	case 0x000005: // off (beta7)
-//	case 0x000003: // off (beta7)
-//		restore_carvisuals = 3;
-//		break;
-//	case 0x010004: // line (beta3, beta6)
-//		restore_carvisuals = 3;
-//		break;
-//	case 0x010005: // line (beta7)
-//	case 0x010003: // line (beta7)
-//		restore_carvisuals = 4;
-//		break;
-//	case 0x020004: // transient (beta3, beta6)
-//		restore_carvisuals = 4;
-//		break;
-//	case 0x020005: // transient (beta7)
-//	case 0x020003: // transient (beta7)
-//	case 0x021105: // transient (beta7)
-//		restore_carvisuals = 5;
-//		break;
-//	case 0x020403: // track (beta3, beta6, beta7)
-//	case 0x020404: // now&next (beta3, beta6)
-//	case 0x020405: // now&next (beta7)
-//	case 0x021505: // now&next (beta7)
-//	case 0x020404: // seek    (beta7)
-// Note that the "Details" setting is not saved in flash.
 
 static void
 fix_visuals (unsigned char *buf)
@@ -3587,6 +3552,8 @@ hijack_read_config_file (const char *path)
 		printk("hijack.c: open(%s) failed (errno=%d)\n", path, rc);
 	} else if (rc > 0 && buf && *buf) {
 		get_hijack_options(buf);
+		if (ide_hwifs[0].drives[1].present || (MAX_HWIFS > 1 && ide_hwifs[1].drives[0].present))
+			remove_menu_entry(onedrive_menu_label);
 		if (hijack_old_style) {
 			PROMPTCOLOR		=  COLOR2;
 			ENTRYCOLOR		=  COLOR3;

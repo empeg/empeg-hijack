@@ -995,6 +995,18 @@ int display_mmap(struct file *filp, struct vm_area_struct *vma)
 	return 0;
 }
 
+int hijack_standbyLED_automatic = 0;
+void hijack_set_standbyLED (int off_on)
+{
+	unsigned long flags;
+
+	save_flags_clif(flags);
+	LCCR0 = LCCR0 & ~LCCR0_LEN;		// disable LCD controller
+	PPDR  = PPDR | 0x201;			// configure LCDdataLine0 and LCLK as outputs
+	PPSR  = off_on ? (PPSR | 0x201) : ((PPSR | 0x200) & ~1);	// set LED on/off
+	restore_flags(flags);
+}
+
 /*
  * functions to handle /dev/fb
  *
@@ -1007,6 +1019,7 @@ int display_mmap(struct file *filp, struct vm_area_struct *vma)
 int display_ioctl(struct inode *inode, struct file *filp, unsigned int cmd,
 		  unsigned long arg)
 {
+	extern int hijack_standbyLED_automatic;
 	struct display_dev *dev =
 		(struct display_dev *)filp->private_data;
 
@@ -1022,6 +1035,7 @@ int display_ioctl(struct inode *inode, struct file *filp, unsigned int cmd,
 	case EMPEG_DISPLAY_POWER:
 	case 1: /* Screen power control */
 		if (arg) {
+			hijack_standbyLED_automatic = 0;
 			if (LCCR0&LCCR0_LEN) {
 				/* Lcd control register 0; everything off */
 				LCSR = LCSR_LDD;
@@ -1065,10 +1079,14 @@ int display_ioctl(struct inode *inode, struct file *filp, unsigned int cmd,
 			empeg_displaypower(0);
 			
 			/* Set standby LED mode */
+			hijack_set_standbyLED(0);	// Off!
+			hijack_standbyLED_automatic = 1;
 		}
 		break;
 		
 	case 2: /* Standby LED settings */
+		hijack_standbyLED_automatic = 0;
+		hijack_set_standbyLED(arg != 0);
 		break;
 		
 	case 3: /* Set screen brightness */

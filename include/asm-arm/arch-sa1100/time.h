@@ -86,14 +86,43 @@ extern __inline__ int reset_timer (void)
 	return(1);
 }
 
+static inline void manage_standbyLED (void)
+{
+	extern int hijack_standbyLED_automatic, hijack_standbyLED_on, hijack_standbyLED_off;
+	extern void hijack_set_standbyLED(int);
+	unsigned long flags;
+
+	if (hijack_standbyLED_automatic) {
+		save_flags_clif(flags);
+		if (hijack_standbyLED_automatic) {
+			static unsigned int counter, ledstate;
+			int action;
+			if (hijack_standbyLED_automatic == 1) {	// just starting?
+				hijack_standbyLED_automatic = 2;
+				ledstate = 0;
+				counter = 0;
+			}
+			if (counter >= (hijack_standbyLED_on + hijack_standbyLED_off))
+				counter = 0;
+			action = (counter < hijack_standbyLED_on);
+			++counter;	// for next time
+			if (ledstate != action)
+				hijack_set_standbyLED(ledstate = action);
+		}
+		restore_flags(flags);
+	}
+}
+
 /*
  * timer_interrupt() needs to keep up the real-time clock,
  * as well as call the "do_timer()" routine every clocktick.
  */
 static void timer_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 {
-	if (reset_timer ())
+	if (reset_timer ()) {
 		do_timer(regs);
+		manage_standbyLED();
+	}
 }
 
 static struct irqaction irqtimer = 

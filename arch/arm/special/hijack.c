@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v255"
+#define HIJACK_VERSION	"v256"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -49,7 +49,7 @@ extern int empeg_inittherm(volatile unsigned int *timerbase, volatile unsigned i
 #ifdef CONFIG_NET_ETHERNET	// Mk2 or later? (Mk1 has no ethernet)
 #define EMPEG_KNOB_SUPPORTED	// Mk2 and later have a front-panel knob
 #endif
-int	hijack_poweroff_time = 0;	// jiffie timestamp of last poweroff
+int	hijack_standby_time = 0;	// jiffies since we entered standby (max 12 hours)
 int	hijack_got_config_ini = 0;	// used by restore visuals, to avoid triggering on a boot logo
 int	kenwood_disabled;		// used by Nextsrc button
 int	empeg_on_dc_power;		// used in arch/arm/special/empeg_power.c
@@ -457,39 +457,40 @@ static hijack_buttonq_t hijack_inputq, hijack_playerq, hijack_userq;
 
 // Externally tuneable parameters for config.ini; the voladj_parms are also tuneable
 //
-static int hijack_buttonled_off_level;		// button brightness when player is "off"
-static int hijack_button_pacing;		// minimum spacing between press/release pairs within playerq
-static int hijack_dc_servers;			// 1 == allow kftpd/khttpd when on DC power
-       int hijack_disable_emplode;		// 1 == block TCP port 8300 (Emplode/Emptool)
-       int hijack_extmute_off;			// buttoncode to inject when EXT-MUTE goes inactive
-       int hijack_extmute_on;			// buttoncode to inject when EXT-MUTE goes active
-static int hijack_ir_debug;			// printk() for every ir press/release code
-static int hijack_spindown_seconds;		// drive spindown timeout in seconds
-       int hijack_fake_tuner;			// pretend we have a tuner, when we really don't have one
-       int hijack_trace_tuner;			// dump incoming tuner/stalk packets onto console
+static	int hijack_buttonled_off_level;		// button brightness when player is "off"
+static	int hijack_button_pacing;		// minimum spacing between press/release pairs within playerq
+static	int hijack_dc_servers;			// 1 == allow kftpd/khttpd when on DC power
+	int hijack_disable_emplode;		// 1 == block TCP port 8300 (Emplode/Emptool)
+	int hijack_extmute_off;			// buttoncode to inject when EXT-MUTE goes inactive
+	int hijack_extmute_on;			// buttoncode to inject when EXT-MUTE goes active
+static	int hijack_ir_debug;			// printk() for every ir press/release code
+static	int hijack_spindown_seconds;		// drive spindown timeout in seconds
+	int hijack_fake_tuner;			// pretend we have a tuner, when we really don't have one
+	int hijack_trace_tuner;			// dump incoming tuner/stalk packets onto console
 #ifdef CONFIG_NET_ETHERNET
-       char hijack_kftpd_password[16];		// kftpd password
-       int hijack_kftpd_control_port;		// kftpd control port
-       int hijack_kftpd_data_port;		// kftpd data port
-       int hijack_kftpd_verbose;		// kftpd verbosity
-       int hijack_rootdir_dotdot;		// 1 == show '..' in rootdir listings
-       int hijack_kftpd_show_dotfiles;		// 1 == show '.*' in rootdir listings
-       int hijack_khttpd_show_dotfiles;		// 1 == show '.*' in rootdir listings
-       int hijack_max_connections;		// restricts memory use
-       int hijack_khttpd_port;			// khttpd port
-       int hijack_khttpd_verbose;		// khttpd verbosity
-       int hijack_khttpd_dirs;			// 1 == enable directory listings
-       int hijack_khttpd_files;			// 1 == enable file downloads, except "streaming"
-       int hijack_khttpd_playlists;		// 1 == enable "?.html" or "?.m3u" functionality
-       int hijack_khttpd_commands;		// 1 == enable "?commands" capability
+	char hijack_kftpd_password[16];		// kftpd password
+	int hijack_kftpd_control_port;		// kftpd control port
+	int hijack_kftpd_data_port;		// kftpd data port
+	int hijack_kftpd_verbose;		// kftpd verbosity
+	int hijack_rootdir_dotdot;		// 1 == show '..' in rootdir listings
+	int hijack_kftpd_show_dotfiles;		// 1 == show '.*' in rootdir listings
+	int hijack_khttpd_show_dotfiles;		// 1 == show '.*' in rootdir listings
+	int hijack_max_connections;		// restricts memory use
+	int hijack_khttpd_port;			// khttpd port
+	int hijack_khttpd_verbose;		// khttpd verbosity
+	int hijack_khttpd_dirs;			// 1 == enable directory listings
+	int hijack_khttpd_files;			// 1 == enable file downloads, except "streaming"
+	int hijack_khttpd_playlists;		// 1 == enable "?.html" or "?.m3u" functionality
+	int hijack_khttpd_commands;		// 1 == enable "?commands" capability
 #endif // CONFIG_NET_ETHERNET
-static int hijack_old_style;			// 1 == don't highlite menu items
-static int hijack_quicktimer_minutes;		// increment size for quicktimer function
-static int hijack_stalk_debug;			// trace button in/out actions to/from Stalk?
-static int hijack_standby_minutes;		// number of minutes after screen blanks before we go into standby
-       int hijack_suppress_notify;		// 1 == suppress player "notify" and "dhcp" text on serial port
-       int hijack_time_offset;			// adjust system time-of-day clock by this many minutes
-       int hijack_temperature_correction;	// adjust all h/w temperature readings by this celcius amount
+static	int hijack_old_style;			// 1 == don't highlite menu items
+static	int hijack_quicktimer_minutes;		// increment size for quicktimer function
+static	int hijack_stalk_debug;			// trace button in/out actions to/from Stalk?
+static	int hijack_standby_minutes;		// number of minutes after screen blanks before we go into standby
+	int hijack_suppress_notify;		// 1 == suppress player "notify" and "dhcp" text on serial port
+	int hijack_time_offset;			// adjust system time-of-day clock by this many minutes
+	int hijack_temperature_correction;	// adjust all h/w temperature readings by this celcius amount
+	int hijack_standbyLED_on, hijack_standbyLED_off;	// on/off duty cycle for standby LED
 
 
 // Bass Treble Adjustment stuff follows  --genixia
@@ -520,7 +521,7 @@ const hijack_db_table_t hijack_db_table[] =
 	{"+4.0 dB"	, 102	},
 	{"+5.0 dB"	, 114	},
 	{"+6.0 dB"	, 128	},
-	
+
 	{"-6.0 dB"	, 32	},
 	{"-5.0 dB"	, 36	},
 	{"-4.0 dB"	, 40	},
@@ -536,7 +537,7 @@ const hijack_db_table_t hijack_db_table[] =
        int hijack_volboost[] = {0,0,0,0};	// {FM, MP3, AUX, AM}
 
 // Tony bonus. Give the option of removing default bass boost on FM  -- genixia
-       int hijack_disable_bassboost_FM;		
+       int hijack_disable_bassboost_FM;
 
 typedef struct hijack_option_s {
 	char	*name;
@@ -588,6 +589,8 @@ static const hijack_option_t hijack_option_table[] =
 {"stalk_debug",			&hijack_stalk_debug,		0,			1,	0,	1},
 {"stalk_lhs",			lhs_stalk_vals,			(int)lhs_stalk_default,	20,	0,	0xff},
 {"stalk_rhs",			rhs_stalk_vals,			(int)rhs_stalk_default,	20,	0,	0xff},
+{"standbyLED_on",		&hijack_standbyLED_on,		1,			1,	0,	HZ*60},
+{"standbyLED_off",		&hijack_standbyLED_off,		10*HZ,			1,	0,	HZ*60},
 {"standby_minutes",		&hijack_standby_minutes,	30,			1,	0,	240},
 {"supress_notify",		&hijack_suppress_notify,	0,			1,	0,	1},
 {"suppress_notify",		&hijack_suppress_notify,	0,			1,	0,	1},
@@ -2033,12 +2036,14 @@ hijack_adjust_buttonled (int power)
 
 	// illumination command already in progress?
 	if (command) {
-		if (jiffies_since(lasttime) >= (HZ/10)) {
+		if (jiffies_since(lasttime) < (HZ/10)) {	// FIXME: was >=
 			restore_flags(flags);
 			return;
 		}
 		if (display_sendcontrol_serial == saved_serial)	// display untouched since last time?
 			display_sendcontrol_part2(command);
+		else
+			hijack_buttonled_level = 256;		// force illumination to be reset
 		command = 0;
 	}
 
@@ -3614,8 +3619,8 @@ input_append_code(void *dev, unsigned int button)  // empeg_input.c
 	save_flags_cli(flags);
 	if (hijack_ir_debug)
 		printk("%lu: IA1:%08x,dk=%08x,dr=%d,lk=%d\n", jiffies, button, ir_downkey, (ir_delayed_rotate != 0), (ir_current_longpress != NULL));
-	if (jiffies_since(hijack_poweroff_time) < (HZ/5))
-		return;	// ignore it
+	//FIXME? if (jiffies_since(hijack_standby_time) < (HZ/5))
+	//FIXME? 	return;	// ignore it
 
 	if (ir_delayed_rotate) {
 		if (button != IR_KNOB_PRESSED)
@@ -3763,16 +3768,6 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	}
 #endif // DEBUG_JIFFIES
 
-{
-	static unsigned long poweroff = 0;
-
-	if (dev->power)
-		poweroff = 0;
-	else if (!poweroff)
-		poweroff = jiffies ? jiffies : -1;
-	if (!poweroff || jiffies_since(poweroff) > (HZ/4))
-		hijack_adjust_buttonled(dev->power);
-}
 	// Send initial button sequences, if any
 	if (!sent_initial_buttons && hijack_player_started) {
 		sent_initial_buttons = 1;
@@ -3792,6 +3787,18 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 
 	// Handle any buttons that may be queued up
 	hijack_handle_buttons(player_buf);
+
+	// Keep rough track of how long the power has been off
+	if (dev->power)
+		hijack_standby_time = 0;
+	else if (!hijack_standby_time)
+		hijack_standby_time = jiffies ? jiffies : -1;
+	else if (jiffies_since(hijack_standby_time) >= (60*60*13))
+		hijack_standby_time = jiffies - (60*60);	// prevent wraparound from eventually screwing us
+
+	// Manage buttonLED illumination level
+	if (!hijack_standby_time || jiffies_since(hijack_standby_time) > (HZ/4))
+		hijack_adjust_buttonled(dev->power);
 
 	save_flags_cli(flags);
 	if (!dev->power) {  // do (almost) nothing if unit is in standby mode

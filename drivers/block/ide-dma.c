@@ -357,8 +357,10 @@ int ide_dmaproc (ide_dma_action_t func, ide_drive_t *drive)
 			return 0;
 		case ide_dma_check:
 			return config_drive_for_dma (drive);
+		case ide_dma_read48:
 		case ide_dma_read:
 			reading = 1 << 3;
+		case ide_dma_write48:
 		case ide_dma_write:
 			if (!(count = ide_build_dmatable(drive, func)))
 				return 1;	/* try PIO instead of DMA */
@@ -369,7 +371,10 @@ int ide_dmaproc (ide_dma_action_t func, ide_drive_t *drive)
 			if (drive->media != ide_disk)
 				return 0;
 			ide_set_handler(drive, &ide_dma_intr, WAIT_CMD);/* issue cmd to drive */
-			OUT_BYTE(reading ? WIN_READDMA : WIN_WRITEDMA, IDE_COMMAND_REG);
+			if (func == ide_dma_read || func == ide_dma_write48)
+				OUT_BYTE(reading ? WIN_READDMA : WIN_WRITEDMA, IDE_COMMAND_REG);
+			else /* lba48 */
+				OUT_BYTE(reading ? WIN_READDMA_EXT : WIN_WRITEDMA_EXT, IDE_COMMAND_REG);
 		case ide_dma_begin:
 			/* Note that this is done *after* the cmd has
 			 * been issued to the drive, as per the BM-IDE spec.

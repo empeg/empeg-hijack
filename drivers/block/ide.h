@@ -287,6 +287,7 @@ typedef struct ide_drive_s {
 	byte		sect;		/* "real" sectors per track */
 	byte		bios_head;	/* BIOS/fdisk/LILO number of heads */
 	byte		bios_sect;	/* BIOS/fdisk/LILO sectors per track */
+	unsigned int	lba28_limit;	/* used to detect need for lba48 EXT commands */
 	unsigned short	bios_cyl;	/* BIOS/fdisk/LILO number of cyls */
 	unsigned short	cyl;		/* "real" number of cyls */
 	unsigned int	drive_data;	/* for use by tuneproc/selectproc as needed */
@@ -315,7 +316,7 @@ typedef struct ide_drive_s {
  */
 typedef enum {	ide_dma_read,	ide_dma_write,	ide_dma_begin,	ide_dma_end,
 		ide_dma_check,	ide_dma_on,	ide_dma_off,	ide_dma_off_quietly,
-		ide_dma_test_irq
+		ide_dma_test_irq, ide_dma_read48, ide_dma_write48
 	} ide_dma_action_t;
 
 typedef int (ide_dmaproc_t)(ide_dma_action_t, ide_drive_t *);

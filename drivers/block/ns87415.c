@@ -90,7 +90,9 @@ static int ns87415_dmaproc(ide_dma_action_t func, ide_drive_t *drive)
 			outb(inb(hwif->dma_base)&~1, hwif->dma_base);	/* stop DMA */
 			outb(inb(hwif->dma_base)|6, hwif->dma_base);	/* from ERRATA: clear the INTR & ERROR bits */
 			return (dma_stat & 7) != 4;		/* verify good DMA status */
+		case ide_dma_write48:
 		case ide_dma_write:
+		case ide_dma_read48:
 		case ide_dma_read:
 			ns87415_prepare_drive(drive, 1);	/* select DMA xfer */
 			if (!ide_dmaproc(func, drive))		/* use standard DMA stuff */

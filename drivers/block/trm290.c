@@ -178,12 +178,14 @@ static int trm290_dmaproc (ide_dma_action_t func, ide_drive_t *drive)
 	unsigned int count, reading = 2, writing = 0;
 
 	switch (func) {
+		case ide_dma_write48:
 		case ide_dma_write:
 			reading = 0;
 			writing = 1;
 #ifdef TRM290_NO_DMA_WRITES
 			break;	/* always use PIO for writes */
 #endif
+		case ide_dma_read48:
 		case ide_dma_read:
 			if (!(count = ide_build_dmatable(drive)))
 				break;		/* try PIO instead of DMA */
@@ -194,7 +196,10 @@ static int trm290_dmaproc (ide_dma_action_t func, ide_drive_t *drive)
 			if (drive->media != ide_disk)
 				return 0;
 			ide_set_handler(drive, &ide_dma_intr, WAIT_CMD);
-			OUT_BYTE(reading ? WIN_READDMA : WIN_WRITEDMA, IDE_COMMAND_REG);
+			if (func == ide_dma_read || func == ide_dma_write)
+				OUT_BYTE(reading ? WIN_READDMA : WIN_WRITEDMA, IDE_COMMAND_REG);
+			else
+				OUT_BYTE(reading ? WIN_READDMA_EXT : WIN_WRITEDMA_EXT, IDE_COMMAND_REG);
 			return 0;
 		case ide_dma_begin:
 			return 0;

@@ -81,6 +81,14 @@
 #define WIN_SRST		0x08	/* ATAPI soft reset command */
 #define WIN_PACKETCMD		0xa0	/* Send a packet command. */
 
+/* 48-bit LBA commands */
+#define WIN_READ_EXT		0x24
+#define WIN_READDMA_EXT		0x25
+#define WIN_MULTREAD_EXT	0x29
+#define WIN_WRITE_EXT		0x34
+#define WIN_WRITEDMA_EXT	0x35
+#define WIN_MULTWRITE_EXT	0x39
+
 /* WIN_SMART sub-commands */
 
 #define SMART_READ_VALUES	0xd0

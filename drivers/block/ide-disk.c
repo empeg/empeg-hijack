@@ -86,10 +86,23 @@ static inline void idedisk_output_data (ide_drive_t *drive, void *buffer, unsign
  * Returns:	1 if lba_capacity looks sensible
  *		0 otherwise
  */
-static int lba_capacity_is_ok (struct hd_driveid *id)
+static int lba_capacity_is_ok (ide_drive_t *drive)
 {
+	struct hd_driveid *id = drive->id;
 	unsigned long lba_sects, chs_sects, head, tail;
+	unsigned short *idw = (unsigned short *)id; 
 
+	if ((idw[83] & 0xc400) == 0x4400) { 		// Does drive support 48-bit LBA?
+		unsigned long capacity;
+		drive->lba28_limit = (idw[61]<<16) | idw[60];	// limit == "normal" lba_capacity value
+		capacity = (idw[101]<<16) | idw[100];
+		// The rest of the kernel can only support 32-bit LBA, so round down:
+		if (idw[103] | idw[102])
+			capacity = ~0;			// 32-bit kernel limit of 2TB
+		id->lba_capacity = capacity;
+		return 1;
+	}
+	drive->lba28_limit = ~0;			// no limit unless 48-bit is supported
 	/*
 	 * The ATA spec tells large drives to return
 	 * C/H/S = 16383/16/63 independent of their size.
@@ -385,6 +398,7 @@ static ide_startstop_t do_rw_disk (ide_drive_t *drive, struct request *rq, unsig
 	ide_hwif_t *hwif = HWIF(drive);
 	int use_pdc4030_io = 0;
 #endif /* CONFIG_BLK_DEV_PDC4030 */
+	int lba48 = 0;
 
 	if (IDE_CONTROL_REG)
 		OUT_BYTE(drive->ctl,IDE_CONTROL_REG);
@@ -404,6 +418,12 @@ static ide_startstop_t do_rw_disk (ide_drive_t *drive, struct request *rq, unsig
 			drive->name, (rq->cmd==READ)?"read":"writ",
 			block, rq->nr_sectors, (unsigned long) rq->buffer);
 #endif
+		if ((block + rq->nr_sectors - 1) > drive->lba28_limit) {	// need to use 48-bit LBA?
+			OUT_BYTE(block>>24,IDE_SECTOR_REG);
+			OUT_BYTE(0,IDE_LCYL_REG);
+			OUT_BYTE(0,IDE_HCYL_REG);
+			lba48 = 1;
+		}
 		OUT_BYTE(block,IDE_SECTOR_REG);
 		OUT_BYTE(block>>=8,IDE_LCYL_REG);
 		OUT_BYTE(block>>=8,IDE_HCYL_REG);
@@ -436,7 +456,10 @@ static ide_startstop_t do_rw_disk (ide_drive_t *drive, struct request *rq, unsig
 			return ide_started;
 #endif /* CONFIG_BLK_DEV_IDEDMA */
 		ide_set_handler(drive, &read_intr, WAIT_CMD);
-		OUT_BYTE(drive->mult_count ? WIN_MULTREAD : WIN_READ, IDE_COMMAND_REG);
+		if (lba48)
+			OUT_BYTE(drive->mult_count ? WIN_MULTREAD_EXT : WIN_READ_EXT, IDE_COMMAND_REG);
+		else
+			OUT_BYTE(drive->mult_count ? WIN_MULTREAD : WIN_READ, IDE_COMMAND_REG);
 		return ide_started;
 	}
 	if (rq->cmd == WRITE) {
@@ -445,7 +468,10 @@ static ide_startstop_t do_rw_disk (ide_drive_t *drive, struct request *rq, unsig
 		if (drive->using_dma && !(HWIF(drive)->dmaproc(ide_dma_write, drive)))
 			return ide_started;
 #endif /* CONFIG_BLK_DEV_IDEDMA */
-		OUT_BYTE(drive->mult_count ? WIN_MULTWRITE : WIN_WRITE, IDE_COMMAND_REG);
+		if (lba48)
+			OUT_BYTE(drive->mult_count ? WIN_MULTWRITE_EXT : WIN_WRITE_EXT, IDE_COMMAND_REG);
+		else
+			OUT_BYTE(drive->mult_count ? WIN_MULTWRITE : WIN_WRITE, IDE_COMMAND_REG);
 		if (ide_wait_stat(&startstop, drive, DATA_READY, drive->bad_wstat, WAIT_DRQ)) {
 			printk(KERN_ERR "%s: no DRQ after issuing %s\n", drive->name,
 				drive->mult_count ? "MULTWRITE" : "WRITE");
@@ -527,7 +553,7 @@ unsigned long idedisk_capacity (ide_drive_t  *drive)
 
 	drive->select.b.lba = 0;
 	/* Determine capacity, and use LBA if the drive properly supports it */
-	if (id != NULL && (id->capability & 2) && lba_capacity_is_ok(id)) {
+	if (id != NULL && (id->capability & 2) && lba_capacity_is_ok(drive)) {
 		if (id->lba_capacity >= capacity) {
 			capacity = id->lba_capacity;
 			drive->select.b.lba = 1;

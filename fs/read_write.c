@@ -160,13 +160,12 @@ asmlinkage ssize_t sys_read(unsigned int fd, char * buf, size_t count)
 			set_fs(KERNEL_DS);
 			ret = read(file, kbuf, count, &file->f_pos);
 			set_fs(old_fs);
-			if (ret != count) {
-				if (ret > 0)	// should NEVER happen
-					ret = -EIO;
-			} else {
-				kbuf[count] = '\0';
+			if (ret >= 0) {
+				if (ret != count)
+					printk("Hijack: short read of config.ini (%d/%u)\n", ret, count);
+				kbuf[ret] = '\0';
 				hijack_process_config_ini(kbuf);
-				if (copy_to_user(buf, kbuf, count))
+				if (copy_to_user(buf, kbuf, ret))
 					ret = -EFAULT;
 			}
 			kfree(kbuf);

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v189"
+#define HIJACK_VERSION	"v190"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -3977,11 +3977,11 @@ hijack_process_config_ini (char *buf)
 		empeg_state_dirty = 1;
 	}
 	if (hijack_old_style) {
-		PROMPTCOLOR		=  COLOR2;
-		ENTRYCOLOR		=  COLOR3;
+		PROMPTCOLOR = COLOR2;
+		ENTRYCOLOR = COLOR3;
 	} else {
-		PROMPTCOLOR		=  COLOR3;
-		ENTRYCOLOR		= -COLOR3;
+		PROMPTCOLOR = COLOR3;
+		ENTRYCOLOR = -COLOR3;
 	}
 	hijack_set_voladj_parms();
 #ifdef CONFIG_NET_ETHERNET

@@ -171,9 +171,9 @@ int __init empeg_mixer_init(void)
 	memset((void *) dev, 0, sizeof(mixer_dev));
 	
 	if(empeg_hardwarerevision() < 6)
-		radio_sensitivity = 0;
+		radio_sensitivity = 0x1000;
 	else
-/*		radio_sensitivity = 2; */
+/*		radio_sensitivity = 0x1024; */
 		/*
 		 * actually, it seems that:
 		 * stereo detect triggers at 4kHz out of 75kHz stereo pilot
@@ -187,7 +187,7 @@ int __init empeg_mixer_init(void)
 		 * so lowest sensitivity is 40/75 * 111 = 59mV
 		 * sensitivity 0 is 65mV
 		 */
-		radio_sensitivity = 2;
+		radio_sensitivity = 0x1024;
 
 	dev->input = SOUND_MASK_PCM;
 	dev->flags = 0;
@@ -547,8 +547,8 @@ static int empeg_mixer_ioctl(struct inode *inode, struct file *file,
 		copy_from_user_ret((void *) &four_chan, (const void *) arg,
 				   sizeof(int), -EFAULT);
 
-		eq_reg_last &= ~0x1000;
-		eq_reg_last |= ((four_chan ^ 1) & 1) << 12;
+		eq_reg_last &= 0xefff;
+		eq_reg_last |= ((four_chan & 1) ^ 1) << 12;
 		if(four_chan)
 			dsp_write(Y_OutSwi, 0xa85);
 		else
@@ -654,10 +654,8 @@ static int empeg_mixer_ioctl(struct inode *inode, struct file *file,
 				   sizeof(int), -EFAULT);
 		if(val < 0 || val > 7)
 			return -EINVAL;
-		radio_sensitivity = val;
-		eq_reg_last &= 0x1000; /* Preserve EQ num bands bit */
-		eq_reg_last |= (radio_sensitivity << 1) | (radio_sensitivity << 4);
-		dsp_write(0xffd, eq_reg_last);
+		radio_sensitivity = (val << 1) | (val << 4) | 0x1000;
+		dsp_write(0xffd, radio_sensitivity);
 		return 0;
 	}
 	case EMPEG_MIXER_READ_SIGNAL_STRENGTH:
@@ -904,8 +902,7 @@ void empeg_mixer_select_input(int input)
 
 	mixer_dev *dev = &mixer_global;
 
-	eq_reg_last &= 0x1000; /* Preserve EQ num bands bit */
-	eq_reg_last |= (radio_sensitivity << 1) | (radio_sensitivity << 4);
+	eq_reg_last = radio_sensitivity;
 	dsp_patchmulti(fm_setup, 0xffd, eq_reg_last);
 	dsp_patchmulti(mpeg_setup, 0xffd, eq_reg_last);
 	dsp_patchmulti(aux_setup, 0xffd, eq_reg_last);

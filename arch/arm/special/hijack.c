@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v352"
+#define HIJACK_VERSION	"v353"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -4818,6 +4818,11 @@ hijack_get_options (unsigned char *buf)
 		}
 		if (!strxcmp(s, ";@EXEC ", 1)) {
 			s = hijack_exec_line(s+7);
+			goto nextline;
+		}
+		if (!strxcmp(s, ";@DELAY", 1)) {
+			current->state = TASK_UNINTERRUPTIBLE;
+			schedule_timeout(HZ);
 			goto nextline;
 		}
 		if (*s == ';')

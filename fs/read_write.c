@@ -146,7 +146,7 @@ asmlinkage ssize_t sys_read(unsigned int fd, char * buf, size_t count)
 	// into the player's buffer, we have to kmalloc() our own buffer for the ENTIRE file
 	// each time through, in order to do the macro edits before passing it on to the player.
 	//
-	extern pid_t hijack_player_init_pid;  // set by do_execve("/empeg/bin/player")
+	extern pid_t hijack_player_init_pid;  // set to -1 by do_execve("/empeg/bin/player")
 	extern void  hijack_process_config_ini (char *, off_t);
 #if 0
 	static int babble = 0;

@@ -875,39 +875,56 @@ hijack_mangle_fids (unsigned char *path, int creating)
 	}
 }
 
-asmlinkage int sys_open(const char * filename, int flags, int mode)
-{
-	char * tmp;
-	int fd, error;
-	
-	extern char *getname2(const char *filename, int creating);
+int hijack_have_zoneinfo = 0;	// set to 0 by do_execve("/empeg/bin/player")
 
-	if ((mode & O_CREAT))
-		tmp = getname2(filename,1);
-	else
-		tmp = getname2(filename,0);
-	fd = PTR_ERR(tmp);
-	if (!IS_ERR(tmp)) {
-		lock_kernel();
-		fd = get_unused_fd();
-		if (fd >= 0) {
-			struct file * f = filp_open(tmp, flags, mode);
-			error = PTR_ERR(f);
-			if (IS_ERR(f))
-				goto out_error;
+static int sys_open2(const char *path, int flags, int mode)
+{
+	int fd, error;
+
+	lock_kernel();
+	fd = get_unused_fd();
+	if (fd >= 0) {
+		struct file * f = filp_open(path, flags, mode);
+		error = PTR_ERR(f);
+		if (IS_ERR(f)) {
+			put_unused_fd(fd);
+			fd = error;
+		} else {
 			fd_install(fd, f);
 		}
-out:
-		unlock_kernel();
+	}
+	unlock_kernel();
+	if (hijack_trace_fs) printk("sys_open(\"%s\", 0x%x) = %d\n", path, flags, fd);
+	return fd;
+}
+
+asmlinkage int sys_open(const char * filename, int flags, int mode)
+{
+	static char zoneinfo[128];
+	char * tmp;
+	int fd;
+	extern char *getname2(const char *filename, int creating);
+
+	tmp = getname2(filename, (mode & O_CREAT) != 0);
+	fd = PTR_ERR(tmp);
+	if (!IS_ERR(tmp)) {
+		fd = sys_open2(tmp, flags, mode);
+		if (hijack_have_zoneinfo) {
+			if (fd == -ENOENT && tmp[0] == '/') {
+				if ((tmp[1] == 'h' && !strcmp(tmp, "/home/empeg/arm-empeg-linux-new/etc/localtime"))
+				 || (tmp[1] == 'e' && !strcmp(tmp, "/etc/localtime"))) {
+					fd = sys_open2(zoneinfo, flags, mode);
+				}
+			}
+		} else if (0 == strncmp(tmp, "/usr/share/zoneinfo/", 20)) {
+			strcpy(zoneinfo, tmp);
+		} else if (0 == strcmp(tmp, "/empeg/var/tags")) {
+			printk("Timezone is %s\n", zoneinfo);
+			hijack_have_zoneinfo = 1;
+		}
 		putname(tmp);
 	}
-	if (hijack_trace_fs) printk("sys_open(\"%s\", 0x%x) = %d\n", filename, flags, fd);
 	return fd;
-
-out_error:
-	put_unused_fd(fd);
-	fd = error;
-	goto out;
 }
 
 #ifndef __alpha__

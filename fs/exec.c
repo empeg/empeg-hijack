@@ -849,8 +849,10 @@ int do_execve(char * filename, char ** argv, char ** envp, struct pt_regs * regs
 	}
 	if (!strcmp(filename, "/empeg/bin/player")) {
 		extern pid_t	hijack_player_init_pid;
+		extern int	hijack_have_zoneinfo;
 		extern int	empeg_on_dc_power, hijack_saveserial;
 		hijack_player_init_pid = -1;	// cannot use current->pid yet because player forks later
+		hijack_have_zoneinfo = 0;
 		if (bprm.argc == 1 && empeg_on_dc_power && hijack_saveserial) {
 			static char *a[] = {"player", "-s-"};
 			argv = a;

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v141"
+#define HIJACK_VERSION "v142"
 
 #include <linux/sched.h>
 #include <linux/kernel.h>
@@ -101,8 +101,8 @@ static int *ir_numeric_input = NULL;
 #define IR_FLAGS_UI		0x0100	// hijack/player ui is active
 #define IR_FLAGS_NOTUI		0x0200	// hijack/player ui is idle
 
-#define IR_FLAGS_SHIFTSTATE	(IR_FLAGS_SHIFTED|IR_FLAGS_NOTSHIFTED)
 #define IR_FLAGS_CARHOME	(IR_FLAGS_CAR|IR_FLAGS_HOME)
+#define IR_FLAGS_SHIFTSTATE	(IR_FLAGS_SHIFTED|IR_FLAGS_NOTSHIFTED)
 #define IR_FLAGS_MIXER		(IR_FLAGS_TUNER|IR_FLAGS_AUX|IR_FLAGS_MAIN)
 #define IR_FLAGS_UISTATE	(IR_FLAGS_UI|IR_FLAGS_NOTUI)
 
@@ -242,7 +242,7 @@ typedef struct hijack_option_s {
 
 // Externally tuneable parameters for config.ini; the voladj_parms are also tuneable
 //
-static int hijack_button_pacing			=  8;	// minimum spacing between press/release pairs within playerq
+static int hijack_button_pacing			= 20;	// minimum spacing between press/release pairs within playerq
        int hijack_extmute_off			=  0;	// buttoncode to inject when EXT-MUTE goes inactive
        int hijack_extmute_on			=  0;	// buttoncode to inject when EXT-MUTE goes active
 #ifdef CONFIG_NET_ETHERNET
@@ -3104,11 +3104,11 @@ ir_setup_translations2 (unsigned char *buf, unsigned long *table)
 					if (*s == '.') {
 						++s;
 						while (*s == 'L' || *s == 'S') {
-							++s;
 							if (*s == 'S')
 								new |= BUTTON_FLAGS_SHIFT;	// mark as a "shift" button
 							else if (new != IR_KNOB_LEFT && new != IR_KNOB_RIGHT)
 								new |= BUTTON_FLAGS_LONGPRESS;	// mark it as a longpress
+							++s;
 						}
 					}
 					if (t)

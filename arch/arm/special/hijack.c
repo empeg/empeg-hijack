@@ -1,6 +1,6 @@
 // Empeg display/IR hijacking by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v117"
+#define HIJACK_VERSION "v118"
 //
 // Includes: font, drawing routines
 //           extensible menu system
@@ -204,6 +204,7 @@ static unsigned int hijack_voladj_parms[(1<<VOLADJ_BITS)-1][5] = { // Values as 
 
 struct semaphore hijack_kftpd_startup_sem;	// sema for waking up kftpd after we read config.ini
 struct semaphore hijack_khttpd_startup_sem;	// sema for waking up khttpd after we read config.ini
+struct semaphore hijack_proc_screen_grap_sem;	// sema for /proc screen grabber
 
 // Externally tuneable parameters for config.ini; the voladj_parms are also tuneable
 static hijack_buttonq_t hijack_inputq, hijack_playerq, hijack_userq;
@@ -486,7 +487,7 @@ hijack_serial_notify (const unsigned char *s, int size)
 
 // /proc/empeg_notify read() routine:
 static int
-hijack_proc_notify (char *buf, char **start, off_t offset, int len, int unused)
+hijack_proc_notify_read (char *buf, char **start, off_t offset, int len, int unused)
 {
 	int	i;
 
@@ -506,12 +507,129 @@ hijack_proc_notify (char *buf, char **start, off_t offset, int len, int unused)
 // /proc/empeg_notify directory entry:
 struct proc_dir_entry notify_proc_entry = {
 	0,			/* inode (dynamic) */
-	12, "empeg_notify",  	/* length and name */
+	12,			/* length of name */
+	"empeg_notify",  	/* name */
 	S_IFREG | S_IRUGO, 	/* mode */
 	1, 0, 0, 		/* links, owner, group */
 	0, 			/* size */
 	NULL, 			/* use default operations */
-	&hijack_proc_notify , 	/* function used to read data */
+	&hijack_proc_notify_read, /* get_info() */
+};
+
+typedef struct tiff_field_s {
+	unsigned short	tag;
+	unsigned short	type;
+	unsigned long	count;
+	unsigned long	value_or_offset;
+} tiff_field_t;
+
+typedef struct grayscale_tiff_s {
+	// header
+	unsigned short	II;			// 'II'
+	unsigned short	fortytwo;		// 42 (decimal)
+	unsigned long	ifd0_offset;		// 10
+	unsigned short	padding;		//  0  // to align the tiff fields on 4-byte boundaries
+
+	// "ifd0"				// tag,type,count,value
+	unsigned short	ifd0_count;		// 12  // count of tiff_field's that follow
+	tiff_field_t	cols;			// 256, 3,    1,   128
+	tiff_field_t	rows;			// 257, 3,    1,    32
+	tiff_field_t	bitspersample;		// 258, 3,    1,     4	// ??
+	tiff_field_t	compression;		// 259, 3,    1,     1	// byte packed (2 pixels/byte)
+	tiff_field_t	photometric;		// 262, 3,    1,     1	// black is zero
+	tiff_field_t	bitorder;		// 266, 3,    1,     1	// columns go from msb to lsb of bytes
+	tiff_field_t	stripoffsets;		// 273, 3,    1,    12 + (12 * sizeof(tiff_field_t)) + (5 * 4)
+	tiff_field_t	rowsperstrip;		// 278, 3,    1,    32
+	tiff_field_t	stripbytecounts;	// 279, 3,    1,    128*32*2/8 
+	tiff_field_t	xresolution;		// 282, 5,    1,    12 + (12 * sizeof(tiff_field_t)) + (1 * 4)
+	tiff_field_t	yresolution;		// 283, 5,    1,    12 + (12 * sizeof(tiff_field_t)) + (3 * 4)
+	tiff_field_t	resolutionunit;		// 296, 3,    1,     2  // resolution is in inches
+	unsigned long	ifd1_offset;		//        0		// no ifd1 in this file
+
+	// longer field values
+	unsigned long	xresolution_numerator;	// 128 * 13		// 128 pixels in 13/4" of space
+	unsigned long	xresolution_denominator;//        4 
+	unsigned long	yresolution_numerator;	//  32 * 13		// 32 pixels in 13/16" of space
+	unsigned long	yresolution_denominator;//       16
+
+	// image data
+	unsigned char	strip0[128*32*4/8];	// the row by row image data
+} grayscale_tiff_t;
+
+static grayscale_tiff_t proc_screen_tiff = {
+	'I'|('I'<<8),						// II
+	42,							// fortytwo
+	10,							// ifd0_offset
+	0,							// padding
+	12,							// ifd0_count
+	{256,3,1,128},						// cols
+	{257,3,1, 32},						// rows
+	{258,3,1,  4},						// bitspersample
+	{259,3,1,  1},						// compression
+	{262,3,1,  1},						// photometric
+	{266,3,1,  1},						// bitorder
+	{273,3,1, 12 + (12 * sizeof(tiff_field_t)) + (5 * 4)},	// stripoffsets
+	{278,3,1, 32},						// rowsperstrip
+	{279,3,1,128 * 32 * 4 / 8},				// stripbytecounts
+	{282,5,1, 12 + (12 * sizeof(tiff_field_t)) + (1 * 4)},	// xresolution
+	{283,5,1, 12 + (12 * sizeof(tiff_field_t)) + (3 * 4)},	// yresolution
+	{296,3,1,  2},						// resolutionunit
+	       0,						// ifd1_offset
+	128 * 13,						// yresolution_numerator
+	       4,						// yresolution_denominator
+	 32 * 13,						// xresolution_numerator
+	      16,						// xresolution_denominator
+	{0,}							// strip0[128*32*2/8]
+	};
+
+static unsigned char	proc_displaybuf[EMPEG_SCREEN_BYTES];
+static int		need_to_grab_screen = 0;
+
+// /proc/empeg_screen read() routine:
+static int
+hijack_proc_screen_read (char *buf, char **start, off_t offset, int len, int unused)
+{
+	int		i, remaining;
+	unsigned char	*t, *d;
+	unsigned long	flags;
+
+	if (offset == 0) {
+		save_flags_cli(flags);
+		hijack_proc_screen_grap_sem = MUTEX_LOCKED;
+		need_to_grab_screen = 1;
+		down(&hijack_proc_screen_grap_sem);
+		restore_flags(flags);
+
+		t = proc_screen_tiff.strip0;
+		d = proc_displaybuf;
+		for (i = 0; i < sizeof(proc_screen_tiff.strip0); ++i) {
+			static const unsigned char colors1[4] = {0x00,0x03,0x07,0x0f};
+			static const unsigned char colors2[4] = {0x00,0x30,0x70,0xf0};
+			unsigned char b = *d++ & 0x33;
+			*t++ = colors2[b & 0xf] | colors1[b >> 4];
+		}
+	}
+
+	remaining = sizeof(proc_screen_tiff) - offset;
+	if (len > remaining)
+		len = (remaining < 0) ? 0 : remaining;
+	if (len > 0) {
+		*start = buf + offset;
+		memcpy(buf, ((unsigned char *)&proc_screen_tiff) + offset, len);
+	}
+	return len;
+}
+
+// /proc/empeg_screen directory entry:
+struct proc_dir_entry screen_proc_entry = {
+	0,			/* inode (dynamic) */
+	17,			/* length of name */
+	"empeg_screen.tiff",	/* name */
+	S_IFREG | S_IRUGO, 	/* mode */
+	1, 0, 0, 		/* links, owner, group */
+	sizeof(proc_screen_tiff), /* size */
+	NULL, 			/* use default operations */
+	&hijack_proc_screen_read, /* get_info() */
 };
 #endif // CONFIG_PROC_FS
 
@@ -994,8 +1112,8 @@ read_temperature (void)
 	//   be able to let the drives out of reset until you'd read the temperature.
 	//
 	// But in practice, the danged thing stops updating sometimes
-	// so we may still need the odd call to empeg_inittherm() just to ensure
-	// it is running.  -ml
+	// so we may still need the odd call to empeg_inittherm()
+	// just to ensure it is running.  -ml
 
 	if ((readtherm_lasttime && jiffies_since(readtherm_lasttime) < (HZ*5)) || init_temperature())
 		return temperature;
@@ -2938,6 +3056,11 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 			hijack_deactivate(HIJACK_INACTIVE_PENDING);
 			break;
 	}
+	if (need_to_grab_screen) {
+		need_to_grab_screen = 0;
+		memcpy(proc_displaybuf, buf, EMPEG_SCREEN_BYTES);
+		up(&hijack_proc_screen_grap_sem);
+	}
 	restore_flags(flags);
 
 	// Prevent screen burn-in on an inactive/unattended player:
@@ -3812,6 +3935,7 @@ hijack_init (void)	// invoked from empeg_display.c
 		menu_init();
 #ifdef CONFIG_PROC_FS
 		proc_register(&proc_root, &notify_proc_entry);
+		proc_register(&proc_root, &screen_proc_entry);
 #endif
 	}
 }

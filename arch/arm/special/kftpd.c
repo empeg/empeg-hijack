@@ -61,6 +61,24 @@ typedef struct server_parms_s {
 
 #define PRINTK	if (parms->verbose) printk
 
+#define INRANGE(c,min,max)	((c) >= (min) && (c) <= (max))
+#define ISOCTAL(c)		INRANGE(c,'0','7')
+#define TOUPPER(c)		(INRANGE((c),'a','z') ? ((c) - ('a' - 'A')) : (c))
+
+static int
+strxcmp (const char *str, const char *pattern, int partial)
+{
+	unsigned char s, p;
+
+	while ((p = *pattern)) {
+		++pattern;
+		s = *str++;
+		if (TOUPPER(s) != TOUPPER(p))
+			return 1;
+	}
+	return (!partial && *str);
+}
+
 // This  function  converts  the  character string src
 // into a network address structure in the af address family,
 // then copies the network address structure to dst.
@@ -191,7 +209,7 @@ static response_t response_table[] = {
 	{451, "Internal error"},
 	{500, "Bad command"},
 	{501, "Bad syntax"},
-	{502, "Unsupported xfer TYPE"},
+	{502, "Not implemented"},
 	{550, "Failed"},
 	{553, "Invalid action"},
 	{0, NULL} // End-Of-Table Marker
@@ -772,17 +790,21 @@ khttp_send_file_header (server_parms_t *parms, char *path, unsigned long i_size,
 {
 	char *hdr  = "HTTP/1.1 200 OK\nConnection: close\nAccept-Ranges: bytes\nContent-Type: %s\n";
 	char *type = "text/plain"; // or maybe: "application/octet-stream"
-	int len;
-	const char *s;
+	int len = strlen(path);
 
-	// Very crude "tune" recognition scheme:
-	if (i_size > 1000) {
-		s = path + strlen(path);
-		if (*--s == '0') {
-			while (s > path && *--s != '/');
-			while (s > path && *--s != '/');
-			if (!strncmp(s, "/fids", 5))
+	if (len >= 5) {
+		// Very crude mime typing:
+		const char *e = path + strlen(path);
+		if (!strxcmp(e-4, ".tif", 0) || !strxcmp(e-5, ".tiff", 0)) {
+			type = "image/tiff";
+		} else if (!strxcmp(e-4, ".htm", 0) || !strxcmp(e-5, ".html", 0)) {
+			type = "text/html";
+		} else if (i_size > 1000 && *--e == '0') {
+			while (e > path && *--e != '/');
+			while (e > path && *--e != '/');
+			if (!strncmp(e, "/fids", 5)) {
 				type = "audio/mpeg";	// or "application/octet-stream" ??
+			}
 		}
 	}
 	len = sprintf(buf, hdr, type);
@@ -1026,19 +1048,6 @@ append_path (char *path, char *new)
 //
 /////////////////////////////////////////////////////////////////////////////////
 
-
-static void
-make_keyword_uppercase (char *keyword)
-{
-	char c = *keyword;
-
-	while (c && c != ' ') {
-		if (c >= 'a' && c <= 'z')
-			*keyword -= ('a' - 'A');
-		c = *++keyword;
-	}
-}
-
 static int
 kftpd_handle_command (server_parms_t *parms)
 {
@@ -1063,47 +1072,43 @@ kftpd_handle_command (server_parms_t *parms)
 	if (buf[n - 1] == '\r')
 		buf[--n] = '\0';
 	PRINTK("%s: '%s' len=%d\n", parms->servername, buf, n);
-	make_keyword_uppercase(buf);
-	if (!strcmp(buf, "QUIT")) {
+	if (!strxcmp(buf, "QUIT", 0)) {
 		quit = 1;
 		response = 221;
-	} else if (!strncmp(buf, "USER ", 5)) {
+	} else if (!strxcmp(buf, "USER ", 1)) {
 		response = 230;
-	} else if (!strncmp(buf, "PASS ", 5)) {
+	} else if (!strxcmp(buf, "PASS ", 1)) {
 		response = 202;
-	} else if (!strncmp(buf, "SYST", 4)) {
+	} else if (!strxcmp(buf, "PASV", 0)) {
+		response = 502;
+	} else if (!strxcmp(buf, "SYST", 0)) {
 		response = 215;
-	} else if (!strcmp(buf, "MODE S")) {
+	} else if (!strxcmp(buf, "MODE S", 0)) {
 		response = 200;
-	} else if (!strcmp(buf, "STRU F")) {
+	} else if (!strxcmp(buf, "STRU F", 0)) {
 		response = 200;
-	} else if (!strncmp(buf, "TYPE ", 5)) {
-		if (buf[5] != 'I') {
-			//response = 502;
-			response = 200;
-		} else {
-			response = 200;
-		}
-	} else if (!strncmp(buf, "CWD ",4)) {
+	} else if (!strxcmp(buf, "TYPE ", 1)) {
+		response = 200;	// type ignored
+	} else if (!strxcmp(buf, "CWD ", 1)) {
 		append_path(parms->cwd, &buf[4]);
 		quit = send_dir_response(parms, 250, parms->cwd, "directory changed");
-	} else if (!strcmp(buf, "CDUP")) {
+	} else if (!strxcmp(buf, "CDUP", 0)) {
 		append_path(parms->cwd, "..");
 		quit = send_dir_response(parms, 200, parms->cwd, NULL);
-	} else if (!strcmp(buf, "NOOP")) {
+	} else if (!strxcmp(buf, "NOOP", 0)) {
 		response = 200;
-	} else if (!strcmp(buf, "HELP")) {
+	} else if (!strxcmp(buf, "HELP", 0)) {
 		quit = send_help_response(parms, "", "   USER    PORT    STOR    NLST    MKD     CDUP    PASS    ABOR*   \r\n   SITE    TYPE*   DELE    SYST*   RMD     STRU*   CWD     MODE*   \r\n   HELP    PWD     QUIT    RETR    LIST    NOOP    \r\n");
 		response = 214;
-	} else if (!strcmp(buf, "PWD")) {
+	} else if (!strxcmp(buf, "PWD", 0)) {
 		quit = send_dir_response(parms, 257, parms->cwd, NULL);
-	} else if (!strcmp(buf, "SITE HELP")) {
+	} else if (!strxcmp(buf, "SITE HELP", 0)) {
 		quit = send_help_response(parms, "SITE ", "   CHMOD   HELP    \r\n");
 		response = 214;
-	} else if (!strncmp(buf, "SITE CHMOD 0", 12)) {
-		unsigned char *p = &buf[12];
+	} else if (!strxcmp(buf, "SITE CHMOD ", 1) && ISOCTAL(buf[11])) {
+		unsigned char *p = &buf[11];
 		unsigned int mode = 0;
-		while (*p >= '0' && *p <= '7')
+		while (ISOCTAL(*p))
 			mode = (mode * 8) + (*p++ - '0');
 		if (*p++ != ' ' || !*p) {
 			response = 501;
@@ -1114,13 +1119,13 @@ kftpd_handle_command (server_parms_t *parms)
 		}
 	} else if (n == 2 && buf[0] == 0xff && buf[1] == 0xf4) {
 		response = 0;	// Ignore the telnet escape sequence
-	} else if (n == 5 && buf[0] == 0xf2 && !strcmp(buf+1, "ABOR")) {
+	} else if (n == 5 && buf[0] == 0xf2 && !strxcmp(buf+1, "ABOR", 0)) {
 		response = 226;
-	} else if (!strcmp(buf, "ABOR")) {
+	} else if (!strxcmp(buf, "ABOR", 0)) {
 		response = 226;
-	//} else if (!strncmp(buf, "SITE EXEC ", 10)) {
+	//} else if (!strxcmp(buf, "SITE EXEC ", 1)) {
 	//	response = 502;
-	} else if (!strncmp(buf, "PORT ", 5)) {
+	} else if (!strxcmp(buf, "PORT ", 1)) {
 		parms->have_portaddr = 0;
 		if (extract_portaddr(&parms->portaddr, &buf[5])) {
 			response = 501;
@@ -1128,7 +1133,7 @@ kftpd_handle_command (server_parms_t *parms)
 			parms->have_portaddr = 1;
 			response = 200;
 		}
-	} else if (!strncmp(buf, "MKD ", 4)) {
+	} else if (!strxcmp(buf, "MKD ", 1)) {
 		if (!buf[4]) {
 			response = 501;
 		} else {
@@ -1136,7 +1141,7 @@ kftpd_handle_command (server_parms_t *parms)
 			append_path(path, &buf[4]);
 			response = do_mkdir(parms, path);
 		}
-	} else if (!strncmp(buf, "RMD ", 4)) {
+	} else if (!strxcmp(buf, "RMD ", 1)) {
 		if (!buf[4]) {
 			response = 501;
 		} else {
@@ -1144,7 +1149,7 @@ kftpd_handle_command (server_parms_t *parms)
 			append_path(path, &buf[4]);
 			response = do_rmdir(parms, path);
 		}
-	} else if (!strncmp(buf, "DELE ", 5)) {
+	} else if (!strxcmp(buf, "DELE ", 1)) {
 		if (!buf[5]) {
 			response = 501;
 		} else {
@@ -1152,7 +1157,7 @@ kftpd_handle_command (server_parms_t *parms)
 			append_path(path, &buf[5]);
 			response = do_delete(parms, path);
 		}
-	} else if (!strncmp(buf, "LIST", 4) || !strncmp(buf, "NLST", 4)) {
+	} else if (!strxcmp(buf, "LIST", 1) || !strxcmp(buf, "NLST", 1)) {
 		int j = 4;
 		if (buf[j] == ' ' && buf[j+1] == '-')
 			while (buf[++j] && buf[j] != ' ');
@@ -1168,7 +1173,7 @@ kftpd_handle_command (server_parms_t *parms)
 			if (!response)
 				response = 226;
 		}
-	} else if (!strncmp(buf, "RETR ", 5) || !strncmp(buf, "STOR ", 5)) {
+	} else if (!strxcmp(buf, "RETR ", 1) || !strxcmp(buf, "STOR ", 1)) {
 		if (!buf[5]) {
 			response = 501;
 		} else {

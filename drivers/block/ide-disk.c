@@ -367,8 +367,10 @@ static ide_startstop_t recal_intr (ide_drive_t *drive)
 {
 	byte stat = GET_STAT();
 
-	if (!OK_STAT(stat,READY_STAT,BAD_STAT))
-		return ide_error(drive, "recal_intr", stat);
+	if (!OK_STAT(stat,READY_STAT,BAD_STAT)) {
+		//return ide_error(drive, "recal_intr", stat);
+		printk("Recal_intr: failed, stat=%02x, err=%02x (ignored)\n", stat, GET_ERR());
+	}
 	return ide_stopped;
 }
 
@@ -540,6 +542,7 @@ static ide_startstop_t idedisk_special (ide_drive_t *drive)
 
 	if (s->b.set_geometry) {
 		s->b.set_geometry = 0;
+printk("%s: set_geom(%u,%u,%u)\n", drive->name, drive->cyl, drive->head, drive->sect);
 		OUT_BYTE(drive->sect,IDE_SECTOR_REG);
 		OUT_BYTE(drive->cyl,IDE_LCYL_REG);
 		OUT_BYTE(drive->cyl>>8,IDE_HCYL_REG);
@@ -568,8 +571,10 @@ static ide_startstop_t idedisk_special (ide_drive_t *drive)
 static void idedisk_pre_reset (ide_drive_t *drive)
 {
 	drive->special.all = 0;
-	drive->special.b.set_geometry = 1;
-	drive->special.b.recalibrate  = 1;
+	if (!drive->select.b.lba) {	// newer drives may not support these..
+		drive->special.b.set_geometry = 1;
+		drive->special.b.recalibrate  = 1;
+	}
 	if (OK_TO_RESET_CONTROLLER)
 		drive->mult_count = 0;
 	if (!drive->keep_settings)

@@ -90,6 +90,7 @@ typedef struct server_parms_s {
 	char			use_http;		// bool
 	char			have_portaddr;		// bool
 	char			icy_metadata;		// bool
+	char			streaming;		// bool
 	char			apple_iTunes;		// bool
 	char			need_password;		// bool, FTP only
 	char			rename_pending;		// bool
@@ -97,7 +98,6 @@ typedef struct server_parms_s {
 	char			show_dotfiles;		// bool
 	char			nodata;			// bool
 	char			method_head;		// bool
-	char			spare1;
 	char			spare0;
 	unsigned short		data_port;
 	off_t			start_offset;		// starting offset for next FTP/HTTP file transfer
@@ -2013,7 +2013,10 @@ khttpd_handle_connection (server_parms_t *parms)
 		if (*x == '\n') {
 			if (!strxcmp(x, "\nUser-Agent: iTunes", 1) || !strxcmp(x, "\nUA-OS: MacOS", 1)) {
 				parms->apple_iTunes = 1;
+			} else if (!strxcmp(x, "\nUser-Agent: NSPlayer", 1)) {	// WinMediaPlayer (?)
+				parms->streaming = 1;
 			} else if (!strxcmp(x, "\nIcy-MetaData:1", 1)) {
+				parms->streaming = 1;
 				parms->icy_metadata = 1;
 			} else if (!strxcmp(x, Host, 1) && *(x += sizeof(Host) - 1)) {
 				unsigned char *h = x;
@@ -2087,7 +2090,7 @@ khttpd_handle_connection (server_parms_t *parms)
 			response = convert_rcode(send_dirlist(parms, path, 1));
 		else
 			response = &access_not_permitted;
-	} else if (hijack_khttpd_files || get_mime_type(path, NULL) || (hijack_khttpd_playlists && parms->icy_metadata)) {
+	} else if (hijack_khttpd_files || get_mime_type(path, NULL) || (hijack_khttpd_playlists && parms->streaming)) {
 		response = convert_rcode(send_file(parms, path));
 	} else {
 		response = &access_not_permitted;

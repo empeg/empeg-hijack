@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v214"
+#define HIJACK_VERSION	"v215"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -4152,8 +4152,8 @@ hijack_process_config_ini (char *buf, int invocation_count)
 	set_drive_spindown_times();
 }
 
-static void
-fix_visuals (unsigned char *buf)
+void
+hijack_fix_visuals (unsigned char *buf)
 {
 	restore_carvisuals = 0;
 	if (carvisuals_enabled) {
@@ -4328,8 +4328,9 @@ hijack_init (void *animptr)
 	hijack_initq(&hijack_userq);
 	menu_init();
 	hijack_notify_init();
-	if (empeg_on_dc_power)
-		fix_visuals(buf);
+	// this now gets done in empeg_state.c
+	//if (empeg_on_dc_power)
+	//	hijack_fix_visuals(buf);
 	if (failed)
 		show_message("Settings have been lost", HZ*7);
 	else

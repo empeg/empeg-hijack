@@ -731,6 +731,12 @@ void __init empeg_state_init(void)
 
 	/* Fetch the last correct state from flash into buffer */
 	state_fetch(dev->buffers[0]);
+{
+	extern int empeg_on_dc_power;
+	extern void hijack_fix_visuals(char *);
+	if (empeg_on_dc_power)
+		hijack_fix_visuals(dev->buffers[0]);
+}
 
 	/* Copy the current state to other buffer */
 	memcpy(dev->buffers[1],dev->buffers[0],STATE_BLOCK_SIZE);

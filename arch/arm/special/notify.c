@@ -22,6 +22,7 @@
 
 extern int hijack_reboot;										// hijack.c
 extern int do_remount(const char *dir,int flags,char *data);						// fs/super.c
+extern int get_filesystem_info(char *);									// fs/super.c
 extern int hijack_supress_notify, hijack_reboot;							// hijack.c
 extern int get_number (unsigned char **src, int *target, unsigned int base, const char *nextchars);	// hijack.c
 extern void input_append_code(void *dev, unsigned long button);						// hijack.c
@@ -242,35 +243,6 @@ static struct proc_dir_entry proc_screen_raw_entry = {
 	&hijack_proc_screen_raw_read, /* get_info() */
 };
 
-#define DRIVE0		1
-#define DRIVE1		2
-
-static int
-remount_drives (int writeable, int which)
-{
-	int rc0 = 0, rc1, flags = writeable ? (MS_NODIRATIME | MS_NOATIME) : MS_RDONLY;
-	char *mount_opts = "nocheck";
-
-	show_message(writeable ? "Remounting read-write.." : "Remounting read-only..", 99*HZ);
-
-	lock_kernel();
-	if (which & DRIVE0)
-		rc0 = do_remount("/drive0", flags, mount_opts);
-	if (which & DRIVE1) {
-		rc1 = do_remount("/drive1", flags, mount_opts);     // returns -EINVAL on 1-drive systems
-		if (rc1 != -EINVAL && !rc0)
-			rc0 = rc1;
-	}
-	rc1 = do_remount("/", flags, mount_opts);
-	if (!rc1)
-		rc1 = rc0;
-	unlock_kernel();
-	sync();
-	sync();
-	show_message(rc1 ? "Failed" : "Done", HZ);
-	return rc1;
-}
-
 #define INRANGE(c,min,max)	((c) >= (min) && (c) <= (max))
 #define TOUPPER(c)		(INRANGE((c),'a','z') ? ((c) - ('a' - 'A')) : (c))
 
@@ -286,6 +258,50 @@ strxcmp (const char *str, const char *pattern, int partial)
 			return 1;	// did not match
 	}
 	return (!partial && *str);	// 0 == matched; 1 == not matched
+}
+
+static int
+remount_drives (int writeable)
+{
+	int	len, flags;
+	char	buf[256], *b, *message, *match, mount_opts[] = "nocheck";
+
+	if (writeable) {
+		flags = (MS_NODIRATIME | MS_NOATIME);
+		message = "Remounting read-write";
+		match = "ext2 ro";
+	} else {
+		flags = MS_RDONLY;
+		message = "Remounting read-only";
+		match = "ext2 rw";
+	}
+		
+	show_message(message, 99*HZ);
+	lock_kernel();
+	len = get_filesystem_info(buf);
+	buf[len] = '\0';
+	for (b = buf; *b;) {
+		unsigned char *fsname, *fstype;
+		while (*++b != ' ');
+		fsname = ++b;
+		while (*++b != ' ');
+		*b = '\0';
+		fstype = ++b;
+		while (*++b != ' ');
+		while (*++b != ' ');
+		*b++ = '\0';
+		if (!strxcmp(fstype, match, 1)) {
+			printk("hijack: %s: %s\n", message, fsname); 
+			(void)do_remount(fsname, flags, mount_opts);
+		}
+		while (*b && *b++ != '\n');
+	}
+	unlock_kernel();
+	sync();
+	sync();
+	show_message("Done", HZ);
+	printk("hijack: Done\n");
+	return 0;
 }
 
 #define RELEASECODE(b)	(((b) > 0xf) ? (b) | 0x80000000 : (b) | 1)
@@ -340,18 +356,12 @@ hijack_do_command (const char *buffer, unsigned int count)
 			s = do_button(s+7, 0);
 		} else if (!strxcmp(s, "BUTTONRAW ", 1)) {
 			s = do_button(s+10, 1);
-		} else if (!strxcmp(s, "RW /", 0)) {
-			rc = remount_drives(1, 0);
-		} else if (!strxcmp(s, "RW /drive0", 0)) {
-			rc = remount_drives(1, DRIVE0);
-		} else if (!strxcmp(s, "RW /drive1", 0)) {
-			rc = remount_drives(1, DRIVE1);
 		} else if (!strxcmp(s, "RW", 0)) {
-			rc = remount_drives(1, DRIVE0|DRIVE1);
+			rc = remount_drives(1);
 		} else if (!strxcmp(s, "RO", 0)) {
-			rc = remount_drives(0, DRIVE0|DRIVE1);
+			rc = remount_drives(0);
 		} else if (!strxcmp(s, "REBOOT", 0)) {
-			remount_drives(0, DRIVE0|DRIVE1);
+			remount_drives(0);
 			hijack_reboot = 1;
 		} else if (!strxcmp(s, "POPUP ", 1)) {
 			int secs;

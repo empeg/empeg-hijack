@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v209"
+#define HIJACK_VERSION	"v210"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -219,10 +219,11 @@ static button_name_t button_names[] = {
 	{IR_RIO_NEXTTRACK_PRESSED,	"Track+"},
 	{IR_RIO_MENU_PRESSED|ALT,	"Ok"},
 	{IR_RIO_MENU_PRESSED,		"Menu"},
-	{IR_RIO_VOLMINUS_PRESSED|ALT,	"VolUp"},
+	{IR_RIO_VOLMINUS_PRESSED|ALT,	"VolDown"},
 	{IR_RIO_VOLMINUS_PRESSED,	"Vol-"},
-	{IR_RIO_VOLPLUS_PRESSED|ALT,	"VolDown"},
+	{IR_RIO_VOLPLUS_PRESSED|ALT,	"VolUp"},
 	{IR_RIO_VOLPLUS_PRESSED,	"Vol+"},
+	{IR_RIO_VOLPLUS_PRESSED,	"Vol "},	// for http "button=vol+", where '+' becomes a space..
 	{IR_RIO_INFO_PRESSED|ALT,	"Detail"},
 	{IR_RIO_INFO_PRESSED,		"Info"},
 	{IR_RIO_VISUAL_PRESSED|ALT,	"Visual+"},

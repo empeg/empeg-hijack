@@ -1810,7 +1810,7 @@ fromhex (unsigned char x)
 		return x - '0';
 	x = TOUPPER(x);
 	if (INRANGE(x, 'A', 'F'))
-		return x - 'A';
+		return x - 'A' + 10;
 	return 16;
 }
 
@@ -1909,7 +1909,6 @@ khttpd_handle_connection (server_parms_t *parms)
 	*p = '\0'; // zero-terminate the GET line
 	if (parms->verbose)
 		printk(KHTTPD": GET '%s'\n", path);
-	path = khttpd_fix_hexcodes(path);
 	// a useful shortcut
 	if (!strxcmp(path, "/?playlists", 1)) {
 		khttpd_redirect(parms, "/drive0/fids/101?.htm");
@@ -1922,6 +1921,7 @@ khttpd_handle_connection (server_parms_t *parms)
 			break;
 		}
 	}
+	path = khttpd_fix_hexcodes(path);
 	if (cmds && *cmds) {
 		char *end;
 
@@ -1932,6 +1932,7 @@ khttpd_handle_connection (server_parms_t *parms)
 			else if (c == '&')
 				*p = ';';
 		}
+		cmds = khttpd_fix_hexcodes(cmds);
 		end = cmds + strlen(cmds);
 		if ((end - cmds) >= 4) {
 			char *saved = end;

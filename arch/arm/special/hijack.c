@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v410"
+#define HIJACK_VERSION	"v411"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -1955,7 +1955,7 @@ menuexec_display (int firsttime)
 	clear_hijack_displaybuf(COLOR0);
 	rowcol = draw_string(ROWCOL(0,0), "Execute this Command? ", PROMPTCOLOR);
 	(void)   draw_string_spaced(rowcol, no_yes[!hijack_menuexec_no], ENTRYCOLOR);
-	rowcol = draw_string(ROWCOL(2,0), (char *)hijack_userdata, PROMPTCOLOR);
+	rowcol = draw_string(ROWCOL(2,0), (char *)hijack_userdata, COLOR1);
 	return NEED_REFRESH;
 }
 
@@ -4105,10 +4105,10 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	if (hijack_dispfunc == message_display) {
 		untrigger_blanker();
 	} else if (blanker_timeout) {
+		int is_paused = 0;
+		if (get_current_mixer_source() == IR_FLAGS_MAIN && ((*empeg_state_writebuf)[0x0c] & 0x02) == 0)
+			is_paused = 1;
 		if (jiffies_since(blanker_lastpoll) >= (4*HZ/3)) {  // use an oddball interval to avoid patterns
-			int is_paused = 0;
-			if (get_current_mixer_source() == IR_FLAGS_MAIN && ((*empeg_state_writebuf)[0x0c] & 0x02) == 0)
-				is_paused = 1;
 			blanker_lastpoll = jiffies;
 			if (!is_paused && screen_compare((unsigned long *)blanker_lastbuf, (unsigned long *)buf)) {
 				memcpy(blanker_lastbuf, buf, EMPEG_SCREEN_BYTES);
@@ -4123,7 +4123,8 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 				buf = player_buf;
 				memset(buf, 0, EMPEG_SCREEN_BYTES);
 				refresh = NEED_REFRESH;
-				if (get_current_mixer_source() == IR_FLAGS_MAIN && hijack_standby_minutes > 0) {
+				//if (get_current_mixer_source() == IR_FLAGS_MAIN && hijack_standby_minutes > 0) {
+				if (is_paused && hijack_standby_minutes > 0) {
 					if (jiffies_since(blanker_triggered) >= ((hijack_standby_minutes * 60 * HZ) + minimum)) {
 						save_flags_cli(flags);
 						hijack_enq_button_pair(IR_RIO_SOURCE_PRESSED|BUTTON_FLAGS_LONGPRESS);

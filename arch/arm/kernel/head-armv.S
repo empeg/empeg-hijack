@@ -152,35 +152,6 @@ __create_page_tables:
 		str	r3, [r0], #4
 		teq	r0, r2
 		bne	1b
-
-		/*
-		 * We need early access to the second and fourth DRAM banks, so that the kernel
-		 * proper can test for extended memory on the Empegs at startup time.
-		 */
-		add	r0, r4, #(TEXTADDR - 0x8000) >> 18	@ c000_0000
-
-		add	r0, r0, #16 << 2	@ point at entry for virtual c100_0000
-		mov	r3, #0xc8000000		@ physical = c800_0000 (first MB of second bank)
-		add	r3, r3, r8		@ combine with MMU flags
-		bic	r3, r3, #0x0c		@ clear C&B (Cachable and Bufferable) bits
-		str	r3, [r0]		@ save page table entry for virtual c100_0000
-
-		sub	r0, r0, #4 << 2		@ point at entry for virtual c0c0_0000
-		mov	r3, #0xd8000000		@ physical = d800_0000 (first MB of fourth bank)
-		add	r3, r3, r8		@ combine with MMU flags
-		bic	r3, r3, #0x0c		@ clear C&B (Cachable and Bufferable) bits
-		str	r3, [r0]		@ save page table entry for virtual c0c0_0000
-
-		/*
-		 * We also need early access to the memory controller registers,
-		 * so that the kernel can enable the bank selects for extra DRAM.
-		 */
-		add	r0, r4, #0xfc000000 >> 18	@ virtual  = fc00_0000 (same as main kernel uses)
-		mov	r3, #0xa0000000			@ physical = a000_0000
-		orr	r3, r3, r8			@ MMU flags
-		bic	r3, r3, #0x0c			@ clear C&B (Cachable and Bufferable) bits
-		str	r3, [r0]			@ save page table entry
-
 		/*
 		 * Create identity mapping for first MB of kernel.
 		 * map in four sections (4MB) for kernel.

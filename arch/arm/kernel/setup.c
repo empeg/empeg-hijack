@@ -452,63 +452,90 @@ static struct machine_desc machine_desc[] __initdata = {
 };
 
 #ifdef CONFIG_EMPEG_EXTRA_RAM
-static unsigned long check_for_extra_dram (unsigned long mem_end)
+
+#define ONE_MB		(1024 * 1024)
+#define _16MB		(PAGE_OFFSET + (16 * ONE_MB))
+#define NPATTERNS	8
+
+volatile unsigned long patterns [NPATTERNS]
+	= {0xffffffff, 0x55555555, 0xaaaaaaaa, 0xffff0000, 0x0000ffff, 0x00ff00ff, 0xff00ff00, 0x00000000};
+
+static int test_1MB_dram (unsigned long addr)
 {
-	// The arch/arm/kernel/head-armv.S entry code sets up temporary MMU mappings
-	// for the 1MB section at virtual=0xc0f00000 (physical=0xc0c00000)
-	// and for the 1MB section at virtual=0xc1000000 (physical=0xc8000000).
-	// This allows us to access and test for the existance of extended memory here.
-	//
-	// Upgraded players must have the newer e000 ROM which enables additional banks.
-	//
-	// The code below does a rudimentry memory test of 1MB, and enables use of the
-	// extra memory size if that test succeeds.  Oddly enough, even though we mapped
-	// this as unbuffered and uncacheable, an immediate readback works even when
-	// memory is not present, so we have to be a little more complicated than otherwise.
+	unsigned long start = addr, end = addr + ONE_MB;
+	unsigned int i;
 
-	#define ONE_MB		(1024 * 1024)
-	#define _16MB		(PAGE_OFFSET + (16 * ONE_MB))
-	#define NPATTERNS	4	// must be an even power of two
-
-	unsigned int p, i;
-	volatile unsigned long *memctl = (void *)0xfc000000, *test, *end;
-	unsigned long patterns[NPATTERNS] = {0x00000000, 0x55555555, 0xaaaaaaaa, 0xffffffff};
-
-	// Access the memory controller and turn on all 4 DRAM banks:
-	*memctl = (*memctl) | 15;
-
-	// Figure out where the "extra" 1MB will appear, based on player type:
-	if (mem_end < _16MB)
-		test = (void *)(_16MB - (4 * ONE_MB));	// Mk1, Mk2
-	else
-		test = (void *)(_16MB);			// Mk2a
-
-	// Walk over 1MB of theoretical extra memory, testing to see if it exists and works:
-	for (end = test + (ONE_MB / sizeof(long)); test != end; test += NPATTERNS) {
-		for (p = 0; p < NPATTERNS; ++p) {
-			for (i = 0; i < NPATTERNS; ++i) {
-				unsigned int tp = (i + p) & (NPATTERNS-1); 
-				test[i] = patterns[tp];
-			}
-			for (i = 0; i < NPATTERNS; ++i) {
-				unsigned int tp = (i + p) & (NPATTERNS-1); 
-				if (test[i] != patterns[tp]) {
-					// Try and make the error message not look "alarming":
-					printk("Checking for extra DRAM at %p: wrote %08lx, read %08lx\n",
-						&(test[i]), patterns[tp], test[i]);
-					return mem_end;		// exit, no change in memory size
-				}
+	// Walk over theoretical extra memory, testing to see if it exists and works:
+	do {
+		volatile unsigned long *test = (void *)addr;
+		for (i = 0; i < NPATTERNS; ++i) {
+			test[i] = patterns[i];
+		}
+		for (i = 0; i < NPATTERNS; ++i) {
+			if (test[i] != patterns[i]) {
+				printk("%p: wrote %08lx, read %08lx\n", test + i, patterns[i], test[i]);
+				return 1; // failed
 			}
 		}
+		if ((addr & 0xf0000) == 0)
+			addr += sizeof(patterns);	// first 64KB: exhaustive test of all locations
+		else
+			addr += 0x10000;		// subsequent 64KB chunks: spot checks only
+	} while (addr != end);
+	printk("%08lx: passed.\n", start);
+	return 0; // passed
+}
+
+static unsigned long check_for_extra_dram (unsigned long mem_end)
+{
+	unsigned long banks, mem_max, mmu_flags = 0x402; // RW=supervisor_only, C=0, B=0, 1MB_section
+	volatile pgd_t *pagedir = (void *)0xc0004000;
+	volatile unsigned long memctl, *memctl_p = (void *)0xfc000000;
+	int is_mk2a;
+
+	// Map MMU registers:
+	pagedir[0xfc000000 >> 20].pgd = 0xa0000000 | mmu_flags;
+
+	// Access the memory controller and turn on all 4 DRAM banks:
+	printk("Checking for extra DRAM:\n");
+	memctl = *memctl_p;
+	*memctl_p = memctl | 0xf;
+
+	// Determine the maximum possible installed DRAM for this configuration:
+	if (mem_end == _16MB) {
+		is_mk2a = 1;
+		mem_max = _16MB + (48 * ONE_MB);
+	} else {
+		is_mk2a = 0;
+		mem_max = _16MB;
 	}
-	if (mem_end < _16MB)
-		mem_end = _16MB;			// Mk1, Mk2: 16MB total
-	else
-		mem_end = _16MB + (16 * ONE_MB);	// Mk2a: 32MB total
+
+	// Loop over possible extra DRAM, 1MB at a time, doing  map/test/extend:
+	for (; mem_end != mem_max; mem_end += ONE_MB) {
+		volatile pgd_t *t = &pagedir[mem_end >> 20];
+		unsigned long phy;
+		if (is_mk2a)
+			phy = ((mem_end & 0x03000000) << 3) + 0xc0000000; // 16MB banks
+		else
+			phy = ((mem_end & 0x00c00000) << 5) + 0xc0000000; // 4MB banks
+		t->pgd = phy | mmu_flags;	// map 1MB DRAM section
+		if (test_1MB_dram(mem_end)) {
+			t->pgd = 0;		// unmap failed section
+			break;
+		}
+	}
+
+	// Access the memory controller and enable only the required DRAM banks:
+	banks = (mem_end >> 20) & 0x7f;
+	banks = is_mk2a ? (banks + 15) >> 4 : ((banks + 3) >> 2);
+	banks = ((1 << banks) - 1);
+	*memctl_p = memctl | banks;
+
 	return mem_end;
 }
-#endif
+#endif	// CONFIG_EMPEG_EXTRA_RAM
 
+extern int __init fpe_init(void);
 
 void __init
 setup_arch(char **cmdline_p, unsigned long * memory_start_p, unsigned long * memory_end_p)

@@ -110,7 +110,7 @@ static const knob_pair_t knobdata_pairs[1<<KNOBDATA_BITS] = {
 
 #define KNOBMENU_SIZE KNOBDATA_SIZE	// indexes share the same bits in flash..
 static int knobmenu_index = 0;
-static const char *knobmenu_labels[] = {" Info+ ", " Mark ", " Repeat ", " SelMode ", " Shuffle ", " Source ", " Tuner ", " Visuals+ "};
+static const char *knobmenu_labels[] = {" Info+ ", " Mark ", " Repeat ", " SelMode ", " Shuffle ", " Source ", " Tuner+ ", " Visuals+ "};
 static const knob_pair_t knobmenu_pairs[KNOBMENU_SIZE] = {
 	{IR_RIO_INFO_PRESSED,		IR_RIO_INFO_RELEASED},
 	{IR_RIO_MARK_PRESSED,		IR_RIO_MARK_RELEASED},
@@ -168,9 +168,9 @@ static unsigned int hijack_voladj_parms[(1<<VOLADJ_BITS)-1][5] = { // Values as 
 
 // Externally tuneable parameters for config.ini; the voladj_parms are also tuneable
 static hijack_buttonq_t hijack_inputq, hijack_playerq, hijack_userq;
-static int hijack_button_pacing			=  4;	// minimum spacing between press/release pairs within playerq
+static int hijack_button_pacing			=  8;	// minimum spacing between press/release pairs within playerq
 static int hijack_temperature_correction	= -4;	// adjust all h/w temperature readings by this celcius amount
-static int hijack_block_notify			=  0;	// 1 == block player "notify" strings from serial port
+static int hijack_block_notify			=  0;	// 1 == block player "notify" (and "dhcp") lines from serial port
 static int hijack_old_style			=  0;	// 1 == don't highlite menu items
 
 typedef struct hijack_option_s {
@@ -1542,7 +1542,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v87 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v88 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -3055,23 +3055,25 @@ hijack_restore_settings (unsigned char *buf)
 				restore_carvisuals = 4;
 				break;
 			case 0x020005: // transient (beta7)
+			case 0x021105: // transient (beta7)
 				restore_carvisuals = 5;
 				break;
 		  //	case 0x020403: // track (beta3, beta6, beta7)
 		  //	case 0x020404: // now&next (beta3, beta6)
 		  //	case 0x020405: // now&next (beta7)
+		  //	case 0x021505: // now&next (beta7)
 		  //	case 0x020404: // infoseek (beta7)
 		}
 		if (restore_carvisuals) {
 #else // not so obvious, but tiny and fast
-		if (buf[0x4c] == 0) {
-			restore_carvisuals = buf[0x40] + buf[0x4d] - 2;
+		if ((buf[0x4c] & 0x04) == 0) {	// visuals visible ?
+			restore_carvisuals = (buf[0x40] & 3) + (buf[0x4d] & 5) - 2;
 #endif // 0
 			// switch to "track" mode on startup (because it's easy to detect later one),
 			// and then restore the original mode when the track info appears in the screen buffer.
-			buf[0x40] = 0x02;
-			buf[0x4c] = 0x04;
-			buf[0x4d] = 0x03;
+			buf[0x40] = (buf[0x40] & ~0x03) | 0x02;
+			buf[0x4c] =  buf[0x4c]          | 0x04;
+			buf[0x4d] = (buf[0x4d] & ~0x07) | 0x03;
 			empeg_state_dirty = 1;
 		}
 	}

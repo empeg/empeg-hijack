@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v186"
+#define HIJACK_VERSION	"v187"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -151,7 +151,8 @@ typedef struct button_name_s {
 #define IR_FAKE_POPUP1		IR_NULL_BUTTON-5
 #define IR_FAKE_POPUP0		IR_NULL_BUTTON-6
 #define IR_FAKE_VOLADJ		IR_NULL_BUTTON-7
-#define IR_FAKE_NEXTSRC		IR_NULL_BUTTON-8	// This MUST be last on this list!!
+#define IR_FAKE_KNOBSEEK	IR_NULL_BUTTON-8
+#define IR_FAKE_NEXTSRC		IR_NULL_BUTTON-9	// This MUST be the lowest numbered FAKE code
 
 #define ALT BUTTON_FLAGS_ALTNAME
 static button_name_t button_names[] = {
@@ -159,8 +160,9 @@ static button_name_t button_names[] = {
 	{IR_FAKE_POPUP1,		"PopUp1"},	// index 1 assumed later in hijack_option_table[]
 	{IR_FAKE_POPUP2,		"PopUp2"},	// index 2 assumed later in hijack_option_table[]
 	{IR_FAKE_POPUP3,		"PopUp3"},	// index 3 assumed later in hijack_option_table[]
-	{IR_FAKE_NEXTSRC,		"NextSrc"},
 	{IR_FAKE_VOLADJ,		"VolAdj"},
+	{IR_FAKE_KNOBSEEK,		"KnobSeek"},
+	{IR_FAKE_NEXTSRC,		"NextSrc"},
 
 	{IR_FAKE_INITCAR,		"Initial.C"},
 	{IR_FAKE_INITHOME,		"Initial.H"},
@@ -254,7 +256,7 @@ static char *get_button_name (unsigned int button, char *buf)
 
 #define KNOBDATA_BITS 3
 #define KNOBDATA_SIZE (1 << KNOBDATA_BITS)
-static int knobdata_index = 0, hijack_knobjog = 0;
+static int knobdata_index = 0, hijack_knobseek = 0;
 static int popup0_index = 0;		// (PopUp0) saved/restored index
 
 #ifdef EMPEG_KNOB_SUPPORTED
@@ -451,7 +453,6 @@ static const char onedrive_menu_label	[] = "Hard Disk Detection";
 static const char hightemp_menu_label	[] = "High Temperature Warning";
 static const char homework_menu_label	[] = "Home/Work Location";
 static const char knobdata_menu_label	[] = "Knob Press Redefinition";
-static const char knobjog_menu_label	[] = "Knob Rotate Redefinition";
 static const char carvisuals_menu_label	[] = "Restore DC/Car Visuals";
 static const char blankerfuzz_menu_label[] = "Screen Blanker Sensitivity";
 static const char blanker_menu_label	[] = "Screen Blanker Timeout";
@@ -497,7 +498,7 @@ typedef struct menu_item_s {
 static volatile short menu_item = 0, menu_size = 0, menu_top = 0;
 
 // format of eight-byte flash memory savearea used for our hijack'd settings
-static struct sa_struct {
+typedef struct hijack_savearea_s {
 	unsigned voladj_ac_power	: VOLADJ_BITS;		// 2 bits
 	unsigned blanker_timeout	: BLANKER_BITS;		// 6 bits
 
@@ -509,7 +510,7 @@ static struct sa_struct {
 	unsigned onedrive		: 1;			// 1 bit
 	unsigned timer_action		: TIMERACTION_BITS;	// 1 bit
 	unsigned force_power		: FORCEPOWER_BITS;	// 2 bits
-	unsigned knobjog		: 1;			// 1 bits
+	unsigned byte3_leftover1	: 1;			// 1 bits (was seek)
 	unsigned homework		: 1;			// 1 bits
 	unsigned byte3_leftover		: 1;			// 1 bits
 
@@ -521,7 +522,7 @@ static struct sa_struct {
 
 	unsigned menu_item		: MENU_BITS;		// 5 bits
 	unsigned blanker_sensitivity	: SENSITIVITY_BITS;	// 3 bits
-} hijack_savearea;
+} hijack_savearea_t;
 
 static unsigned char hijack_displaybuf[EMPEG_SCREEN_ROWS][EMPEG_SCREEN_COLS/2];
 
@@ -1740,30 +1741,36 @@ knobdata_display (int firsttime)
 	return NEED_REFRESH;
 }
 
+static unsigned long knobseek_lasttime;
+
 static void
-knobjog_move (int direction)
+knobseek_move (int direction)
 {
-	hijack_knobjog = !hijack_knobjog;
-	empeg_state_dirty = 1;
+	unsigned int button;
+
+	if (jiffies_since(knobseek_lasttime) >= (HZ/4)) {
+		knobseek_lasttime = jiffies;
+		button = (direction > 0) ? IR_RIGHT_BUTTON_PRESSED : IR_LEFT_BUTTON_PRESSED;
+		hijack_enq_button_pair(button);
+	}
 }
 
-static const char *knobjog_msg[2] = {"Volume", "Next/Prev"};
-
 static int
-knobjog_display (int firsttime)
+knobseek_display (int firsttime)
 {
-	unsigned int rowcol;
+	static const hijack_geom_t geom = {8, 8+6+KFONT_HEIGHT, 20, EMPEG_SCREEN_COLS-20};
 
-	if (firsttime)
-		ir_numeric_input = &hijack_knobjog;	// allows cancel/top to reset it to 0
-	else if (!hijack_last_moved)
-		return NO_REFRESH;
-	hijack_last_moved = 0;
-	clear_hijack_displaybuf(COLOR0);
-	(void)draw_string(ROWCOL(0,0), knobjog_menu_label, PROMPTCOLOR);
-	rowcol = draw_string(ROWCOL(2,0), "Knob Rotate = ", PROMPTCOLOR);
-	(void)draw_string_spaced(rowcol, knobjog_msg[hijack_knobjog], ENTRYCOLOR);
-	return NEED_REFRESH;
+	if (firsttime) {
+		unsigned int rowcol = (geom.first_row+4)|((geom.first_col+6)<<16);
+		create_overlay(&geom);
+		rowcol = draw_string(rowcol, "Knob \"Seek\" Mode", COLOR3);
+		hijack_knobseek = 1;
+		knobseek_lasttime = hijack_last_moved = jiffies ? jiffies : -1;
+	} else if (jiffies_since(hijack_last_moved) >= (HZ*5)) {
+		hijack_knobseek = 0;
+		hijack_deactivate(HIJACK_IDLE);
+	}
+	return NO_REFRESH;	// gets overridden if overlay still active
 }
 
 #endif // EMPEG_KNOB_SUPPORTED
@@ -2295,7 +2302,6 @@ static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 	{ homework_menu_label,		homework_display,	homework_move,		0},
 #ifdef EMPEG_KNOB_SUPPORTED
 	{ knobdata_menu_label,		knobdata_display,	knobdata_move,		0},
-	{ knobjog_menu_label,		knobjog_display,	knobjog_move,		0},
 #endif // EMPEG_KNOB_SUPPORTED
 	{"Reboot Machine",		reboot_display,		NULL,			0},
 	{ carvisuals_menu_label,	carvisuals_display,	carvisuals_move,	0},
@@ -2766,21 +2772,19 @@ hijack_handle_button (unsigned int button, unsigned long delay, int any_ui_is_ac
 			}
 			ir_knob_down = 0;
 			break;
+		case IR_FAKE_KNOBSEEK:
+			activate_dispfunc(knobseek_display, knobseek_move);
+			hijacked = 1;
+			break;
 		case IR_KNOB_RIGHT:
 			if (hijack_status != HIJACK_IDLE) {
 				hijack_move(1);
-				hijacked = 1;
-			} else if (hijack_knobjog) {
-				hijack_enq_button_pair(IR_RIGHT_BUTTON_PRESSED);
 				hijacked = 1;
 			}
 			break;
 		case IR_KNOB_LEFT:
 			if (hijack_status != HIJACK_IDLE) {
 				hijack_move(-1);
-				hijacked = 1;
-			} else if (hijack_knobjog) {
-				hijack_enq_button_pair(IR_LEFT_BUTTON_PRESSED);
 				hijacked = 1;
 			}
 			break;
@@ -3984,9 +3988,9 @@ hijack_process_config_ini (char *buf)
 		}
 	}
 	if (ir_setup_translations(buf))
-		show_message("[ir_translate] config errors", 5*HZ);
+		show_message("ir_translate config error", 5*HZ);
 	if (hijack_get_options(buf))
-		show_message("[hijack] config errors", 5*HZ);
+		show_message("hijack config error", 5*HZ);
 	if (ide_hwifs[0].drives[1].present || (MAX_HWIFS > 1 && ide_hwifs[1].drives[0].present)) {
 		remove_menu_entry(onedrive_menu_label);
 		hijack_onedrive = 0;
@@ -4082,92 +4086,69 @@ fix_visuals (unsigned char *buf)
 	}
 }
 
-#define HIJACK_SAVEAREA_OFFSET (128 - 2 - sizeof(hijack_savearea))
+#define HIJACK_SAVEAREA_OFFSET (128 - 2 - sizeof(hijack_savearea_t))
 
 void	// invoked from empeg_state.c
 hijack_save_settings (unsigned char *buf)
 {
 	unsigned int knob;
+	hijack_savearea_t savearea;
 
 	// save state
 	if (empeg_on_dc_power)
-		hijack_savearea.voladj_dc_power	= hijack_voladj_enabled;
+		savearea.voladj_dc_power = hijack_voladj_enabled;
 	else
-		hijack_savearea.voladj_ac_power	= hijack_voladj_enabled;
-	hijack_savearea.blanker_timeout		= blanker_timeout;
-	hijack_savearea.hightemp_threshold	= hightemp_threshold;
-	hijack_savearea.onedrive		= hijack_onedrive;
-	hijack_savearea.knobjog			= hijack_knobjog;
+		savearea.voladj_ac_power = hijack_voladj_enabled;
+	savearea.blanker_timeout	= blanker_timeout;
+	savearea.hightemp_threshold	= hightemp_threshold;
+	savearea.onedrive		= hijack_onedrive;
 	if (knobdata_index == 0) {
 		knob = (1 << KNOBDATA_BITS) | popup0_index;
 	} else {
 		knob = knobdata_index;
 	}
 	if (empeg_on_dc_power)
-		hijack_savearea.knob_dc = knob;
+		savearea.knob_dc = knob;
 	else
-		hijack_savearea.knob_ac = knob;
-	hijack_savearea.blanker_sensitivity	= blanker_sensitivity;
-	hijack_savearea.timer_action		= timer_action;
-	hijack_savearea.menu_item		= menu_item;
-	hijack_savearea.restore_visuals		= carvisuals_enabled;
-	hijack_savearea.fsck_disabled		= hijack_fsck_disabled;
-	hijack_savearea.force_power		= hijack_force_power;
-	hijack_savearea.homework		= hijack_homework;
-	hijack_savearea.byte3_leftover		= 0;
-	hijack_savearea.byte5_leftover		= 0;
-	hijack_savearea.byte6_leftover		= 0;
-	memcpy(buf+HIJACK_SAVEAREA_OFFSET, &hijack_savearea, sizeof(hijack_savearea));
+		savearea.knob_ac = knob;
+	savearea.blanker_sensitivity	= blanker_sensitivity;
+	savearea.timer_action		= timer_action;
+	savearea.menu_item		= menu_item;
+	savearea.restore_visuals	= carvisuals_enabled;
+	savearea.fsck_disabled		= hijack_fsck_disabled;
+	savearea.force_power		= hijack_force_power;
+	savearea.homework		= hijack_homework;
+	savearea.byte3_leftover		= 0;
+	savearea.byte5_leftover		= 0;
+	savearea.byte6_leftover		= 0;
+	memcpy(buf+HIJACK_SAVEAREA_OFFSET, &savearea, sizeof(savearea));
 }
 
-static void
-hijack_init (void)	// invoked from empeg_display.c
-{
-	extern void hijack_notify_init (void);
-	static int initialized = 0;
-
-	if (!initialized) {
-		initialized = 1;
-		reset_hijack_options();
-		(void)init_temperature();
-		hijack_initq(&hijack_inputq);
-		hijack_initq(&hijack_playerq);
-		hijack_initq(&hijack_userq);
-		menu_init();
-		hijack_notify_init();
-	}
-}
-
-void	// invoked first from empeg_display.c, and later again from empeg_state.c
-hijack_restore_settings (unsigned char *buf, int failed)
+static int
+hijack_restore_settings (char *buf)
 {
 	extern int empeg_state_restore(unsigned char *);	// arch/arm/special/empeg_state.c
-	static int second_pass = 0;
-	unsigned int knob;
+	unsigned int knob, failed;
+	hijack_savearea_t savearea;
 
-	// restore state
-	memcpy(&hijack_savearea, buf+HIJACK_SAVEAREA_OFFSET, sizeof(hijack_savearea));
+	failed = empeg_state_restore(buf);
+        memcpy(&savearea, buf+HIJACK_SAVEAREA_OFFSET, sizeof(savearea));
 
-	hijack_force_power		= hijack_savearea.force_power;
+	hijack_force_power		= savearea.force_power;
 	if (hijack_force_power & 2)
 		empeg_on_dc_power	= hijack_force_power & 1;
 	else
 		empeg_on_dc_power	= ((GPLR & EMPEG_EXTPOWER) != 0);
-	if (!second_pass++)
-		return;		// first time through, just get/set empeg_on_dc_power
-
-	hijack_init();
 
 	if (empeg_on_dc_power)
-		hijack_voladj_enabled	= hijack_savearea.voladj_dc_power;
+		hijack_voladj_enabled	= savearea.voladj_dc_power;
 	else
-		hijack_voladj_enabled	= hijack_savearea.voladj_ac_power;
-	hijack_homework			= hijack_savearea.homework;
-	blanker_timeout			= hijack_savearea.blanker_timeout;
-	hightemp_threshold		= hijack_savearea.hightemp_threshold;
-	hijack_onedrive			= hijack_savearea.onedrive;
-	hijack_knobjog			= hijack_savearea.knobjog;
-	knob = empeg_on_dc_power ? hijack_savearea.knob_dc : hijack_savearea.knob_ac;
+		hijack_voladj_enabled	= savearea.voladj_ac_power;
+	hijack_homework			= savearea.homework;
+	blanker_timeout			= savearea.blanker_timeout;
+	hightemp_threshold		= savearea.hightemp_threshold;
+	hijack_onedrive			= savearea.onedrive;
+	knob = empeg_on_dc_power ? savearea.knob_dc : savearea.knob_ac;
 	if ((knob & (1 << KNOBDATA_BITS)) == 0) {
 		popup0_index		= 0;
 		knobdata_index		= knob;
@@ -4175,17 +4156,38 @@ hijack_restore_settings (unsigned char *buf, int failed)
 		popup0_index		= knob & ((1 << KNOBDATA_BITS) - 1);
 		knobdata_index		= 1;
 	}
-	blanker_sensitivity		= hijack_savearea.blanker_sensitivity;
-	timer_action			= hijack_savearea.timer_action;
-	menu_item			= hijack_savearea.menu_item;
+	blanker_sensitivity		= savearea.blanker_sensitivity;
+	timer_action			= savearea.timer_action;
+	menu_item			= savearea.menu_item;
 	menu_init();
-	carvisuals_enabled		= hijack_savearea.restore_visuals;
-	hijack_fsck_disabled		= hijack_savearea.fsck_disabled;
+	carvisuals_enabled		= savearea.restore_visuals;
+	hijack_fsck_disabled		= savearea.fsck_disabled;
 
+	return failed;
+}
+
+unsigned long	// invoked once from empeg_display.c
+hijack_init (void *animptr)
+{
+	extern void hijack_notify_init (void);
+	int failed;
+	char savearea[128];
+	const unsigned long animstart = HZ/3;
+
+	hijack_game_animptr = animptr;
+	failed = hijack_restore_settings(savearea);
+	reset_hijack_options();
+	(void)init_temperature();
+	hijack_initq(&hijack_inputq);
+	hijack_initq(&hijack_playerq);
+	hijack_initq(&hijack_userq);
+	menu_init();
+	hijack_notify_init();
 	if (empeg_on_dc_power)
-		fix_visuals(buf);
+		fix_visuals(savearea);
 	if (failed)
-		show_message("Settings have been lost", 7*HZ);
+		show_message("Settings have been lost", HZ*7);
 	else
-		show_message(hijack_vXXX_by_Mark_Lord, HZ/6);
+		show_message(hijack_vXXX_by_Mark_Lord, animstart);
+	return animstart;
 }

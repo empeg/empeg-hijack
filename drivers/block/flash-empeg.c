@@ -87,9 +87,10 @@ static struct flash_sect_cache_struct {
 /*
  *  Macros to toggle WP pin for programming flash
  */
-#define WP_ON()		GPCR = EMPEG_FLASHWE
-#define WP_OFF()	GPSR = EMPEG_FLASHWE
 
+static struct semaphore flash_busy = MUTEX;
+#define WP_ON()		do {down(&flash_busy); GPCR = EMPEG_FLASHWE;} while (0)
+#define WP_OFF()	do {up(&flash_busy); GPSR = EMPEG_FLASHWE;} while (0)
 
 /* Flash commands.. */
 #define FlashCommandRead            0x00FF
@@ -166,16 +167,17 @@ static inline int full_status_check( unsigned short status_reg )
 	return TRUE;
 }                     
 
-
 /*********************************************************************
  *  Function:   erase_flash_sector
  *  Author:     Stephane Dalton
  *  History:    1999/02/18 -> creation
  *  Parameters: in->    address within the flash sector to erase
  *              out->   TRUE: sector erase FALSE otherwise
- *  Abstract:	DO NOT REMOVE the udelay call, because we have to 
- *		disable the interrupts to prevent further access to 
- *		the flash during erase
+ *  Abstract:	//DO NOT REMOVE the udelay call, because we have to 
+ *		//disable the interrupts to prevent further access to 
+ *		//the flash during erase
+ *              I've added a semaphore to control flash access,
+ *              so we can sleep instead of busy waiting.  -M.Lord
  *********************************************************************/
 static int erase_flash_sector(unsigned short *ptr)
 {
@@ -207,7 +209,9 @@ static int erase_flash_sector(unsigned short *ptr)
 	erase_loop_ctr = 0;
 
 	while (!(*flash_ptr & STATUS_BUSY)) {
-		udelay(1000L);
+		//udelay(1000L);
+		current->state = TASK_INTERRUPTIBLE;
+		schedule_timeout(1*HZ);
 
 		if(++erase_loop_ctr == ERASE_TIME_LIMIT) {
 			panic("Flash seems dead... too bad!\n");
@@ -241,9 +245,11 @@ static int erase_flash_sector(unsigned short *ptr)
  *			data addr to read from
  *                      size to write
  *              out->   TRUE: sector written FALSE otherwise
- *  Abstract:   DO NOT REMOVE the udelay call, because we have to
- *              disable the interrupts to prevent further access to
- *              the flash during write
+ *  Abstract:   //DO NOT REMOVE the udelay call, because we have to
+ *              //disable the interrupts to prevent further access to
+ *              //the flash during write
+ *              I've added a semaphore to control flash access,
+ *              so we can sleep instead of busy waiting.  -M.Lord
  *********************************************************************/
 static int write_flash_sector(unsigned short *ptr,const char* data,const int size)
 {
@@ -279,6 +285,7 @@ static int write_flash_sector(unsigned short *ptr,const char* data,const int siz
 		write_loop_ctrl = 0;
 
 		while (!(*flash_ptr&STATUS_BUSY)) {
+			schedule();
 			udelay(10L);
 
 			if(++write_loop_ctrl==WRITE_TIME_LIMIT) {
@@ -327,7 +334,6 @@ static int write_cached_data(void)
 		(flash_cache.state == CLEAN) ? "clean" : 
 		(flash_cache.state == UNUSED) ? "unused":"" );
 #endif
-
 	if(flash_cache.state == DIRTY){
 		flash_ptr = (unsigned short *)
 			(flash_start[flash_cache.minor] + flash_cache.start);
@@ -389,7 +395,9 @@ static int flash_cached_read(	char *buf,
 			/*
 			 *	Otherwise we read the data directly from flash
 			 */
+			down(&flash_busy);
 			memcpy( buf, flash_start[minor] + offset, size );
+			up(&flash_busy);
 #ifdef FLASH_DEBUG
 			printk("flash: READ from flash\n");
 #endif
@@ -462,9 +470,11 @@ static int flash_cached_write(	const char *buf,
 				 */
 				flash_cache.size=flash_sectorsizes[minor];
 				flash_cache.start=(offset&~(flash_cache.size-1));
+				down(&flash_busy);
 				memcpy(	flash_cache.buf, 
 					flash_start[minor] + flash_cache.start, 
 					flash_cache.size );
+				up(&flash_busy);
 				flash_cache.minor = minor;
 #ifdef FLASH_DEBUG
 				printk("flash.start = %d, minor = %d, size = %x, flash.buf = 0x%p\n",

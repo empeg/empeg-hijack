@@ -176,10 +176,6 @@ static unsigned int powerontime=0;
 static void powerfail_disabled_timeout(unsigned long);
 static void powerfail_reenabled_timeout(unsigned long);
 
-/* save hijack savearea for user-defined-menu settings */
-void hijack_save_settings (unsigned char *buf);
-void hijack_restore_settings (unsigned char *, int);
-
 void enable_powerfail(int enable)
 {
 	unsigned long flags;
@@ -298,7 +294,7 @@ static int state_fetch(unsigned char *buffer)
 	   the one we use */
 	int a;
 
-	hijack_restore_settings(buffer, empeg_state_restore(buffer));
+	(void)empeg_state_restore(buffer);
 
 	/* Nowhere to save, yet */
 	savebase=NULL;
@@ -357,6 +353,8 @@ static int state_fetch(unsigned char *buffer)
 
 static inline int state_store(void)
 {
+	extern void hijack_save_settings (unsigned char *buf);
+
 	/* Store the contents of read_buffer to flash, at savebase */
 	int a,status,crc=0xffff,data;
 	volatile unsigned short *from=(volatile unsigned short*)state_devices[0].read_buffer;

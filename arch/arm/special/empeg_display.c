@@ -661,7 +661,6 @@ static void display_queue_add(struct display_dev *dev)
 extern int empeg_on_dc_power;
 extern void hijack_handle_display (struct display_dev *, unsigned char *);
 extern int hijack_ioctl (struct inode *, struct file *, unsigned int, unsigned long);
-extern unsigned int *hijack_game_animptr;
 
 /* Display the current top of queue. If there isn't anything in the
    queue then just re-use the last one. */
@@ -770,8 +769,13 @@ static void display_animation(unsigned long animation_base)
 	   frame) */
 	init_timer(&animation_timer);
 	animation_timer.data=animation_base;
-	animation_timer.expires=(jiffies+((framenr==0)?(HZ/2):(HZ/ANIMATION_FPS)));
 	animation_timer.function=display_animation;
+	if (framenr >= 0) {
+		animation_timer.expires=(jiffies+((framenr==0)?(HZ/2):(HZ/ANIMATION_FPS)));
+	} else {
+		extern unsigned long hijack_init (void *);
+		animation_timer.expires = jiffies + hijack_init(frameptr);
+	}
 	add_timer(&animation_timer);
 
 	/* Next frame */
@@ -789,6 +793,7 @@ static void handle_splash(struct display_dev *dev)
 	int logo_type;
 	unsigned char *user_splash=(unsigned char*)(EMPEG_FLASHBASE+0xa000);
 	int animation_time=(3*HZ);
+	unsigned long animation_start;
 	unsigned long *ani_ptr;
 
 	unsigned long splash_signature = *((unsigned long *)user_splash);
@@ -820,19 +825,18 @@ static void handle_splash(struct display_dev *dev)
 		display_splash(dev, &rio_logo);
 	else
 		display_splash(dev, &empeg_logo);
+	animation_start = jiffies;
 #else
 	/* Display splash screen animation */
 	if ((logo_type & LOGO_MASK) == LOGO_RIO) {
-		display_animation((unsigned long)rio_ani);
 		ani_ptr=(unsigned long*)rio_ani;
-		hijack_game_animptr = (unsigned int *)empeg_ani;
 	} else {
-		display_animation((unsigned long)empeg_ani);
 		ani_ptr=(unsigned long*)empeg_ani;
-		hijack_game_animptr = (unsigned int *)rio_ani;
 	}
+	display_animation((unsigned long)ani_ptr);
 
 	/* Work out time to play animation: 1s (0.5 start & end) + frames */
+	animation_start=animation_timer.expires;
 	animation_time=HZ;
 	while(*ani_ptr++) animation_time+=(HZ/ANIMATION_FPS);
 #endif
@@ -841,7 +845,7 @@ static void handle_splash(struct display_dev *dev)
 	if (logo_type & LOGO_CUSTOM) {
 		printk("Scheduling custom logo.\n");
 		init_timer(&display_timer);
-		display_timer.expires=(jiffies+animation_time);
+		display_timer.expires=(animation_start + animation_time);
 
 		/* On AC or DC power? AC is first image, DC is second */
 		display_timer.data=(unsigned long)(user_splash+4);
@@ -1278,13 +1282,6 @@ void __init empeg_display_init(void)
 	udelay(1);
 #endif
 
-{
-	extern int empeg_state_restore (unsigned char *);
-	extern void hijack_restore_settings(unsigned char *, int);
-	// we need hijack to set-up AC/DC power mode for us
-	unsigned char buf[128];
-	hijack_restore_settings (buf, empeg_state_restore(buf));
-}
 	handle_splash(dev);
 	printk("empeg display initialised.\n");
 }

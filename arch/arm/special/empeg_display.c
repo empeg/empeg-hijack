@@ -941,7 +941,6 @@ int display_sendcontrol_part1(void)
 	if (empeg_hardwarerevision()<6) return 1;
 
 	save_flags_clif(flags);
-	//if (sendcontrol_busy || jiffies_since(sendcontrol_timestamp) < 1) {
 	if (sendcontrol_busy) {
 		restore_flags(flags);
 		return 1;
@@ -1020,6 +1019,7 @@ void hijack_set_standbyLED (int off_on)
 
 	save_flags_clif(flags);
 	LCCR0 = LCCR0 & ~LCCR0_LEN;		// disable LCD controller
+	while((LCSR&LCSR_LDD)==0);		// wait for controller off
 	PPDR  = PPDR | 0x201;			// configure LCDdataLine0 and LCLK as outputs
 	PPSR  = off_on ? (PPSR | 0x201) : ((PPSR | 0x200) & ~1);	// set LED on/off
 	restore_flags(flags);

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v287"
+#define HIJACK_VERSION	"v288"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -93,7 +93,7 @@ static void (*hijack_movefunc)(int) = NULL;
 #define BUTTON_FLAGS		(0xff000000)
 #define IR_NULL_BUTTON		(~BUTTON_FLAGS)
 
-#define LONGPRESS_DELAY		((HZ)+((HZ)/10)) // delay between press/release for emulated longpresses
+#define LONGPRESS_DELAY		((HZ)+((HZ)*2/3)) // delay between press/release for emulated longpresses
 
 // Sony Stalk packets look like this:
 //
@@ -1031,6 +1031,7 @@ static void
 hijack_initq (hijack_buttonq_t *q)
 {
 	q->head = q->tail = q->last_deq = 0;
+	q->last_deq = jiffies;
 }
 
 static unsigned long
@@ -1162,7 +1163,7 @@ hijack_button_deq (hijack_buttonq_t *q, hijack_buttondata_t *rdata, int nowait)
 		if (++tail >= HIJACK_BUTTONQ_SIZE)
 			tail = 0;
 		data = &q->data[tail];
-		if (nowait || !data->delay || jiffies_since(q->last_deq) >= data->delay) {
+		if (nowait || !data->delay || jiffies_since(q->last_deq) > data->delay) {
 			rdata->button = data->button;
 			rdata->delay  = data->delay;
 			q->tail = tail;
@@ -2001,18 +2002,20 @@ headlight_sense_is_active (void)
 	return sense;
 }
 
+
+static unsigned long buttonled_command = 0;
+
 static void	// invoked from empeg_display.c
 hijack_adjust_buttonled (int power)
 {
-	static unsigned long command = 0;
 	const unsigned char bright_levels[1<<BUTTONLED_BITS] = {0, 1, 2, 4, 7, 14, 24, 255};
 	int brightness;
 
 	// illumination command already in progress?
-	if (command) {
-		if (display_sendcontrol_part2(command))
+	if (buttonled_command) {
+		if (display_sendcontrol_part2(buttonled_command))
 			return;	// still busy with command
-		command = 0;
+		buttonled_command = 0;
 	}
 
 	// start a new command if level needs adjustment:
@@ -2029,16 +2032,16 @@ hijack_adjust_buttonled (int power)
 		// don't do adjustments until buttons have been idle for half a second or more
 		if (jiffies_since(ir_lastevent) >= (HZ/2)) {
 			if (brightness == 255)
-				command = 244;	// select full brightness
+				buttonled_command = 244;	// select full brightness
 			else if (hijack_buttonled_level > brightness)
-				command = 242;	// turn off LEDs and ramp up again
+				buttonled_command = 242;	// turn off LEDs and ramp up again
 			else if (hijack_buttonled_level < brightness)
-				command = 243;	// brighten LEDs by 5/255 (2%)
-			if (command) {
+				buttonled_command = 243;	// brighten LEDs by 5/255 (2%)
+			if (buttonled_command) {
 				if (display_sendcontrol_part1()) {
-					command = 0;	// busy, try again later
+					buttonled_command = 0;	// busy, try again later
 				} else {
-					switch (command) {
+					switch (buttonled_command) {
 						case 242: hijack_buttonled_level = 0;	break;
 						case 243: hijack_buttonled_level++;	break;
 						case 244: hijack_buttonled_level = 255;	break;
@@ -3734,10 +3737,12 @@ check_screen_grab (unsigned char *buf)
 #endif // CONFIG_NET_ETHERNET
 }
 
+// The Hijack equivalent of main()
+//
 // This routine covertly intercepts all display updates,
 // giving us a chance to substitute our own display.
 //
-enum {poweron, booting, booted, waiting, started} player_state = booting;
+enum {poweringup, booting, booted, waiting, starting, started} player_state = booting;
 
 void	// invoked from empeg_display.c
 hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
@@ -3745,6 +3750,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	unsigned char *buf = player_buf;
 	unsigned long flags;
 	int refresh = NEED_REFRESH;
+	static unsigned long poweron;
 
 	if (hijack_reboot) {
 		do_reboot(dev);
@@ -3757,14 +3763,14 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	else if (!hijack_standby_time)
 		hijack_standby_time = JIFFIES();
 	else if (jiffies_since(hijack_standby_time) >= (60*60*13)) {
-		hijack_standby_time = jiffies - (60*60);	// prevent wraparound from eventually screwing us
+		hijack_standby_time += (60*60);	// prevent wraparound from eventually screwing us
 		if (hijack_standby_time == 0)
 			hijack_standby_time = -1;
 	}
 
 	// Wait for the player software to start up before doing certain tasks
 	switch (player_state) {
-		case poweron:
+		case poweringup:
 			if (jiffies > (3 * HZ))
 				player_state = booting;
 			break;
@@ -3778,13 +3784,19 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 			break;
 		case waiting:
 			if (dev->power) {
-				player_state = started;
-				init_temperature(1);
 				if (carvisuals_enabled && empeg_on_dc_power)
-					hijack_enq_button_pair(IR_BOTTOM_BUTTON_PRESSED|BUTTON_FLAGS_LONGPRESS);
+					(void)real_input_append_code(IR_BOTTOM_BUTTON_PRESSED);
+				poweron = jiffies;
+				player_state = starting;
+			}
+			break;
+		case starting:
+			if (jiffies_since(poweron) > (HZ)) {
+				init_temperature(1);
 				// Send initial button sequences, if any
 				input_append_code(IR_INTERNAL, IR_FAKE_INITIAL);
 				input_append_code(IR_INTERNAL, RELEASECODE(IR_FAKE_INITIAL));
+				player_state = started;
 			}
 			break;
 		case started:
@@ -3792,8 +3804,8 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	}
 
 	// Adjust ButtonLED levels
-	if (player_state != poweron) {
-		if (!hijack_standby_time || jiffies_since(hijack_standby_time) > (HZ/4))
+	if (player_state != poweringup) {
+		if (buttonled_command || !hijack_standby_time || jiffies_since(hijack_standby_time) > (HZ/2))
 			hijack_adjust_buttonled(dev->power);
 	}
 

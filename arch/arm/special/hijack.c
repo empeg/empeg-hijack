@@ -61,6 +61,7 @@ static unsigned int info_screenrow = 0;
 static unsigned int hijack_status = HIJACK_INACTIVE;
 static unsigned long hijack_last_moved = 0, hijack_last_refresh = 0, blanker_triggered = 0, blanker_lastpoll = 0;
 static unsigned char blanker_lastbuf[EMPEG_SCREEN_BYTES] = {0,}, blanker_is_blanked = 0;
+static enum {muted, active, unknown} hijack_audio_state = unknown;
 
 static int  (*hijack_dispfunc)(int) = NULL;
 static void (*hijack_movefunc)(int) = NULL;
@@ -211,9 +212,9 @@ static struct wait_queue *hijack_userq_waitq = NULL, *hijack_menu_waitq = NULL;
 #define BLANKER_BITS 6
 static int blanker_timeout = 0;
 
-#define BLANKERFUZZ_MULTIPLIER 5
-#define BLANKERFUZZ_BITS 3
-static int blankerfuzz_amount = 0;
+#define SENSITIVITY_MULTIPLIER 5
+#define SENSITIVITY_BITS 3
+static int blanker_sensitivity = 0;
 
 #define MAXTEMP_OFFSET	34
 #define MAXTEMP_BITS	5
@@ -260,7 +261,7 @@ static struct sa_struct {
 	unsigned byte6_leftover		: 8;			// 8 bits
 
 	unsigned menu_item		: MENU_BITS;		// 5 bits
-	unsigned blankerfuzz_amount	: BLANKERFUZZ_BITS;	// 3 bits
+	unsigned blanker_sensitivity	: SENSITIVITY_BITS;	// 3 bits
 } hijack_savearea;
 
 static unsigned char hijack_displaybuf[EMPEG_SCREEN_ROWS][EMPEG_SCREEN_COLS/2];
@@ -366,7 +367,9 @@ const unsigned char kfont [1 + '~' - ' '][KFONT_WIDTH] = {  // variable width fo
 #ifdef CONFIG_PROC_FS
 #include <linux/proc_fs.h>
 
-#define NOTIFY_MAX_LINES	8
+
+unsigned char notify_labels[] = "#AFGLMNSTV";
+#define NOTIFY_MAX_LINES	(sizeof(notify_labels))
 #define NOTIFY_MAX_LENGTH	64
 static char notify_data[NOTIFY_MAX_LINES][NOTIFY_MAX_LENGTH] = {{0,},};
 static const char notify_thread[] = "  serial_notify_thread.cpp";
@@ -411,9 +414,16 @@ hijack_serial_notify (const unsigned char *s, int size)
 				if (size > (NOTIFY_MAX_LENGTH - 1))
 					size = (NOTIFY_MAX_LENGTH - 1);
 				if (size > 0) {
-					unsigned char i = 0, c = *s, labels[] = "SNFTAG# ";
-					labels[sizeof(labels)-1] = c;
-					for (i = 0; c != labels[i]; ++i);
+					unsigned char i, c = *s;
+					if (c == 'S') {
+						switch (s[1]) {
+							case '0': hijack_audio_state = muted;	break;
+							case '1': hijack_audio_state = active;	break;
+							default:  hijack_audio_state = unknown;	break;
+						}
+					}
+					notify_labels[sizeof(notify_labels)-1] = c;
+					for (i = 0; c != notify_labels[i]; ++i);
 					line = notify_data[i];
 					save_flags_cli(flags);
 					memcpy(line, s, size);
@@ -1162,17 +1172,17 @@ timer_move (int direction)
 static int
 timer_display (int firsttime)
 {
-	static int paused = 0;
+	static int timer_paused = 0;
 	unsigned int rowcol;
 	unsigned char *offmsg = " [Off] ";
 
 	if (firsttime) {
-		paused = 0;
+		timer_paused = 0;
 		if (timer_timeout) {  // was timer already running?
 			int remaining = timer_timeout - jiffies_since(timer_started);
 			if (remaining >= HZ) {
 				timer_timeout = remaining;
-				paused = 1;
+				timer_paused = 1;
 			} else {
 				timer_timeout = 0;  // turn alarm off if it was on
 				offmsg = " [Cancelled] ";
@@ -1189,10 +1199,10 @@ timer_display (int firsttime)
 	rowcol = draw_string(ROWCOL(2,0), "Duration: ", PROMPTCOLOR);
 	if (timer_timeout) {
 		rowcol = draw_hhmmss(rowcol, timer_timeout / HZ, ENTRYCOLOR);
-		if (paused)
+		if (timer_paused)
 			(void)draw_string(rowcol, " [paused]", PROMPTCOLOR);
 	} else {
-		paused = 0;
+		timer_paused = 0;
 		(void)draw_string(rowcol, offmsg, ENTRYCOLOR);
 	}
 	return NEED_REFRESH;
@@ -1411,11 +1421,11 @@ blanker_display (int firsttime)
 static void
 blankerfuzz_move (int direction)
 {
-	blankerfuzz_amount += direction;
-	if (blankerfuzz_amount < 0 || direction == 0)
-		blankerfuzz_amount = 0;
-	else if (blankerfuzz_amount > ((1<<BLANKERFUZZ_BITS)-1))
-		blankerfuzz_amount  = ((1<<BLANKERFUZZ_BITS)-1);
+	blanker_sensitivity += direction;
+	if (blanker_sensitivity < 0 || direction == 0)
+		blanker_sensitivity = 0;
+	else if (blanker_sensitivity > ((1<<SENSITIVITY_BITS)-1))
+		blanker_sensitivity  = ((1<<SENSITIVITY_BITS)-1);
 	empeg_state_dirty = 1;
 }
 
@@ -1425,14 +1435,14 @@ blankerfuzz_display (int firsttime)
 	unsigned int rowcol;
 
 	if (firsttime)
-		ir_numeric_input = &blankerfuzz_amount;
+		ir_numeric_input = &blanker_sensitivity;
 	else if (!hijack_last_moved)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
 	(void)draw_string(ROWCOL(0,0), "Screen Blanker Sensitivity", PROMPTCOLOR);
 	rowcol = draw_string(ROWCOL(2,0), "Examine ", PROMPTCOLOR);
-	rowcol = draw_number(rowcol, 100 - (blankerfuzz_amount * BLANKERFUZZ_MULTIPLIER), " %u%% ", ENTRYCOLOR);
+	rowcol = draw_number(rowcol, 100 - (blanker_sensitivity * SENSITIVITY_MULTIPLIER), " %u%% ", ENTRYCOLOR);
 	(void)   draw_string(rowcol, " of screen", PROMPTCOLOR);
 	return NEED_REFRESH;
 }
@@ -1441,7 +1451,7 @@ static int
 screen_compare (unsigned long *screen1, unsigned long *screen2)
 {
 	const unsigned char bitcount4[16] = {0,1,1,2, 1,2,2,3, 1,2,3,4, 2,3,3,4};
-	int allowable_fuzz = blankerfuzz_amount * (BLANKERFUZZ_MULTIPLIER * (2 * EMPEG_SCREEN_BYTES) / 100);
+	int allowable_fuzz = blanker_sensitivity * (SENSITIVITY_MULTIPLIER * (2 * EMPEG_SCREEN_BYTES) / 100);
 	unsigned long *end = screen1 - 1;
 
 	if (allowable_fuzz == 0)
@@ -1613,7 +1623,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v96 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v97 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -2206,6 +2216,7 @@ toggle_input_source (void)
 		case 'A':	// Aux
 			button = IR_KW_CD_PRESSED;   // player
 			break;
+		//case 'M':
 		default:	// Main/Mp3
 			// by hitting "aux" before "tuner", we handle "tuner not present"
 			hijack_button_enq(&hijack_playerq, IR_KW_TAPE_PRESSED,  0);	// aux
@@ -2766,7 +2777,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	if (blanker_timeout) {
 		if (jiffies_since(blanker_lastpoll) >= (4*HZ/3)) {  // use an oddball interval to avoid patterns
 			blanker_lastpoll = jiffies;
-			if (screen_compare((unsigned long *)blanker_lastbuf, (unsigned long *)buf)) {
+			if (hijack_audio_state != muted && screen_compare((unsigned long *)blanker_lastbuf, (unsigned long *)buf)) {
 				memcpy(blanker_lastbuf, buf, EMPEG_SCREEN_BYTES);
 				blanker_triggered = 0;
 			} else if (!blanker_triggered) {
@@ -3175,7 +3186,7 @@ hijack_save_settings (unsigned char *buf)
 		hijack_savearea.knob_ac = knob;
 }
 #endif // EMPEG_KNOB_SUPPORTED
-	hijack_savearea.blankerfuzz_amount	= blankerfuzz_amount;
+	hijack_savearea.blanker_sensitivity	= blanker_sensitivity;
 	hijack_savearea.timer_action		= timer_action;
 	hijack_savearea.menu_item		= menu_item;
 	hijack_savearea.restore_visuals		= carvisuals_enabled;
@@ -3219,7 +3230,7 @@ hijack_restore_settings (unsigned char *buf)
 	}
 }
 #endif // EMPEG_KNOB_SUPPORTED
-	blankerfuzz_amount		= hijack_savearea.blankerfuzz_amount;
+	blanker_sensitivity		= hijack_savearea.blanker_sensitivity;
 	timer_action			= hijack_savearea.timer_action;
 	menu_item			= hijack_savearea.menu_item;
 	menu_init();

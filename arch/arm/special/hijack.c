@@ -540,7 +540,7 @@ voladj_prefix (int firsttime)
 
 	ir_selected = 0; // paranoia?
 	if (firsttime) {
-		hijack_last_moved = jiffies ? jiffies : 1;
+		hijack_last_moved = jiffies ? jiffies : -1;
 		clear_hijack_displaybuf(COLOR0);
 		draw_frame((unsigned char *)hijack_displaybuf, &geom);
 		hijack_overlay_geom = (hijack_geom_t *)&geom;
@@ -618,7 +618,7 @@ read_temperature (void)
 	save_flags_clif(flags);			//  power cyles without inittherm()
 	temp = empeg_readtherm(&OSMR0,&GPLR);
 	restore_flags(flags);
-	temp_lasttime = jiffies ? jiffies : 1;
+	temp_lasttime = jiffies ? jiffies : -1;
 	if (((temp_lasttime / HZ) & 0x63) == 0) // restart the thermometer once a minute or so
 		init_temperature();
 	/* Correct for negative temperatures (sign extend) */
@@ -975,7 +975,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v60 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v61 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1006,7 +1006,7 @@ game_finale (void)
 		s++;
 	}
 	framenr += frameadj;
-	game_animtime = jiffies ? jiffies : 1;
+	game_animtime = jiffies ? jiffies : -1;
 	return NEED_REFRESH;
 }
 
@@ -1056,10 +1056,10 @@ game_move_ball (void)
 	save_flags_cli(flags);
 	ir_selected = 0; // prevent accidental exit from game
 	if (ir_left_down && jiffies_since(ir_left_down) >= (HZ/15)) {
-		ir_left_down = jiffies ? jiffies : 1;
+		ir_left_down = jiffies ? jiffies : -1;
 		game_move(-1);
 	} else if (ir_right_down && jiffies_since(ir_right_down) >= (HZ/15)) {
-		ir_right_down = jiffies ? jiffies : 1;
+		ir_right_down = jiffies ? jiffies : -1;
 		game_move(1);
 	}
 	if (jiffies_since(game_ball_last_moved) < (HZ/game_speed)) {
@@ -1450,7 +1450,7 @@ hijack_move (int direction)
 	if (hijack_status == HIJACK_ACTIVE) {
 		if (hijack_movefunc != NULL)
 			hijack_movefunc(direction);
-		hijack_last_moved = jiffies ? jiffies : 1;
+		hijack_last_moved = jiffies ? jiffies : -1;
 	}
 }
 
@@ -1458,10 +1458,10 @@ static void
 hijack_move_repeat (void)
 {
 	if (ir_left_down && jiffies_since(ir_left_down) >= ir_move_repeat_delay) {
-		ir_left_down = jiffies ? jiffies : 1;
+		ir_left_down = jiffies ? jiffies : -1;
 		hijack_move(-1);
 	} if (ir_right_down && jiffies_since(ir_right_down) >= ir_move_repeat_delay) {
-		ir_right_down = jiffies ? jiffies : 1;
+		ir_right_down = jiffies ? jiffies : -1;
 		hijack_move(1);
 	}
 }
@@ -1484,18 +1484,15 @@ check_if_player_menu_is_active (void *player_buf)
 {
 	if (!test_row(player_buf, 2, 0x00))
 		return 0;
-	if (test_row(player_buf, 0, 0x00) && test_row(player_buf, 1, 0x11))
-		return 1;
-	return test_row(player_buf, 3, 0x11) && test_row(player_buf, 4, 0x00);
+	return (test_row(player_buf, 0, 0x00) && test_row(player_buf, 1, 0x11))
+	    || (test_row(player_buf, 3, 0x11) && test_row(player_buf, 4, 0x00));
 }
 
 static int
 check_if_sound_adjust_is_active (void *player_buf)
 {
-	return test_row(player_buf,  8, 0x00)
-	    && test_row(player_buf,  9, 0x11)
-	    && test_row(player_buf, 15, 0x00)
-	    && test_row(player_buf, 16, 0x11);
+	return (test_row(player_buf,  8, 0x00) && test_row(player_buf,  9, 0x11)
+	     && test_row(player_buf, 16, 0x11) && test_row(player_buf, 17, 0x00));
 }
 
 static void
@@ -1595,6 +1592,8 @@ hijack_display (struct display_dev *dev, unsigned char *player_buf)
 #ifdef EMPEG_KNOB_SUPPORTED
 	if (ir_knob_down && jiffies_since(ir_knob_down) > (HZ*2)) {
 		ir_knob_down = jiffies - HZ;  // allow repeated cycling if knob is held down
+		if (!ir_knob_down)
+			ir_knob_down = -1;
 		toggle_input_source();
 		hijack_deactivate(HIJACK_INACTIVE_PENDING);
 	}
@@ -1656,10 +1655,9 @@ hijack_display (struct display_dev *dev, unsigned char *player_buf)
 			break;
 	}
 	// Use screen-scraping to keep track of some of the player states:
-	player_menu_is_active = player_sound_adjust_is_active = 0;
+	player_menu_is_active = 0;
 	if (buf == player_buf && !hijack_overlay_geom) {
-		player_menu_is_active = check_if_player_menu_is_active(buf);
-		if (!player_menu_is_active)
+		if (!(player_menu_is_active = check_if_player_menu_is_active(buf)))
 			player_sound_adjust_is_active = check_if_sound_adjust_is_active(buf);
 	}
 	restore_flags(flags);
@@ -1672,7 +1670,7 @@ hijack_display (struct display_dev *dev, unsigned char *player_buf)
 				memcpy(blanker_lastbuf, buf, EMPEG_SCREEN_BYTES);
 				blanker_triggered = 0;
 			} else if (!blanker_triggered) {
-				blanker_triggered = jiffies ? jiffies : 1;
+				blanker_triggered = jiffies ? jiffies : -1;
 			}
 		}
 		if (!blanker_triggered) {
@@ -1786,7 +1784,7 @@ ir_setup_translations2 (unsigned char *buf, ir_translation_t *table)
 		}
 		if (get_8hex(&s, &old) || *s++ != ':' || get_8hex(&s, &new))
 			return count;
-		while (*s && (*s != '\n' || *s != '\r'))	// ignore end of line (comments)
+		while (*s && (*s != '\n' && *s != '\r'))	// ignore end of line (comments)
 			++s;
 		++count;
 		if (table) {
@@ -1881,7 +1879,7 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 		case IR_KNOB_PRESSED:
 			hijacked = 1; // hijack it and later send it with the release
 			if (!ir_delayed_knob_release)
-				ir_knob_down = jiffies ? jiffies : 1;
+				ir_knob_down = jiffies ? jiffies : -1;
 			if (hijack_status == HIJACK_ACTIVE)
 				hijacked = ir_selected = 1;
 			break;
@@ -1903,7 +1901,7 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 						} else {
 							(void)real_input_append_code(knobdata_pressed[index]);
 							if (knobdata_pressed[index] == knobdata_released[index])
-								ir_delayed_knob_release = jiffies ? jiffies : 1;
+								ir_delayed_knob_release = jiffies ? jiffies : -1;
 							else
 								(void)real_input_append_code(knobdata_released[index]);
 						}
@@ -1916,7 +1914,7 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 		case IR_RIO_MENU_PRESSED:
 			if (!player_menu_is_active) {
 				hijacked = 1; // hijack it and later send it with the release
-				ir_menu_down = jiffies ? jiffies : 1;
+				ir_menu_down = jiffies ? jiffies : -1;
 			}
 			if (hijack_status == HIJACK_ACTIVE)
 				hijacked = ir_selected = 1;
@@ -1957,7 +1955,7 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 		case IR_KW_NEXTTRACK_PRESSED:
 		case IR_RIO_NEXTTRACK_PRESSED:
 			ir_move_repeat_delay = (hijack_movefunc == game_move) ? (HZ/15) : (HZ/3);
-			ir_right_down = jiffies ? jiffies : 1;
+			ir_right_down = jiffies ? jiffies : -1;
 		case IR_KNOB_RIGHT:
 			if (hijack_status != HIJACK_INACTIVE) {
 				hijack_move(1);
@@ -1967,7 +1965,7 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 		case IR_KW_PREVTRACK_PRESSED:
 		case IR_RIO_PREVTRACK_PRESSED:
 			ir_move_repeat_delay = (hijack_movefunc == game_move) ? (HZ/15) : (HZ/3);
-			ir_left_down = jiffies ? jiffies : 1;
+			ir_left_down = jiffies ? jiffies : -1;
 		case IR_KNOB_LEFT:
 			if (hijack_status != HIJACK_INACTIVE) {
 				hijack_move(-1);

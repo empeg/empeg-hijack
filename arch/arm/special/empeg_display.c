@@ -887,26 +887,12 @@ static struct vm_operations_struct empegfb_vm_ops = {
 	display_vma_nopage, /* nopage */
 };
 
-/* Send a command to the empeg via the display control line. This is only
-   present on the Mk2 mainboard and display board, and uses pulse widths to
-   indicate the databits. This line is fed into the button control PIC on the
-   mainboard, which can then send the current button state or set the display
-   dimmer level */
-static void display_sendcontrol(int b)
+void display_sendcontrol_part2(int b)
 {
 	int bit;
 	unsigned long flags;
-
 	/* Send a byte to the display serially via control line (mk2 only) */
 	if (empeg_hardwarerevision()<6) return;
-
-	/* Starts with line high, plus a little delay to make sure that
-	   the PIC is listening */
-	GPSR=EMPEG_DISPLAYCONTROL;
-	
-	/* Wait 100ms */
-	current->state=TASK_INTERRUPTIBLE;
-	schedule_timeout(HZ/10);
 
 	/* Need to do this with IRQs disabled to preserve timings */
 	/* Disable FIQs too - might make the 2us delay too long */
@@ -939,6 +925,39 @@ static void display_sendcontrol(int b)
 
 	/* Reenable IRQs */
 	restore_flags(flags);
+}
+
+unsigned int display_sendcontrol_serial = 0;
+
+void display_sendcontrol_part1(void)
+{
+	/* Send a byte to the display serially via control line (mk2 only) */
+	if (empeg_hardwarerevision()<6) return;
+
+	/* Starts with line high, plus a little delay to make sure that
+	   the PIC is listening */
+	GPSR=EMPEG_DISPLAYCONTROL;
+	++display_sendcontrol_serial;	// signify that someone is tweaking the display
+}
+
+/* Send a command to the empeg via the display control line. This is only
+   present on the Mk2 mainboard and display board, and uses pulse widths to
+   indicate the databits. This line is fed into the button control PIC on the
+   mainboard, which can then send the current button state or set the display
+   dimmer level */
+static void display_sendcontrol(int b)
+{
+	/* Send a byte to the display serially via control line (mk2 only) */
+	if (empeg_hardwarerevision()<6) return;
+
+	display_sendcontrol_part1();
+
+	/* Wait 100ms */
+	current->state=TASK_INTERRUPTIBLE;
+	schedule_timeout(HZ/10);
+
+	/* send the byte */
+	display_sendcontrol_part2(b);
 }
 
 static int display_open(struct inode *inode, struct file *filp)
@@ -991,7 +1010,6 @@ int display_mmap(struct file *filp, struct vm_area_struct *vma)
 int display_ioctl(struct inode *inode, struct file *filp, unsigned int cmd,
 		  unsigned long arg)
 {
-	extern int hijack_buttonhack_enabled;
 	struct display_dev *dev =
 		(struct display_dev *)filp->private_data;
 
@@ -1035,10 +1053,6 @@ int display_ioctl(struct inode *inode, struct file *filp, unsigned int cmd,
 			
 			/* Turning display on */
 			empeg_displaypower(1);
-			
-			/* Turn on button LEDs, Hack by Brian Mihulka bmihulka@hulkster.net */
-			if (hijack_buttonhack_enabled)
-				display_sendcontrol(244);
 
 			/* Wait for a while for it to come to life */
 			udelay(POWERFAIL_DISABLED_DELAY);
@@ -1049,14 +1063,10 @@ int display_ioctl(struct inode *inode, struct file *filp, unsigned int cmd,
 		} else {
 			/* Do this first in case powerfail triggers */
 			dev->power = FALSE;
-			
-			/* Turn off button LEDs, Hack by Brian Mihulka bmihulka@hulkster.net */
-			if (hijack_buttonhack_enabled)
-				display_sendcontrol(242);
-			
+
 			/* Turning display off */
 			empeg_displaypower(0);
-			
+
 			/* Set standby LED mode */
 		}
 		break;

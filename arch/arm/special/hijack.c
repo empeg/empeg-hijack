@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v226"
+#define HIJACK_VERSION	"v227"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -22,6 +22,8 @@ const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 #include "../../../drivers/block/ide.h"	// for ide_hwifs[]
 #include "empeg_display.h"
 
+extern void display_sendcontrol_part1(void);				// arch/arm/special/empeg_display.c
+extern void display_sendcontrol_part2(int);				// arch/arm/special/empeg_display.c
 extern int remount_drives (int writeable);				// arch/arm/special/notify.c
 extern int sys_newfstat(int, struct stat *);
 extern int sys_sync(void);						// fs/buffer.c
@@ -46,7 +48,7 @@ extern int empeg_inittherm(volatile unsigned int *timerbase, volatile unsigned i
 #ifdef CONFIG_NET_ETHERNET	// Mk2 or later? (Mk1 has no ethernet)
 #define EMPEG_KNOB_SUPPORTED	// Mk2 and later have a front-panel knob
 #endif
-
+int	hijack_poweroff_time = 0;	// jiffie timestamp of last poweroff
 int	hijack_got_config_ini = 0;	// used by restore visuals, to avoid triggering on a boot logo
 int	kenwood_disabled;		// used by Nextsrc button
 int	empeg_on_dc_power;		// used in arch/arm/special/empeg_power.c
@@ -348,7 +350,9 @@ static hijack_buttonq_t hijack_inputq, hijack_playerq, hijack_userq;
 
 // Externally tuneable parameters for config.ini; the voladj_parms are also tuneable
 //
-       int hijack_buttonhack_enabled;		// 1 == turn illuminated buttons on/off
+#ifdef EMPEG_KNOB_SUPPORTED
+static int hijack_buttonled_off_level;		// button brightness when player is "off"
+#endif
 static int hijack_button_pacing;		// minimum spacing between press/release pairs within playerq
 static int hijack_dc_servers;			// 1 == allow kftpd/khttpd when on DC power
        int hijack_disable_emplode;		// 1 == block TCP port 8300 (Emplode/Emptool)
@@ -396,7 +400,9 @@ static const hijack_option_t hijack_option_table[] =
 {
 // config.ini string		address-of-variable		default			howmany	min	max
 //===========================	==========================	=========		=======	===	================
-{"buttonhack_enabled",		&hijack_buttonhack_enabled,	0,			1,	0,	1},
+#ifdef EMPEG_KNOB_SUPPORTED
+{"buttonled_off",		&hijack_buttonled_off_level,	1,			1,	0,	7},
+#endif
 {"button_pacing",		&hijack_button_pacing,		20,			1,	0,	HZ},
 {"dc_servers",			&hijack_dc_servers,		0,			1,	0,	1},
 {"disable_emplode",		&hijack_disable_emplode,	0,			1,	0,	1},
@@ -469,8 +475,8 @@ static int blanker_timeout = 0;
 #define SENSITIVITY_BITS 3
 static int blanker_sensitivity = 0;
 
-#define hightemp_OFFSET	34
-#define hightemp_BITS	5
+#define HIGHTEMP_OFFSET	34
+#define HIGHTEMP_BITS	5
 static int hightemp_threshold = 0;
 
 #define FORCEPOWER_BITS 2
@@ -903,7 +909,7 @@ hijack_enq_button (hijack_buttonq_t *q, unsigned int button, unsigned long hold_
 	if (head != q->tail && hold_time < hijack_button_pacing && q == &hijack_playerq && !IS_RELEASE(button))
 		hold_time = hijack_button_pacing;	// ensure we have sufficient delay between press/release pairs
 	if (hijack_ir_debug)
-		printk("ENQ.%c: %08x.%ld\n", (q == &hijack_playerq) ? 'P' : ((q == &hijack_inputq) ? 'I' : 'U'), button, hold_time);
+		printk("%lu: ENQ.%c: %08x.%ld\n", jiffies, (q == &hijack_playerq) ? 'P' : ((q == &hijack_inputq) ? 'I' : 'U'), button, hold_time);
 	if (++head >= HIJACK_BUTTONQ_SIZE)
 		head = 0;
 	if (head != q->tail) {
@@ -1661,7 +1667,7 @@ static int hightemp_check_threshold (void)
 {
 	static unsigned long beeping, elapsed;
 
-	if (!hightemp_threshold || read_temperature() < (hightemp_threshold + hightemp_OFFSET))
+	if (!hightemp_threshold || read_temperature() < (hightemp_threshold + HIGHTEMP_OFFSET))
 		return 0;
 	elapsed = jiffies_since(ir_lasttime) / HZ;
 	if (elapsed < 1) {
@@ -1782,7 +1788,123 @@ screen_compare (unsigned long *screen1, unsigned long *screen2)
 	return 0;	// the same
 }
 
+#define BUTTONLED_BITS		3
+static unsigned int hijack_buttonled_on_level = 0;
+static unsigned int hijack_buttonled_level = 0;
+
 #ifdef EMPEG_KNOB_SUPPORTED
+
+static const char buttonled_menu_label	[] = "Button Illumination Level";
+
+// Front panel illumination info from Hugo:
+//
+// You can in theory dim them by sending commands to the display - there is no
+// ioctl for this. See the display_sendcontrol() function in
+// arch/arm/special/empeg_display.c - this sends a single byte to the display.
+//
+// Looking at the source to the pic that it talks to, the commands are:
+//
+// 000..239 sets display brightness level. Note that the higher end (nearer 0)
+// can overdrive the display by about 10%, the maximum value you should use is 16
+// as I remember. You don't get a lot more brightness by overdriving it.
+//
+// 240 - send display board pic version as IR keypress
+// 241 - force send of current button state
+// 242 - turn off button illumination (=255)
+// 243 - increase illumination by 5 (-=5)
+// 244 - turn on button illumination full (=0)
+//
+// So, in theory to get them to come on, you need to call
+// display_sendcontrol(244). Different brightnesses can be acheived by sending
+// 242, then multiple 243's to step the brightness up (no idea why I never put
+// one to dim the other way...)
+
+static void	// invoked from empeg_display.c
+hijack_adjust_buttonled (int power)
+{
+	extern unsigned int display_sendcontrol_serial;
+	static unsigned long lasttime = 0, command = 0, saved_serial = 0;
+	const unsigned char bright_levels[1<<BUTTONLED_BITS] = {0, 1, 2, 4, 7, 14, 24, 255};
+	int brightness;
+	unsigned long flags;
+
+	save_flags_clif(flags);
+
+	// illumination command already in progress?
+	if (command) {
+		if (jiffies_since(lasttime) >= (HZ/10)) {	// fixme?  speed this up?
+			restore_flags(flags);
+			return;
+		}
+		if (display_sendcontrol_serial == saved_serial)	// display untouched since last time?
+			display_sendcontrol_part2(command);
+		command = 0;
+	}
+
+	// start a new command if level needs adjustment:
+	if (power)
+		brightness = hijack_buttonled_on_level;
+	else if (hijack_buttonled_on_level)
+		brightness = hijack_buttonled_off_level;
+	else
+		brightness = 0;
+	brightness = bright_levels[brightness];
+	if (hijack_buttonled_level != brightness) {
+		if (brightness == 255)
+			command = 244;
+		else if (hijack_buttonled_level > brightness)
+			command = 242;	// turn off LEDs and ramp up again
+		else if (hijack_buttonled_level < brightness)
+			command = 243;	// brighten LEDs by 5/255 (2%)
+		if (command) {
+			display_sendcontrol_part1();
+			saved_serial = display_sendcontrol_serial;
+			lasttime = jiffies;
+			switch (command) {
+				case 242: hijack_buttonled_level = 0;	break;
+				case 243: hijack_buttonled_level++;	break;
+				case 244: hijack_buttonled_level = 255;	break;
+			}
+		}
+	}
+	restore_flags(flags);
+}
+
+static void
+buttonled_move (int direction)
+{
+	if (direction == 0) {
+		hijack_buttonled_on_level = 0;
+	} else {
+		int level = hijack_buttonled_on_level + direction;
+		if (level >= 0 && level < (1<<BUTTONLED_BITS))
+			hijack_buttonled_on_level = level;
+	}
+	empeg_state_dirty = 1;
+}
+
+static int
+buttonled_display (int firsttime)
+{
+	unsigned int rowcol, level;
+
+	if (firsttime)
+		ir_numeric_input = &hijack_buttonled_on_level;
+	else if (!hijack_last_moved)
+		return NO_REFRESH;
+	hijack_last_moved = 0;
+	clear_hijack_displaybuf(COLOR0);
+	(void) draw_string(ROWCOL(0,0), buttonled_menu_label, PROMPTCOLOR);
+	rowcol = draw_string(ROWCOL(2,0), "Brightness: ", PROMPTCOLOR);
+	level = hijack_buttonled_on_level;
+	if (!level)
+		(void) draw_string_spaced(rowcol, "[off]", ENTRYCOLOR);
+	else if (level == ((1<<BUTTONLED_BITS)-1))
+		(void) draw_string_spaced(rowcol,"[max]", ENTRYCOLOR);
+	else
+		(void) draw_number(rowcol, level, "%2u", ENTRYCOLOR);
+	return NEED_REFRESH;
+}
 
 static void
 knobdata_move (int direction)
@@ -2182,13 +2304,13 @@ static void
 hightemp_move (int direction)
 {
 	if (hightemp_threshold == 0 && direction > 0)
-		hightemp_threshold = 55 - hightemp_OFFSET;
+		hightemp_threshold = 55 - HIGHTEMP_OFFSET;
 	else
 		hightemp_threshold += direction;
 	if (hightemp_threshold < 0 || direction == 0)
 		hightemp_threshold = 0;
-	else if (hightemp_threshold > ((1<<hightemp_BITS)-1))
-		hightemp_threshold  = ((1<<hightemp_BITS)-1);
+	else if (hightemp_threshold > ((1<<HIGHTEMP_BITS)-1))
+		hightemp_threshold  = ((1<<HIGHTEMP_BITS)-1);
 	empeg_state_dirty = 1;
 }
 
@@ -2203,10 +2325,10 @@ hightemp_display (int firsttime)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
-	rowcol = draw_string(ROWCOL(0,0), hightemp_menu_label, PROMPTCOLOR);
+	(void) draw_string(ROWCOL(0,0), hightemp_menu_label, PROMPTCOLOR);
 	rowcol = draw_string(ROWCOL(1,0), "Threshold: ", PROMPTCOLOR);
 	if (hightemp_threshold)
-		(void)draw_temperature(rowcol, hightemp_threshold + hightemp_OFFSET, 32, ENTRYCOLOR);
+		(void)draw_temperature(rowcol, hightemp_threshold + HIGHTEMP_OFFSET, 32, ENTRYCOLOR);
 	else
 		rowcol = draw_string_spaced(rowcol, "[Off]", ENTRYCOLOR);
 	rowcol = draw_string(ROWCOL(2,0), "Currently: ", PROMPTCOLOR);
@@ -2411,6 +2533,9 @@ static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 	{"Auto Volume Adjust",		voladj_display,		voladj_move,		0},
 	{"Break-Out Game",		game_display,		game_move,		0},
 	{ showbutton_menu_label,	showbutton_display,	NULL,			0},
+#ifdef EMPEG_KNOB_SUPPORTED
+	{ buttonled_menu_label,		buttonled_display,	buttonled_move,		0},
+#endif
 	{"Calculator",			calculator_display,	NULL,			0},
 	{ timeraction_menu_label,	timeraction_display,	timeraction_move,	0},
 	{ timer_menu_label,		timer_display,		timer_move,		0},
@@ -3119,7 +3244,7 @@ input_append_code2 (unsigned int rawbutton)
 	unsigned int released = IS_RELEASE(rawbutton);
 
 	if (hijack_ir_debug) {
-		printk("IA2:%08x.%c,dk=%08x,dr=%d,lk=%d\n", rawbutton, released ? 'R' : 'P',
+		printk("%lu: IA2:%08x.%c,dk=%08x,dr=%d,lk=%d\n", jiffies, rawbutton, released ? 'R' : 'P',
 			ir_downkey, (ir_delayed_rotate != 0), (ir_current_longpress != NULL));
 	}
 	if (released) {
@@ -3151,7 +3276,7 @@ input_append_code2 (unsigned int rawbutton)
 			if (t_flags & IR_FLAGS_POPUP)
 				break;	// no translations here for PopUp's
 			if (hijack_ir_debug)
-				printk("IA2: tflags=%02x, flags=%02x, match=%d\n", t_flags, flags, (t_flags & flags) == t_flags);
+				printk("%lu: IA2: tflags=%02x, flags=%02x, match=%d\n", jiffies, t_flags, flags, (t_flags & flags) == t_flags);
 			if ((t_flags & flags) == flags) {
 				if (released) {	// button release?
 					if ((t_flags & IR_FLAGS_LONGPRESS) && was_waiting) {
@@ -3206,7 +3331,9 @@ input_append_code(void *dev, unsigned int button)  // empeg_input.c
 
 	save_flags_cli(flags);
 	if (hijack_ir_debug)
-		printk("IA1:%08x,dk=%08x,dr=%d,lk=%d\n", button, ir_downkey, (ir_delayed_rotate != 0), (ir_current_longpress != NULL));
+		printk("%lu: IA1:%08x,dk=%08x,dr=%d,lk=%d\n", jiffies, button, ir_downkey, (ir_delayed_rotate != 0), (ir_current_longpress != NULL));
+	if (jiffies_since(hijack_poweroff_time) < (HZ/5))
+		return;	// ignore it
 
 	if (ir_delayed_rotate) {
 		if (button != IR_KNOB_PRESSED)
@@ -3319,6 +3446,18 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	if (hijack_reboot)
 		hijack_reboot_now(dev);
 
+#ifdef EMPEG_KNOB_SUPPORTED
+{
+	static unsigned long poweroff = 0;
+
+	if (dev->power)
+		poweroff = 0;
+	else if (!poweroff)
+		poweroff = jiffies ? jiffies : -1;
+	if (!poweroff || jiffies_since(poweroff) > (HZ/4))
+		hijack_adjust_buttonled(dev->power);
+}
+#endif
 	// Send initial button sequences, if any
 	if (!sent_initial_buttons && hijack_player_started) {
 		sent_initial_buttons = 1;
@@ -4419,7 +4558,7 @@ typedef struct hijack_savearea_s {
 	unsigned blanker_timeout	: BLANKER_BITS;		// 6 bits
 
 	unsigned voladj_dc_power	: VOLADJ_BITS;		// 2 bits
-	unsigned hightemp_threshold	: hightemp_BITS;		// 5 bits
+	unsigned hightemp_threshold	: HIGHTEMP_BITS;		// 5 bits
 	unsigned restore_visuals	: 1;			// 1 bit
 
 	unsigned fsck_disabled		: 1;			// 1 bit
@@ -4435,7 +4574,8 @@ typedef struct hijack_savearea_s {
 
 	signed 	 delaytime		: 8;			// 8 bits
 	unsigned fix_beta11		: 1;			// 1 bits
-	unsigned byte6_leftover		: 7;			// 7 bits
+	unsigned buttonled_level	: BUTTONLED_BITS;	// 3 bits
+	unsigned byte6_leftover		: 1;			// 4 bit
 
 	unsigned menu_item		: MENU_BITS;		// 5 bits
 	unsigned blanker_sensitivity	: SENSITIVITY_BITS;	// 3 bits
@@ -4474,6 +4614,7 @@ hijack_save_settings (unsigned char *buf)
 	savearea.homework		= hijack_homework;
 	savearea.byte3_leftover		= 0;
 	savearea.delaytime		= hijack_delaytime;
+	savearea.buttonled_level	= hijack_buttonled_on_level;
 	savearea.byte6_leftover		= 0;
 	memcpy(buf+HIJACK_SAVEAREA_OFFSET, &savearea, sizeof(savearea));
 }
@@ -4498,6 +4639,7 @@ hijack_restore_settings (char *buf)
 	hijack_homework			= savearea.homework;
 	blanker_timeout			= savearea.blanker_timeout;
 	hightemp_threshold		= savearea.hightemp_threshold;
+	hijack_buttonled_on_level	= savearea.buttonled_level;
 	hijack_onedrive			= savearea.onedrive;
 	knob = empeg_on_dc_power ? savearea.knob_dc : savearea.knob_ac;
 	if ((knob & (1 << KNOBDATA_BITS)) == 0) {
@@ -4528,6 +4670,7 @@ hijack_init (void *animptr)
 	const unsigned long animstart = HZ/3;
 
 	hijack_game_animptr = animptr;
+	hijack_buttonled_level = 0;	// turn off button LEDs
 	failed = hijack_restore_settings(buf);
 	reset_hijack_options();
 	(void)init_temperature();

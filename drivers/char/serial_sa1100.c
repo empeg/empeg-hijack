@@ -363,6 +363,8 @@ static _INLINE_ void receive_chars(struct async_struct *info,
 			static unsigned int button = 0;
 			unsigned char csum = button + (button >> 8);
 			button = (button << 8) | ch;
+			if (hijack_trace_tuner)
+				printk("tuner: in=%02x\n", ch);
 			if (ch == csum) {
 				char ptype = button >> 24;
 				if (ptype == 0x02 || ptype == 0x01) {
@@ -625,26 +627,105 @@ static _INLINE_ void transmit_chars(struct async_struct *info, int *intr_done)
 }
 
 #ifdef CONFIG_SMC9194_TIFON	// not present on Mk1 models
-int
-hijack_check_for_tuner_loopback (void)
-{
-	struct async_struct	info;
-	unsigned long		timestamp;
-	unsigned char		c;
-	const unsigned char	pattern = 0x5a;	// must be 7-bits only
-	extern unsigned long	jiffies_since(unsigned long);
+extern unsigned long	jiffies_since(unsigned long);
 
-	info.port = rs_table[0].port;
-	serial_outp(&info, UTCR3, UTCR3_RXE|UTCR3_TXE);
-	serial_outp(&info, UART_TX, pattern);
-	timestamp = jiffies;
-	while ((serial_inp(&info, UTSR1) & UTSR1_RNE) == 0) {
-		if (jiffies_since(timestamp) > (HZ/5))
-			return 0;	// timed out, no loopback
+static unsigned char
+hijack_chk_serial (struct async_struct *infop)
+{
+	unsigned char c = 0;
+
+	if ((serial_inp(infop, UTSR1) & UTSR1_RNE)) {
+		c = serial_inp(infop, UART_RX);
+		//printk("Hijack: got 0x%02x from tuner port\n", (unsigned int)c);
+	}
+	return c;
+}
+
+static int
+hijack_read_serial (struct async_struct *infop, unsigned long interval)
+{
+	unsigned long		timestamp = jiffies;
+
+	while (jiffies_since(timestamp) < interval) {
+		unsigned char c = hijack_chk_serial(infop);
+		if (c) {
+			//printk("Hijack: read 0x%02x\n", c);
+			return c;
+		}
 		schedule();
 	}
-	c = serial_inp(&info, UART_RX);
-	return (c == pattern);
+	return -1;	// timed out
+}
+
+void
+hijack_read_tuner_id (unsigned int *loopback, unsigned int *tuner_id)
+{
+	int			rc;
+	struct async_struct	info;
+	const unsigned char	pattern = 0x5a;
+
+	info.port = rs_table[0].port;
+
+	// This data is from a trace of change_speed() as invoked from the player software:
+	//
+	// port=Ser1UTCR0, cflag=0x4be, CSIZE=1, CSTOPB=0, PARENB=0, PARODD=0
+	// baud=19200, baud_base=230400, quot=12, timeout=2, flags=0xb2000040, cval=0xa, IER=0xb
+	// UTCR3 <- 0xb
+	// UTCR3 <- 0x0
+	// UTCR0 <- 0xa
+	// UTCR1 <- 0x0
+	// UTCR2 <- 0xb
+	// UTSR0 <- 0xff
+	// UTCR3 <- 0xb
+	//
+	// We want to do (almost) the same thing here, but inline, so as not to enable
+	// interrupts or anything else.  We just want the basic bare metal to work.
+	//
+	//serial_outp(&info, UTCR3, 0x0b);
+	serial_outp(&info, UTCR3, 0x00);
+	serial_outp(&info, UTCR0, 0x0a);
+	serial_outp(&info, UTCR1, 0x00);
+	serial_outp(&info, UTCR2, 0x0b);
+	serial_outp(&info, UTSR0, 0xff);
+	serial_outp(&info, UTCR3, UTCR3_RXE|UTCR3_TXE);
+	//
+	// Perform loopback test, looking for a docking station.
+	// This also waits up to 1/4 second for the Tuner (if present)
+	// to send us it's startup indications.  Two birds with one stone.
+	//
+	//printk("Hijack: sending 0x%02x\n", pattern);
+	serial_outp(&info, UART_TX, pattern);
+	rc = hijack_read_serial(&info, HZ/16);
+	//
+	// If we got our data echoed back, then we've found a docking station
+	//
+	if (rc == pattern) {
+		*loopback = 1;
+	} else {
+		//
+		// Tuner might still be present.  It starts up with a stream of data,
+		// but we ignore that and just issue the "read knob/jumpers" command.
+		//
+		serial_outp(&info, UART_TX, 0x01);
+		serial_outp(&info, UART_TX, 0x09);
+		//
+		// Now loop, discarding data until we see a new response beginning with 0x01
+		//
+		do {
+			rc = hijack_read_serial(&info, HZ/8);
+		} while (rc != -1 && rc != 0x01);
+		//
+		// Now grab the entire 4-byte response, check validity, and extract the tuner_id
+		//
+		if (rc == 0x01 && hijack_read_serial(&info, HZ/8) == 0x09) {
+			int id, chk;
+			id  = hijack_read_serial(&info, HZ/8);
+			chk = hijack_read_serial(&info, HZ/8);
+			if (id != -1 && chk != -1 && ((id + 9) & 0xff) == chk) {
+				*tuner_id = id;
+			}
+		}
+	}
 }
 #endif // CONFIG_SMC9194_TIFON
 

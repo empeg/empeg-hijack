@@ -370,6 +370,7 @@ static struct proc_dir_entry proc_bootlogos_entry = {
 	&kflash_ops,		/* inode operations */
 };
 
+#ifdef CONFIG_NET_ETHERNET
 static struct proc_dir_entry proc_kernel_entry = {
 	0,			/* inode (dynamic) */
 	12,			/* length of name */
@@ -379,6 +380,7 @@ static struct proc_dir_entry proc_kernel_entry = {
 	MKDEV(60,8),		/* size holds device number */
 	&kflash_ops,		/* inode operations */
 };
+#endif
 
 static int
 proc_notify_read (char *buf, char **start, off_t offset, int len, int unused)

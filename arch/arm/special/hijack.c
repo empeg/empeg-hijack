@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v320"
+#define HIJACK_VERSION	"v321"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -141,7 +141,7 @@ static int stalk_on_left = 0;
 static min_max_t rhs_stalk_vals[11];	// 10 sets of values, followed by {-1,-1} terminator.
 static min_max_t lhs_stalk_vals[11];	// 10 sets of values, followed by {-1,-1} terminator.
 
-static const min_max_t rhs_stalk_default[] = {
+static min_max_t rhs_stalk_default[] = {
 	{0x00, 0x07},	// IR_KOFF_PRESSED
 	{0x10, 0x1c},	// IR_KSOURCE_PRESSED
 	{0x24, 0x30},	// IR_KATT_PRESSED
@@ -153,7 +153,7 @@ static const min_max_t rhs_stalk_default[] = {
 	{0x94, 0xa0},	// IR_KREAR_PRESSED
 	{0xa0, 0xb5}};	// IR_KBOTTOM_PRESSED
 
-static const min_max_t lhs_stalk_default[] = {
+static min_max_t lhs_stalk_default[] = {
 	{0x00, 0x07},	// IR_KOFF_PRESSED
 	{0x10, 0x1c},	// IR_KSOURCE_PRESSED
 	{0x24, 0x30},	// IR_KATT_PRESSED
@@ -696,7 +696,7 @@ static int blanker_sensitivity = 0;
 #define HIGHTEMP_BITS	5
 static int hightemp_threshold = 0;
 
-#define FORCEPOWER_BITS 2
+#define FORCEPOWER_BITS 4
 static int hijack_force_power = 0;
 
 #define TIMERACTION_BITS 1
@@ -1201,7 +1201,7 @@ inject_stalk_button (unsigned int button)
 			if (stalk_buttons[i] == IR_NULL_BUTTON)
 				return;
 		}
-		vals = stalk_on_left ? lhs_stalk_vals : rhs_stalk_vals;
+		vals = stalk_on_left ? lhs_stalk_default : rhs_stalk_default;
 		v = &vals[i];
 		pkt[2] = (v->min + v->max) / 2;
 	}
@@ -1674,36 +1674,56 @@ vitals_display (int firsttime)
 	return NEED_REFRESH;
 }
 
-static const char *powermode_text[FORCEPOWER_BITS<<1] = {"[Normal]", "[Normal]", "Force AC/Home", "Force DC/Car"};
+static char *acdc_text[2] = {"AC/Home", "DC/Car"};
+
+#define FORCE_NORMAL	0
+#define FORCE_AC	1
+#define FORCE_DC	2
+#define FORCE_TUNER	3	// and higher..
 
 static void
 forcepower_move (int direction)
 {
-	if (direction < 0) {
-		if (--hijack_force_power < 1)
-			hijack_force_power = 3;
-	} else if (++hijack_force_power == 1) {
-		hijack_force_power = 2;
-	} else if (hijack_force_power > 3) {
-		hijack_force_power = 0;
-	}
+	hijack_force_power = (hijack_force_power + direction) & ((1<<FORCEPOWER_BITS)-1);
+#ifndef EMPEG_KNOB_SUPPORTED
+	if (hijack_force_power >= FORCE_TUNER)
+		hijack_force_power = (direction < 0) ? FORCE_DC : FORCE_NORMAL;
+#endif
 	empeg_state_dirty = 1;
 }
 
 static int
 forcepower_display (int firsttime)
 {
-	unsigned int rowcol;
+	unsigned int rowcol, force_power;
+	char  buf[32], *msg = buf;
 
 	if (!firsttime && !hijack_last_moved)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
-	(void)draw_string(ROWCOL(0,0), forcepower_menu_label, PROMPTCOLOR);
+	draw_string(ROWCOL(0,0), forcepower_menu_label, PROMPTCOLOR);
 	rowcol = draw_string(ROWCOL(1,0), "Current Mode: ", PROMPTCOLOR);
-	(void)draw_string(rowcol, empeg_on_dc_power ? "DC/Car" : "AC/Home", PROMPTCOLOR);
-	rowcol = draw_string(ROWCOL(3,0), "On reboot: ", PROMPTCOLOR);
-	(void)draw_string_spaced(rowcol, powermode_text[hijack_force_power], ENTRYCOLOR);
+	draw_string(rowcol, acdc_text[empeg_on_dc_power], PROMPTCOLOR);
+	rowcol = draw_string(ROWCOL(2,0), "On reboot: ", PROMPTCOLOR);
+	force_power = hijack_force_power;
+	switch (force_power) {
+		default:
+#ifdef EMPEG_KNOB_SUPPORTED
+			rowcol = ROWCOL(3,0);
+			force_power -= FORCE_TUNER;
+			sprintf(msg, "If tuner=%d, force %s", force_power >> 1, acdc_text[force_power & 1]);
+			break;
+#endif
+		case FORCE_NORMAL:
+			msg = "Normal";
+			break;
+		case FORCE_AC:
+		case FORCE_DC:
+			sprintf(msg, "force %s", acdc_text[force_power == FORCE_DC]);
+			break;
+	}
+	draw_string_spaced(rowcol, msg, ENTRYCOLOR);
 	return NEED_REFRESH;
 }
 
@@ -4979,7 +4999,7 @@ hijack_process_config_ini (char *buf, off_t f_pos)
 
 // This substruct is for data that MUST be kept independently for AC/DC power modes
 typedef struct hijack_savearea_acdc_s {	// 32-bits total
-	signed 	 delaytime		: 8;			// 8 bits
+	signed   delaytime		: 8;			// 8 bits
 
 	unsigned knob			: 1+KNOBDATA_BITS;	// 4 bits
 	unsigned buttonled_level	: BUTTONLED_BITS;	// 3 bits
@@ -4998,7 +5018,7 @@ typedef struct hijack_savearea_s {
 	hijack_savearea_acdc_t dc;				// 32 bits
 
 	unsigned blanker_timeout	: BLANKER_BITS;		// 6 bits
-	unsigned force_power		: FORCEPOWER_BITS;	// 2 bits
+	unsigned spare2			: 2;			// 2 bits (was force_power)
 
 	unsigned blanker_sensitivity	: SENSITIVITY_BITS;	// 3 bits
 	unsigned hightemp_threshold	: HIGHTEMP_BITS;	// 5 bits
@@ -5010,9 +5030,9 @@ typedef struct hijack_savearea_s {
 
 	unsigned timer_action		: TIMERACTION_BITS;	// 1 bit
 	unsigned homework		: 1;			// 1 bits
-	unsigned spare9			: 1;			// 1 bits
+	unsigned spare1			: 1;			// 1 bits
 	unsigned blanker_action		: 1;			// 1 bits
-	unsigned spare4			: 4;			// 4 bits
+	unsigned force_power		: FORCEPOWER_BITS;	// 4 bits
 
 	unsigned spare16		: 16;			// 16 bits
 	unsigned spare8			:  8;			//  8 bits
@@ -5067,9 +5087,9 @@ hijack_save_settings (unsigned char *buf)
 static int
 hijack_restore_settings (char *buf)
 {
-	extern int empeg_state_restore(unsigned char *);	// arch/arm/special/empeg_state.c
+	extern int		empeg_state_restore(unsigned char *);	// arch/arm/special/empeg_state.c
 	hijack_savearea_acdc_t	*acdc;
-	unsigned int knob, failed;
+	unsigned int		knob, failed, force_power;
 
 	// retrieve the savearea, reverting to all zeros if the layout has changed
 	memset(&savearea, 0, sizeof(savearea));
@@ -5084,18 +5104,27 @@ hijack_restore_settings (char *buf)
 	}
 
 	// first priority is getting/overriding the unit's AC/DC power mode
-	hijack_force_power		= savearea.force_power;
-	if (hijack_force_power & 2) {
-		empeg_on_dc_power	= hijack_force_power & 1;
-	} else {
+	empeg_on_dc_power = ((GPLR & EMPEG_EXTPOWER) != 0);
+	hijack_force_power = force_power = savearea.force_power;
 #ifdef EMPEG_KNOB_SUPPORTED
-		extern int hijack_check_for_tuner_loopback(void);	// drivers/char/serial_sa1100.c
-		empeg_on_dc_power	= ((GPLR & EMPEG_EXTPOWER) != 0);
-		if (empeg_on_dc_power && hijack_check_for_tuner_loopback())
-			empeg_on_dc_power = 0;
-#else
-		empeg_on_dc_power	= ((GPLR & EMPEG_EXTPOWER) != 0);
-#endif
+	if (force_power != FORCE_AC && force_power != FORCE_DC) {
+		extern void hijack_read_tuner_id (unsigned int *, unsigned int *); // drivers/char/serial_sa1100.c
+		unsigned int loopback = 0, tuner_id = 0;
+		hijack_read_tuner_id(&loopback, &tuner_id);
+		printk("Tuner: loopback=%d, ID=%d\n", loopback, tuner_id);
+		if (empeg_on_dc_power && loopback) {
+			force_power = FORCE_AC;
+		} else if (force_power >= FORCE_TUNER) {
+			force_power -= FORCE_TUNER;
+			if ((force_power >> 1) == tuner_id) {
+				force_power = (force_power & 1) ? FORCE_DC : FORCE_AC;
+			}
+		}
+	}
+#endif // EMPEG_KNOB_SUPPORTED
+	if (force_power == FORCE_AC || force_power == FORCE_DC) {
+		empeg_on_dc_power = (force_power == FORCE_AC) ? 0 : 1;
+		printk("Forcing %s power mode\n", acdc_text[empeg_on_dc_power]);
 	}
 
 	// Now that the powermode (AC/DC) is set, we can deal with everything else
@@ -5142,6 +5171,7 @@ hijack_init (void *animptr)
 	hijack_game_animptr = animptr;
 	hijack_buttonled_level = 0;	// turn off button LEDs
 	failed = hijack_restore_settings(buf);
+
 	menu_init();
 	reset_hijack_options();
 	hijack_initq(&hijack_inputq);

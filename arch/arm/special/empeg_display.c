@@ -1359,7 +1359,10 @@ void __init empeg_display_init(void)
 	*lcd_command1=0xaf;
 	udelay(1);
 #endif
-
+	//
+	// Ugh.. this is the earliest we can do Tuner Module ID detection,
+	// since on a fresh power-up, the tuner won't have power until this point.
+	//
 	handle_splash(dev);
 	printk("empeg display initialised.\n");
 }

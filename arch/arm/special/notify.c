@@ -107,7 +107,7 @@ hijack_serial_notify (const unsigned char *s, int size)
 
 #ifdef CONFIG_NET_ETHERNET
 
-static char *
+static inline char *
 pngcpy (char *png, const void *src, int len)
 {
 	const char *s = src;
@@ -116,25 +116,27 @@ pngcpy (char *png, const void *src, int len)
 	return png;
 }
 
-static char *
+static inline char *
 deflate0 (char *p, const char *screen, unsigned long *checksum)
 {
 	const char *end_of_screen = screen + EMPEG_SCREEN_BYTES;
 	unsigned long s1 = 1, s2 = 0;
 
+	// "type 0" zlib deflate algorithm: null filter, no compression
 	do {
 		const char *end_of_col = screen + (EMPEG_SCREEN_COLS/2);
 		*p++ = 0;	// filter type 0
 		s2 += s1;
 		do {
+			// pack 4 pixels per byte, ordered from msb to lsb
 			unsigned char b, c;
 			b = *screen++;
-			c = *screen++;
 			b = (b & 0x30) | (b << 6);
+			c = *screen++;
 			b |= ((c & 3) << 2) | ((c >> 4) & 3);
+			*p++ = b;
 			s1 += b;
 			s2 += s1;
-			*p++ = b;
 		} while (screen != end_of_col);
 	} while (screen != end_of_screen);
 	s1 %= 65521;
@@ -143,27 +145,10 @@ deflate0 (char *p, const char *screen, unsigned long *checksum)
 	return p;
 }
 
-static const char png_ihdr[] = {137,'P','N','G','\r','\n',26,'\n',0,0,0,13,'I','H','D','R',
-				0,0,0,EMPEG_SCREEN_COLS,0,0,0,EMPEG_SCREEN_ROWS,2,0,0,0,0,0xb5,0xf9,0x37,0x58};
-static const char png_idat[] = {0,0,4,0x2b,'I','D','A','T',0x48,0x0d,0x01,0x20,0x04,0xdf,0xfb};
+static const char png_hdr[] = {137,'P','N','G','\r','\n',26,'\n',0,0,0,13,'I','H','D','R',
+			0,0,0,EMPEG_SCREEN_COLS,0,0,0,EMPEG_SCREEN_ROWS,2,0,0,0,0,0xb5,0xf9,0x37,0x58,
+			0,0,4,0x2b,'I','D','A','T',0x48,0x0d,0x01,0x20,0x04,0xdf,0xfb};
 static const char png_iend[] = {0,0,0,0,'I','E','N','D',0xae,0x42,0x60,0x82};
-
-static void
-make_png (char *displaybuf, char *png)
-{
-	unsigned long crc, checksum;
-	char *p, *crcstart;
-
-	p = pngcpy(png, png_ihdr, sizeof(png_ihdr));
-	crcstart = p + 4;	// len field is not part of CRC
-	p = pngcpy(p , png_idat, sizeof(png_idat));
-	p = deflate0(p, displaybuf, &checksum);
-	p = pngcpy(p, &checksum, 4);
-	crc = crc32(crcstart, p - crcstart) ^ 0xffffffff;
-	crc = htonl(crc);
-	p = pngcpy(p, &crc, 4);
-	p = pngcpy(p, png_iend, sizeof(png_iend));
-}
 
 // these two are shared with arch/arm/special/hijack.c
 struct semaphore	notify_screen_grab_sem = MUTEX_LOCKED;
@@ -175,24 +160,37 @@ unsigned char		*notify_screen_grab_buffer = NULL;
 static int
 hijack_proc_screen_read (char *buf, char **start, off_t offset, int len, int unused)
 {
-	unsigned long	flags;
-	unsigned char	*displaybuf;
+	static struct semaphore	one_at_a_time = MUTEX;
+	unsigned long		flags, crc, checksum;
+	unsigned char		*displaybuf, *p, *crcstart;
 
-	if (offset)
+	if (offset || !buf)
 		return -EINVAL;
-	displaybuf = kmalloc(EMPEG_SCREEN_BYTES, GFP_KERNEL);
-	if (!buf)
-		return -ENOMEM;
+
+	// "buf" is guaranteed to be a 4096 byte scratchpad for our use,
+	//   so we can use the latter half for our screen capture buffer.
+	displaybuf = buf + ((PNG_BYTES + 63) & ~63);	// use an aligned offset
+
+	down(&one_at_a_time);		// stop other processes from grabbing the screen
 	save_flags_cli(flags);
-	notify_screen_grab_sem = MUTEX_LOCKED;
 	notify_screen_grab_buffer = displaybuf;
-	down(&notify_screen_grab_sem);
 	restore_flags(flags);
 
-	make_png(displaybuf, buf);
-	kfree(displaybuf);
+	// Prepare an "image/png" snapshot of the screen:
+	p = pngcpy(buf, png_hdr, sizeof(png_hdr));
+	crcstart = p - 11;		// len field is not part of IDAT CRC
 
-	return PNG_BYTES;
+	down(&notify_screen_grab_sem);	// wait for screen capture
+	up(&one_at_a_time);		// allow other processes to grab the screen
+
+	p = deflate0(p, displaybuf, &checksum);
+	p = pngcpy(p, &checksum, 4);
+	crc = crc32(crcstart, p - crcstart) ^ 0xffffffff;
+	crc = htonl(crc);
+	p = pngcpy(p, &crc, 4);
+	p = pngcpy(p, png_iend, sizeof(png_iend));
+
+	return PNG_BYTES;	// same as (p - buf)
 }
 
 // /proc/empeg_screen directory entry:
@@ -223,26 +221,31 @@ static struct proc_dir_entry proc_kflash_entry = {
 	&kflash_ops,		/* inode operations */
 };
 
+#define DRIVE0		1
+#define DRIVE1		2
 
 static int
-remount_drives (int writeable)
+remount_drives (int writeable, int which)
 {
-	int rc0, rc1, flags = writeable ? (MS_NODIRATIME | MS_NOATIME) : MS_RDONLY;
+	int rc0 = 0, rc1, flags = writeable ? (MS_NODIRATIME | MS_NOATIME) : MS_RDONLY;
+	char *mount_opts = NULL;	// "nocheck";
 
 	show_message(writeable ? "Remounting read-write.." : "Remounting read-only..", 99*HZ);
 
 	lock_kernel();
-	rc0 = do_remount("/drive0", flags, NULL);
-	rc1 = do_remount("/drive1", flags, NULL);     // returns -EINVAL on 1-drive systems
-	if (rc1 != -EINVAL && !rc0)
-		rc0 = rc1;
-	rc1 = do_remount("/", flags, NULL);
+	if (which & DRIVE0)
+		rc0 = do_remount("/drive0", flags, mount_opts);
+	if (which & DRIVE1) {
+		rc1 = do_remount("/drive1", flags, mount_opts);     // returns -EINVAL on 1-drive systems
+		if (rc1 != -EINVAL && !rc0)
+			rc0 = rc1;
+	}
+	rc1 = do_remount("/", flags, mount_opts);
+	if (!rc1)
+		rc1 = rc0;
 	unlock_kernel();
 	sync();
 	sync();
-
-	if (!rc1)
-		rc1 = rc0;
 	show_message(rc1 ? "Failed" : "Done", HZ);
 	return rc1;
 }
@@ -314,12 +317,18 @@ hijack_do_command (const char *buffer, unsigned int count)
 					hold_time = HZ+(HZ/5);
 				insert_button_pair(button, hold_time);
 			}
-		} else if (!strxcmp(s, "RO", 0)) {
-			rc = remount_drives(0);
+		} else if (!strxcmp(s, "RW /", 0)) {
+			rc = remount_drives(1, 0);
+		} else if (!strxcmp(s, "RW /drive0", 0)) {
+			rc = remount_drives(1, DRIVE0);
+		} else if (!strxcmp(s, "RW /drive1", 0)) {
+			rc = remount_drives(1, DRIVE1);
 		} else if (!strxcmp(s, "RW", 0)) {
-			rc = remount_drives(1);
+			rc = remount_drives(1, DRIVE0|DRIVE1);
+		} else if (!strxcmp(s, "RO", 0)) {
+			rc = remount_drives(0, DRIVE0|DRIVE1);
 		} else if (!strxcmp(s, "REBOOT", 0)) {
-			remount_drives(0);
+			remount_drives(0, DRIVE0|DRIVE1);
 			hijack_reboot = 1;
 		} else if (!strxcmp(s, "POPUP ", 1)) {
 			int secs;

@@ -194,6 +194,7 @@ static response_t response_table[] = {
 	{257,	" Okay"},
 	{425,	" Connection error"},
 	{426,	" Connection failed"},
+	{431,	" No such directory"},
 	{451,	" Internal error"},
 	{500,	" Bad command"},
 	{501,	" Bad syntax"},
@@ -832,7 +833,7 @@ typedef struct mime_type_s {
 static const mime_type_t mime_types[] = {
 	{"*.tiff",		"image/tiff"			},
 	{"*.jpg",		"image/jpeg"			},
-	{"*.png",		"image/x-png"			},
+	{"*.png",		"image/png"			},
 	{"*.htm",		"text/html"			},
 	{"*.html",		"text/html"			},
 	{"*.txt",		 text_plain			},
@@ -1032,6 +1033,18 @@ receive_file (server_parms_t *parms, const char *path)
 	return response;
 }
 
+static int
+classify_path (char *path)
+{
+	struct stat st;
+
+	if (0 > sys_newstat(path, &st))	// in theory, this "follows" symlinks for us
+		return 0;		// does not exist
+	if ((st.st_mode & S_IFMT) != S_IFDIR)
+		return 1;		// non-directory
+	return 2;			// directory
+}
+
 static void
 append_path (char *path, char *new)
 {
@@ -1158,9 +1171,15 @@ kftpd_handle_command (server_parms_t *parms)
 	}
 
 	// now look for commands involving more complex handling:
-	if (!strxcmp(buf, "CWD ", 1)) {
-		append_path(parms->cwd, &buf[4]);
-		quit = send_dir_response(parms, 250, parms->cwd, "directory changed");
+	if (!strxcmp(buf, "CWD ", 1) && buf[4]) {
+		strcpy(path, parms->cwd);
+		append_path(path, &buf[4]);
+		if (2 != classify_path(path)) {
+			response = 431;
+		} else {
+			strcpy(parms->cwd, path);
+			quit = send_dir_response(parms, 250, parms->cwd, "directory changed");
+		}
 	} else if (!strxcmp(buf, "CDUP", 0)) {
 		append_path(parms->cwd, "..");
 		quit = send_dir_response(parms, 200, parms->cwd, NULL);
@@ -1303,6 +1322,7 @@ khttpd_handle_connection (server_parms_t *parms)
 		while (buflen == ksock_rw(parms->clientsock, buf, buflen, 0));	// fixme? flush incoming stream
 		khttpd_respond(parms, 400, "Bad command", "request too long");
 	} else if (!strxcmp(buf, "GET ", 1) && n > 4) {
+		int use_index = 1;	// look for index.html?
 		char *path = &buf[4], *p = path, c;
 		while (*p && (*p != ' '))
 			++p;
@@ -1324,8 +1344,7 @@ khttpd_handle_connection (server_parms_t *parms)
 					}
 					(void) hijack_do_command(cmds, p - cmds); // ignore errors
 				}
-				if (path[0] == '/' && path[1] == '\0')
-					return 0;	// send "nothing" in response to "GET /?xxxx"
+				use_index = 0;
 				break;
 			}
 		}
@@ -1335,11 +1354,7 @@ khttpd_handle_connection (server_parms_t *parms)
 		}
 		n = strlen(path);
 		if (path[n-1] == '/') {
-			int rc;
-			struct stat statbuf;
-			strcat(path, "index.html");
-			rc = sys_newstat(path, &statbuf);
-			if (rc < 0 || (statbuf.st_mode & S_IFMT) == S_IFDIR) {
+			if (!use_index || !strcpy(path+n, "index.html") || 1 != classify_path(path)) {
 				path[n] = '\0';
 				response = send_dirlist(parms, path, 1);
 				return 0;
@@ -1359,12 +1374,13 @@ khttpd_handle_connection (server_parms_t *parms)
 static int
 get_clientip (server_parms_t *parms)
 {
-	int	addrlen = sizeof(struct sockaddr_in);
+	int	rc, addrlen = sizeof(struct sockaddr_in);
 
 	parms->clientip[0] = '\0';
-	return (parms->clientsock->ops->getname(parms->clientsock, (struct sockaddr *)&parms->clientaddr, &addrlen, 1) < 0)
-	 	|| (parms->clientaddr.sin_family != AF_INET)
-	 	|| !inet_ntop(AF_INET, &parms->clientaddr.sin_addr.s_addr, parms->clientip, INET_ADDRSTRLEN);
+	rc = parms->clientsock->ops->getname(parms->clientsock, (struct sockaddr *)&parms->clientaddr, &addrlen, 1);
+	return rc < 0
+	 || parms->clientaddr.sin_family != AF_INET
+	 || !inet_ntop(AF_INET, &parms->clientaddr.sin_addr.s_addr, parms->clientip, INET_ADDRSTRLEN);
 }
 
 static int

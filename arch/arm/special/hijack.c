@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v402"
+#define HIJACK_VERSION	"v403"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -27,6 +27,7 @@ const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 #include "empeg_display.h"
 #include "empeg_mixer.h"
 
+extern int hijack_exec(const char *, const char *);			// arch/arm/special/kexec.c
 extern void *hijack_get_state_read_buffer (void);			// arch/arm/special/empeg_state.c
 extern void save_current_volume(void);					// arch/arm/special/empeg_state.c
 extern void input_wakeup_waiters(void);					// arch/arm/special/empeg_input.c
@@ -432,6 +433,7 @@ static const unsigned int knobdata_buttons[1<<KNOBDATA_BITS] = {
 	IR_FAKE_NEXTSRC,
 	};
 
+static	int hijack_option_stalk_enabled;	// 0 == ignore (drop) all stalk input
 #endif // EMPEG_KNOB_SUPPORTED
 
 // How button press/release events are handled:
@@ -493,6 +495,7 @@ static int voladj_hdefault[] = {0x2200,	1000,	0x1000,	100,	 500}; // High
 struct semaphore hijack_kftpd_startup_sem	= MUTEX_LOCKED;	// sema for waking up kftpd after we read config.ini
 struct semaphore hijack_khttpd_startup_sem	= MUTEX_LOCKED;	// sema for waking up khttpd after we read config.ini
 #endif // CONFIG_NET_ETHERNET
+struct semaphore hijack_menuexec_sem		= MUTEX_LOCKED;	// sema for waking up menuxec when we issue a command
 
 static hijack_buttonq_t hijack_inputq, hijack_playerq, hijack_userq;
 int hijack_khttpd_new_fid_dirs;			// 0 == don't look for new fids sub-directories
@@ -535,7 +538,6 @@ static	int hijack_standby_minutes;		// number of minutes after screen blanks bef
 	int hijack_trace_fs;			// trace major filesystem accesses, on serial console
 	int hijack_standbyLED_on, hijack_standbyLED_off;	// on/off duty cycle for standby LED
 static	int hijack_keypress_flash;		// flash display when buttons are pressed
-static	int hijack_option_stalk_enabled;	// 0 == ignore (drop) all stalk input
 
 
 // Bass Treble Adjustment stuff follows  --genixia
@@ -1918,12 +1920,26 @@ fsck_display (int firsttime)
 void show_message (const char *message, unsigned long time);
 static unsigned int hijack_menuexec_no;
 static const char *no_yes[2] = {"No ", "Yes"};
+static char *hijack_menuexec_command;
+
+static int
+menuexec_display2 (int firsttime)
+{
+	if (hijack_menuexec_no) {
+		ir_selected = 1; // return to menu
+	} else if (firsttime) {
+		hijack_menuexec_command = (char *)hijack_userdata;
+		up(&hijack_menuexec_sem);	// wake up the daemon
+	} else if (hijack_menuexec_command == NULL) {
+		ir_selected = 1; // return to menu
+	}
+	return NO_REFRESH;
+}
 
 static void
 menuexec_move (int direction)
 {
 	hijack_menuexec_no = !hijack_menuexec_no;
-	empeg_state_dirty = 1;
 }
 
 static int
@@ -1933,18 +1949,14 @@ menuexec_display (int firsttime)
 
 	if (firsttime)
 		hijack_menuexec_no = 1;
-	else if (!hijack_last_moved)
+	else if (!hijack_last_moved && !ir_selected)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
 	rowcol = draw_string(ROWCOL(0,0), "Execute this Command? ", PROMPTCOLOR);
 	(void)   draw_string_spaced(rowcol, no_yes[!hijack_menuexec_no], ENTRYCOLOR);
 	rowcol = draw_string(ROWCOL(2,0), (char *)hijack_userdata, PROMPTCOLOR);
-	if (ir_selected) {
-		if (!hijack_menuexec_no) {
-			// FIXME: not implemented
-		}
-	}
+printk("menuexec_display: ir_sel=%lu exec_no=%u\n", ir_selected, hijack_menuexec_no);
 	return NEED_REFRESH;
 }
 
@@ -4055,6 +4067,8 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 							activate_dispfunc(item->dispfunc, item->movefunc, 0);
 						} else if (hijack_dispfunc == forcepower_display || hijack_dispfunc == homework_display || hijack_dispfunc == saveserial_display) {
 							activate_dispfunc(reboot_display, NULL, 0);
+						} else if (hijack_dispfunc == menuexec_display) {
+							activate_dispfunc(menuexec_display2, NULL, hijack_userdata);
 						} else {
 							activate_dispfunc(menu_display, menu_move, 0);
 						}
@@ -4873,13 +4887,31 @@ hijack_exec_line (unsigned char *s)
 	memcpy(cmdline, "exec", 4);	// prefix the command with "exec"
 	s = findchars(cmdline+5, "\n\r");
 	if (s != (cmdline+5)) {
-		extern int hijack_exec(const char *, const char *);
 		char saved = *s;
 		*s = '\0';
 		hijack_exec(NULL, cmdline);
 		*s = saved;
 	}
 	return s;
+}
+
+int
+menuexec_daemon (void *not_used)	// invoked from init/main.c
+{
+	// kthread setup
+	set_fs(KERNEL_DS);
+	current->session = 1;
+	current->pgrp = 1;
+	strcpy(current->comm, "menuexec");
+	sigfillset(&current->blocked);
+
+	while (1) {
+		down(&hijack_menuexec_sem);
+		if (hijack_menuexec_command != NULL) {
+			hijack_exec(NULL, hijack_menuexec_command);
+			hijack_menuexec_command = NULL;
+		}
+	}
 }
 
 static int

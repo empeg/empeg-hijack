@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v284"
+#define HIJACK_VERSION	"v285"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -130,7 +130,6 @@ static const unsigned int stalk_buttons[] = {
 	IR_KNEXT_PRESSED,
 	IR_KPREV_PRESSED,
 	IR_KVOLUP_PRESSED,
-	IR_KVOLDOWN_PRESSED,
 	IR_KREAR_PRESSED,
 	IR_KBOTTOM_PRESSED,
 	IR_NULL_BUTTON};
@@ -243,13 +242,23 @@ typedef struct ir_translation_s {
 // a default translation for PopUp0 menu:
 static struct {
 		ir_translation_t	hdr;
-		unsigned int		buttons[8];
+		unsigned int		buttons[9];
+	} seektool_default_translation =
+	{	{IR_FAKE_POPUP0, 0, 2, 0},
+		{IR_KNOB_PRESSED|ALT,	IR_FAKE_POPUP0}
+	};
+
+// a default translation for PopUp0 menu:
+static struct {
+		ir_translation_t	hdr;
+		unsigned int		buttons[9];
 	} popup0_default_translation =
-	{	{IR_FAKE_POPUP0, 0, 8, 0},
+	{	{IR_FAKE_POPUP0, 0, 9, 0},
 		{IR_FAKE_CLOCK,		IR_RIO_INFO_PRESSED,
 		 IR_FAKE_KNOBSEEK,	IR_RIO_MARK_PRESSED|ALT,
 		 IR_FAKE_NEXTSRC,	IR_RIO_0_PRESSED|ALT,
-		 IR_FAKE_VOLADJMENU,	IR_RIO_VISUAL_PRESSED }
+		 IR_FAKE_VOLADJMENU,	IR_RIO_VISUAL_PRESSED,
+		 IR_KNOB_PRESSED}
 	};
 
 static ir_translation_t *ir_current_longpress = NULL;
@@ -331,6 +340,7 @@ static button_name_t button_names[] = {
 	{"KnobLeft",	IR_KNOB_LEFT},
 	{"KnobRight",	IR_KNOB_RIGHT},
 	{"Knob",	IR_KNOB_PRESSED},
+	{"SeekTool",	IR_KNOB_PRESSED|ALT},
 
 	{"AM",		IR_KW_AM_PRESSED},
 	{"FM",		IR_KW_FM_PRESSED},
@@ -2234,20 +2244,6 @@ popup_display (int firsttime)
 	return rc;
 }
 
-static void
-popup_activate (unsigned int button)
-{
-	button &= ~BUTTON_FLAGS;
-	current_popup = ir_next_match(NULL, button);
-	if (current_popup == NULL && button == IR_FAKE_POPUP0)
-		current_popup = &popup0_default_translation.hdr;
-	if (current_popup != NULL) {
-		if (current_popup->old == IR_FAKE_POPUP0)
-			current_popup->popup_index = (current_popup->popup_index & ~7) | popup0_index;
-		activate_dispfunc(popup_display, popup_move);
-	}
-}
-
 #define GAME_COLS		(EMPEG_SCREEN_COLS/2)
 #define GAME_VBOUNCE		0xff
 #define GAME_BRICKS		0xee
@@ -2931,8 +2927,8 @@ check_for_seek_pattern (const unsigned char *buf, const unsigned long *pattern)
 	int row;
 
 	for (row = 24; row <= 31; row++) {
-		const unsigned long s = *(unsigned long *)(buf + ROWOFFSET(row) + 4);
-		if (s != *pattern++)
+		unsigned long test = *(unsigned long *)(buf + ROWOFFSET(row) + 4);
+		if (test != *pattern++)
 			return 0;	// Seek-Tool not active
 	}
 	return 1;	// Seek-Tool is active
@@ -2944,7 +2940,30 @@ check_if_seek_tool_is_active (const unsigned char *buf)
 	static const unsigned long playsym [8] = { 0x000002f0, 0x0002fff0, 0x02fffff0, 0xfffffff0, 0x02fffff0, 0x0002fff0, 0x000002f0, 0x00000000 };
 	static const unsigned long pausesym[8] = { 0x00000000, 0x00000000, 0xfff0fff0, 0xfff0fff0, 0xfff0fff0, 0xfff0fff0, 0x00000000, 0x00000000 };
 
-	return check_for_seek_pattern(buf, playsym) || check_for_seek_pattern(buf, pausesym);
+	if (!check_for_seek_pattern(buf, playsym) && !check_for_seek_pattern(buf, pausesym))
+		return 0;
+	if (*(unsigned long *)(buf + 20))
+		return 2;	// Seek-Tool is active, and has the knob
+	return 1;		// Seek-Tool is on-screen, but does not have knob
+}
+
+static void
+popup_activate (unsigned int button, int seek_tool)
+{
+	button &= ~BUTTON_FLAGS;
+	current_popup = ir_next_match(NULL, button);
+
+	if (seek_tool) {
+		seektool_default_translation.buttons[1] = button;
+		current_popup = &seektool_default_translation.hdr;
+	} else if (current_popup == NULL && button == IR_FAKE_POPUP0) {
+		current_popup = &popup0_default_translation.hdr;
+	}
+	if (current_popup != NULL) {
+		if (current_popup->old == IR_FAKE_POPUP0)
+			current_popup->popup_index = (current_popup->popup_index & ~7) | popup0_index;
+		activate_dispfunc(popup_display, popup_move);
+	}
 }
 
 static int
@@ -3276,7 +3295,7 @@ hijack_handle_button (unsigned int button, unsigned long delay, int any_ui_is_ac
 		case IR_FAKE_POPUP1:
 		case IR_FAKE_POPUP2:
 		case IR_FAKE_POPUP3:
-			popup_activate(button);
+			popup_activate(button, 0);
 			hijacked = 1;
 			break;
 #ifdef EMPEG_KNOB_SUPPORTED
@@ -3297,14 +3316,18 @@ hijack_handle_button (unsigned int button, unsigned long delay, int any_ui_is_ac
 						index = 0;
 					hijacked = 1;
 					if (jiffies_since(ir_knob_down) < (HZ/2)) {	// short press?
-						if (check_if_seek_tool_is_active(player_buf))
-							index = 0;	// pass short press on to player
-						if (index == 1)
-							popup_activate(knobdata_buttons[1]);
-						else if (index == 2)
+						int seek_tool = check_if_seek_tool_is_active(player_buf);
+						unsigned int button;
+						if (seek_tool == 2)
+							index = 0;
+						button = knobdata_buttons[index];
+						if (index == 2) {
 							activate_dispfunc(voladj_prefix_display, voladj_move);
-						else
-							hijack_enq_button_pair(knobdata_buttons[index]);
+						} else if (index == 1 || seek_tool == 1) {
+							popup_activate(button, seek_tool);
+						} else {
+							hijack_enq_button_pair(button);
+						}
 					}
 				} else { //fixme someday: get rid of "special case" logic here
 					hijacked = 1;

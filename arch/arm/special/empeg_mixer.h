@@ -23,4 +23,16 @@ int empeg_mixer_get_multipath(void);
 #define INPUT_AUX			2
 #define INPUT_RADIO_AM			3
 
+void empeg_mixer_select_input(int input);
+int empeg_mixer_get_input(void);
+int empeg_mixer_get_user_input(void);
+
+int empeg_mixer_setvolume(int vol);
+int empeg_mixer_getvolume(void);
+
+int empeg_mixer_getsam(void);
+void empeg_mixer_setsam(int sam);
+
+void empeg_mixer_setsam (int on);
+
 #endif

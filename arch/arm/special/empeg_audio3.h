@@ -9,4 +9,6 @@ int __init empeg_audio_init(void);
 int empeg_audio_open(struct inode *inode, struct file *file);
 void empeg_audio_beep_setup(int rate);
 
+int audio_overlay_in_use(void);
+
 #endif

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v300"
+#define HIJACK_VERSION	"v301"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -554,6 +554,11 @@ const hijack_db_table_t hijack_db_table[] =
 // Tony bonus. Give the option of removing default bass boost on FM  -- genixia
        int hijack_disable_bassboost_FM;
 
+// audio overlay patch settings
+       int hijack_overlay_bg_min = 0x00004000;
+       int hijack_overlay_bg_max = 0x00010000;
+       int hijack_overlay_bg_fadestep = 0x00000AAA;
+
 typedef struct hijack_option_s {
 	char	*name;
 	void	*target;
@@ -623,6 +628,10 @@ static const hijack_option_t hijack_option_table[] =
 {"volume_boost_AUX",		&hijack_volboost[2],		0,			1,	-100,	100},
 {"volume_boost_AM",		&hijack_volboost[3],		0,			1,	-100,	100},
 {"disable_bassboost_FM",	&hijack_disable_bassboost_FM,	0,			1,	0,	1,},
+{"overlay_bg_min",	&hijack_overlay_bg_min,	0x00004000, 1, 0, 0x00010000,},
+{"overlay_bg_max",	&hijack_overlay_bg_max,	0x00010000, 1, 0, 0x00010000,},
+{"overlay_bg_fadestep",	&hijack_overlay_bg_max,	0x00000AAA, 1, 0, 0x00010000,},
+
 {NULL,NULL,0,0,0,0} // end-of-list
 };
 

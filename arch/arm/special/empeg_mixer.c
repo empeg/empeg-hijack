@@ -63,6 +63,8 @@
 typedef struct
 {
 	int input;
+	int inputInternal;
+	int userInputInternal;
 	unsigned int flags;
 	int volume;
 	int loudness;
@@ -114,6 +116,7 @@ static struct empeg_eq_section_t eq_init[20];
 static struct empeg_eq_section_t eq_current[20];
 static int eq_section_order[20];
 static int mixer_compression = 0;
+	int sam;
 static unsigned int eq_last[40];
 static unsigned int eq_reg_last = 0;
 static unsigned int radio_sensitivity;
@@ -137,9 +140,9 @@ static int empeg_mixer_release(struct inode *inode, struct file *file);
 static int empeg_mixer_ioctl(struct inode *inode, struct file *file,
 			     uint command, ulong arg);
 
-       void empeg_mixer_select_input(int input);
+//static void empeg_mixer_select_input(int input);
 static void empeg_mixer_setloudness(mixer_dev *dev, int level);
-static int empeg_mixer_setvolume(mixer_dev *dev, int vol);
+//static int empeg_mixer_setvolume(mixer_dev *dev, int vol);
 static int empeg_mixer_getdb(mixer_dev *dev);
 static void empeg_mixer_inflict_flags(mixer_dev *dev);
 static void empeg_mixer_setbalance(mixer_dev *dev, int balance);
@@ -164,6 +167,7 @@ static struct file_operations mixer_fops =
 	open:		empeg_mixer_open,
 	release:	empeg_mixer_release
 };
+
 
 
 int __init empeg_mixer_init(void)
@@ -204,7 +208,7 @@ int __init empeg_mixer_init(void)
 	empeg_mixer_mute(1);
 
 	/* Set volume */
-	empeg_mixer_setvolume(dev,VOLUME_ZERO_DB);
+	empeg_mixer_setvolume(VOLUME_ZERO_DB);
 
 	/* try doing this last thing */
 	empeg_mixer_select_input(INPUT_PCM);
@@ -409,7 +413,7 @@ static int empeg_mixer_ioctl(struct inode *inode, struct file *file,
 		if (vol_out < 0 || vol_out > 100)
 			return -EINVAL;
 		vol_out = hijack_volume_boost_w(vol_out);       // calculate boost volume
-		empeg_mixer_setvolume(dev, vol_out);
+		empeg_mixer_setvolume(vol_out);
 		vol_out = dev->volume;
 		vol_out = hijack_volume_boost_r(vol_out);	// 'de'calculate hijack volume boost. player sees what it asked for.
 		vol_out = (vol_out & 0xFF) + ((vol_out << 8));
@@ -470,24 +474,27 @@ static int empeg_mixer_ioctl(struct inode *inode, struct file *file,
 #endif	
 		if (source & SOUND_MASK_PCM)
 		{
-			empeg_mixer_select_input(INPUT_PCM);
+			dev->userInputInternal = INPUT_PCM;
 			dev->input = SOUND_MASK_PCM;
 		}
 		else if (source & SOUND_MASK_RADIO)
 		{
-			empeg_mixer_select_input(INPUT_RADIO_FM);
+			dev->userInputInternal = INPUT_RADIO_FM;
 			dev->input = SOUND_MASK_RADIO;
 		}
 		else if (source & SOUND_MASK_LINE1)
 		{
-			empeg_mixer_select_input(INPUT_RADIO_AM);
+			dev->userInputInternal = INPUT_RADIO_AM;
 			dev->input = SOUND_MASK_LINE1;
 		}
 		else if (source & SOUND_MASK_LINE)
 		{
-		        empeg_mixer_select_input(INPUT_AUX);
+			dev->userInputInternal = INPUT_AUX;
 			dev->input = SOUND_MASK_LINE;
 		}
+		if( dev->userInputInternal != dev->inputInternal && !audio_overlay_in_use() )
+			empeg_mixer_select_input( dev->userInputInternal );
+		
 		put_user_ret(dev->input, (int *)arg, -EFAULT);
 		return 0;
 	}
@@ -614,20 +621,36 @@ static int empeg_mixer_ioctl(struct inode *inode, struct file *file,
 		mixer_compression = onoff;
 		return 0;
 	}
+      
+      
+      case EMPEG_MIXER_GET_SAM:
+      {
+
+        int sam;
+    #if MIXER_DEBUG
+            printk(MIXER_NAME
+                   ": mixer_ioctl EMPEG_MIXER_GET_SAM %d\n",
+                   arg);
+    #endif
+          dsp_read_xram(Y_switch, &sam);
+          copy_to_user_ret((void *) arg, (const void *) &sam , sizeof(int), -EFAULT);
+          return 0;
+      }
+
 	case EMPEG_MIXER_SET_SAM:
 	{
-		int sam;
+        /* int sam;     Now global */
 
-		copy_from_user_ret((void *) &sam, (const void *) arg,
-				   sizeof(int), -EFAULT);
+        copy_from_user_ret((void *) &sam, (const void *) arg,
+                   sizeof(int), -EFAULT);
 
-       		if(sam) dsp_write(Y_switch, 0);
-		else dsp_write(Y_switch, 0x5d4);	// 4.6ms
-		
+            if(sam) dsp_write(Y_switch, 0);
+        else dsp_write(Y_switch, 0x5d4);	// 4.6ms
+
 #if MIXER_DEBUG
-		printk(MIXER_NAME
-		       ": mixer_ioctl EMPEG_MIXER_SET_SAM %d\n",
-		       sam);
+      printk(MIXER_NAME
+             ": mixer_ioctl EMPEG_MIXER_SET_SAM %d\n",
+             sam);
 #endif
 
 		return 0;
@@ -868,6 +891,29 @@ static void empeg_mixer_mute(int on)
 #endif
 }
 
+
+void empeg_mixer_setsam(int on)
+{	
+	if(on) dsp_write(Y_switch, 0);
+	else dsp_write(Y_switch, 0x5d4);	// 4.6ms
+
+#if MIXER_DEBUG
+printk(MIXER_NAME
+       ": empeg_mixer_setsam %d\n",
+       sam);
+#endif
+}
+
+int empeg_mixer_get_input()
+{
+	return mixer_global.inputInternal;
+}
+
+int empeg_mixer_get_user_input()
+{
+	return mixer_global.userInputInternal;
+}
+
 void empeg_mixer_select_input(int input)
 {
 	static dsp_setup fm_setup[]=
@@ -916,6 +962,7 @@ void empeg_mixer_select_input(int input)
 	  { 0,0 } };
 
 	mixer_dev *dev = &mixer_global;
+	dev->inputInternal = input;
 
 	eq_reg_last &= 0x1000; /* Preserve EQ num bands bit */
 	eq_reg_last |= (radio_sensitivity << 1) | (radio_sensitivity << 4);
@@ -1119,7 +1166,8 @@ void empeg_mixer_select_input(int input)
 		/* Wait for a while so that the I2S being clocked into the
 		   DSP by DMA runs the initialisation code: the DSP is cycle-
 		   locked to the incoming bitstream */
-		{ int a=jiffies+(HZ/20); while(jiffies<a); }
+//		{ int a=jiffies+(HZ/20); while(jiffies<a); }
+		{ int a=0; for( a = 0; a < 1000; ++a ) udelay( 50 ); } // jiffies can not be used inside interrupt
 		
 		/* Select mode */
 		dsp_write(X_modpntr,0x0200);
@@ -1200,15 +1248,17 @@ static void hijack_volume_boost_reapply(mixer_dev *dev)
 	// Calculate the desired boost for the new input.
 	int vol;
 	vol = hijack_volume_boost_w(hijack_current_vol_request);
-	(void) empeg_mixer_setvolume(dev, vol);
+	(void) empeg_mixer_setvolume(vol);
 }
 
-static int empeg_mixer_setvolume(mixer_dev *dev, int vol)
+
+/*static*/ 
+int empeg_mixer_setvolume(/*mixer_dev *dev,*/ int vol)
 {
 	hijack_current_mixer_volume = vol;
 	dsp_write(Y_VAT, volume_table[vol].vat);
 	dsp_write(Y_VGA, volume_table[vol].vga);
-	dev->volume = vol;
+	mixer_global.volume = vol;	
 
 #if MIXER_DEBUG
 	printk(MIXER_NAME ": volume set %d VAT:%03x VGA:%03x\n",vol,
@@ -1258,6 +1308,29 @@ hijack_tone_set (int bass_value, int bass_freq, int bass_q, int treble_value, in
 		(void)empeg_mixer_eq_apply();
 	}
 }
+
+int empeg_mixer_getvolume(void)
+{
+	return mixer_global.volume;
+}
+
+int empeg_mixer_getsam(void)
+{
+  
+  int sam;
+  
+  dsp_read_xram(Y_switch, &sam);
+  if (sam)
+  {
+    return 0;
+  } else {
+    return 1;
+  }
+  
+
+}
+
+
 
 static int empeg_mixer_getdb(mixer_dev *dev)
 {

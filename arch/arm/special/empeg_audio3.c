@@ -99,7 +99,9 @@
 /* debug */
 #define AUDIO_DEBUG			0
 #define AUDIO_DEBUG_VERBOSE		0
+#define AUDIO_OVERLAY_DEBUG			0
 #define AUDIO_DEBUG_STATS		1 //AUDIO_DEBUG | AUDIO_DEBUG_VERBOSE
+
 
 /* Names */
 #define AUDIO_NAME			"audio-empeg"
@@ -111,6 +113,22 @@
 /* Client parameters */
 #define AUDIO_NOOF_BUFFERS		8	/* Number of audio buffers */
 #define AUDIO_BUFFER_SIZE		4608	/* User buffer chunk size */
+
+/* Audio overlay specific variables */
+#define AUDIO_OVERLAY_BUFFERS				(16)
+#define MAX_FREE_OVERLAY_BUFFERS			(AUDIO_OVERLAY_BUFFERS - 2)
+#define AUDIO_OVERLAY_BG_VOLUME_FADED		(0x00004000)
+#define AUDIO_OVERLAY_BG_VOLUME_MAX			(0x00010000)
+#define AUDIO_OVERLAY_BG_VOLUME_FADESTEP	(0x00000AAA)
+
+extern int hijack_overlay_bg_min;
+extern int hijack_overlay_bg_max;
+extern int hijack_overlay_bg_fadestep;
+
+
+int audio_overlay_bg_volume = AUDIO_OVERLAY_BG_VOLUME_MAX;
+signed short audio_zero_sample[ AUDIO_BUFFER_SIZE/2 ] = { 0 };
+extern int sam;
 
 /* Number of audio buffers that can be in use at any one time. This is
    two less since the inactive two are actually still being used by
@@ -555,6 +573,12 @@ typedef struct
 	int  count;
 } audio_buf;
 
+struct
+{
+	audio_buf *buffers;
+	int used,free,head,tail,initialized;
+} audio_overlay;
+
 typedef struct
 {
 	/* Buffers */
@@ -575,6 +599,12 @@ typedef struct
 
 	/* Are we sending "good" data? */
 	int good_data;
+
+    /* overlay: has SAM been set yet */
+    int sam_set;
+
+    /* overlay: prev soft audio mute status */
+    int prev_sam;
 } audio_dev;
 
 /* cosine tables for beep parameters */
@@ -646,7 +676,18 @@ int __init empeg_audio_init(void)
 
 	/* Blank everything to start with */
 	memset(dev, 0, sizeof(audio_dev));
-	
+
+    /*
+	// initialize audio overlay buffers
+	if ((audio_overlay.buffers=kmalloc(sizeof(audio_buf)*AUDIO_OVERLAY_BUFFERS,GFP_KERNEL))==NULL)
+		printk(AUDIO_NAME ": can't get memory for audio overlay buffers");
+	for(i = 0; i < AUDIO_OVERLAY_BUFFERS; i++)
+		audio_overlay.buffers[i].count = 0;
+	audio_overlay.head = audio_overlay.tail = audio_overlay.used = 0;
+	audio_overlay.free = MAX_FREE_OVERLAY_BUFFERS;
+	*/
+    audio_overlay.initialized = 0;
+
 	/* Allocate buffers */
 	if ((dev->buffers = kmalloc(sizeof(audio_buf) * AUDIO_NOOF_BUFFERS,
 				    GFP_KERNEL)) == NULL) {
@@ -822,6 +863,63 @@ static int empeg_audio_write(struct file *file,
 	if (count == 0) {
 		printk("zero byte write\n");
 		return 0;
+	}
+
+	if( (file->f_flags & O_SYNC) )
+	{
+      if ( !audio_overlay.initialized )
+      {
+        int i;
+        unsigned long flags;
+#if AUDIO_OVERLAY_DEBUG
+        printk("audio overlay initializing\n");
+#endif
+
+        save_flags_cli(flags);
+        if ((audio_overlay.buffers=kmalloc(sizeof(audio_buf)*AUDIO_OVERLAY_BUFFERS,GFP_KERNEL))==NULL)
+            printk(AUDIO_NAME ": can't get memory for audio overlay buffers");
+        for(i = 0; i < AUDIO_OVERLAY_BUFFERS; i++)
+            audio_overlay.buffers[i].count = 0;
+        audio_overlay.head = audio_overlay.tail = audio_overlay.used = 0;
+        audio_overlay.free = MAX_FREE_OVERLAY_BUFFERS;
+        restore_flags(flags);
+        audio_overlay.initialized = 1;
+#if AUDIO_OVERLAY_DEBUG
+        printk("audio overlay initialized\n");
+#endif
+      }
+
+		if (audio_overlay.free==0) {
+		    struct wait_queue wait = { current, NULL };
+	
+		    add_wait_queue(&dev->waitq, &wait);
+		    current->state = TASK_INTERRUPTIBLE;
+		    while (audio_overlay.free == 0) {
+			schedule();
+		    }
+		    current->state = TASK_RUNNING;
+		    remove_wait_queue(&dev->waitq, &wait);
+
+		}
+		// fill data to overlay buffers instead
+		while( count > 0 && audio_overlay.free > 0 )
+		{
+			unsigned long flags;
+			save_flags_cli(flags);
+			audio_overlay.free--;
+			restore_flags(flags);
+
+			copy_from_user( audio_overlay.buffers[ audio_overlay.head++ ].data, buffer, AUDIO_BUFFER_SIZE );
+			if( audio_overlay.head == AUDIO_OVERLAY_BUFFERS )
+				audio_overlay.head = 0;
+			total += AUDIO_BUFFER_SIZE;
+			count -= AUDIO_BUFFER_SIZE;
+			
+			save_flags_cli(flags);
+			audio_overlay.used++;
+			restore_flags(flags);
+		}
+		return total;
 	}
 
 	/* Any space left? (No need to disable IRQs: we're just checking for a
@@ -1100,6 +1198,253 @@ static void empeg_audio_beep_end_sched(void *unused)
 	dsp_write(Y_sinusMode, 0x89a);
 }
 
+// consumes 1.7% of CPU time on 220MHz SA1100 when processing 176400 bytes/second
+void audio_mix( signed short* pDstSample, signed short* pSrcSample )
+{
+
+__asm__ (
+		"stmfd	r13!, {r0-r12,r14}\n\t"
+		
+		// initialize registers
+		"ldr	r1, %0\n\t"				// r1 = audio_overlay_bg_volume
+		"ldr	r4, %1\n\t"				// r4 = pDstSample
+		"ldr	r5, %2\n\t"				// r5 = pSrcSample
+		"mov	r6, #2304\n\t"			// r6 = loop counter
+		"sub	r6, r6, #1\n\t"			// r6 -= 1
+		"mov	r7, #65280\n\t"			// r7 = ...
+		"add	r7, r7, #255\n\t"		// r7 = 0xFFFF
+		"mov	r8, #32512\n\t"			// r8 = ...
+		"add	r8, r8, #255\n\t"		// r8 = 32767
+
+		".MixLoopStart:\n\t"
+
+		// scale destination sample down by fixed-point multiplier
+		"ldrsh	r0, [r4]\n\t"			// r0 = *pDstSample
+		"mov	r0, r0, lsl#16\n\t"		// r0 <<= 16
+		"smull  r2, r3, r1, r0\n\t"		// r2 = lo(r1 * r0), r3 = hi(r1 * r0)
+		"adc	r2, r2, #32768\n\t"		// r2 += 32768 + carry
+		"mov	r2, r2, lsr#16\n\t"		// r2 >>= 16
+		"and	r3, r3, r7\n\t"			// r3 &= r7
+		"orr	r0, r2, r3, lsl#16\n\t"	// r0 = r2 | (r3 << 16)
+		
+		// add source sample to scaled destination sample
+		"ldrsh	r2, [r5]\n\t"			// r2 = *pSrcSample
+		"add	r2, r2, r0, asr#16\n\t"	// r2 += (r0 >> 16)
+	
+		// clamp destination sample up
+		"cmp	r2, r8\n\t"				// if( r2 > 32767 )
+		"movgt	r2, r8\n\t"				//     r2 = 32767
+
+		// clamp destination sample down
+		"cmn	r2, r8\n\t"				// if( r2 < -32768 )
+		"mvnlt	r2, r8\n\t"				//     r2 = -32768
+
+		// put processed sample back to memory
+		"strh	r2, [r4]\n\t"			// *pDstSample = r2
+
+		"add	r4, r4, #2\n\t"			// r4 += 2 (get next dst sample pointer)
+		"add	r5, r5, #2\n\t"			// r5 += 2 (get next src sample pointer)
+
+		// loop back
+		"subs	r6, r6, #1\n\t"			// r6 -= 1
+		"bpl	.MixLoopStart\n\t"
+
+		"ldmfd	r13!, {r0-r12,r14}\n\t"
+		: // no outputs
+		: "m" (audio_overlay_bg_volume), "m" (pDstSample), "m" (pSrcSample) );
+}
+
+int audio_overlay_in_use()
+{
+	return audio_overlay.used > 0;
+}
+
+// copies audio data to dma; if audio buffer and overlay buffer both has
+// data, it mixes them together and outputs to dma; if only one has data, it
+// outputs that into dma and if both are empty, it outputs zero sample to dma
+// parameter: dma_register == 0 == DBSA0/DBTA0, dma_register == 1 == DBSB0/DBTB0
+void audio_data_to_dma( int dma_register )
+{
+	static int iSwitchToPCM = 0;
+	static int iFadeVolumeUp = 0;
+	static int iStoredVolume = 0;
+	static int iSam = 0;  // Did we change SAM?
+	int iPreviousOverlayUsed = audio_overlay.used;
+	audio_dev *dev=&audio[0];
+
+	if ( audio_overlay.used > 0 && !iSam ) {
+		iSam = 1;
+		empeg_mixer_setsam(0); // Disable SAM whilst overlay is active.
+	}
+	else if ( audio_overlay.used == 0 && iSam ) {
+		iSam = 0;
+		empeg_mixer_setsam(sam); // Restore player's SAM setting.
+	}
+
+
+
+	if( empeg_mixer_get_input() != 1 ) // INPUT_PCM
+	{
+		if( audio_overlay.used > 0 && !iSwitchToPCM )
+		{
+#if AUDIO_OVERLAY_DEBUG
+            printk("audio_overlay.used > 0 && !iSwitchToPCM\n");
+#endif
+			if( !iFadeVolumeUp )
+				iStoredVolume = empeg_mixer_getvolume();
+			
+            // start fading volume towards 0
+			iSwitchToPCM = 1;
+			iFadeVolumeUp = 0;
+		}
+		// output regular PCM data (should be silent as non-PCM output is active)
+		if( dev->used > 0 )
+		{
+			if( dma_register )
+		    	DBSB0=(unsigned char*)virt_to_phys(dev->buffers[dev->tail].data);
+		    else
+		    	DBSA0=(unsigned char*)virt_to_phys(dev->buffers[dev->tail].data);
+			if (++dev->tail==AUDIO_NOOF_BUFFERS) dev->tail=0;
+			dev->used--; dev->free++;
+		}
+		else
+		{
+			if( dma_register )
+				DBSB0=(unsigned char*)_ZeroMem;
+			else
+				DBSA0=(unsigned char*)_ZeroMem;
+		}
+	}
+	else
+	{
+
+		// dsp mode is PCM
+		if( dev->used == 0 )
+		{
+			if( audio_overlay.used == 0 )
+			{
+				if( dma_register )
+					DBSB0=(unsigned char*)_ZeroMem;
+				else
+					DBSA0=(unsigned char*)_ZeroMem;
+			}
+			else
+			{
+				//audio_overlay_bg_volume = AUDIO_OVERLAY_BG_VOLUME_FADED;
+                audio_overlay_bg_volume = hijack_overlay_bg_min;
+				if( dma_register )
+		    		DBSB0=(unsigned char*)virt_to_phys(audio_overlay.buffers[audio_overlay.tail].data);
+		    	else
+		    		DBSA0=(unsigned char*)virt_to_phys(audio_overlay.buffers[audio_overlay.tail].data);
+				if( ++audio_overlay.tail == AUDIO_OVERLAY_BUFFERS ) audio_overlay.tail = 0;
+				audio_overlay.used--; audio_overlay.free++;
+			}
+		}
+		else
+		{
+			if( audio_overlay.used > 0 )
+			{
+
+				//if( audio_overlay_bg_volume > AUDIO_OVERLAY_BG_VOLUME_FADED )
+                if( audio_overlay_bg_volume > hijack_overlay_bg_min )
+				{   
+                  
+                    // fading down...
+					audio_overlay_bg_volume -= hijack_overlay_bg_fadestep;
+					if( audio_overlay_bg_volume < hijack_overlay_bg_min )
+						audio_overlay_bg_volume = hijack_overlay_bg_min;
+					audio_mix( (signed short*)dev->buffers[ dev->tail ].data, &audio_zero_sample[0] );
+				}
+				else
+				{
+					audio_mix( (signed short*)dev->buffers[ dev->tail ].data, 
+							   (signed short*)audio_overlay.buffers[ audio_overlay.tail ].data );
+
+					if( ++audio_overlay.tail == AUDIO_OVERLAY_BUFFERS ) audio_overlay.tail = 0;
+					audio_overlay.used--; audio_overlay.free++;
+				}
+			}
+			else
+			{
+				if( audio_overlay_bg_volume < hijack_overlay_bg_max )
+				{
+                    // fading up...
+                    audio_overlay_bg_volume += hijack_overlay_bg_fadestep;
+					if( audio_overlay_bg_volume > hijack_overlay_bg_max )
+						audio_overlay_bg_volume = hijack_overlay_bg_max;
+					audio_mix( (signed short*)dev->buffers[ dev->tail ].data, &audio_zero_sample[0] );
+
+				}
+			}
+			
+            if( dma_register )
+		    	DBSB0=(unsigned char*)virt_to_phys(dev->buffers[dev->tail].data);
+		    else
+		    	DBSA0=(unsigned char*)virt_to_phys(dev->buffers[dev->tail].data);
+			if (++dev->tail==AUDIO_NOOF_BUFFERS) dev->tail=0;
+			dev->used--; dev->free++;
+		}
+        
+		// if all overlay buffers are played and user DSP mode is different, do a change		
+		if( audio_overlay.used == 0 && iPreviousOverlayUsed > 0 &&
+		    empeg_mixer_get_input() != empeg_mixer_get_user_input() )
+		{
+			if( !iFadeVolumeUp )
+			{
+#if AUDIO_OVERLAY_DEBUG
+                printk("!iFadeVolumeUp\n");
+#endif
+				iStoredVolume = empeg_mixer_getvolume();
+				empeg_mixer_setvolume( 0 );
+				empeg_mixer_select_input( empeg_mixer_get_user_input() );
+				// fade volume back to stored volume
+				iFadeVolumeUp = 1;
+			}
+		}
+	}
+
+	if( dma_register )
+		DBTB0=AUDIO_BUFFER_SIZE;
+	else
+		DBTA0=AUDIO_BUFFER_SIZE;
+
+	if( iSwitchToPCM )
+	{
+        // fade volume towards 0...
+		int iVol = empeg_mixer_getvolume();
+		iVol -= 7; // takes roughly 0.3sec to fade from 100 to 0
+		if( iVol < 0 )
+		{
+#if AUDIO_OVERLAY_DEBUG
+            printk("iVol < 0\n");
+#endif
+			empeg_mixer_select_input( 1 ); // INPUT_PCM
+			empeg_mixer_setvolume( iStoredVolume );
+			iSwitchToPCM = 0;
+		}
+		else
+			empeg_mixer_setvolume( iVol );
+	}
+	else if( iFadeVolumeUp )
+	{
+		// fade volume towards stored volume...
+        int iVol = empeg_mixer_getvolume();
+#if AUDIO_OVERLAY_DEBUG
+        printk("!iFadeVolumeUp\n");
+#endif
+		iVol += 7; // takes roughly 0.3sec to fade from 0 to 100
+		if( iVol > iStoredVolume )
+		{
+#if AUDIO_OVERLAY_DEBUG
+            printk("iVol > iStoredVolume\n");
+#endif
+			iVol = iStoredVolume;
+			iFadeVolumeUp = 0;
+		}
+		empeg_mixer_setvolume( iVol );
+	}
+}
+
 /*                      
  * Interrupt processing 
  */
@@ -1122,44 +1467,18 @@ static void empeg_audio_interrupt(int irq, void *dev_id, struct pt_regs *regs)
         if (dofirst== 0) {
 		ClrDCSR0 = DCSR_DONEB;
 		
-		/* Any data to get? */
-		if (dev->used == 0) {
-			DBSA0 = (unsigned char *) _ZeroMem;
-			DBTA0 = AUDIO_BUFFER_SIZE;
-
-
-			/* If we've underrun, take note */
-			if (dev->good_data) {
-				dev->good_data = 0;
-				dev->stats.user_underruns++;
-			}
+		/* If we've underrun, take note */
+		if( dev->used == 0 && dev->good_data )
+		{
+			dev->good_data = 0;
+			dev->stats.user_underruns++;
 		}
-		else {
-		        DBSA0 =	(unsigned char *)
-				virt_to_phys(dev->buffers[dev->tail].data);
-			DBTA0 = AUDIO_BUFFER_SIZE;
-			if (++dev->tail == AUDIO_NOOF_BUFFERS) dev->tail = 0;
-			dev->used--;
-			dev->free++;
-		}
+		audio_data_to_dma( 0 );
 		
 		if (!(status & DCSR_STRTB)) {
 			/* Filling both buffers: possible IRQ underrun */
 			dev->stats.irq_underruns++;
-
-			if (dev->used == 0) {
-				DBSB0 = (unsigned char *) _ZeroMem;
-				DBTB0 = AUDIO_BUFFER_SIZE;
-			}
-			else {
-				DBSB0 = (unsigned char *) virt_to_phys(
-					dev->buffers[dev->tail].data);
-				DBTB0 = AUDIO_BUFFER_SIZE;
-				if (++dev->tail == AUDIO_NOOF_BUFFERS)
-					dev->tail = 0;
-				dev->used--;
-				dev->free++;
-			}
+			audio_data_to_dma( 1 );
 			
 			/* Start both channels */
 			SetDCSR0 =
@@ -1172,44 +1491,18 @@ static void empeg_audio_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 	else {
 		ClrDCSR0 = DCSR_DONEA;
 
-		/* Any data to get? */
-		if (dev->used == 0) {
-			DBSB0 = (unsigned char *) _ZeroMem;
-			DBTB0 = AUDIO_BUFFER_SIZE;
-
-			/* If we've underrun, take note */
-			if (dev->good_data) {
-				dev->good_data = 0;
-				dev->stats.user_underruns++;
-			}
+		/* If we've underrun, take note */
+		if( dev->used == 0 && dev->good_data )
+		{
+			dev->good_data = 0;
+			dev->stats.user_underruns++;
 		}
-		else {
-			DBSB0 = (unsigned char *)
-				virt_to_phys(dev->buffers[dev->tail].data);
-			DBTB0 = AUDIO_BUFFER_SIZE;
-			if (++dev->tail == AUDIO_NOOF_BUFFERS)
-				dev->tail=0;
-			dev->used--;
-			dev->free++;
-		}
+		audio_data_to_dma( 1 );
 		
 		if (!(status & DCSR_STRTA)) {
 			/* Filling both buffers: possible IRQ underrun */
 			dev->stats.irq_underruns++;
-
-			if (dev->used == 0) {
-				DBSA0 = (unsigned char *) _ZeroMem;
-				DBTA0 = AUDIO_BUFFER_SIZE;
-			}
-			else {
-				DBSA0 = (unsigned char*) virt_to_phys(
-					dev->buffers[dev->tail].data);
-				DBTA0 = AUDIO_BUFFER_SIZE;
-				if (++dev->tail == AUDIO_NOOF_BUFFERS)
-					dev->tail=0;
-				dev->used--;
-				dev->free++;
-			}
+			audio_data_to_dma( 0 );
 
 			/* Start both channels */
 			SetDCSR0 =

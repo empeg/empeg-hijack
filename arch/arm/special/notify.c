@@ -15,38 +15,14 @@
 
 #include <linux/proc_fs.h>
  
-#ifdef CONFIG_NET_ETHERNET
 extern int crc32 (char *buf, int len);	// drivers/net/smc9194_tifon.c
-#else
-int crc32( char * s, int length ) { 
-  /* indices */
-  int perByte;
-  int perBit;
-  /* crc polynomial for Ethernet */
-  const unsigned long poly = 0xedb88320;
-  /* crc value - preinitialized to all 1's */
-  unsigned long crc_value = 0xffffffff; 
-
-  for ( perByte = 0; perByte < length; perByte ++ ) {
-    unsigned char	c;
-	
-    c = *(s++);
-    for ( perBit = 0; perBit < 8; perBit++ ) {
-      crc_value = (crc_value>>1)^
-	(((crc_value^c)&0x01)?poly:0);
-      c >>= 1;
-    }
-  }
-  return	crc_value;
-} 
-#endif
+extern int hijack_reboot;										// hijack.c
 extern int do_remount(const char *dir,int flags,char *data);
 extern int hijack_supress_notify, hijack_reboot;							// hijack.c
 extern int get_number (unsigned char **src, int *target, unsigned int base, const char *nextchars);	// hijack.c
 extern void hijack_button_enq_inputq (unsigned int button, unsigned int hold_time);			// hijack.c
 extern void input_append_code(void *ignored, unsigned long button);					// hijack.c
 extern void show_message (const char *message, unsigned long time);					// hijack.c
-extern int strxcmp (const char *str, const char *pattern, int partial);					// kftpd.c
 extern long sleep_on_timeout(struct wait_queue **p, long timeout);			// kernel/sched.c
 extern signed long schedule_timeout(signed long timeout);						// kernel/sched.c
 
@@ -127,151 +103,7 @@ hijack_serial_notify (const unsigned char *s, int size)
 	return 0;
 }
 
-static void
-insert_button_pair (unsigned int button, unsigned int hold_time)
-{
-	unsigned int release = 0x80000000;
-	struct wait_queue *wq = NULL;
-
-	button &= ~release;
-	if (button < 0xf) {
-		release = 1;
-		if (button == IR_KNOB_LEFT && button == IR_KNOB_RIGHT)
-			release = 0;
-		else
-			button &= ~1;
-	}
-	sleep_on_timeout(&wq, HZ/50);
-	input_append_code (NULL, button);
-	if (release) {
-		sleep_on_timeout(&wq, hold_time);
-		input_append_code (NULL, button|release);
-	}
-}
-
-static int
-remount_drives (int writeable)
-{
-	int rc0, rc1, flags = writeable ? (MS_NODIRATIME | MS_NOATIME) : MS_RDONLY;
-
-	show_message(writeable ? "Remounting read-write.." : "Remounting read-only..", 99*HZ);
-
-	lock_kernel();
-	rc0 = do_remount("/drive0", flags, NULL);
-	rc1 = do_remount("/drive1", flags, NULL);     // returns -EINVAL on 1-drive systems
-	if (rc1 != -EINVAL && !rc0)
-		rc0 = rc1;
-	rc1 = do_remount("/", flags, NULL);
-	unlock_kernel();
-	sync();
-	sync();
-
-	if (!rc1)
-		rc1 = rc0;
-	show_message(rc1 ? "Failed" : "Done", HZ);
-	return rc1;
-}
-
-extern int hijack_reboot;
-
-int
-hijack_do_command (const char *buffer, unsigned int count)
-{
-	int	rc = 0;
-	char	*nextline, *kbuf;
-
-	// make a zero-terminated writeable copy to simplify parsing:
-	if (!(kbuf = kmalloc(count + 1, GFP_KERNEL)))
-		return -ENOMEM;
-	memcpy(kbuf, buffer, count);
-	kbuf[count] = '\0';
-	nextline = kbuf;
-
-	while (!rc && *nextline) {
-		unsigned char *s;
-		s = nextline;
-		while (*nextline && *++nextline != '\n' && *nextline != ';');
-		*nextline = '\0';
-
-		if (!strxcmp(s, "BUTTON ", 1)) {
-			unsigned int button;
-			s += 7;
-			if (*s && get_number(&s, &button, 16, NULL)) {
-				unsigned int hold_time = 5;
-				if (s[0] == '.' && s[1] == 'L')
-					hold_time = HZ+(HZ/5);
-				insert_button_pair(button, hold_time);
-			}
-		} else if (!strxcmp(s, "RO", 0)) {
-			rc = remount_drives(0);
-		} else if (!strxcmp(s, "RW", 0)) {
-			rc = remount_drives(1);
-		} else if (!strxcmp(s, "REBOOT", 0)) {
-			remount_drives(0);
-			hijack_reboot = 1;
-		} else if (!strxcmp(s, "POPUP ", 1)) {
-			int secs;
-			s += 6;
-			if (*s && get_number(&s, &secs, 10, NULL) && *s++ == ' ' && *s)
-				show_message(s, secs * HZ);
-			else
-				rc = -EINVAL;
-		//} else if (!strxcmp(s, "SERIAL ", 1)) {
-		//	/* fixme: not implemented yet */
-		} else {
-			rc = -EINVAL;
-		}
-	}
-	kfree(kbuf);
-	return rc;
-}
-
-static int
-proc_notify_write (struct file *file, const char *buffer, unsigned long count, void *data)
-{
-	int rc = hijack_do_command(buffer, count); 
-	if (!rc)
-		rc = count;
-	return rc;
-}
-
-static int
-proc_notify_read (char *buf, char **start, off_t offset, int len, int unused)
-{
-	int	i;
-
-	len = 0;
-	for (i = 0; i < NOTIFY_MAX_LINES; ++i) {
-		char *n = notify_data[i];
-		if (*n) {
-			unsigned long flags;
-			save_flags_cli(flags);
-			len += sprintf(buf+len, "%s\n", n);
-			restore_flags(flags);
-		}
-	}
-	return len;
-}
-
-// notify proc directory entry:
-static struct proc_dir_entry proc_notify_entry = {
-	0,				// inode (dynamic)
-	12,				// length of name
-	"empeg_notify",			// name
-	S_IFREG|S_IRUGO|S_IWUSR,	// mode
-	1, 0, 0, 			// links, owner, group
-	0, 				// size
-	NULL, 				// use default operations
-	proc_notify_read,		// get_info (simple readproc)
-	NULL,				// fill_inode
-	NULL,NULL,NULL,			// next, parent, subdir
-	NULL,				// callback data
-	NULL,				// readproc (using simpler get_info() instead)
-	proc_notify_write,		// writeproc
-	NULL,				// readlink
-	0,				// usage count
-	0				// deleted flag
-};
+#ifdef CONFIG_NET_ETHERNET
 
 static char *
 pngcpy (char *png, const void *src, int len)
@@ -389,9 +221,179 @@ static struct proc_dir_entry proc_kflash_entry = {
 	&kflash_ops,		/* inode operations */
 };
 
+
+static int
+remount_drives (int writeable)
+{
+	int rc0, rc1, flags = writeable ? (MS_NODIRATIME | MS_NOATIME) : MS_RDONLY;
+
+	show_message(writeable ? "Remounting read-write.." : "Remounting read-only..", 99*HZ);
+
+	lock_kernel();
+	rc0 = do_remount("/drive0", flags, NULL);
+	rc1 = do_remount("/drive1", flags, NULL);     // returns -EINVAL on 1-drive systems
+	if (rc1 != -EINVAL && !rc0)
+		rc0 = rc1;
+	rc1 = do_remount("/", flags, NULL);
+	unlock_kernel();
+	sync();
+	sync();
+
+	if (!rc1)
+		rc1 = rc0;
+	show_message(rc1 ? "Failed" : "Done", HZ);
+	return rc1;
+}
+
+static void
+insert_button_pair (unsigned int button, unsigned int hold_time)
+{
+	unsigned int release = 0x80000000;
+	struct wait_queue *wq = NULL;
+
+	button &= ~release;
+	if (button < 0xf) {
+		release = 1;
+		if (button == IR_KNOB_LEFT && button == IR_KNOB_RIGHT)
+			release = 0;
+		else
+			button &= ~1;
+	}
+	sleep_on_timeout(&wq, HZ/50);
+	input_append_code (NULL, button);
+	if (release) {
+		sleep_on_timeout(&wq, hold_time);
+		input_append_code (NULL, button|release);
+	}
+}
+
+#define INRANGE(c,min,max)	((c) >= (min) && (c) <= (max))
+#define TOUPPER(c)		(INRANGE((c),'a','z') ? ((c) - ('a' - 'A')) : (c))
+
+int
+strxcmp (const char *str, const char *pattern, int partial)
+{
+	unsigned char s, p;
+
+	while ((p = *pattern)) {
+		++pattern;
+		s = *str++;
+		if (TOUPPER(s) != TOUPPER(p))
+			return 1;	// did not match
+	}
+	return (!partial && *str);	// 0 == matched; 1 == not matched
+}
+
+int
+hijack_do_command (const char *buffer, unsigned int count)
+{
+	int	rc = 0;
+	char	*nextline, *kbuf;
+
+	// make a zero-terminated writeable copy to simplify parsing:
+	if (!(kbuf = kmalloc(count + 1, GFP_KERNEL)))
+		return -ENOMEM;
+	memcpy(kbuf, buffer, count);
+	kbuf[count] = '\0';
+	nextline = kbuf;
+
+	while (!rc && *nextline) {
+		unsigned char *s;
+		s = nextline;
+		while (*nextline && *++nextline != '\n' && *nextline != ';');
+		*nextline = '\0';
+
+		if (!strxcmp(s, "BUTTON ", 1)) {
+			unsigned int button;
+			s += 7;
+			if (*s && get_number(&s, &button, 16, NULL)) {
+				unsigned int hold_time = 5;
+				if (s[0] == '.' && s[1] == 'L')
+					hold_time = HZ+(HZ/5);
+				insert_button_pair(button, hold_time);
+			}
+		} else if (!strxcmp(s, "RO", 0)) {
+			rc = remount_drives(0);
+		} else if (!strxcmp(s, "RW", 0)) {
+			rc = remount_drives(1);
+		} else if (!strxcmp(s, "REBOOT", 0)) {
+			remount_drives(0);
+			hijack_reboot = 1;
+		} else if (!strxcmp(s, "POPUP ", 1)) {
+			int secs;
+			s += 6;
+			if (*s && get_number(&s, &secs, 10, NULL) && *s++ == ' ' && *s)
+				show_message(s, secs * HZ);
+			else
+				rc = -EINVAL;
+		//} else if (!strxcmp(s, "SERIAL ", 1)) {
+		//	/* fixme: not implemented yet */
+		} else {
+			rc = -EINVAL;
+		}
+	}
+	kfree(kbuf);
+	return rc;
+}
+
+static int
+proc_notify_write (struct file *file, const char *buffer, unsigned long count, void *data)
+{
+	int rc = hijack_do_command(buffer, count); 
+	if (!rc)
+		rc = count;
+	return rc;
+}
+
+#else
+
+#define proc_notify_write NULL
+
+#endif // CONFIG_NET_ETHERNET
+
+static int
+proc_notify_read (char *buf, char **start, off_t offset, int len, int unused)
+{
+	int	i;
+
+	len = 0;
+	for (i = 0; i < NOTIFY_MAX_LINES; ++i) {
+		char *n = notify_data[i];
+		if (*n) {
+			unsigned long flags;
+			save_flags_cli(flags);
+			len += sprintf(buf+len, "%s\n", n);
+			restore_flags(flags);
+		}
+	}
+	return len;
+}
+
+// notify proc directory entry:
+static struct proc_dir_entry proc_notify_entry = {
+	0,				// inode (dynamic)
+	12,				// length of name
+	"empeg_notify",			// name
+	S_IFREG|S_IRUGO|S_IWUSR,	// mode
+	1, 0, 0, 			// links, owner, group
+	0, 				// size
+	NULL, 				// use default operations
+	proc_notify_read,		// get_info (simple readproc)
+	NULL,				// fill_inode
+	NULL,NULL,NULL,			// next, parent, subdir
+	NULL,				// callback data
+	NULL,				// readproc (using simpler get_info() instead)
+	proc_notify_write,		// writeproc
+	NULL,				// readlink
+	0,				// usage count
+	0				// deleted flag
+};
+
 void hijack_notify_init (void)
 {
 	proc_register(&proc_root, &proc_notify_entry);
+#ifdef CONFIG_NET_ETHERNET
 	proc_register(&proc_root, &proc_screen_entry);
 	proc_register(&proc_root, &proc_kflash_entry);
+#endif // CONFIG_NET_ETHERNET
 }

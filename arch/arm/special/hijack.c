@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v126"
+#define HIJACK_VERSION "v127"
 
 #include <linux/sched.h>
 #include <linux/kernel.h>
@@ -179,8 +179,10 @@ static unsigned int hijack_voladj_parms[(1<<VOLADJ_BITS)-1][5] = { // Values as 
 	{0x2000,	 409,	0x1000,	27,	70},  // Medium (Normal)
 	{0x2000,	3000,	0x0c00,	30,	80}}; // High
 
+#ifdef CONFIG_NET_ETHERNET
 struct semaphore hijack_kftpd_startup_sem	= MUTEX_LOCKED;	// sema for waking up kftpd after we read config.ini
 struct semaphore hijack_khttpd_startup_sem	= MUTEX_LOCKED;	// sema for waking up khttpd after we read config.ini
+#endif // CONFIG_NET_ETHERNET
 
 typedef struct hijack_option_s {
 	const char	*name;
@@ -198,22 +200,26 @@ static int hijack_button_pacing			=  8;	// minimum spacing between press/release
 static int hijack_old_style			=  0;	// 1 == don't highlite menu items
 static int hijack_quicktimer_minutes		= 30;	// increment size for quicktimer function
 static int hijack_standby_minutes		= 30;	// number of minutes after screen blanks before we go into standby
+#ifdef CONFIG_NET_ETHERNET
        int hijack_khttpd_port			= 80;	// khttpd port
        int hijack_khttpd_verbose		=  0;	// khttpd verbosity
        int hijack_kftpd_control_port		= 21;	// kftpd control port
        int hijack_kftpd_data_port		= 20;	// kftpd data port
        int hijack_kftpd_verbose			=  0;	// kftpd verbosity
        int hijack_kftpd_show_dotdir		=  0;	// 0 == hide '.' directory in listings; 1 == show '.' in listings
+#endif // CONFIG_NET_ETHERNET
 
 static const hijack_option_t hijack_option_table[] = {
 	// config.ini string		address-of-variable		howmany	min	max
 	{"button_pacing",		&hijack_button_pacing,		1,	0,	HZ},
+#ifdef CONFIG_NET_ETHERNET
  	{"kftpd_control_port",		&hijack_kftpd_control_port,	1,	0,	65535},
  	{"kftpd_data_port",		&hijack_kftpd_data_port,	1,	0,	65535},
  	{"kftpd_verbose",		&hijack_kftpd_verbose,		1,	0,	1},
  	{"kftpd_show_dotdir",		&hijack_kftpd_show_dotdir,	1,	0,	1},
  	{"khttpd_port",			&hijack_khttpd_port,		1,	0,	65535},
  	{"khttpd_verbose",		&hijack_khttpd_verbose,		1,	0,	1},
+#endif // CONFIG_NET_ETHERNET
 	{"old_style",			&hijack_old_style,		1,	0,	1},
  	{"quicktimer_minutes",		&hijack_quicktimer_minutes,	1,	1,	120},
  	{"standby_minutes",		&hijack_standby_minutes,	1,	0,	240},
@@ -2783,6 +2789,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 			hijack_deactivate(HIJACK_INACTIVE_PENDING);
 			break;
 	}
+#ifdef CONFIG_NET_ETHERNET
 {
 	extern unsigned char *notify_screen_grab_buffer;	// arch/arm/notify.c
 	if (notify_screen_grab_buffer) {
@@ -2792,6 +2799,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 		up(&notify_screen_grab_sem);
 	}
 }
+#endif // CONFIG_NET_ETHERNET
 	restore_flags(flags);
 
 	// Prevent screen burn-in on an inactive/unattended player:
@@ -3563,8 +3571,10 @@ hijack_read_config_file (const char *path)
 	if (buf)
 		kfree(buf);
 	hijack_set_voladj_parms();
+#ifdef CONFIG_NET_ETHERNET
 	up(&hijack_kftpd_startup_sem);	// wake-up kftpd now that we've parsed config.ini for port numbers
 	up(&hijack_khttpd_startup_sem);	// wake-up kftpd now that we've parsed config.ini for port numbers
+#endif // CONFIG_NET_ETHERNET
 }
 
 #ifdef RESTORE_CARVISUALS

@@ -28,6 +28,7 @@
 #include <net/udp.h>
 #include <net/scm.h>
 
+extern int strxcmp (const char *str, const char *pattern, int partial);	// notify.c
 extern int hijack_do_command(const char *command, unsigned int size);	// notify.c 
 extern void show_message (const char *message, unsigned long time);	// hijack.c
 extern int hijack_khttpd_port;				// from arch/arm/special/hijack.c
@@ -68,20 +69,6 @@ typedef struct server_parms_s {
 
 #define INRANGE(c,min,max)	((c) >= (min) && (c) <= (max))
 #define TOUPPER(c)		(INRANGE((c),'a','z') ? ((c) - ('a' - 'A')) : (c))
-
-int
-strxcmp (const char *str, const char *pattern, int partial)
-{
-	unsigned char s, p;
-
-	while ((p = *pattern)) {
-		++pattern;
-		s = *str++;
-		if (TOUPPER(s) != TOUPPER(p))
-			return 1;	// did not match
-	}
-	return (!partial && *str);	// 0 == matched; 1 == not matched
-}
 
 static int	// returns -1 on failure
 getnum (unsigned char **str, unsigned char base)

@@ -1420,8 +1420,10 @@ static void __init do_basic_setup(void)
 	  kernel_thread(asyncd, NULL, CLONE_FS | CLONE_FILES | CLONE_SIGHAND);
 	}
 #endif
+#ifdef CONFIG_NET_ETHERNET
 	kernel_thread(kftpd_daemon, (void *)0, CLONE_FS | CLONE_FILES | CLONE_SIGHAND);
 	kernel_thread(kftpd_daemon, (void *)1, CLONE_FS | CLONE_FILES | CLONE_SIGHAND);
+#endif
 
 #ifdef CONFIG_BLK_DEV_INITRD
 

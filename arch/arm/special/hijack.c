@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v310"
+#define HIJACK_VERSION	"v311"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -47,7 +47,7 @@ extern int empeg_readtherm(volatile unsigned int *timerbase, volatile unsigned i
 extern int empeg_inittherm(volatile unsigned int *timerbase, volatile unsigned int *gpiobase);	// arch/arm/special/empeg_therm.S
        int display_ioctl (struct inode *inode, struct file *filp, unsigned int cmd, unsigned long arg); //arch/arm/special/empeg_display.c
 
-#ifdef CONFIG_NET_ETHERNET	// Mk2 or later? (Mk1 has no ethernet)
+#ifdef CONFIG_SMC9194_TIFON	// Mk2 or later? (Mk1 has no ethernet chip)
 #define EMPEG_KNOB_SUPPORTED	// Mk2 and later have a front-panel knob
 #endif
 int	kenwood_disabled;		// used by Nextsrc button
@@ -5047,10 +5047,18 @@ hijack_restore_settings (char *buf)
 
 	// first priority is getting/overriding the unit's AC/DC power mode
 	hijack_force_power		= savearea.force_power;
-	if (hijack_force_power & 2)
+	if (hijack_force_power & 2) {
 		empeg_on_dc_power	= hijack_force_power & 1;
-	else
+	} else {
+#ifdef EMPEG_KNOB_SUPPORTED
+		extern int hijack_check_for_tuner_loopback(void);	// drivers/char/serial_sa1100.c
 		empeg_on_dc_power	= ((GPLR & EMPEG_EXTPOWER) != 0);
+		if (empeg_on_dc_power && hijack_check_for_tuner_loopback())
+			empeg_on_dc_power = 0;
+#else
+		empeg_on_dc_power	= ((GPLR & EMPEG_EXTPOWER) != 0);
+#endif
+	}
 
 	// Now that the powermode (AC/DC) is set, we can deal with everything else
 	acdc = empeg_on_dc_power ? &savearea.dc : &savearea.ac;

@@ -568,6 +568,30 @@ static _INLINE_ void transmit_chars(struct async_struct *info, int *intr_done)
 	}
 }
 
+#ifdef CONFIG_SMC9194_TIFON	// not present on Mk1 models
+int
+hijack_check_for_tuner_loopback (void)
+{
+	struct async_struct	info;
+	unsigned long		timestamp;
+	unsigned char		c;
+	const unsigned char	pattern = 0xa5;
+	extern unsigned long	jiffies_since(unsigned long);
+
+	info.port = rs_table[0].port;
+	serial_outp(&info, UTCR3, UTCR3_RXE|UTCR3_TXE);
+	serial_outp(&info, UART_TX, pattern);
+	timestamp = jiffies;
+	while ((serial_inp(&info, UTSR1) & UTSR1_RNE) == 0) {
+		if (jiffies_since(timestamp) > (HZ/5))
+			return 0;	// timed out, no loopback
+		schedule();
+	}
+	c = serial_inp(&info, UART_RX);
+	return (c == pattern);
+}
+#endif // CONFIG_SMC9194_TIFON
+
 /*
  * This is the serial driver's interrupt routine for a single port
  */
@@ -2632,7 +2656,6 @@ __initfunc(int sa1100_rs_init(void))
 		       state->port, state->irq,
 		       uart_config[state->type].name);
 	}
-
 	return 0;
 }
 

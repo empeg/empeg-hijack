@@ -110,4 +110,7 @@ struct display_dev
 	unsigned power : 1;
 };
 
+int real_display_ioctl(struct display_dev *dev, unsigned int cmd,
+                  unsigned long arg);
+
 #endif // EMPEG_DISPLAY_H

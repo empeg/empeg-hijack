@@ -85,8 +85,8 @@ typedef struct server_parms_s {
 	struct socket		*servsock;
 	struct socket		*datasock;
 	struct sockaddr_in	clientaddr;
+	enum {nolist, html, m3u, xml} generate_playlist;
 	char			verbose;		// bool
-	char			generate_playlist;	// 0=no; 1=html,2=m3u,3=xml
 	char			use_http;		// bool
 	char			have_portaddr;		// bool
 	char			icy_metadata;		// bool
@@ -1203,13 +1203,15 @@ send_playlist (server_parms_t *parms, char *path)
 
 	// If tagfile is for a "tune", then send a .m3u playlist for it, and quit
 	if (fidtype == 'T') {
-		secs = str_val(tags.duration) / 1000;
-		used  = sprintf(xfer.buf, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s\r\n\r\n"
-			"#EXTM3U\r\n#EXTINF:%u,%s\r\nhttp://%s/", audio_m3u, secs, artist_title, parms->hostname);
-		used += encode_url(xfer.buf+used, artist_title, parms->apple_iTunes);
-		used += sprintf(xfer.buf+used, ".m3u?FID=%x&EXT=.%s\r\n", pfid^1, tags.codec);
-		(void)ksock_rw(parms->datasock, xfer.buf, used, -1);
-		goto cleanup;
+		if (parms->generate_playlist != xml) {
+			secs = str_val(tags.duration) / 1000;
+			used  = sprintf(xfer.buf, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s\r\n\r\n"
+				"#EXTM3U\r\n#EXTINF:%u,%s\r\nhttp://%s/", audio_m3u, secs, artist_title, parms->hostname);
+			used += encode_url(xfer.buf+used, artist_title, parms->apple_iTunes);
+			used += sprintf(xfer.buf+used, ".m3u?FID=%x&EXT=.%s\r\n", pfid^1, tags.codec);
+			(void)ksock_rw(parms->datasock, xfer.buf, used, -1);
+			goto cleanup;
+		}
 	}
 
 	// Send the playlist header, in either html, m3u, or xml format:
@@ -1217,7 +1219,7 @@ send_playlist (server_parms_t *parms, char *path)
 		playlist_format[parms->generate_playlist - 1]);
 
 	switch (parms->generate_playlist) {
-		case 1:	// html
+		case html:
 			used += sprintf(xfer.buf+used,
 				"<HTML><HEAD><TITLE>%s playlists: %s</TITLE></HEAD>\r\n"
 				"<BODY><TABLE BGCOLOR=\"WHITE\" BORDER=\"2\"><THEAD>\r\n"
@@ -1231,25 +1233,39 @@ send_playlist (server_parms_t *parms, char *path)
 			used += sprintf(xfer.buf+used, "<TD ALIGN=CENTER> <FONT SIZE=+2><B><EM>%s</EM></B></FONT> <TD> <B>Length</B> "
 				"<TD> <B>Type</B> <TD> <B>Artist</B> <TD> <B>Source</B><TBODY>\r\n", tags.title);
 			break;
-		case 2: // m3u
+		case m3u:
 			used += sprintf(xfer.buf+used, "#EXTM3U\r\n");
 			break;
-		case 3: // xml
+		case xml: // xml
 			used += sprintf(xfer.buf+used,
 				"<?xml version=\"1.0\" encoding=\"iso-8859-1\"?>\r\n"
 				"<?xml-stylesheet type=\"text/xsl\" href=\"%s\"?>\r\n"
-				"<playlist stylesheet=\"%s\" host=\"%s\" allow_files=\"%d\" allow_commands=\"%d\" "
+				"<%s stylesheet=\"%s\" host=\"%s\" allow_files=\"%d\" allow_commands=\"%d\" "
 				"type=\"%s\" tagfid=\"%x\" fid=\"%x\" length=\"%s\" "
 				"year=\"%s\" options=\"%s\"",
-				parms->style, parms->style, parms->hostname, hijack_khttpd_files, hijack_khttpd_commands,
-				tagtype, pfid, pfid^1, tags.length, tags.year, tags.options);
+				parms->style, (fidtype == 'T' ? "item" : "playlist"), parms->style, parms->hostname, hijack_khttpd_files,
+				hijack_khttpd_commands, tagtype, pfid, pfid^1, tags.length, tags.year, tags.options);
 			used += encode_tag1(xfer.buf+used, "genre",   tags.genre);
 			used += encode_tag1(xfer.buf+used, "title",   tags.title);
 			used += encode_tag1(xfer.buf+used, "artist",  tags.artist);
 			used += encode_tag1(xfer.buf+used, "source",  tags.source);
 			used += encode_tag1(xfer.buf+used, "comment", tags.comment);
+			if (fidtype == 'T') {
+				char dbuf[32];
+				used += encode_tag1(xfer.buf+used, "tracknr", tags.tracknr);
+				used += encode_tag1(xfer.buf+used, "bitrate", tags.bitrate);
+				used += encode_tag1(xfer.buf+used, "samplerate", tags.samplerate);
+				used += encode_tag1(xfer.buf+used, "codec", tags.codec);
+				secs = str_val(tags.duration) / 1000;
+				sprintf(dbuf, "%u:%02u", secs/60, secs%60);
+				used += encode_tag1(xfer.buf+used, "duration", dbuf);
+				used += encode_tag1(xfer.buf+used, "offset", tags.offset);
+				used += sprintf(xfer.buf+used, ">\r\n");
+				goto sendit;
+			}
 			used += sprintf(xfer.buf+used, ">\r\n\t<items>\r\n");
 			break;
+		default:
 	}
 
 open_fidfile:
@@ -1269,7 +1285,7 @@ open_fidfile:
 		} // else: empty playlist; just continue..
 	}
 	path[6] = subpath[6];	// update the drive number '0'|'1'
-	xmit_threshold = (parms->generate_playlist == 3) ? 1536 : 512;
+	xmit_threshold = (parms->generate_playlist == xml) ? 1536 : 512;
 	while (fidx >= 0) {
 		while (sizeof(fid) == read(fidfiles[fidx], (char *)&fid, sizeof(fid))) {
 			int sublen, fd;
@@ -1284,7 +1300,7 @@ open_fidfile:
 			if (fd < 0) {
 				// Hmmm.. missing tags file.  This IS a database error, and should never happen.  But it does..
 				// But we'll just ignore it here.
-				if (parms->generate_playlist == 1)
+				if (parms->generate_playlist == html)
 					printk(KHTTPD": open(\"%s\") failed, rc=%d\n", subpath, fd);
 				continue;
 			}
@@ -1294,7 +1310,7 @@ open_fidfile:
 			if (size <= 0) {
 				// Hmmm.. empty tags file.  This IS a database error, and should never happen.
 				// But we'll just ignore it here.
-				if (parms->generate_playlist == 1)
+				if (parms->generate_playlist == html)
 					printk(KHTTPD": read(\"%s\") failed, rc=%d\n", subpath, size);
 				continue;
 			}
@@ -1304,7 +1320,7 @@ open_fidfile:
 			find_tags(parms->tmp3, size, labels, (char **)&tags);
 			fidtype = TOUPPER(tags.type[0]);
 			if (fidtype == 'P') {
-				if (parms->generate_playlist == 2) {
+				if (parms->generate_playlist == m3u) {
 					if (!tags.length[0] || str_val(tags.length))
 						goto open_fidfile;	// nest one level deeper for this playlist
 				}
@@ -1314,7 +1330,7 @@ open_fidfile:
 				tagtype = tagtypes[1];
 				secs = str_val(tags.duration) / 1000;
 			} else {
-				if (parms->generate_playlist == 1)
+				if (parms->generate_playlist == html)
 					used += sprintf(xfer.buf+used, "<TR><TD COLSPAN=7><FONT COLOR=RED>%s: invalid 'type=%s'</FONT>\n",
 						subpath, tags.type);
 				continue;
@@ -1325,7 +1341,7 @@ open_fidfile:
 
 			// spit out an appropriately formed representation for this fid:
 			switch (parms->generate_playlist) {
-				case 1:	// html
+				case html:
 					used += sprintf(xfer.buf+used, "<TR><TD> <A HREF=\"/");
 					used += encode_url(xfer.buf+used, artist_title, 1);
 					used += sprintf(xfer.buf+used, ".m3u?FID=%x&EXT=.m3u\"><em>Stream</em></A> ", fid);
@@ -1349,7 +1365,7 @@ open_fidfile:
 							fid, tags.title, entries, tags.type, tags.artist, tags.source);
 					}
 					break;
-				case 2: // m3u
+				case m3u:
 					if (fidtype == 'T') {
 						combine_artist_title(tags.artist, tags.title, artist_title, sizeof(artist_title));
 						subpath[sublen - 1] = '0';
@@ -1358,7 +1374,7 @@ open_fidfile:
 						used += sprintf(xfer.buf+used, "?FID=%x&EXT=.%s\r\n", fid^1, tags.codec);
 					}
 					break;
-				case 3: // xml
+				case xml:
 					used += sprintf(xfer.buf+used,
 						"\t\t<item>\r\n"
 						"\t\t\t<type>%s</type>\r\n"
@@ -1390,19 +1406,22 @@ open_fidfile:
 							entries);
 					}
 					break;
+				default:
 			}
 		}
 		close(fidfiles[fidx--]);
 	}
 aborted:
 	switch (parms->generate_playlist) {
-		case 1:	// html
+		case html:
 			used += sprintf(xfer.buf+used, "</TABLE><FONT SIZE=-2>%s</FONT></BODY></HTML>\r\n", hijack_vXXX_by_Mark_Lord);
 			break;
-		case 3: // xml
+		case xml:
 			used += sprintf(xfer.buf+used, "\t</items>\r\n</playlist>\r\n");
 			break;
+		default:
 	}
+sendit:
 	if (used)
 		(void) ksock_rw(parms->datasock, xfer.buf, used, -1);
 cleanup:
@@ -1709,11 +1728,11 @@ hijack_do_command (void *sparms, char *buf)
 				rc = -EINVAL;
 			} else {
 				if (!strxcmp(s, ".html", 0) || !strxcmp(s, ".htm", 0)) {
-					parms->generate_playlist = 1;
+					parms->generate_playlist = html;
 				} else if (!strxcmp(s, ".m3u", 0)) {
-					parms->generate_playlist = 2;
+					parms->generate_playlist = m3u;
 				} else if (!strxcmp(s, ".xml", 0)) {
-					parms->generate_playlist = 3;
+					parms->generate_playlist = xml;
 				} else {
 					// Just ignore it:  .mp3, .wma, .wav, ..
 				}

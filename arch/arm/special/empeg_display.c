@@ -1034,12 +1034,9 @@ void hijack_set_standbyLED (int off_on)
  *
  */
 
-int display_ioctl(struct inode *inode, struct file *filp, unsigned int cmd,
+int real_display_ioctl(struct display_dev *dev, unsigned int cmd,
 		  unsigned long arg)
 {
-	struct display_dev *dev =
-		(struct display_dev *)filp->private_data;
-
 	if (cmd < 0x10)
 		printk("Deprecated display ioctl %d used.\n", cmd);
 	
@@ -1163,6 +1160,23 @@ int display_ioctl(struct inode *inode, struct file *filp, unsigned int cmd,
 	}
 	
 	return 0;
+}
+
+/*
+ * functions to handle /dev/fb
+ *
+ * This is all we really deal with on the empeg at the moment - we're not
+ * actually interested in plain text output as with only a 128x32 screen it
+ * gets a little tight: a 16x4 display? Sounds like some old Epson laptop :)
+ *
+ */
+
+int display_ioctl(struct inode *inode, struct file *filp, unsigned int cmd,
+		  unsigned long arg)
+{
+	struct display_dev *dev =
+		(struct display_dev *)filp->private_data;
+	return real_display_ioctl(dev, cmd, arg);
 }
 
 static int display_fsync(struct file *filp, struct dentry *dentry)

@@ -21,7 +21,7 @@
 
 extern int hijack_current_mixer_input;
 extern int hijack_current_mixer_volume;
-extern int hijack_player_started;
+extern int hijack_notify_started;
 extern int hijack_do_command (void *sparms, char *buf);
 extern int strxcmp (const char *str, const char *pattern, int partial);					// hijack.c
 extern int do_remount(const char *dir,int flags,char *data);						// fs/super.c
@@ -52,14 +52,15 @@ hijack_serial_notify (const unsigned char *s, int size)
 	// "return 1" means "discard without sending"
 	//
 	// Note that printk() will probably not work from within this routine
-	static enum {want_title, want_data, want_eol} state = want_title;
+	static enum	{want_title, want_data, want_eol} state = want_title;
+	char		*line;
+	unsigned long	flags;
 
 	switch (state) {
 		default:
 			state = want_title;
 			// fall thru
 		case want_title:
-		{
 			if (!strxcmp(s, "  serial_notify_thread.cpp", 1)) {
 				state = want_data;
 				return hijack_suppress_notify;
@@ -68,12 +69,7 @@ hijack_serial_notify (const unsigned char *s, int size)
 				return hijack_suppress_notify;
 			}
 			break;
-		}
 		case want_data:
-		{
-			char		*line;
-			unsigned long	flags;
-
 			if (size > 3 && *s == '@' && *++s == '@' && *++s == ' ' && *++s) {
 				size -= 3;
 				while (size > 0 && (s[size-1] <= ' ' || s[size-1] > '~'))
@@ -92,18 +88,15 @@ hijack_serial_notify (const unsigned char *s, int size)
 					restore_flags(flags);
 				}
 				state = want_eol;
-				if (!hijack_player_started)
-					hijack_player_started = JIFFIES();
+				if (!hijack_notify_started)
+					hijack_notify_started = JIFFIES();
 				return hijack_suppress_notify;
 			}
 			break;
-		}
 		case want_eol:
-		{
 			if (s[size-1] == '\n')
 				state = want_title;
 			return hijack_suppress_notify;
-		}
 	}
 	return 0;
 }

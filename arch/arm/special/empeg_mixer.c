@@ -217,11 +217,6 @@ int __init empeg_mixer_init(void)
 	
 	/* mixer_select_input(INPUT_AUX); */
 	dsp_write(Y_SrcScal, 0x400);
-#if 0
-	
-#else
-      dsp_write(Y_OutSwi, 0xa49);
-#endif
 	dev->input = SOUND_MASK_PCM;
 	dev->flags = 0;
 	empeg_mixer_setloudness(dev, 0);
@@ -229,7 +224,7 @@ int __init empeg_mixer_init(void)
 	empeg_mixer_setfade(dev, FADE_ZERO);
 	empeg_mixer_inflict_flags(dev);
 
-	dsp_write(Y_OutSwi, 0xa7c);
+	dsp_write(Y_OutSwi, 0xa49);
 
 	empeg_mixer_eq_reset();	// reset coefficients
 

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v285"
+#define HIJACK_VERSION	"v286"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -51,7 +51,6 @@ extern int empeg_inittherm(volatile unsigned int *timerbase, volatile unsigned i
 #define EMPEG_KNOB_SUPPORTED	// Mk2 and later have a front-panel knob
 #endif
 int	hijack_standby_time = 0;	// jiffies since we entered standby (max 12 hours)
-int	hijack_got_config_ini = 0;	// used by restore visuals, to avoid triggering on a boot logo
 int	kenwood_disabled;		// used by Nextsrc button
 int	empeg_on_dc_power;		// used in arch/arm/special/empeg_power.c
 int	empeg_tuner_present = 0;	// used by NextSrc button, perhaps has other uses
@@ -59,7 +58,7 @@ int	hijack_fsck_disabled = 0;	// used in fs/ext2/super.c
 int	hijack_onedrive = 0;		// used in drivers/block/ide-probe.c
 int	hijack_reboot = 0;		// set to "1" to cause reboot on next display refresh
 int	hijack_player_is_restarting = 0;// used in fs/read_write.c, fs/exec.c
-unsigned int hijack_player_started = 0;	// set to jiffies when player startup is detected on serial port (notify.c)
+unsigned int hijack_notify_started = 0;	// set to jiffies when player startup is detected on serial port (notify.c)
 
 static unsigned int PROMPTCOLOR = COLOR3, ENTRYCOLOR = -COLOR3;
 
@@ -73,8 +72,6 @@ static unsigned int PROMPTCOLOR = COLOR3, ENTRYCOLOR = -COLOR3;
 #define HIJACK_ACTIVE		3
 
 static unsigned int carvisuals_enabled = 0;
-static unsigned int restore_visuals = 0;
-static unsigned int info_screenrow = 0;
 static unsigned int hijack_status = HIJACK_IDLE;
 static unsigned long hijack_last_moved = 0, hijack_last_refresh = 0, blanker_triggered = 0, blanker_lastpoll = 0;
 static unsigned char blanker_lastbuf[EMPEG_SCREEN_BYTES] = {0,};
@@ -2689,6 +2686,7 @@ do_reboot (struct display_dev *dev)
 	if (jiffies_since(hijack_last_moved) >= (HZ+(HZ/2))) {
 		unsigned long flags;
 		save_flags_clif(flags);	// clif is necessary for machine_restart
+		real_display_ioctl(dev, EMPEG_DISPLAY_POWER, 0);
 		machine_restart(NULL);	// never returns
 	}
 }
@@ -2921,6 +2919,7 @@ hijack_move_repeat (void)
 #define ROWOFFSET(row)	((row)*(EMPEG_SCREEN_COLS/2))
 #define TESTOFFSET(row)	(ROWOFFSET(row)+TESTCOL)
 
+#ifdef EMPEG_KNOB_SUPPORTED
 static int
 check_for_seek_pattern (const unsigned char *buf, const unsigned long *pattern)
 {
@@ -2946,6 +2945,7 @@ check_if_seek_tool_is_active (const unsigned char *buf)
 		return 2;	// Seek-Tool is active, and has the knob
 	return 1;		// Seek-Tool is on-screen, but does not have knob
 }
+#endif // EMPEG_KNOB_SUPPORTED
 
 static void
 popup_activate (unsigned int button, int seek_tool)
@@ -2973,9 +2973,9 @@ test_row (const void *rowaddr, unsigned long color)
 	const unsigned long *test  = first + (((EMPEG_SCREEN_COLS/2)-(TESTCOL*2))/sizeof(long));
 	do {
 		if (*--test != color)
-			return 0;
+			return 0;	// no match
 	} while (test > first);
-	return 1;
+	return 1;	// matched
 }
 
 static inline int
@@ -2994,14 +2994,14 @@ check_if_equalizer_is_active (const unsigned char *buf)
 static inline int
 check_if_soundadj_is_active (const unsigned char *buf)
 {
-	return (test_row(buf+TESTOFFSET( 8), 0x00000000) && test_row(buf+TESTOFFSET( 9), 0x11111111)
+	return (   test_row(buf+TESTOFFSET( 8), 0x00000000) && test_row(buf+TESTOFFSET( 9), 0x11111111)
 		&& test_row(buf+TESTOFFSET(16), 0x11111111) && test_row(buf+TESTOFFSET(17), 0x00000000));
 }
 
 static inline int
 check_if_search_is_active (const unsigned char *buf)
 {
-	return ((test_row(buf+TESTOFFSET(4), 0x00000000) && test_row(buf+TESTOFFSET(5), 0x11111111))
+	return ((   test_row(buf+TESTOFFSET(4), 0x00000000) && test_row(buf+TESTOFFSET(5), 0x11111111))
 		|| (test_row(buf+TESTOFFSET(6), 0x00000000) && test_row(buf+TESTOFFSET(7), 0x11111111)));
 }
 
@@ -3323,7 +3323,7 @@ hijack_handle_button (unsigned int button, unsigned long delay, int any_ui_is_ac
 						button = knobdata_buttons[index];
 						if (index == 2) {
 							activate_dispfunc(voladj_prefix_display, voladj_move);
-						} else if (index == 1 || seek_tool == 1) {
+						} else if (index == 1 || (index && seek_tool == 1)) {
 							popup_activate(button, seek_tool);
 						} else {
 							hijack_enq_button_pair(button);
@@ -3720,28 +3720,6 @@ hijack_intercept_tuner (unsigned int packet)
 	}
 }
 
-static int
-check_for_trackinfo_or_tuner (unsigned char *buf, int row)
-{
-	if (row) {
-		// look for a solid line, any color(s)
-		unsigned long *screen = (unsigned long *)(&buf[row * (EMPEG_SCREEN_COLS / 2)]);
-		unsigned long test = (*(unsigned long *)screen) & 0x33333333;
-		return (((test | (test << 1)) & 0x22222222) == 0x22222222);
-	} else {
-		// look for the distinctive Tuner "chickenfoot" character
-		static const unsigned long chickenfoot[] =
-			{0x000f0000, 0xf00f00f0, 0x0f0f0f00, 0x00fff000, 0x000f0000, 0x000f0000, 0x000f0000};
-		const unsigned long *foot = &chickenfoot[0];
-		for (row = 0; row < (sizeof(chickenfoot) / sizeof(unsigned long)); ++row) {
-			unsigned long *screen = (unsigned long *)(&buf[(row + 15) * (EMPEG_SCREEN_COLS / 2)]);
-			if (*screen != *foot++)
-				return 0;
-		}
-		return 1;
-	}
-}
-
 static void
 check_screen_grab (unsigned char *buf)
 {
@@ -3759,10 +3737,11 @@ check_screen_grab (unsigned char *buf)
 // This routine covertly intercepts all display updates,
 // giving us a chance to substitute our own display.
 //
+enum {poweron, booting, booted, waiting, started} player_state = booting;
+
 void	// invoked from empeg_display.c
 hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 {
-	static int sent_initial_buttons = 0, done_temp = 0;
 	unsigned char *buf = player_buf;
 	unsigned long flags;
 	int refresh = NEED_REFRESH;
@@ -3771,16 +3750,51 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 		do_reboot(dev);
 		return;
 	}
-	if (!done_temp && jiffies > 10*HZ) {
-		done_temp = 1;
-		init_temperature(1);
+
+	// Keep rough track of how long the power has been off
+	if (dev->power)
+		hijack_standby_time = 0;
+	else if (!hijack_standby_time)
+		hijack_standby_time = JIFFIES();
+	else if (jiffies_since(hijack_standby_time) >= (60*60*13)) {
+		hijack_standby_time = jiffies - (60*60);	// prevent wraparound from eventually screwing us
+		if (hijack_standby_time == 0)
+			hijack_standby_time = -1;
 	}
 
-	// Send initial button sequences, if any
-	if (!sent_initial_buttons && hijack_player_started) {
-		sent_initial_buttons = 1;
-		input_append_code(IR_INTERNAL, IR_FAKE_INITIAL);
-		input_append_code(IR_INTERNAL, RELEASECODE(IR_FAKE_INITIAL));
+	// Wait for the player software to start up before doing certain tasks
+	switch (player_state) {
+		case poweron:
+			if (jiffies > (3 * HZ))
+				player_state = booting;
+			break;
+		case booting:
+			if (hijack_notify_started)
+				player_state = booted;
+			break;
+		case booted:
+			if (jiffies_since(hijack_notify_started) >= HZ)
+				player_state = waiting;
+			break;
+		case waiting:
+			if (dev->power) {
+				player_state = started;
+				init_temperature(1);
+				if (carvisuals_enabled && empeg_on_dc_power)
+					hijack_enq_button_pair(IR_BOTTOM_BUTTON_PRESSED|BUTTON_FLAGS_LONGPRESS);
+				// Send initial button sequences, if any
+				input_append_code(IR_INTERNAL, IR_FAKE_INITIAL);
+				input_append_code(IR_INTERNAL, RELEASECODE(IR_FAKE_INITIAL));
+			}
+			break;
+		case started:
+			break;
+	}
+
+	// Adjust ButtonLED levels
+	if (player_state != poweron) {
+		if (!hijack_standby_time || jiffies_since(hijack_standby_time) > (HZ/4))
+			hijack_adjust_buttonled(dev->power);
 	}
 
 	save_flags_cli(flags);
@@ -3796,40 +3810,14 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	// Handle any buttons that may be queued up
 	hijack_handle_buttons(player_buf);
 
-	// Keep rough track of how long the power has been off
-	if (dev->power)
-		hijack_standby_time = 0;
-	else if (!hijack_standby_time)
-		hijack_standby_time = JIFFIES();
-	else if (jiffies_since(hijack_standby_time) >= (60*60*13)) {
-		hijack_standby_time = jiffies - (60*60);	// prevent wraparound from eventually screwing us
-		if (hijack_standby_time == 0)
-			hijack_standby_time = -1;
-	}
-
-	// Manage buttonLED illumination level
-	if (jiffies > (2 * HZ)) {
-		if (!hijack_standby_time || jiffies_since(hijack_standby_time) > (HZ/4)) {
-			hijack_adjust_buttonled(dev->power);
-		}
-	}
-
 	save_flags_cli(flags);
-	if (!dev->power) {  // do (almost) nothing if unit is in standby mode
+	if (!dev->power) {  // do (almost) nothing else if unit is in standby mode
 		hijack_deactivate(HIJACK_IDLE);
 		(void)timer_check_expiry(dev);
 		restore_flags(flags);
 		check_screen_grab(player_buf);
 		display_blat(dev, player_buf);
 		return;
-	}
-	if (restore_visuals && hijack_got_config_ini) {
-		if (check_for_trackinfo_or_tuner(player_buf, info_screenrow)) {
-			while (restore_visuals) {
-				--restore_visuals;
-				hijack_enq_button_pair(IR_RIO_INFO_PRESSED);
-			}
-		}
 	}
 
 #ifdef EMPEG_KNOB_SUPPORTED
@@ -4754,9 +4742,8 @@ hijack_process_config_ini (char *buf, int invocation_count)
 {
 	static const char *acdc_labels[2] = {";@AC", ";@DC"};
 
-	hijack_got_config_ini = 1;
-	(void) edit_config_ini(buf, acdc_labels[empeg_on_dc_power]);
-	(void) edit_config_ini(buf, homework_labels[ hijack_homework]);
+	(void) edit_config_ini(buf, acdc_labels    [empeg_on_dc_power]);
+	(void) edit_config_ini(buf, homework_labels[hijack_homework]);
 	if (invocation_count != 1)		// exit if not first read of this cycle
 		return;
 
@@ -4789,55 +4776,6 @@ hijack_process_config_ini (char *buf, int invocation_count)
 	up(&hijack_khttpd_startup_sem);	// wake-up kftpd now that we've parsed config.ini for port numbers
 #endif // CONFIG_NET_ETHERNET
 	set_drive_spindown_times();
-}
-
-void
-hijack_fix_visuals (unsigned char *buf)
-{
-	restore_visuals = 0;
-	if (empeg_on_dc_power && carvisuals_enabled) {
-		switch ((buf[0x0e] & 7) - 1) { // examine the saved mixer source
-			case INPUT_RADIO_FM: // Tuner FM
-				if ((buf[0x4c] & 0x10) == 0) {	// FM visuals visible ?
-					info_screenrow = 0;	// "chickenfoot"
-					restore_visuals = (buf[0x42] - 1) & 3;
-					buf[0x4c] = buf[0x4c] |  0x10;
-					buf[0x42] = buf[0x42] & ~0x03;
-				}
-				break;
-			case INPUT_PCM: // Main/Mp3
-				if ((buf[0x4c] & 0x04) == 0) {	// MP3 visuals visible ?
-					info_screenrow = 15;
-					restore_visuals = (buf[0x40] & 3) + 2 + (buf[0x4d] & 1);
-					//printk("1restore=%d, x40=%02x, x4c=%02x, x4d=%02x\n", restore_visuals, buf[0x40], buf[0x4c], buf[0x4d]);
-					// switch to "track" mode on startup (because it's easy to detect later on),
-					// and then restore the original mode when the track info appears in the screen buffer.
-					buf[0x40] = (buf[0x40] & ~0x03) | 0x02;
-					buf[0x4c] =  buf[0x4c]          | 0x04;
-					buf[0x4d] = (buf[0x4d] & ~0x07) | 0x03;
-					//printk("2restore=%d, x40=%02x, x4c=%02x, x4d=%02x\n", restore_visuals, buf[0x40], buf[0x4c], buf[0x4d]);
-				}
-				break;
-			case INPUT_AUX: // Aux
-				if ((buf[0x4c] & 0x08) == 0) {	// AUX visuals visible ?
-					info_screenrow = 8;
-					restore_visuals = (buf[0x41] & 3) + 1;
-					buf[0x41] = (buf[0x41] & ~0x03) | 0x02;
-					buf[0x4c] =  buf[0x4c]          | 0x08;
-				}
-				break;
-			case INPUT_RADIO_AM: // Tuner AM
-				if ((buf[0x4c] & 0x20) == 0) {	// AM visuals visible ?
-					info_screenrow = 0;	// "chickenfoot"
-					restore_visuals = (buf[0x43] - 1) & 3;
-					buf[0x43] = buf[0x43] & ~0x03;
-					buf[0x4c] = buf[0x4c] |  0x20;
-				}
-				break;
-		}
-		if (restore_visuals)
-			empeg_state_dirty = 1;
-	}
 }
 
 // This version number should be incremented ONLY when existing fields
@@ -4876,7 +4814,7 @@ typedef struct hijack_savearea_s {
 	unsigned hightemp_threshold	: HIGHTEMP_BITS;	// 5 bits
 
 	unsigned menu_item		: MENU_BITS;		// 5 bits
-	unsigned restore_visuals	: 1;			// 1 bit
+	unsigned restore_carvisuals	: 1;			// 1 bit
 	unsigned fsck_disabled		: 1;			// 1 bit
 	unsigned onedrive		: 1;			// 1 bit
 
@@ -4925,7 +4863,7 @@ hijack_save_settings (unsigned char *buf)
 	savearea.blanker_sensitivity	= blanker_sensitivity;
 	savearea.hightemp_threshold	= hightemp_threshold;
 	savearea.menu_item		= menu_item;
-	savearea.restore_visuals	= carvisuals_enabled;
+	savearea.restore_carvisuals	= carvisuals_enabled;
 	savearea.fsck_disabled		= hijack_fsck_disabled;
 	savearea.onedrive		= hijack_onedrive;
 	savearea.timer_action		= timer_action;
@@ -4981,7 +4919,7 @@ hijack_restore_settings (char *buf)
 	blanker_sensitivity		= savearea.blanker_sensitivity;
 	hightemp_threshold		= savearea.hightemp_threshold;
 	menu_item			= savearea.menu_item;
-	carvisuals_enabled		= savearea.restore_visuals;
+	carvisuals_enabled		= savearea.restore_carvisuals;
 	hijack_fsck_disabled		= savearea.fsck_disabled;
 	hijack_onedrive			= savearea.onedrive;
 	timer_action			= savearea.timer_action;

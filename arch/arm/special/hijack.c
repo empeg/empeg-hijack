@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v147"
+#define HIJACK_VERSION "v148"
 
 #include <linux/sched.h>
 #include <linux/kernel.h>
@@ -740,12 +740,11 @@ hijack_enq_translations (ir_translation_t *t)
 
 	while (count--) {
 		unsigned long code = *newp++;
-		unsigned long button = code & ~(BUTTON_FLAGS^BUTTON_FLAGS_UISTATE);
-		if (code & BUTTON_FLAGS_SHIFT)
-			ir_shifted = !ir_shifted;
-		hijack_enq_button(&hijack_inputq, button, 0);
-		if (count)
+		hijack_enq_button(&hijack_inputq, code & ~~BUTTON_FLAGS_LONGPRESS, 0);
+		if (count) {
+			unsigned long button = code & ~(BUTTON_FLAGS^BUTTON_FLAGS_UISTATE);
 			hijack_enq_release(&hijack_inputq, button|(code & BUTTON_FLAGS_LONGPRESS), 0);
+		}
 	}
 }
 
@@ -2427,7 +2426,9 @@ hijack_handle_button (unsigned long button, unsigned long delay, int any_ui_is_a
 		if (!(button & (any_ui_is_active ? BUTTON_FLAGS_UI : BUTTON_FLAGS_NOTUI)))
 			return;		// this button doesn't exist in this state
 	}
-	button &= ~BUTTON_FLAGS_UISTATE;
+	if (button & BUTTON_FLAGS_SHIFT)
+		ir_shifted = !ir_shifted;
+	button &= ~(BUTTON_FLAGS_UISTATE|BUTTON_FLAGS_SHIFT);
 
 	blanker_triggered = 0;
 	if (hijack_status == HIJACK_ACTIVE) {

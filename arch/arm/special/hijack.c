@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v328"
+#define HIJACK_VERSION	"v329"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -4288,7 +4288,7 @@ ir_setup_translations2 (unsigned char *s, unsigned int *table, int *had_errors)
 			}
 		}
 		if (!table && !good) {
-			printline("[ir_translate] ERROR: ", line);
+			printline("[ir_translate] ERROR", line);
 			*had_errors = 1;
 		}
 		s = findchars(s, "\n");
@@ -4658,6 +4658,14 @@ int hijack_ioctl  (struct inode *inode, struct file *filp, unsigned int cmd, uns
 			userland_display_updated = 1;
 			return 0;
 		}
+		case EMPEG_HIJACK_READ_GPLR:	// read GPSR
+		{
+			//
+			// An ioctl to rawread the serial port flow control pins,
+			// added at the request of vincent@applesolutions.com
+			//
+			return GPLR;
+		}
 		default:			// Everything else
 		{
 			return display_ioctl(inode, filp, cmd, arg);
@@ -4810,7 +4818,7 @@ hijack_get_options (unsigned char *buf)
 			}
 		}
 		if (hijack_get_set_option(&s)) {
-			printline("[hijack] ERROR: ", line);
+			printline("[hijack] ERROR", line);
 			errors = 1;
 		}
 	nextline:

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v293"
+#define HIJACK_VERSION	"v294"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -3894,7 +3894,8 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 		buf = (unsigned char *)hijack_displaybuf;
 		untrigger_blanker();
 	}
-	hijack_detect();
+	if (player_state == started)
+		hijack_detect();
 	switch (hijack_status) {
 		case HIJACK_IDLE:
 			if (ir_trigger_count >= 3

@@ -1009,7 +1009,6 @@ khttp_send_file_header (server_parms_t *parms, char *path, off_t length, char *b
 				combine_artist_title(tags.artist, tags.title, artist_title, sizeof(artist_title));
 			}
 		}
-
 	} else {
 		(void) get_mime_type(path, &mimetype);
 	}

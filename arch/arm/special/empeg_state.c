@@ -611,6 +611,19 @@ static ssize_t state_read(struct file *filp, char *dest, size_t count,
 	return count;
 }
 
+typedef struct savearea_fields_s {
+	long		filler0;
+	long		filler1;
+	int		filler2;
+	unsigned	filler3   :2;
+	unsigned	ac_volume :7;
+	unsigned	dc_volume :7;
+	unsigned	filler4   :16;
+} savearea_fields_t;
+
+extern int hijack_volumelock_enabled;
+
+
 static ssize_t state_write(struct file *filp, const char *source, size_t count,
 		     loff_t *ppos)
 {
@@ -623,11 +636,19 @@ static ssize_t state_write(struct file *filp, const char *source, size_t count,
 
 	copy_from_user_ret(dev->write_buffer, source, count, -EFAULT);
 
+	if (hijack_volumelock_enabled) {
+		savearea_fields_t	*new = (savearea_fields_t *)dev->write_buffer;
+		savearea_fields_t	*old = (savearea_fields_t *)dev->read_buffer;
+		new->ac_volume = old->ac_volume;
+		new->dc_volume = old->dc_volume;
+	}
+
 	/* Now we've written, switch the buffers and copy */
 	save_flags_cli(flags);
 	temp = dev->read_buffer;
 	dev->read_buffer = dev->write_buffer;
 	dev->write_buffer = temp;
+
 
 	/* Mark as dirty */
 	dirty=1;

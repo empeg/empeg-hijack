@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v316"
+#define HIJACK_VERSION	"v317"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -53,6 +53,7 @@ extern int empeg_inittherm(volatile unsigned int *timerbase, volatile unsigned i
 int	kenwood_disabled;		// used by Nextsrc button
 int	empeg_on_dc_power;		// used in arch/arm/special/empeg_power.c
 int	empeg_tuner_present = 0;	// used by NextSrc button, perhaps has other uses
+int	hijack_volumelock_enabled;	// used by arch/arm/special/empeg_state.c
 int	hijack_fsck_disabled = 0;	// used in fs/ext2/super.c
 int	hijack_onedrive = 0;		// used in drivers/block/ide-probe.c
 int	hijack_reboot = 0;		// set to "1" to cause reboot on next display refresh
@@ -670,6 +671,7 @@ static const char blanker_menu_label	[] = "Screen Blanker Timeout";
 static const char blankeraction_menu_label[] = "Screen Blanker Action";
 static const char bass_menu_label       [] = "Tone: Bass Adjust";
 static const char treble_menu_label     [] = "Tone: Treble Adjust";
+static const char volumelock_menu_label	[] = "Volume Level on Boot";
 
 #define HIJACK_USERQ_SIZE	8
 static const unsigned int intercept_all_buttons[] = {1};
@@ -1793,6 +1795,31 @@ timer_display (int firsttime)
 	}
 	if (offmsg)
 		(void)draw_string_spaced(rowcol, offmsg, ENTRYCOLOR);
+	return NEED_REFRESH;
+}
+
+static void
+volumelock_move (int direction)
+{
+	hijack_volumelock_enabled = !hijack_volumelock_enabled;
+	empeg_state_dirty = 1;
+}
+
+static const char *last_current[2] = {"Previous", "Current"};
+
+static int
+volumelock_display (int firsttime)
+{
+	unsigned int rowcol;
+
+	if (!firsttime && !hijack_last_moved)
+		return NO_REFRESH;
+	hijack_last_moved = 0;
+	clear_hijack_displaybuf(COLOR0);
+	(void)draw_string(ROWCOL(0,0), volumelock_menu_label, PROMPTCOLOR);
+	rowcol = draw_string(ROWCOL(2,0), "On boot use ", PROMPTCOLOR);
+	rowcol = draw_string_spaced(rowcol, last_current[hijack_volumelock_enabled], ENTRYCOLOR);
+	(void)   draw_string(rowcol, " volume", PROMPTCOLOR);
 	return NEED_REFRESH;
 }
 
@@ -2978,6 +3005,7 @@ static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 	{ bass_menu_label,		bass_display,		tone_move,		0},
 	{ treble_menu_label,		treble_display,		tone_move,		0},
 	{"Vital Signs",			vitals_display,		NULL,			0},
+	{ volumelock_menu_label,	volumelock_display,	volumelock_move,	0},
 	{NULL,				NULL,			NULL,			0},};
 
 static void
@@ -4953,7 +4981,7 @@ typedef struct hijack_savearea_acdc_s {	// 32-bits total
 
 	unsigned knob			: 1+KNOBDATA_BITS;	// 4 bits
 	unsigned buttonled_level	: BUTTONLED_BITS;	// 3 bits
-	unsigned spare1			: 1;			// 1 bit
+	unsigned volumelock_enabled	: 1;			// 1 bit
 
 	unsigned voladj			: VOLADJ_BITS;		// 2 bits
 	unsigned spare6			: 6;			// 6 bits
@@ -5015,6 +5043,7 @@ hijack_save_settings (unsigned char *buf)
 	acdc->knob			= knob;
 	acdc->delaytime			= hijack_delaytime;
 	acdc->buttonled_level		= hijack_buttonled_on_level;
+	acdc->volumelock_enabled	= hijack_volumelock_enabled;
 	acdc->voladj			= hijack_voladj_enabled;
 	acdc->bass_adj			= hijack_bass_adj;
 	acdc->treble_adj		= hijack_treble_adj;
@@ -5072,6 +5101,7 @@ hijack_restore_settings (char *buf)
 	knob				= acdc->knob;
 	hijack_delaytime		= acdc->delaytime;
 	hijack_buttonled_on_level	= acdc->buttonled_level;
+	hijack_volumelock_enabled	= acdc->volumelock_enabled;
 	hijack_voladj_enabled		= acdc->voladj;
 	hijack_bass_adj			= acdc->bass_adj;
 	hijack_treble_adj		= acdc->treble_adj;
@@ -5109,6 +5139,7 @@ hijack_init (void *animptr)
 	hijack_player_init_pid = 0;
 	hijack_game_animptr = animptr;
 	hijack_buttonled_level = 0;	// turn off button LEDs
+	hijack_volumelock_enabled = 0;
 	failed = hijack_restore_settings(buf);
 	menu_init();
 	reset_hijack_options();

@@ -14,12 +14,13 @@
 #include <asm/arch/hijack.h>
 
 #include <linux/proc_fs.h>
- 
+
 #include "fast_crc32.c"					// 10X the CPU usage of non-table-lookup version
 //extern unsigned long crc32 (char *buf, int len);	// drivers/net/smc9194_tifon.c (10X slower, 1KB smaller)
 
 #define IR_INTERNAL		((void *)-1)
 
+extern int strxcmp (const char *str, const char *pattern, int partial);					// hijack.c
 extern int hijack_reboot;										// hijack.c
 extern int do_remount(const char *dir,int flags,char *data);						// fs/super.c
 extern int get_filesystem_info(char *);									// fs/super.c
@@ -242,23 +243,6 @@ static struct proc_dir_entry proc_screen_raw_entry = {
 	NULL, 			/* use default operations */
 	&hijack_proc_screen_raw_read, /* get_info() */
 };
-
-#define INRANGE(c,min,max)	((c) >= (min) && (c) <= (max))
-#define TOUPPER(c)		(INRANGE((c),'a','z') ? ((c) - ('a' - 'A')) : (c))
-
-int
-strxcmp (const char *str, const char *pattern, int partial)
-{
-	unsigned char s, p;
-
-	while ((p = *pattern)) {
-		++pattern;
-		s = *str++;
-		if (TOUPPER(s) != TOUPPER(p))
-			return 1;	// did not match
-	}
-	return (!partial && *str);	// 0 == matched; 1 == not matched
-}
 
 static int
 remount_drives (int writeable)

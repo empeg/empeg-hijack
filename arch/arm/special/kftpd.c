@@ -29,7 +29,7 @@
 #include <net/scm.h>
 
 extern void sys_exit(int);
-extern int strxcmp (const char *str, const char *pattern, int partial);	// notify.c
+extern int strxcmp (const char *str, const char *pattern, int partial);	// hijack.c
 extern int hijack_do_command(const char *command, unsigned int size);	// notify.c 
 extern void show_message (const char *message, unsigned long time);	// hijack.c
 extern int hijack_khttpd_port;				// from arch/arm/special/hijack.c

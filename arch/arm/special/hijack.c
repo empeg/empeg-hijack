@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v151"
+#define HIJACK_VERSION "v152"
 
 #include <linux/sched.h>
 #include <linux/kernel.h>
@@ -78,7 +78,7 @@ static void (*hijack_movefunc)(int) = NULL;
 #define BUTTON_FLAGS_UI		(0x20000000)	// send only if player menus are idle
 #define BUTTON_FLAGS_NOTUI	(0x10000000)	// send only if player menus are active
 #define BUTTON_FLAGS_UISTATE	(BUTTON_FLAGS_UI|BUTTON_FLAGS_NOTUI)
-#define BUTTON_FLAGS		(BUTTON_FLAGS_LONGPRESS|BUTTON_FLAGS_SHIFT|BUTTON_FLAGS_UISTATE)
+#define BUTTON_FLAGS		(0xff000000)
 #define IR_NULL_BUTTON		(~BUTTON_FLAGS)
 #define IR_INTERNAL		((void *)-1)
 
@@ -98,15 +98,12 @@ static int *ir_numeric_input = NULL;
 #define IR_FLAGS_TUNER		0x0020	// Tuner is active
 #define IR_FLAGS_AUX		0x0040	// Aux (line-in) is active
 #define IR_FLAGS_MAIN		0x0080	// Main/mp3/pcm/dsp is active
-#define IR_FLAGS_UI		0x0100	// hijack/player ui is active
-#define IR_FLAGS_NOTUI		0x0200	// hijack/player ui is idle
 
 #define IR_FLAGS_CARHOME	(IR_FLAGS_CAR|IR_FLAGS_HOME)
 #define IR_FLAGS_SHIFTSTATE	(IR_FLAGS_SHIFTED|IR_FLAGS_NOTSHIFTED)
 #define IR_FLAGS_MIXER		(IR_FLAGS_TUNER|IR_FLAGS_AUX|IR_FLAGS_MAIN)
-#define IR_FLAGS_UISTATE	(IR_FLAGS_UI|IR_FLAGS_NOTUI)
 
-static short ir_flag_defaults[] = {IR_FLAGS_SHIFTSTATE, IR_FLAGS_CARHOME, IR_FLAGS_MIXER, IR_FLAGS_UISTATE, 0};
+static short ir_flag_defaults[] = {IR_FLAGS_SHIFTSTATE, IR_FLAGS_CARHOME, IR_FLAGS_MIXER, 0};
 
 typedef struct ir_flags_s {
 	unsigned char	symbol;
@@ -120,8 +117,6 @@ static ir_flags_t ir_flags[] = {
 	{'H', 0, IR_FLAGS_HOME},
 	{'S', 0, IR_FLAGS_SHIFTED},
 	{'N', 0, IR_FLAGS_NOTSHIFTED},
-	{'U', 0, IR_FLAGS_UI},
-	{'I', 0, IR_FLAGS_NOTUI},
 	{'T', 0, IR_FLAGS_TUNER},
 	{'A', 0, IR_FLAGS_AUX},
 	{'M', 0, IR_FLAGS_MAIN},
@@ -137,7 +132,75 @@ typedef struct ir_translation_s {
 
 static ir_translation_t *ir_current_longpress = NULL;
 static unsigned long *ir_translate_table = NULL;
-static unsigned long ir_init_buttoncode = (IR_NULL_BUTTON-8), ir_initial_car = 0, ir_initial_home = 0;
+static unsigned long ir_initial_car = 0, ir_initial_home = 0;
+
+typedef struct button_name_s {
+	unsigned long	code;
+	unsigned char	name[12];
+} button_name_t;
+
+static button_name_t button_names[] = {
+	{IR_NULL_BUTTON-8,		"Initial"},	// very special; must be first
+
+	{IR_NULL_BUTTON,		"null"},
+	{IR_RIO_1_PRESSED,		"One"},
+	{IR_RIO_2_PRESSED,		"Two"},
+	{IR_RIO_3_PRESSED,		"Three"},
+	{IR_RIO_SOURCE_PRESSED,		"Source"},
+	{IR_RIO_4_PRESSED,		"Four"},
+	{IR_RIO_5_PRESSED,		"Five"},
+	{IR_RIO_6_PRESSED,		"Six"},
+	{IR_RIO_TUNER_PRESSED,		"Tuner"},
+	{IR_RIO_7_PRESSED,		"Seven"},
+	{IR_RIO_8_PRESSED,		"Eight"},
+	{IR_RIO_9_PRESSED,		"Nine"},
+	{IR_RIO_SELECTMODE_PRESSED,	"SelectMode"},
+	{IR_RIO_CANCEL_PRESSED,		"Cancel"},
+	{IR_RIO_0_PRESSED,		"Zero"},
+	{IR_RIO_SEARCH_PRESSED,		"Search"},
+	{IR_RIO_SOUND_PRESSED,		"Sound"},
+	{IR_RIO_PREVTRACK_PRESSED,	"PrevTrack"},
+	{IR_RIO_PREVTRACK_PRESSED,	"Prev"},
+	{IR_RIO_PREVTRACK_PRESSED,	"Track-"},	// alternate
+	{IR_RIO_NEXTTRACK_PRESSED,	"NextTrack"},
+	{IR_RIO_NEXTTRACK_PRESSED,	"Next"},
+	{IR_RIO_NEXTTRACK_PRESSED,	"Track+"},	// alternate
+	{IR_RIO_MENU_PRESSED,		"Menu"},
+	{IR_RIO_MENU_PRESSED,		"Ok"},		// alternate
+	{IR_RIO_VOLMINUS_PRESSED,	"VolUp"},	// alternate
+	{IR_RIO_VOLMINUS_PRESSED,	"Vol-"},
+	{IR_RIO_VOLPLUS_PRESSED,	"VolDown"},	// alternate
+	{IR_RIO_VOLPLUS_PRESSED,	"Vol+"},
+	{IR_RIO_INFO_PRESSED,		"Info"},
+	{IR_RIO_INFO_PRESSED,		"Detail"},	// alternate
+	{IR_RIO_VISUAL_PRESSED,		"Visual"},
+	{IR_RIO_VISUAL_PRESSED,		"Visual+"},	// alternate
+	{IR_RIO_PLAY_PRESSED,		"Play"},
+	{IR_RIO_PLAY_PRESSED,		"Pause"},	// alternate
+
+	{IR_TOP_BUTTON_PRESSED,		"Top"},
+	{IR_BOTTOM_BUTTON_PRESSED,	"Bottom"},
+	{IR_LEFT_BUTTON_PRESSED,	"Left"},
+	{IR_RIGHT_BUTTON_PRESSED,	"Right"},
+	{IR_KNOB_PRESSED,		"Knob"},
+	{IR_KNOB_LEFT,			"KnobLeft"},
+	{IR_KNOB_RIGHT,			"KnobRight"},
+
+	{IR_KW_AM_PRESSED,		"AM"},
+	{IR_KW_FM_PRESSED,		"FM"},
+	{IR_KW_DIRECT_PRESSED,		"Direct"},
+	{IR_KW_STAR_PRESSED,		"Star"},
+	{IR_KW_STAR_PRESSED,		"*"},		// alternate
+	{IR_KW_TUNER_PRESSED,		"Radio"},
+	{IR_KW_TAPE_PRESSED,		"Auxiliary"},
+	{IR_KW_TAPE_PRESSED,		"Tape"},	// alternate
+	{IR_KW_CD_PRESSED,		"Player"},
+	{IR_KW_CD_PRESSED,		"CD"},		// alternate
+	{IR_KW_CDMDCH_PRESSED,		"CDMDCH"},
+	{IR_KW_DNPP_PRESSED,		"DNPP"},
+
+	{IR_NULL_BUTTON,		"\0"}		// end-of-table-marker
+	};
 
 #define KNOBDATA_BITS 3
 
@@ -265,8 +328,8 @@ static const hijack_option_t hijack_option_table[] = {
 	// config.ini string		address-of-variable		howmany	min	max
 	{"button_pacing",		&hijack_button_pacing,		1,	0,	HZ},
 	{"rioremote_disabled",		&hijack_rioremote_disabled,	1,	0,	1},
-	{"extmute_off",			&hijack_extmute_off,		1,	0,	~BUTTON_FLAGS},
-	{"extmute_on",			&hijack_extmute_on,		1,	0,	~BUTTON_FLAGS},
+	{"extmute_off",			&hijack_extmute_off,		1,	0,	IR_NULL_BUTTON},
+	{"extmute_on",			&hijack_extmute_on,		1,	0,	IR_NULL_BUTTON},
 #ifdef CONFIG_NET_ETHERNET
  	{"kftpd_control_port",		&hijack_kftpd_control_port,	1,	0,	65535},
  	{"kftpd_data_port",		&hijack_kftpd_data_port,	1,	0,	65535},
@@ -449,6 +512,24 @@ const unsigned char kfont [1 + '~' - ' '][KFONT_WIDTH] = {  // variable width fo
 	{0x41,0x3e,0x08,0x00,0x00,0x00}, // }
 	{0x02,0x01,0x02,0x04,0x02,0x00}  // ~
 	};
+
+#define INRANGE(c,min,max)	((c) >= (min) && (c) <= (max))
+#define TOUPPER(c)		(INRANGE((c),'a','z') ? ((c) - ('a' - 'A')) : (c))
+
+int
+strxcmp (const char *str, const char *pattern, int partial)
+{
+	unsigned char s, p;
+
+	while ((p = *pattern)) {
+		++pattern;
+		s = *str++;
+		if (TOUPPER(s) != TOUPPER(p))
+			return 1;	// did not match
+	}
+	return (!partial && *str);	// 0 == matched; 1 == not matched
+}
+ 
 
 static void
 clear_hijack_displaybuf (unsigned char color)
@@ -3032,12 +3113,61 @@ get_option_vals (int syntax_only, unsigned char **s, const hijack_option_t *opt)
 	return rc; // success
 }
 
+static char *get_button_name (unsigned int button, char *buf)
+{
+	button_name_t *bn = button_names;
+	unsigned char *name = NULL;
+
+	button &= ~BUTTON_FLAGS;
+	if (button <= 0xf && button != IR_KNOB_LEFT)
+		button &= ~1;
+	if (button > IR_NULL_BUTTON) {
+		name = "initial";
+	} else {
+		for (bn = button_names; bn->name[0]; ++bn) {
+			if (button == bn->code) {
+				name = bn->name;
+				goto done;
+			}
+		}
+		sprintf(buf, "0%x", button);
+		return buf;
+	}
+done:
+	return strcpy(buf, name);
+}
+
+static int get_button_code (unsigned char **s_p, int *initial, unsigned int *button, int eol_okay, const char *nextchars)
+{
+	button_name_t *bn = button_names;
+	unsigned char *s = *s_p;
+
+	if (!initial)
+		++bn;
+	for (bn = button_names; bn->name[0]; ++bn) {
+		if (!strxcmp(s, bn->name, 1)) {
+			unsigned char *t = s + strlen(bn->name), c = *t;
+			if ((!c && eol_okay) || strchr(nextchars, c)) {
+				*s_p = t;
+				*button = bn->code;
+				if (bn == button_names) {	// special case for "initial"
+					++bn->code;
+					*initial = 1;
+				}
+				return 1;	// success
+			}
+		}
+	}
+	return get_number(s_p, button, 16, nextchars);
+}
+
 static int
 ir_setup_translations2 (unsigned char *buf, unsigned long *table)
 {
 	const char header[] = "[ir_translate]";
 	unsigned char *s;
 	int index = 0;
+	button_names[0].code = IR_NULL_BUTTON - 8;	// reset the special codes for "initial"
 
 	// find start of translations
 	if (!buf || !*buf || !(s = strstr(buf, header)) || !*s)
@@ -3046,21 +3176,11 @@ ir_setup_translations2 (unsigned char *buf, unsigned long *table)
 	while (skip_over(&s, " \t\r\n")) {
 		unsigned int old = 0, new, initial = 0;
 		ir_translation_t *t = NULL;
-		if (!strncmp(s, "initial", 7)) {
-			char next = s[7];
-			if (next == '=' || next == '.' || next == ' ' || next == '\t') {
-				s += 7;
-				initial = 1;
-				old = ir_init_buttoncode++;
-			}
-		}
-		if (initial || get_number(&s, &old, 16, " \t.=")) {
+		if (get_button_code(&s, &initial, &old, 0, ".=")) {
 			unsigned short irflags = 0, flagmask, *defaults;
-			if (!initial) {
-				old &= ~BUTTON_FLAGS;
-				if (old <= 0xf)
-					old &= ~1;
-			}
+			old &= ~BUTTON_FLAGS;
+			if (old <= 0xf)
+				old &= ~1;
 			if (*s == '.') {
 				ir_flags_t *f;
 				do {
@@ -3089,21 +3209,13 @@ ir_setup_translations2 (unsigned char *buf, unsigned long *table)
 				}
 				index += (sizeof(ir_translation_t) - sizeof(unsigned long)) / sizeof(unsigned long);
 				do {
-					if (!get_number(&s, &new, 16, " .,;\t\r\n")) {
+					if (!get_button_code(&s, NULL, &new, 1, ".,; \t\r\n")) {
 						index = saved; // error: completely ignore this line
 						break;
 					}
 					new &= ~BUTTON_FLAGS;
 					if (new <= 0xf && new != IR_KNOB_LEFT)
 						new &= ~1;
-					if ((irflags & IR_FLAGS_UISTATE) == IR_FLAGS_UISTATE) {
-						irflags ^= IR_FLAGS_UISTATE;
-					} else {
-						if ((irflags & IR_FLAGS_UI))
-							new |= BUTTON_FLAGS_UI;
-						if ((irflags & IR_FLAGS_NOTUI))
-							new |= BUTTON_FLAGS_NOTUI;
-					}
 					if (*s == '.') {
 						do {
 							switch (*++s) {
@@ -3367,14 +3479,13 @@ print_ir_translates (void)
 
 	if (table) {
 		while (*table != -1) {
+			char nambuf[16];
 			ir_translation_t *t = (ir_translation_t *)table;
 			unsigned long	*newp = &t->new[0];
 			unsigned short	t_flags = t->flags, *defaults, flagmask;
 			int		count = t->count;
-			if (t->old == ir_initial_car || t->old == ir_initial_home)
-				printk("ir_translate: initial");
-			else
-				printk("ir_translate: %08lx", t->old);
+
+			printk("ir_translate: %s",  get_button_name(t->old, nambuf));
 			// for display purposes, turn off any defaulted flags
 			for (defaults = ir_flag_defaults; t_flags && (flagmask = *defaults++);) {
 				if ((t_flags & flagmask) == flagmask)
@@ -3392,7 +3503,7 @@ print_ir_translates (void)
 			printk("=");
 			while (count--) {
 				unsigned long new = *newp++;
-				printk("%08lx", new & ~BUTTON_FLAGS);
+				printk(get_button_name(new & ~BUTTON_FLAGS, nambuf));
 				if ((new & BUTTON_FLAGS_UISTATE) == BUTTON_FLAGS_UISTATE)
 					new ^= BUTTON_FLAGS_UISTATE;
 				if (new & BUTTON_FLAGS) {

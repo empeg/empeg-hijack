@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v362"
+#define HIJACK_VERSION	"v363"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -2375,7 +2375,7 @@ static void check_for_v3alpha (void)
 	set_fs(KERNEL_DS);
 	if (0 == sys_newstat("/empeg/bin/player", &st)) {
 		//printk("player_size = %lu\n", st.st_size);
-		if (st.st_size == 1900988 || st.st_size == 1907572) {
+		if (st.st_size == 1900988 || st.st_size == 1907572 || st.st_size == 1915200) {
 			player_v3alpha = 1;
 		}
 	}

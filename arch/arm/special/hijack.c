@@ -36,7 +36,8 @@ extern int empeg_inittherm(volatile unsigned int *timerbase, volatile unsigned i
 #define EMPEG_KNOB_SUPPORTED	// Mk2 and later have a front-panel knob
 #endif
 
-unsigned int PROMPTCOLOR, ENTRYCOLOR;
+static unsigned int PROMPTCOLOR = COLOR3, ENTRYCOLOR = -COLOR3;
+static unsigned int hijack_classic = 0;	// 1 == don't highlite menu items
 
 #define NEED_REFRESH		0
 #define NO_REFRESH		1
@@ -46,6 +47,12 @@ unsigned int PROMPTCOLOR, ENTRYCOLOR;
 #define HIJACK_PENDING		2
 #define HIJACK_ACTIVE		3
 
+#define RESTORE_CARVISUALS
+#ifdef RESTORE_CARVISUALS
+static unsigned int carvisuals_enabled = 0;
+static unsigned int restore_carvisuals = 0;
+#endif // RESTORE_CARVISUALS
+static unsigned int on_dc_power = 0;
 static unsigned int hijack_status = HIJACK_INACTIVE;
 static unsigned long hijack_last_moved = 0, hijack_last_refresh = 0, blanker_triggered = 0, blanker_lastpoll = 0;
 static unsigned char blanker_lastbuf[EMPEG_SCREEN_BYTES] = {0,}, blanker_is_blanked = 0;
@@ -165,11 +172,13 @@ typedef struct hijack_option_s {
 } hijack_option_t; 
 
 static const hijack_option_t hijack_option_table[] = {
+	// config.ini string		address-of-variable		howmany	min	max
 	{"temperature_correction",	&hijack_temperature_correction,	1,	-20,	+20},
 	{"button_pacing",		&hijack_button_pacing,		1,	0,	HZ},
 	{"voladj_low",			&hijack_voladj_parms[0][0],	5,	0,	0x7ffe},
 	{"voladj_medium",		&hijack_voladj_parms[1][0],	5,	0,	0x7ffe},
 	{"voladj_high",			&hijack_voladj_parms[2][0],	5,	0,	0x7ffe},
+	{"old_style",			&hijack_classic,		1,	0,	1},
 	{NULL,NULL,0,0,0} // end-of-list
 	};
 
@@ -216,7 +225,7 @@ static struct sa_struct {
 	unsigned blanker_timeout	: BLANKER_BITS;		// 6 bits
 	unsigned voladj_dc_power	: VOLADJ_BITS;		// 2 bits
 	unsigned maxtemp_threshold	: MAXTEMP_BITS;		// 5 bits
-	unsigned byte2_leftover		: 1;
+	unsigned restore_visuals	: 1;
 	unsigned byte3_leftover		: 6;
 	unsigned timer_action		: TIMERACTION_BITS;	// 1 bit
 	unsigned force_dcpower		: DCPOWER_BITS;		// 1 bit
@@ -940,39 +949,11 @@ forcedc_display (int firsttime)
 	clear_hijack_displaybuf(COLOR0);
 	(void)draw_string(ROWCOL(0,0), "Force DC/Car Operation", PROMPTCOLOR);
 	rowcol = draw_string(ROWCOL(1,0), "Current Mode: ", PROMPTCOLOR);
-	(void)draw_string(rowcol, empeg_on_dc_power() ? "DC/Car" : "AC/Home", PROMPTCOLOR);
+	(void)draw_string(rowcol, on_dc_power ? "DC/Car" : "AC/Home", PROMPTCOLOR);
 	rowcol = draw_string(ROWCOL(3,0), "On reboot: ", PROMPTCOLOR);
 	(void)draw_string(rowcol, hijack_savearea.force_dcpower ? " Force DC/Car " : " [Normal] ", ENTRYCOLOR);
 	return NEED_REFRESH;
 }
-
-#ifdef STYLE_SELECT
-static void
-style_move (int direction)
-{
-	if (PROMPTCOLOR == COLOR3) {
-		PROMPTCOLOR		=  COLOR2;
-		ENTRYCOLOR		=  COLOR3;
-	} else {
-		PROMPTCOLOR		=  COLOR3;
-		ENTRYCOLOR		= -COLOR3;
-	}
-}
-
-static int
-style_display (int firsttime)
-{
-	unsigned int rowcol;
-
-	if (!firsttime && !hijack_last_moved)
-		return NO_REFRESH;
-	hijack_last_moved = 0;
-	clear_hijack_displaybuf(COLOR0);
-	(void)draw_string(ROWCOL(0,0), "Select Menu Style:", PROMPTCOLOR);
-	rowcol = draw_string(ROWCOL(2,48), (PROMPTCOLOR == COLOR3) ? "Modern" : "Classic", ENTRYCOLOR);
-	return NEED_REFRESH;
-}
-#endif // STYLE_SELECT
 
 static unsigned int
 draw_hhmmss (unsigned int rowcol, unsigned int seconds, int color)
@@ -1061,10 +1042,34 @@ timer_display (int firsttime)
 	return NEED_REFRESH;
 }
 
+#ifdef RESTORE_CARVISUALS
+static void
+carvisuals_move (int direction)
+{
+	carvisuals_enabled = (direction > 0);
+	empeg_state_dirty = 1;
+}
+
+static int
+carvisuals_display (int firsttime)
+{
+	unsigned int rowcol;
+ 
+	if (!firsttime && !hijack_last_moved)
+		return NO_REFRESH;
+	hijack_last_moved = 0;
+	clear_hijack_displaybuf(COLOR0);
+	(void)draw_string(ROWCOL(0,0), "Restore DC/Car Visuals", PROMPTCOLOR);
+	rowcol = draw_string(ROWCOL(2,0), "Restore: ", PROMPTCOLOR);
+	(void)   draw_string(rowcol, carvisuals_enabled ? " Enabled " : " Disabled ", ENTRYCOLOR);
+	return NEED_REFRESH;
+}
+#endif // RESTORE_CARVISUALS
+
 static void
 timeraction_move (int direction)
 {
-	timer_action = !timer_action;
+	timer_action = (direction > 0);
 	empeg_state_dirty = 1;
 }
 
@@ -1329,7 +1334,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v81 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v82 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1743,10 +1748,10 @@ static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 #ifdef EMPEG_KNOB_SUPPORTED
 	{" Knob Press Redefinition ",	knobdata_display,	knobdata_move,		0},
 #endif // EMPEG_KNOB_SUPPORTED
-#ifdef STYLE_SELECT
-	{" Menu Style ",		style_display,		style_move,		0},
-#endif // STYLE_SELECT
 	{" Reboot Machine ",		reboot_display,		NULL,			0},
+#ifdef RESTORE_CARVISUALS
+	{" Restore DC/Car Visuals ",	carvisuals_display,	carvisuals_move,	0},
+#endif // RESTORE_CARVISUALS
 	{" Screen Blanker Timeout ",	blanker_display,	blanker_move,		0},
 	{" Screen Blanker Sensitivity ", blankerfuzz_display,	blankerfuzz_move,	0},
 	{" Show Flash Savearea ",	savearea_display,	savearea_move,		0},
@@ -2219,6 +2224,21 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	}
 	restore_flags(flags);
 
+#ifdef RESTORE_CARVISUALS
+	save_flags_cli(flags);
+	if (dev->power && carvisuals_enabled && restore_carvisuals) {
+		unsigned char *r15 = &player_buf[15 * EMPEG_SCREEN_COLS / 2];
+		if ((*(unsigned long *)r15) == 0x22222222) {	// is track-info active yet?
+			while (restore_carvisuals) {
+				--restore_carvisuals;
+				hijack_button_enq(&hijack_playerq, IR_RIO_INFO_PRESSED,  0);
+				hijack_button_enq(&hijack_playerq, IR_RIO_INFO_RELEASED, 0);
+			}
+		}
+	}
+	restore_flags(flags);
+#endif // RESTORE_CARVISUALS
+
 	// Handle any buttons that may be queued up
 	hijack_handle_buttons();
 	hijack_send_buttons_to_player();
@@ -2673,12 +2693,13 @@ menu_init (void)
 	menu_top = (menu_item ? menu_item : menu_size) - 1;
 }
 
+#define HIJACK_SAVEAREA_OFFSET (128 - 2 - sizeof(hijack_savearea))
+
 void	// invoked from empeg_state.c
 hijack_save_settings (unsigned char *buf)
 {
-	int dc_power = empeg_on_dc_power();
 	// save state
-	if (dc_power)
+	if (on_dc_power)
 		hijack_savearea.voladj_dc_power	= hijack_voladj_enabled;
 	else
 		hijack_savearea.voladj_ac_power	= hijack_voladj_enabled;
@@ -2691,7 +2712,7 @@ hijack_save_settings (unsigned char *buf)
 		knob = (1 << KNOBDATA_BITS) | knobmenu_index;
 	else
 		knob = knobdata_index;
-	if (dc_power)
+	if (on_dc_power)
 		hijack_savearea.knob_dc = knob;
 	else
 		hijack_savearea.knob_ac = knob;
@@ -2700,34 +2721,32 @@ hijack_save_settings (unsigned char *buf)
 	hijack_savearea.blankerfuzz_amount	= blankerfuzz_amount;
 	hijack_savearea.timer_action		= timer_action;
 	hijack_savearea.menu_item		= menu_item;
+	hijack_savearea.restore_visuals		= carvisuals_enabled;
 	//hijack_savearea.force_dcpower is only updated from the menu!
-	hijack_savearea.byte2_leftover = hijack_savearea.byte3_leftover = 0;
-	hijack_savearea.byte5_leftover = hijack_savearea.byte6_leftover = 0;
-	memcpy(buf, &hijack_savearea, sizeof(hijack_savearea));
+	hijack_savearea.byte3_leftover = 0;
+	hijack_savearea.byte5_leftover = 0;
+	hijack_savearea.byte6_leftover = 0;
+	memcpy(buf+HIJACK_SAVEAREA_OFFSET, &hijack_savearea, sizeof(hijack_savearea));
 }
 
 void	// invoked from empeg_state.c
-hijack_restore_settings (const unsigned char *buf)
+hijack_restore_settings (unsigned char *buf)
 {
-	int dc_power = empeg_on_dc_power();
+	on_dc_power = empeg_on_dc_power();
 	// restore state
-	memcpy(&hijack_savearea, buf, sizeof(hijack_savearea));
+	memcpy(&hijack_savearea, buf+HIJACK_SAVEAREA_OFFSET, sizeof(hijack_savearea));
 	hijack_force_dcpower		= hijack_savearea.force_dcpower;
-	if (dc_power) {
+	if (on_dc_power) {
 		hijack_voladj_enabled	= hijack_savearea.voladj_dc_power;
-		//PROMPTCOLOR		=  COLOR3;
-		//ENTRYCOLOR		= -COLOR3;
 	} else {
 		hijack_voladj_enabled	= hijack_savearea.voladj_ac_power;
-		//PROMPTCOLOR		=  COLOR2;
-		//ENTRYCOLOR		=  COLOR3;
 	}
 	blanker_timeout			= hijack_savearea.blanker_timeout;
 	maxtemp_threshold		= hijack_savearea.maxtemp_threshold;
 #ifdef EMPEG_KNOB_SUPPORTED
 {
 	unsigned int knob;
-	knob = dc_power ? hijack_savearea.knob_dc : hijack_savearea.knob_ac;
+	knob = on_dc_power ? hijack_savearea.knob_dc : hijack_savearea.knob_ac;
 	if ((knob & (1 << KNOBDATA_BITS)) == 0) {
 		knobmenu_index		= 0;
 		knobdata_index		= knob;
@@ -2741,6 +2760,35 @@ hijack_restore_settings (const unsigned char *buf)
 	timer_action			= hijack_savearea.timer_action;
 	menu_item			= hijack_savearea.menu_item;
 	menu_init();
+	carvisuals_enabled		= hijack_savearea.restore_visuals;
+
+#ifdef RESTORE_CARVISUALS
+	restore_carvisuals = 0;
+	if (on_dc_power) {
+		unsigned int b40cd = (buf[0x40] << 16) | (buf[0x4c] << 8) | buf[0x4d];
+		switch (b40cd) {
+			case 0x000004: // off
+				restore_carvisuals = 2;
+				break;
+			case 0x010004: // line
+				restore_carvisuals = 3;
+				break;
+			case 0x020004: // transient
+				restore_carvisuals = 4;
+				break;
+		//	case 0x020403: // track
+		//	case 0x020404: // now&next
+		}
+		if (restore_carvisuals) {
+			// switch to "track" mode on startup, and restore original mode when track info appears
+			buf[0x40] = 0x02;
+			buf[0x4c] = 0x04;
+			buf[0x4d] = 0x03;
+			empeg_state_dirty = 1;
+		}
+	printk("\non_dc_power, b40cd=%06x, restore=%d\n", b40cd, restore_carvisuals);
+	}
+#endif // RESTORE_CARVISUALS
 }
 
 static int
@@ -2920,6 +2968,13 @@ hijack_read_config_file (const char *path)
 		printk("hijack.c: open(%s) failed (errno=%d)\n", path, rc);
 	} else if (rc > 0 && buf && *buf) {
 		get_hijack_options(buf);
+		if (hijack_classic) {
+			PROMPTCOLOR		=  COLOR2;
+			ENTRYCOLOR		=  COLOR3;
+		} else {
+			PROMPTCOLOR		=  COLOR3;
+			ENTRYCOLOR		= -COLOR3;
+		}
 		ir_setup_translations(buf);
 		print_ir_translates();
 	}
@@ -3103,8 +3158,6 @@ hijack_init (void)
 
 	if (!initialized) {
 		initialized = 1;
-		PROMPTCOLOR = COLOR3;
-		ENTRYCOLOR  = -COLOR3;
 		(void)init_temperature();
 		hijack_initq(&hijack_inputq);
 		hijack_initq(&hijack_playerq);

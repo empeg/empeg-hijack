@@ -178,9 +178,7 @@ static void powerfail_reenabled_timeout(unsigned long);
 
 /* save/restore hijack savearea for user-defined-menu settings */
 void hijack_save_settings (unsigned char *buf);
-void hijack_restore_settings (const unsigned char *buf);
-
-#define HIJACK_SAVEAREA_OFFSET (STATE_BLOCK_SIZE - 2 - 8)
+void hijack_restore_settings (unsigned char *buf);
 
 void enable_powerfail(int enable)
 {
@@ -339,7 +337,7 @@ int state_fetch(unsigned char *buffer)
 	powerontime=*((unsigned int*)(buffer+4));
 
 	/* Restore hijack_savearea */
-	hijack_restore_settings(buffer+HIJACK_SAVEAREA_OFFSET);
+	hijack_restore_settings(buffer);
 
 	return(0);
 }
@@ -357,7 +355,7 @@ static inline int state_store(void)
 	*((unsigned int*)(from+2))=(xtime.tv_sec-unixtime)+powerontime;
 
 	/* Store hijack_savearea */
-	hijack_save_settings(((unsigned char *)from)+HIJACK_SAVEAREA_OFFSET);
+	hijack_save_settings((unsigned char *)from);
 
 	/* Enable writes to flash chip */
 	state_enablewrite();

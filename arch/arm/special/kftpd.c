@@ -1109,7 +1109,7 @@ encode_url (unsigned char *out, unsigned char *s, int partial_encode)
 			*out++ = hexchars[c >> 4];
 			*out++ = hexchars[c & 0xf];
 		} else if (partial_encode == 1) { // for netscape, and stupid iTunes playlist display
-			*out++ = (c == ' ' || c == '?') ? '_' : c;
+			*out++ = (c == ' ' || c == '?' || c == '%') ? '_' : c;
 		} else {  // xml
 			if (c == '<' || c == '>' || c == '&') {
 				*out++ = '&';
@@ -1587,18 +1587,18 @@ static void
 khttpd_fix_hexcodes (char *buf)
 {
 	char *s = buf;
-	unsigned char *x, x1, x2;
+	unsigned char *x, x0, x1;
 
-	while (*s) {
-		while (*s && *s != '%')
-			++s;
-		x = s + 1;
-		if ((x1 = *x++) && (x2 = *x++)) {
-			if ((x1 = fromhex(x1)) < 16 && (x2 = fromhex(x2)) < 16) {
-				*s++ = (x1 << 4) | x2;
-				do {
-					*(x - 2) = *x;
-				} while (*x++);
+	for (s = buf; *s; ++s) {
+		if (*s == '%') {
+			x = s + 1;
+			if ((x0 = *x++) && (x1 = *x++)) {
+				if ((x0 = fromhex(x0)) < 16 && (x1 = fromhex(x1)) < 16) {
+					*s = (x0 << 4) | x1;
+					do {
+						*(x - 2) = *x;
+					} while (*x++);
+				}
 			}
 		}
 	}

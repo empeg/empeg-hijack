@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v309"
+#define HIJACK_VERSION	"v310"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -237,7 +237,7 @@ typedef struct ir_translation_s {
 	unsigned int	new[0];		// start of macro table with replacement buttons to send
 } ir_translation_t;
 
-// a default translation for PopUp0 menu:
+// special set-up for the SeekTool:
 static struct {
 		ir_translation_t	hdr;
 		unsigned int		buttons[2];
@@ -471,6 +471,7 @@ struct semaphore hijack_khttpd_startup_sem	= MUTEX_LOCKED;	// sema for waking up
 #endif // CONFIG_NET_ETHERNET
 
 static hijack_buttonq_t hijack_inputq, hijack_playerq, hijack_userq;
+int hijack_khttpd_new_fid_dirs;			// 0 == don't look for new fids sub-directories
 
 // Externally tuneable parameters for config.ini; the voladj_parms are also tuneable
 //
@@ -490,7 +491,7 @@ static	int hijack_spindown_seconds;		// drive spindown timeout in seconds
 	int hijack_kftpd_verbose;		// kftpd verbosity
 	int hijack_rootdir_dotdot;		// 1 == show '..' in rootdir listings
 	int hijack_kftpd_show_dotfiles;		// 1 == show '.*' in rootdir listings
-	int hijack_khttpd_show_dotfiles;		// 1 == show '.*' in rootdir listings
+	int hijack_khttpd_show_dotfiles;	// 1 == show '.*' in rootdir listings
 	int hijack_max_connections;		// restricts memory use
 	int hijack_khttpd_port;			// khttpd port
 	int hijack_khttpd_verbose;		// khttpd verbosity
@@ -5089,6 +5090,7 @@ hijack_init (void *animptr)
 	char buf[128];
 	const unsigned long animstart = HZ/2;
 
+	hijack_khttpd_new_fid_dirs = 1;	// look for new fids directory structure
 	hijack_player_init_pid = 0;
 	hijack_game_animptr = animptr;
 	hijack_buttonled_level = 0;	// turn off button LEDs

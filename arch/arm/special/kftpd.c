@@ -49,6 +49,7 @@ extern void show_message (const char *message, unsigned long time);	// hijack.c
 extern void printline (const char *msg, char *s);	// from arch/arm/special/hijack.c
 extern int hijack_khttpd_port;				// from arch/arm/special/hijack.c
 extern int hijack_khttpd_verbose;			// from arch/arm/special/hijack.c
+extern int hijack_khttpd_new_fid_dirs;			// from arch/arm/special/hijack.c
 extern int hijack_kftpd_control_port;			// from arch/arm/special/hijack.c
 extern int hijack_kftpd_data_port;			// from arch/arm/special/hijack.c
 extern int hijack_kftpd_verbose;			// from arch/arm/special/hijack.c
@@ -920,8 +921,51 @@ combine_artist_title (char *artist, char *title, char *combined, int maxlen)
 static int
 open_fid_file (char *path)
 {
-	int	fd;
+	int		fd;
+	char		buf[24];
 
+	if (hijack_khttpd_new_fid_dirs) {
+		int p, b;
+		strcpy(buf, "/drive0/fids/_00000/000");
+		b = strlen(buf) - 1;
+	        if (hijack_khttpd_new_fid_dirs != 2) {
+			buf[b-2] = '1';
+			fd = open(buf, O_RDONLY, 0);
+			if (fd == -1) {
+				buf[6] = '1';
+				fd = open(buf, O_RDONLY, 0);
+			}
+			buf[b-2] = '0';
+			if (fd == -1) {
+				hijack_khttpd_new_fid_dirs = 0;
+				goto old_style;
+			} else {
+				hijack_khttpd_new_fid_dirs = 2;
+				printk("hijack: found new-style fids subdirectories\n");
+				(void)close(fd);
+			}
+		}
+		p = strlen(path) - 1;
+		if (path[p] != '/') {
+			do {	// copy the fid number to new format
+				unsigned char c = path[p];
+				if (buf[b] == '_' || !(INRANGE(c,'0','9') || INRANGE(c,'a','f')))
+					goto old_style;
+				if (buf[b] == '/')
+					b--;
+				buf[b--] = path[p];
+			} while (path[--p] != '/');
+			buf[6] = path[6];				// copy the drive number 0/1
+			if ((fd = open(buf, O_RDONLY, 0)) >= 0)		// try the specified drive first
+				return fd;
+			buf[6] ^= 1;					// failed, now try the other drive
+			if ((fd = open(buf, O_RDONLY, 0)) >= 0) {
+				path[6] ^= 1;				// point path at the successful drive
+				return fd;
+			}
+		}
+	}
+old_style:						// try the old/original fid structure:
 	if ((fd = open(path, O_RDONLY, 0)) < 0) {	// try the specified drive first
 		path[6] ^= 1;				// failed, now try the other drive
 		if ((fd = open(path, O_RDONLY, 0)) < 0)
@@ -1021,12 +1065,10 @@ prepare_file_xfer (server_parms_t *parms, char *path, file_xfer_t *xfer, int wri
 	else
 		flags = O_RDONLY;
 
-	fd = open(path, flags, 0666 & ~parms->umask);
-	if (fd < 0 && !writing && parms->use_http && hijack_glob_match(path, "/drive?/fids/*")) {
-		path[6] ^= 1;	// try the other drive; we cannot use httpd_redirect() here
-		if (0 > (fd = open(path, flags, 0))) 
-			path[6] ^= 1;	// restore original path
-	}
+	if (!writing && parms->use_http && hijack_glob_match(path, "/drive?/fids/*"))
+		fd = open_fid_file(path);
+	else
+		fd = open(path, flags, 0666 & ~parms->umask);
 	xfer->fd = fd;
 	if (fd < 0) {
 		printk("%s: open(%s) failed, rc=%d\n", parms->servername, path, fd);

@@ -524,7 +524,6 @@ static void powerfail_disabled_timeout(unsigned long unused)
 	struct state_dev *dev = state_devices;
 
 	unsigned long dis;
-	save_flags_cli(dis);
 #if DEBUG
 	  printk("The power doesn't seem to have gone away after all.\n");
 #endif
@@ -533,6 +532,7 @@ static void powerfail_disabled_timeout(unsigned long unused)
 	/* Re-enable powerfail processing */
 	display_powerreturn_action();
 #endif
+	save_flags_cli(dis);
 
 	/* Reenable DACs */
 	GPSR=EMPEG_DSPPOM;

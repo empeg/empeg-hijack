@@ -1053,6 +1053,8 @@ int real_display_ioctl(struct display_dev *dev, unsigned int cmd,
 
 	case EMPEG_DISPLAY_POWER:
 	case 1: /* Screen power control */
+		if (arg == (int)dev->power)	// don't bother if display is already in proper state
+			break;
 		if (arg) {
 			unsigned long flags;
 			save_flags_clif(flags);
@@ -1077,29 +1079,22 @@ int real_display_ioctl(struct display_dev *dev, unsigned int cmd,
 			LCCR0 = LCCR0_SETUP;
 			LCCR0 |= LCCR0_LEN;
 			
-			/* Disable powerfail interrupts */
-			enable_powerfail(FALSE);
-
 			/* Let powerfail know that the display is supposed to be on */
 			dev->power = TRUE;
+			restore_flags(flags);
 			
 			/* Turning display on */
-			empeg_displaypower(1);
-
-			/* Wait for a while for it to come to life */
-			udelay(POWERFAIL_DISABLED_DELAY);
-			enable_powerfail(TRUE);
+			empeg_displaypower(1, 0);
 
 			/* Keep palette 0 until display has warmed up (500ms?) and then
 			   turn palette on. */
-			restore_flags(flags);
 		} else {
 			extern int hijack_standbyLED_on;
 			/* Do this first in case powerfail triggers */
 			dev->power = FALSE;
 			
 			/* Turning display off */
-			empeg_displaypower(0);
+			empeg_displaypower(0, 0);
 			
 			/* Set standby LED mode */
 			if (hijack_standbyLED_on >= 0) {
@@ -1336,11 +1331,8 @@ void __init empeg_display_init(void)
 	   draw - so we disable it, turn on the power, wait a bit, then
 	   re-enable it */
 
-	enable_powerfail(FALSE);
 	dev->power = TRUE;
-	empeg_displaypower(1);
-	udelay(POWERFAIL_DISABLED_DELAY);
-	enable_powerfail(TRUE);
+	empeg_displaypower(1, 1);
 
 	result = register_chrdev(EMPEG_DISPLAY_MAJOR, "empeg_display",
 				 &display_fops);
@@ -1369,9 +1361,7 @@ void __init empeg_display_init(void)
 
 void display_powerreturn_action(void)
 {
-	unsigned long flags;
 #if 0
-	save_flags_clif(flags);
 	/* LCD control register 0; flags & enable */
 	LCCR0 = 
 		LCCR0_LEN+            /* Enable LCD controller */
@@ -1386,11 +1376,12 @@ void display_powerreturn_action(void)
 		LCCR0_DMADel(0);      /* No DMA delay */
 
 	/* Display on again */
-	empeg_displaypower(1);
+	empeg_displaypower(1, 0);
 #else
 	struct display_dev *dev = devices;
-
+	unsigned long flags;
 	save_flags_clif(flags);
+
 	/* Set up SA1100 LCD controller: first ensure that it's turned off */
 	LCCR0 = 0;
 	
@@ -1439,10 +1430,9 @@ void display_powerreturn_action(void)
 	   draw - so we disable it, turn on the power, wait a bit, then
 	   re-enable it */
 
+	restore_flags(flags);
 	if (dev->power) {
-		empeg_displaypower(1);
-		udelay(POWERFAIL_DISABLED_DELAY);
+		empeg_displaypower(1, 0);
 	}
 #endif
-	restore_flags(flags);
 }

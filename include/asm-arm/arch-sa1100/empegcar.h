@@ -79,11 +79,11 @@ static inline void enable_powerfail(int enable)
 #endif /* CONFIG_EMPEG_STATE */
 
 #ifdef CONFIG_EMPEG_DISPLAY
-void empeg_displaypower(int on);
+void empeg_displaypower(int on, int no_sched);
 static inline void display_powerfail_action(void)
 {
 	/* Turn off display */
-	empeg_displaypower(0);
+	empeg_displaypower(0,1);
 
 	/* Turn off scan */
 	LCCR0=0;

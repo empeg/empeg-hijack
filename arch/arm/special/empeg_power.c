@@ -80,6 +80,7 @@
 #include <linux/empeg.h>
 
 #include "empeg_power.h"
+#include "empeg_display.h"
 
 /* Only one power pic */
 struct power_dev power_devices[1];
@@ -451,9 +452,6 @@ static int power_ioctl(struct inode *inode, struct file *flip,
 		/* Swap over with IRQs disabled */
 		save_flags_cli(flags);
 
-		//if (dev->laststate != dev->newstate)
-		//	printk("\n**** power state changed: old=0x%04x new=0x%04x ****\n", dev->laststate, dev->newstate);
-
 		returnstate=dev->laststate=dev->newstate;
 		restore_flags(flags);
 
@@ -467,46 +465,38 @@ static int power_ioctl(struct inode *inode, struct file *flip,
 	return -EINVAL;
 }
 
-extern void empeg_displaypower(int on)
+extern void empeg_displaypower(int on, int no_sched)
 {
 	struct power_dev *dev=power_devices;
+	unsigned long flags;
 
-	if (empeg_hardwarerevision()<9) {
-		/* Just twiddle appropriate line */
-		if (on) GPSR=EMPEG_DISPLAYPOWER;
-		else GPCR=EMPEG_DISPLAYPOWER;
-	} else {
-		/* Send actual command */
-		powercontrol(on?3:4);
-	}
-
-	/* Record the state */
-	dev->displaystate=on?1:0;
-}
-
-void hijack_set_displaypower (int off_on)
-{
-	static int displaystate = -1;
-
-	if (displaystate != off_on) {
-		displaystate = off_on;
-		if (off_on) {
-			/* Disable powerfail interrupts */
+	save_flags_clif(flags);
+	if (dev->displaystate != on) {
+		if (on)
 			enable_powerfail(FALSE);
-		}
 		if (empeg_hardwarerevision()<9) {
 			/* Just twiddle appropriate line */
-			if (off_on) GPSR=EMPEG_DISPLAYPOWER;
+			if (on) GPSR=EMPEG_DISPLAYPOWER;
 			else GPCR=EMPEG_DISPLAYPOWER;
 		} else {
 			/* Send actual command */
-			powercontrol(off_on?3:4);
+			powercontrol(on?3:4);
 		}
-		if (off_on) {
-			#define POWERFAIL_DISABLED_DELAY 100000
-			/* Wait for a while for it to come to life */
-			udelay(POWERFAIL_DISABLED_DELAY);
+		/* Record the state */
+		dev->displaystate=on?1:0;
+	
+		if (on) {
+			/* allow power to stabilize before reenabling powerfail detection */
+			if (no_sched || in_interrupt()) {
+				udelay(150000);	// allow some rise time
+			} else {
+				restore_flags(flags);
+				current->state = TASK_UNINTERRUPTIBLE;
+				schedule_timeout(HZ/4);
+				save_flags_clif(flags);
+			}
 			enable_powerfail(TRUE);
 		}
 	}
+	restore_flags(flags);
 }

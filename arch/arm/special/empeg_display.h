@@ -36,9 +36,6 @@
 /* Shadow buffer, rounded up to nearest 4k as mmap() does minimum of 1 page */
 #define EMPEG_SHADOW_SIZE      ((EMPEG_SCREEN_SIZE+4095)&~0xfff)
 
-/* 100ms delay after powering on display before re-enabling powerfails */
-#define POWERFAIL_DISABLED_DELAY 100000
-
 /* LCD register configuration */
 #define LCCR1_SETUP \
 		(LCCR1_DisWdth(EMPEG_SCREEN_HEIGHT*2*4)+ /* 2 v-strips */  \
@@ -70,9 +67,6 @@
 		LCCR0_LtlEnd+         /* Little-endian frame buffer */     \
 		LCCR0_4PixMono+       /* 4-pix-per-clock mono display */   \
 		LCCR0_DMADel(0))      /* No DMA delay */
-
-/* Display power control (in empeg_power.c) */
-extern void empeg_displaypower(int);
 
 /* The display buffer */
 struct empegfb_buffer {

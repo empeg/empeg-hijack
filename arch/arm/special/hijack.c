@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v334"
+#define HIJACK_VERSION	"v335"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -1230,12 +1230,12 @@ hijack_button_deq (hijack_buttonq_t *q, hijack_buttondata_t *rdata, int nowait)
 			tail = 0;
 		data = &q->data[tail];
 		if (nowait || !data->delay || jiffies_since(q->last_deq) > data->delay) {
-			if (hijack_ir_debug)
-				printk("%lu: DEQ.%c: @%p: %08x.%ld\n", jiffies, q->qname, data, data->button, data->delay);
 			rdata->button = data->button;
 			rdata->delay  = data->delay;
 			q->tail = tail;
 			q->last_deq = jiffies;
+			if (hijack_ir_debug)
+				printk("%lu: DEQ.%c: @%p: %08x.%ld\n", q->last_deq, q->qname, data, data->button, data->delay);
 			restore_flags(flags);
 			return 1;	// button was available
 		}
@@ -1272,10 +1272,10 @@ hijack_playerq_deq (unsigned int *rbutton)	// for use by empeg_input.c
 			//
 			// Dequeue/issue the stalk button, and loop again
 			//
-			if (hijack_ir_debug)
-				printk("%lu: DEQ.%c: @%p: %08x.%ld (stalk)\n", jiffies, hijack_playerq.qname, data, button, data->delay);
 			hijack_playerq.tail = tail;
 			hijack_playerq.last_deq = jiffies;
+			if (hijack_ir_debug)
+				printk("%lu: DEQ.%c: @%p: %08x.%ld (stalk)\n", hijack_playerq.last_deq, hijack_playerq.qname, data, button, data->delay);
 			restore_flags(flags);
 			inject_stalk_button(button);
 			save_flags_clif(flags);
@@ -1285,11 +1285,11 @@ hijack_playerq_deq (unsigned int *rbutton)	// for use by empeg_input.c
 			// otherwise leave button on the queue for now.
 			//
 			if (rbutton) {
-				if (hijack_ir_debug)
-					printk("%lu: DEQ.%c: @%p: %08x.%ld\n", jiffies, hijack_playerq.qname, data, button, data->delay);
 				*rbutton = button;
 				hijack_playerq.tail = tail;
 				hijack_playerq.last_deq = jiffies;
+				if (hijack_ir_debug)
+					printk("%lu: DEQ.%c: @%p: %08x.%ld\n", hijack_playerq.last_deq, hijack_playerq.qname, data, button, data->delay);
 			}
 			restore_flags(flags);
 			return 0;	// a button was available
@@ -2159,18 +2159,15 @@ headlight_sense_is_active (void)
 	int new;
 
 	new = !(GPLR & EMPEG_SERIALCTS);   // EMPEG_SERIALCTS is active low.
-	if (new == prev) {
-		if (debouncing && jiffies_since(debouncing) > (HZ+(HZ/2))) {
-			debouncing = 0;
-			sense = new;
-		}
-	} else {
+	if (new != prev) {
 		prev = new;
 		debouncing = JIFFIES();
+	} else if (debouncing && jiffies_since(debouncing) > (HZ+(HZ/2))) {
+		debouncing = 0;
+		sense = new;
 	}
 	return sense;
 }
-
 
 static unsigned int buttonled_command = 0;
 
@@ -3945,7 +3942,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	// Adjust ButtonLED levels
 	if (dev->power != old_power) {
 		old_power = dev->power;
-		power_changed = jiffies;
+		power_changed = JIFFIES();
 	}
 
 	if (player_state != poweringup) {
@@ -5111,11 +5108,11 @@ hijack_save_settings (unsigned char *buf)
 }
 
 static int
-hijack_restore_settings (char *buf)
+hijack_restore_settings (char *buf, char *msg)
 {
 	extern int		empeg_state_restore(unsigned char *);	// arch/arm/special/empeg_state.c
 	hijack_savearea_acdc_t	*acdc;
-	unsigned int		knob, failed, force_power;
+	unsigned int		knob, failed, force_power, no_popup = 0;
 
 	// retrieve the savearea, reverting to all zeros if the layout has changed
 	memset(&savearea, 0, sizeof(savearea));
@@ -5146,6 +5143,7 @@ hijack_restore_settings (char *buf)
 	if (force_power != FORCE_AC && force_power != FORCE_DC) {
 		if (empeg_on_dc_power && loopback) {
 			force_power = FORCE_AC;
+			no_popup = 1;
 		} else if (force_power >= FORCE_TUNER) {
 			force_power -= FORCE_TUNER;
 			if ((force_power >> 1) == tuner_id) {
@@ -5157,7 +5155,13 @@ hijack_restore_settings (char *buf)
 #endif // EMPEG_KNOB_SUPPORTED
 	if (force_power == FORCE_AC || force_power == FORCE_DC) {
 		empeg_on_dc_power = (force_power == FORCE_AC) ? 0 : 1;
-		printk("Forcing %s power mode\n", acdc_text[empeg_on_dc_power]);
+		sprintf(msg, "Forced %s mode", acdc_text[empeg_on_dc_power]);
+		printk("%s\n", msg);
+		//
+		// Supress pop-up message for the normal "docked" situation
+		//
+		if (no_popup)
+			msg[0] = '\0';
 	}
 
 	// Now that the powermode (AC/DC) is set, we can deal with everything else
@@ -5196,14 +5200,15 @@ hijack_init (void *animptr)
 {
 	extern void hijack_notify_init (void);
 	int failed;
-	char buf[128];
-	const unsigned long animstart = HZ/2;
+	char buf[128], msg[32];
+	unsigned long anistart = HZ;
 
 	hijack_khttpd_new_fid_dirs = 1;	// look for new fids directory structure
 	hijack_player_init_pid = 0;
 	hijack_game_animptr = animptr;
 	hijack_buttonled_level = 0;	// turn off button LEDs
-	failed = hijack_restore_settings(buf);
+	msg[0] = '\0';
+	failed = hijack_restore_settings(buf, msg);
 
 	menu_init();
 	reset_hijack_options();
@@ -5216,8 +5221,11 @@ hijack_init (void *animptr)
 			show_message("Hijack Settings Reset", HZ*7);
 		else
 			show_message("Player Settings Lost", HZ*7);
+	} else if (msg[0]) {
+		show_message(msg, HZ);
 	} else {
-		show_message(hijack_vXXX_by_Mark_Lord, animstart);
+		anistart = HZ/2;
+		show_message(hijack_vXXX_by_Mark_Lord, anistart);
 	}
-	return animstart;
+	return (HZ/2);
 }

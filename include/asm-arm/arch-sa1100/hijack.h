@@ -1,7 +1,7 @@
 #ifndef KERNEL_HIJACK_H
 #define KERNEL_HIJACK_H
 
-#include <asm/arch/empeg.h>
+#include "empeg.h"
 
 // /* Basic sequence for userland app to bind into the menu, display, and IR buttons */
 // /* Not shown: all "rc" return codes have to be checked for success/failure */

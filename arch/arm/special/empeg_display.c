@@ -138,9 +138,6 @@
 #include <asm/arch/empeg.h>
 #include <asm/uaccess.h>
 
-/* No hard disk found image */
-#include "nohd_img.h"
-
 #ifdef NO_ANIMATION
 /* The Rio logo for the splash screen */
 #include "rio_logo.h"
@@ -150,8 +147,12 @@
 /* Animations for both empeg and rio players. */
 #include "empeg_ani.h"
 #include "rio_ani.h"
+
 /* Animation speed (in fps) */
 #endif
+
+/* No hard disk found image */
+#include "nohd_img.h"
 
 inline void donothing(const char *s, ...)
 {

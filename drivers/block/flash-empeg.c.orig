@@ -647,7 +647,7 @@ static int flash_release(struct inode * inode, struct file * filp)
  *		function for the flash driver
  *********************************************************************/
 
-struct file_operations flash_fops = {
+static struct file_operations flash_fops = {
 	NULL,			/* lseek */
 	block_read,		/* read */
 	block_write,		/* write */

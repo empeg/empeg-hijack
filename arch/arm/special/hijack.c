@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v143"
+#define HIJACK_VERSION "v144"
 
 #include <linux/sched.h>
 #include <linux/kernel.h>
@@ -11,7 +11,7 @@
 #include <linux/delay.h>
 #include <linux/init.h>
 
-#include <asm/arch/empeg.h>
+#include "empeg.h"
 #include <asm/uaccess.h>
 
 #include <asm/arch/hijack.h>		// for ioctls, IR_ definitions, etc..

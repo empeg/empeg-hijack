@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v166"
+#define HIJACK_VERSION "v167"
 
 #include <linux/sched.h>
 #include <linux/kernel.h>

@@ -931,7 +931,7 @@ get_fid_mime_title (char *path, char *buf, int bufsize, char *title, int titlele
 				case 'm': mimetype = audio_wma;	 break;
 				case 'a': mimetype = audio_wav;	 break;
 			}
-			get_tag(buf, "artist=", title, titlelen / 2);
+			get_tag(buf, "artist=", title, 32);
 			size = strlen(title);
 			if (size) {
 				title += size;
@@ -955,7 +955,7 @@ khttp_send_file_header (server_parms_t *parms, char *path, off_t length, char *b
 	int		len;
 	const char	*mimetype, *rcode = "200 OK";
 	off_t		clength = length;
-	char		title[80], ext[8];
+	char		title[96], ext[8];
 
 	title[0] = '\0';
 	if (glob_match(path, "/drive?/fids/*0")) {
@@ -972,18 +972,18 @@ khttp_send_file_header (server_parms_t *parms, char *path, off_t length, char *b
 		rcode = "206 Partial content";
 	}
 	len = sprintf(buf, "HTTP/1.1 %s\r\nConnection: close\r\n", rcode);
+	if (clength) {
+		len += sprintf(buf+len, "Accept-Ranges: bytes\r\nContent-Length: %lu\r\n", clength);
+		if (parms->end_offset != -1)
+			len += sprintf(buf+len, "Content-Range: bytes %lu-%lu/%lu\r\n", parms->start_offset, parms->end_offset, length);
+	}
 	if (mimetype)
 		len += sprintf(buf+len, "Content-Type: %s\r\n", mimetype);
 	if (*title) {	// tune title for WinAmp, XMMS, Save-To-Disk, etc..
 		if (parms->icy_metadata)
 			len += sprintf(buf+len, "icy-name:%s\r\n", title);
 		else
-			len += sprintf(buf+len, "Content-Disposition: attachment; filename=%s%s\r\n", title, ext);
-	}
-	if (clength) {
-		len += sprintf(buf+len, "Accept-Ranges: bytes\r\nContent-Length: %lu\r\n", clength);
-		if (parms->end_offset != -1)
-			len += sprintf(buf+len, "Content-Range: bytes %lu-%lu/%lu\r\n", parms->start_offset, parms->end_offset, length);
+			len += sprintf(buf+len, "Content-Disposition: attachment; filename=%s%s;\r\n", title, ext);
 	}
 	buf[len++] = '\r';
 	buf[len++] = '\n';
@@ -1040,8 +1040,8 @@ prepare_file_xfer (server_parms_t *parms, char *path, file_xfer_t *xfer, int wri
 			khttpd_redirect(parms, path);
 			xfer->redirected = 1;
 		}
-	} else if (start_offset && (start_offset >= xfer->st.st_size || lseek(fd, start_offset, 0))) {
-		printk("%s: lseek(%s,%lu) failed\n", parms->servername, path, start_offset);
+	} else if (start_offset && (start_offset >= xfer->st.st_size || start_offset != lseek(fd, start_offset, 0))) {
+		printk("%s: lseek(%s,%lu/%lu) failed\n", parms->servername, path, start_offset, xfer->st.st_size);
 		response = 553;
 	} else {
 		response = open_datasock(parms);

@@ -1,7 +1,7 @@
 VERSION = 2
 PATCHLEVEL = 2
 SUBLEVEL = 14
-EXTRAVERSION = -rmk5-np17-empeg50-hijack-v260
+EXTRAVERSION = -rmk5-np17-empeg50-hijack-v261
 
 #ARCH := $(shell uname -m | sed -e s/i.86/i386/ -e s/sun4u/sparc64/ -e s/arm.*/arm/ -e s/sa110/arm/)
 ARCH := arm

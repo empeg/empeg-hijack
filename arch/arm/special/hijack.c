@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v260"
+#define HIJACK_VERSION	"v261"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -589,7 +589,7 @@ static const hijack_option_t hijack_option_table[] =
 {"stalk_debug",			&hijack_stalk_debug,		0,			1,	0,	1},
 {"stalk_lhs",			lhs_stalk_vals,			(int)lhs_stalk_default,	20,	0,	0xff},
 {"stalk_rhs",			rhs_stalk_vals,			(int)rhs_stalk_default,	20,	0,	0xff},
-{"standbyLED_on",		&hijack_standbyLED_on,		-1,			1,	0,	HZ*60},
+{"standbyLED_on",		&hijack_standbyLED_on,		-1,			1,	-1,	HZ*60},
 {"standbyLED_off",		&hijack_standbyLED_off,		10*HZ,			1,	0,	HZ*60},
 {"standby_minutes",		&hijack_standby_minutes,	30,			1,	0,	240},
 {"supress_notify",		&hijack_suppress_notify,	0,			1,	0,	1},

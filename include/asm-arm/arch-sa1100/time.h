@@ -95,19 +95,19 @@ static inline void manage_standbyLED (void)
 	if (hijack_standbyLED_automatic) {
 		save_flags_clif(flags);
 		if (hijack_standbyLED_automatic) {
-			static unsigned int counter, ledstate;
-			int action;
+			static int counter, led_state;
+			int new_state;
 			if (hijack_standbyLED_automatic == 1) {	// just starting?
 				hijack_standbyLED_automatic = 2;
-				ledstate = 0;
+				led_state = 0;
 				counter = 0;
 			}
 			if (counter >= (hijack_standbyLED_on + hijack_standbyLED_off))
 				counter = 0;
-			action = (counter < hijack_standbyLED_on);
+			new_state = (counter < hijack_standbyLED_on);
 			++counter;	// for next time
-			if (ledstate != action)
-				hijack_set_standbyLED(ledstate = action);
+			if (led_state != new_state)
+				hijack_set_standbyLED(led_state = new_state);
 		}
 		restore_flags(flags);
 	}

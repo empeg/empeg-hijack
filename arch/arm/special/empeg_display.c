@@ -1019,7 +1019,6 @@ void hijack_set_standbyLED (int off_on)
 int display_ioctl(struct inode *inode, struct file *filp, unsigned int cmd,
 		  unsigned long arg)
 {
-	extern int hijack_standbyLED_on;
 	struct display_dev *dev =
 		(struct display_dev *)filp->private_data;
 
@@ -1072,6 +1071,7 @@ int display_ioctl(struct inode *inode, struct file *filp, unsigned int cmd,
 			/* Keep palette 0 until display has warmed up (500ms?) and then
 			   turn palette on. */
 		} else {
+			extern int hijack_standbyLED_on;
 			/* Do this first in case powerfail triggers */
 			dev->power = FALSE;
 			
@@ -1079,7 +1079,12 @@ int display_ioctl(struct inode *inode, struct file *filp, unsigned int cmd,
 			empeg_displaypower(0);
 			
 			/* Set standby LED mode */
-			hijack_standbyLED_automatic = (hijack_standbyLED_on > 0);
+			if (hijack_standbyLED_on >= 0) {
+				hijack_set_standbyLED(0);
+				hijack_standbyLED_automatic = 1;
+			} else {
+				hijack_standbyLED_automatic = 0;
+			}
 		}
 		break;
 		

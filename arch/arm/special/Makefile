@@ -109,6 +109,10 @@ ifdef CONFIG_EMPEG_USBD12
   L_OBJS	+= empeg_pdiusb12.o
 endif
 
+ifdef CONFIG_EMPEG_PEGASUS
+  L_OBJS	+= empeg_pegasus.o
+endif
+
 ifdef CONFIG_EMPEG_CS4231
   L_OBJS        += empeg_cs4231a.o empeg_cs4231dma.o
 endif

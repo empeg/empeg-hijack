@@ -159,6 +159,13 @@ else
   endif
 endif
 
+ifeq ($(CONFIG_EMPEG_PEGASUS),y)
+  L_OBJS += Empeg_Pegasus_USB.o
+else
+  ifeq ($(CONFIG_EMPEG_PEGASUS),m)
+  M_OBJS += Empeg_Pegasus_USB.o
+  endif
+endif
 
 ifeq ($(CONFIG_ARM_AM79C961A),y)
 L_OBJS += am79c961a.o

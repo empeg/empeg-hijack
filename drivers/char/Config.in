@@ -173,6 +173,7 @@ if [ "$CONFIG_SA1100_EMPEG" = "y" ]; then
   bool 'empeg-car ram test support' CONFIG_EMPEG_RAMTEST
   bool 'empeg-car support for i2c Fan Controller' CONFIG_EMPEG_I2C_FAN_CONTROL
   bool 'empeg-car support for Hijacking Tuner' CONFIG_HIJACK_TUNER
+  bool 'empeg-car support for USB-Ethernet Emulation' CONFIG_EMPEG_PEGASUS
 fi
 
 mainmenu_option next_comment

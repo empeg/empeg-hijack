@@ -1,5 +1,14 @@
 #define DEBUG_USB
 #define DEBUG_USB_6 /* Stall checking */
+//#define DEBUG_USB_RXD
+//#define DEBUG_USB_1 1
+
+#ifdef DEBUG_USB
+#define PEGASUS_printk printk
+#else
+#define PEGASUS_printk()
+#endif
+
 #define NO_ZERO_TERM
 
 #ifdef CONFIG_EMPEG_USB9602
@@ -88,6 +97,13 @@ static int usb_txidle=1;
 static char log[3800];
 static int log_size=0;
 
+#ifdef CONFIG_EMPEG_PEGASUS
+  #include "empeg_pegasus.h"
+  struct usb_dev *GlobalUsbDev;
+  void EmpegPegasus_rcv(unsigned char * data, int length);
+  unsigned char * PegasusAddMAC(unsigned char * data);
+#endif
+
 static inline void LOG(char x)
 {
 	if (log_size < sizeof(log))
@@ -140,8 +156,13 @@ unsigned char DEV_DESC[] = {      DEV_DESC_SIZE,     /* length of this desc. */
 				  0x00,              /* device subclass */
 				  0x00,              /* device protocol */  
 				  0x10,              /* max packet size */   
+#ifdef CONFIG_EMPEG_PEGASUS
+			 	  0x46,0x08,         /* Pegasus usb-ether vendor ID */
+			 	  0x20,0x10,         /* empeg usb-ether product ID */
+#else
 				  0x4f,0x08,         /* empeg's vendor ID */
 				  0x01,0x00,         /* empeg car product ID */
+#endif
 				  0x01,0x00,         /* empeg's revision ID */  
 				  1,                 /* index of manuf. string */   
 				  2,                 /* index of prod.  string */  
@@ -188,8 +209,13 @@ unsigned char CFG_DESC[] = {      0x09,              /* length of this desc. */
 				  /* Pipe 2 */ 
 				  0x07,              /* length of this desc. */   
 				  0x05,              /* ENDPOINT descriptor*/ 
+#ifdef CONFIG_EMPEG_PEGASUS
+				  0x81,              /* address (OUT) */  
+				  0x03,              /* attributes (2 for Bulk, 3 for INT) */    
+#else
 				  0x05,              /* address (OUT) */  
 				  0x02,              /* attributes  (BULK) */    
+#endif
 				  0x40,0x00,         /* max packet size (64) */
 				  0};                /* interval (ms) */
 
@@ -261,6 +287,7 @@ static int readendpoint(int endpoint, unsigned char *buffer, int length)
 {
 	int a,c;
 
+	PEGASUS_printk("Read Endpoint\n");
 	/* Any data? */
 	if (!checkendpoint(endpoint)) return(0);
 
@@ -269,9 +296,17 @@ static int readendpoint(int endpoint, unsigned char *buffer, int length)
 	usb_cread(); /* Discard */
 	c=usb_cread();
 
+	PEGASUS_printk("length read %d\n", c);
 	/* Trim length & read packet */
 	if (c>length) c=length;
-	for(a=0;a<c;a++) *buffer++=usb_cread();
+	PEGASUS_printk("length used %d\n", c);
+	PEGASUS_printk("Data ");
+	for(a=0;a<c;a++) {
+		*buffer=usb_cread();
+		PEGASUS_printk("0x%02x,", *buffer);
+		buffer++;
+	}
+	PEGASUS_printk("\n");
 
 	/* Now we've read it, clear the buffer */
 	usb_command(CMD_CLEARBUFFER);
@@ -284,6 +319,19 @@ static int readendpoint(int endpoint, unsigned char *buffer, int length)
 static void writeendpoint(int endpoint, unsigned char *buffer, int length)
 {
 	int a;
+
+	PEGASUS_printk("Writing to endpoint %d\n", endpoint);
+	if(length == 0)
+	{
+		PEGASUS_printk("Ack Only!!\n");
+	}
+	else
+	{
+		PEGASUS_printk("Sending %d bytes: ", length);
+		for(a=0;a<length;a++)
+			PEGASUS_printk("0x%02x,", buffer[a]);
+		PEGASUS_printk("\n");
+	}
 
 	/* Select the endpoint */
 	usb_command(CMD_SELECTEP0+endpoint);
@@ -335,6 +383,9 @@ static int init_usb(void)
 	desc_ptr=NULL;
 	desc_idx=0;
 	desc_sze=0;
+#ifdef CONFIG_EMPEG_PEGASUS
+	init_pegasus(); 
+#endif
 
 	/* Return the chip ID */
 	return(id);
@@ -362,29 +413,36 @@ static void get_descriptor(unsigned char *command)
 	/* Store the type requested */
 	desc_typ = command[3];
 	if (desc_typ==DEVICE) {
+		PEGASUS_printk("Device Desc Req\n");
 		desc_ptr=DEV_DESC;
 		desc_sze=DEV_DESC_SIZE;
         } else if (desc_typ==CONFIGURATION) {
+		PEGASUS_printk("Config Desc Req\n");
 		desc_ptr=CFG_DESC;
 		desc_sze=CFG_DESC_SIZE;
 	} else if (desc_typ==XSTRING) {
+		PEGASUS_printk("String Req:");
 		switch(command[2]) {
 		case 0:
+			PEGASUS_printk("Unicode\n");
 			desc_ptr=UNICODE_AVAILABLE;
 			desc_sze=sizeof(UNICODE_AVAILABLE);
 			break;
 		case 1:
+			PEGASUS_printk("Manuf\n");
 			desc_ptr=UNICODE_MANUFACTURER;
 			desc_sze=sizeof(UNICODE_MANUFACTURER);
 			break;
 
 		case 2:
+			PEGASUS_printk("Prod\n");
 			desc_ptr=UNICODE_PRODUCT;
 			desc_sze=sizeof(UNICODE_PRODUCT);
 			break;
 		}
 	} else {
 		/* I've never seen this packet in my life, mister */
+		PEGASUS_printk("Stalling EP0\n");
 		stall_ep0();
 		return;
 	}
@@ -399,6 +457,7 @@ static void get_descriptor(unsigned char *command)
 		LOGN(desc_sze);
 		LOGS(")\n");
 #endif
+		PEGASUS_printk("trimming response to %d bytes (was %d)\n", maxlength, desc_sze);
 		desc_sze = maxlength;    
 	}
 	
@@ -475,6 +534,99 @@ static void get_status(unsigned char *command)
 	writeendpoint(1,reply,2);
 }
 
+#ifdef CONFIG_EMPEG_PEGASUS
+void USB_handle_eth_rcv(unsigned char * data, int length)
+{
+#if 0
+	static unsigned char AddMACNextFrame = 1;
+	
+	if(AddMACNextFrame)
+	{
+		PegasusAddMAC(&data[2]);
+	}
+	if((length == 0x40) || (length == 0x80))
+	{
+		AddMACNextFrame = 0;
+		EmpegPegasus_rcv(&data[2], length-2);	
+	}
+	else
+	{
+		AddMACNextFrame = 1;
+		EmpegPegasus_rcv(data, length);	
+	}
+
+
+#else
+	static unsigned char * StoredData = NULL;
+	static int StoredLength = 0;
+	unsigned char * TempData;
+
+	if((!StoredLength) && (length != 0x40) && (length != 0x80))
+	{
+		/* Full frame, nothing stored so pass directly to network functions */
+		PegasusAddMAC(&data[2]);
+		EmpegPegasus_rcv(&data[2], length-2);	
+	}
+	else if(StoredLength)
+	{
+		/* We have stuff stored, so just add to it */
+		
+		TempData = kmalloc(StoredLength + length, GFP_KERNEL);
+		if(TempData)
+		{
+			/* Copy in all our data */
+			memcpy(TempData, StoredData, StoredLength);
+			memcpy(&TempData[StoredLength], data, length);
+			kfree(StoredData);
+			StoredData = TempData;
+			StoredLength += length;
+			
+			/* If it wasn't a full USB buffer, pass to net Handler */
+			if((length != 0x40) && (length != 0x80))
+			{
+				PegasusAddMAC(&StoredData[2]);
+				EmpegPegasus_rcv(&StoredData[2], StoredLength -2);		
+				kfree(StoredData);
+				StoredData = NULL;
+				StoredLength = 0;
+			}
+		}
+		else
+		{
+			/* Malloc failed so pass what we have to the net handler */
+			PegasusAddMAC(&StoredData[2]);
+			EmpegPegasus_rcv(&StoredData[2], StoredLength -2);		
+			kfree(StoredData);
+			StoredData = NULL;
+			StoredLength = 0;
+		}
+	}
+	else
+	{
+		/* This is a full USB buffer, but we don't have anything stored */
+		TempData = kmalloc(length, GFP_KERNEL);
+		if(TempData)
+		{
+			/* Copy in all our data */
+			memcpy(TempData, data, length);
+			StoredData = TempData;
+			StoredLength = length;
+			
+		}
+		else
+		{
+			/* Malloc failed so pass what we have to the net handler */
+			PegasusAddMAC(&data[2]);
+			EmpegPegasus_rcv(&data[2], length-2);		
+			StoredData = NULL;
+			StoredLength = 0;
+		}
+
+	}
+#endif // 0
+}
+#endif /* CONFIG_EMPEG_PEGASUS */
+
 /* Make a configuration active */
 static void set_configuration(unsigned char *command)
 {
@@ -521,8 +673,16 @@ static __inline__ void rx_data(void)
 {
 	struct usb_dev *dev=usb_devices;
 	int rxstat,bytes,fifos=1;
+#ifndef CONFIG_EMPEG_PEGASUS
 	unsigned char rxdata[2*MAXRXPACKET],*rxd=rxdata;
+#else
+	static unsigned char rxdata[2*MAXRXPACKET];	// why static?  -ml
+	unsigned char *rxd=rxdata;
+#endif
 
+#ifdef DEBUG_USB_RXD
+	printk("RX DATA\n");
+#endif
 	/* Get status/clear IRQ */
 	usb_command(CMD_LASTTRANSACTION4);
 	rxstat=usb_cread();
@@ -553,7 +713,21 @@ static __inline__ void rx_data(void)
 		if (bytes==0) break;
 		
 		/* Read data */
-		while(a--) *rxd++=usb_cread();
+#ifdef DEBUG_USB_RXD
+		printk("Data ");
+#endif
+		while(a--)
+		{
+			*rxd=usb_cread();
+#ifdef DEBUG_USB_RXD
+			printk("0x%02x,", *rxd);
+#endif
+			rxd++;
+		}
+
+#ifdef DEBUG_USB_RXD
+		printk("\n");
+#endif
 
 		/* Now we've read it, clear the buffer */
 		usb_command(CMD_CLEARBUFFER);
@@ -572,6 +746,9 @@ static __inline__ void rx_data(void)
 	bytes=rxd-rxdata;
 	rxd=rxdata;
 
+#ifdef CONFIG_EMPEG_PEGASUS
+	USB_handle_eth_rcv(rxdata, bytes); // Hack to pass it to the Network handler - May work???
+#else
 	/* Bump counts */
 	dev->rx_count+=bytes;
 	
@@ -590,9 +767,10 @@ static __inline__ void rx_data(void)
 		if (dev->rx_head==USB_RX_BUFFER_SIZE)
 			dev->rx_head=0;
 	}
-		
+
 	/* Wake up anyone that's waiting on read */
-	wake_up_interruptible(&dev->rx_wq);		
+	wake_up_interruptible(&dev->rx_wq);
+#endif // CONFIG_EMPEG_PEGASUS
 }
 
 /* TX on the data fifo */
@@ -601,6 +779,8 @@ static void tx_data(int kick)
 	struct usb_dev *dev=usb_devices;
 	unsigned long flags;
 	int a,txstat,tofill=2;
+
+	PEGASUS_printk("tx_data(%d)\n", kick);
 
 	if (kick == 2) {
 		usb_command(CMD_ENDPOINTENABLE);
@@ -716,6 +896,12 @@ static void rx_command(void)
 	/* Get receiver status */    
 	struct usb_dev *dev=usb_devices;
 	unsigned char command[8];
+
+#ifdef CONFIG_EMPEG_PEGASUS
+	unsigned char reply[8];
+	unsigned char temp_count;		/* MRJ for USB temp debug */
+#endif
+
 #ifdef DEBUG_USB
 	static char *reqtext[]=
 	{"GET_STATUS","CLEAR_FEATURE","(2)","SET_FEATURE","(4)","SET_ADDRESS",
@@ -732,6 +918,11 @@ static void rx_command(void)
 	dev->stats_ok[0]++;
 
 	/* Is this a setup packet? */  
+
+	PEGASUS_printk("RX Command:");
+	LOGN(eplast);
+	LOG(':');
+
 	if(eplast&LASTTRANS_SETUP) {
 		int i;
 
@@ -754,11 +945,11 @@ static void rx_command(void)
 		
 		/* If a standard request? */
 		if ((command[0]&0x60)==0x00) {
-#ifdef DEBUG_USB
 			LOGS("USB: ");
 			LOGS(reqtext[command[1]&0xf]);
 			LOG('\n');
-#endif
+			PEGASUS_printk("USB: ");
+			PEGASUS_printk(reqtext[command[1]&0xf]);
 			/* Find request target */
 			switch (command[1]) {
 			case GET_STATUS: 
@@ -845,10 +1036,42 @@ static void rx_command(void)
 #ifdef DEBUG_USB
 			printk("USB: Non-standard request\n");
 #endif
+#ifdef CONFIG_EMPEG_PEGASUS
+			if((command[0])==0x40)
+			{
+				PEGASUS_printk("Ethernet ReqType:REQT_Write\n");
+				if(Pegasus_HandleCtrl(command) == 0xFF)
+				{
+					writeendpoint(1, 0, 0);
+				}
+
+			}
+			else if((command[0])==0xC0)
+			{
+				PEGASUS_printk("Ethernet ReqType:REQT_Read\n");
+				Pegasus_HandleCtrl(command);
+				writeendpoint(1, PegasusData, PegasusLen);
+
+			}
+#endif /* CONFIG_EMPEG_PEGASUS */
+
 		}
+#ifdef CONFIG_EMPEG_PEGASUS
+	} else if(eplast&LASTTRANS_DATA1)
+	{
+		PEGASUS_printk("DATA1 Packet\n");
+		readendpoint(0,command,sizeof(command));
+		if(Pegasus_HandleCtrl(command) == 0xFF)
+		{
+			writeendpoint(1, 0, 0);
+		}
+		desc_ptr=NULL;
+#endif /* CONFIG_EMPEG_PEGASUS */
+
 	} else {   
 		/* If not a setup packet, it must be an OUT packet */ 
 
+		PEGASUS_printk("Non Setup Packet");
 		/* Exit get_descr mode */
 		desc_ptr=NULL;
 	}
@@ -867,6 +1090,7 @@ static void tx_command(void)
 	dev->stats_ok[0]++;
 
 	LOGS("tx_command ");
+	PEGASUS_printk("tx_command ");
 
 	/* In the middle of a transmit? */
 	if (desc_ptr!=NULL && desc_idx<=desc_sze) {
@@ -885,6 +1109,7 @@ static void tx_command(void)
 		LOGN(desc_sze);
 		LOGS("\n");
 #endif
+		PEGASUS_printk("sent %d of %d\n", desc_idx, desc_sze);
 
 		/* Done it all? */
 		if (tosend<16) desc_ptr=NULL;
@@ -892,6 +1117,7 @@ static void tx_command(void)
 #ifdef DEBUG_USB_1
 	        LOGS("nothing to do\n");
 #endif
+	        PEGASUS_printk("nothing to do\n");
 	}
 }
 
@@ -906,32 +1132,41 @@ void usb_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 	evnt=usb_cread();
 	evnt|=(usb_cread()<<8);
 
+	PEGASUS_printk("USB Int: %d\n", evnt);
 	/* No irq? */
 	if (evnt==0) return;
 
 	if (evnt&IRQ1_MAINOUT) {
+		PEGASUS_printk("Main Out\n");
 		rx_data();
 	}
 	if (evnt&IRQ1_MAININ) {
+		PEGASUS_printk("Main In\n");
 		tx_data(0);
 	}
 	if (evnt&IRQ1_CONTROLOUT) {
+		PEGASUS_printk("CTRL Out\n");
 		rx_command();
 	}
 	if (evnt&IRQ1_CONTROLIN) {
+		PEGASUS_printk("CTRL In\n");
 		tx_command();
 	}
 	if (evnt&IRQ1_EP1OUT) {
 		char temp[16];
+		PEGASUS_printk("EP1 Out\n");
 		usb_command(CMD_LASTTRANSACTION2);
 		usb_cread();
 		readendpoint(2,temp,16);
 		LOGS("1r");
+		PEGASUS_printk("1r");
 	}
 	if (evnt&IRQ1_EP1IN) {
+		PEGASUS_printk("EP1 In\n");
 		usb_command(CMD_LASTTRANSACTION3);
 		usb_cread();
 		LOGS("1t");
+		PEGASUS_printk("1t");
 	}
 	if (evnt&IRQ1_BUSRESET) {
 #if DEBUG_USB_1
@@ -1073,6 +1308,9 @@ void __init empeg_usb_init(void)
 	   detect edges */
 	if (GPLR&EMPEG_USBIRQ) usb_interrupt(1,NULL,NULL);
 
+#ifdef CONFIG_EMPEG_PEGASUS
+	GlobalUsbDev = dev;
+#endif /* CONFIG_EMPEG_PEGASUS */
 	/* All ready! */
 	init_usb_connect();
 }
@@ -1191,6 +1429,41 @@ static ssize_t usb_write(struct file *filp, const char *buf, size_t count,
 	return count;
 }
 
+#ifdef CONFIG_EMPEG_PEGASUS
+ssize_t data_usb_write(char *buf, size_t count)
+{
+	/* This will need heavy mods to cause the device to be kicked */
+	struct usb_dev *dev = GlobalUsbDev;
+	unsigned long flags;
+	size_t bytes;
+	
+	/* How many bytes can we write? */
+	save_flags_cli(flags);
+	if (count > dev->tx_free) count = dev->tx_free;
+	dev->tx_free -= count;
+	dev->tx_used += count;
+
+	/* Copy data into buffer with IRQs enabled: we're the only people who
+	   deal with the head, so no problems here */
+	bytes = count;
+	while (bytes--) {
+		dev->tx_buffer[dev->tx_head++] = *buf++;
+		if (dev->tx_head == USB_TX_BUFFER_SIZE)
+			dev->tx_head=0;
+	}
+
+	/* Do we need to kick the TX? (ie, was the buffer empty before & TX
+	   was idle) */
+	if (usb_txidle && dev->tx_used==count) {
+		/* TX not going, kick the b'stard (while he's down) */
+		tx_data(1);
+	}
+	restore_flags(flags);
+
+	return count;
+}
+#endif /* CONFIG_EMPEG_PEGASUS */
+
 static unsigned int usb_poll(struct file *filp, poll_table *wait)
 {
 	struct usb_dev *dev = filp->private_data;
@@ -1212,6 +1485,9 @@ static unsigned int usb_poll(struct file *filp, poll_table *wait)
 
 static int usb_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, unsigned long arg)
 {
+#ifdef CONFIG_EMPEG_PEGASUS
+	struct usb_dev *dev = filp->private_data;
+#endif /* CONFIG_EMPEG_PEGASUS */
 	unsigned long flags;
 	int state;
 	switch (cmd)

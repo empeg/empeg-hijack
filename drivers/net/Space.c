@@ -124,6 +124,9 @@ extern int lance_probe(struct device *dev);
 extern int rcpci_probe(struct device *);
 extern int dmfe_probe(struct device *);
 extern int sktr_probe(struct device *dev);
+#ifdef CONFIG_EMPEG_PEGASUS
+extern int EmpegPegasus_init(struct device *);
+#endif /* CONFIG_EMPEG_PEGASUS */
 
 /* Gigabit Ethernet adapters */
 extern int yellowfin_probe(struct device *dev);
@@ -353,12 +356,23 @@ struct devprobe isa_probes[] __initdata = {
 #ifdef CONFIG_LANCE		/* ISA/VLB (use pcnet32 for PCI cards) */
 	{lance_probe, 0},
 #endif
+
 #ifdef CONFIG_SMC9194
+   #ifdef CONFIG_EMPEG_PEGASUS
+	{EmpegPegasus_init, 0}
+   #else
 	{smc_init, 0},
+   #endif
 #endif
+
 #ifdef CONFIG_SMC9194_TIFON
+   #ifdef CONFIG_EMPEG_PEGASUS
+	{EmpegPegasus_init, 0}
+   #else
 	{smc_init, 0},
+   #endif
 #endif
+
 #ifdef CONFIG_SEEQ8005 
 	{seeq8005_probe, 0},
 #endif

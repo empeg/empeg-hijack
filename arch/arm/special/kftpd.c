@@ -36,6 +36,7 @@ extern const char hijack_vXXX_by_Mark_Lord[];		// from arch/arm/special/hijack.c
 extern int strxcmp (const char *str, const char *pattern, int partial);	// hijack.c
 extern int hijack_do_command(const char *command, unsigned int size);	// notify.c 
 extern void show_message (const char *message, unsigned long time);	// hijack.c
+extern void printline (const char *msg, char *s);	// from arch/arm/special/hijack.c
 extern int hijack_khttpd_port;				// from arch/arm/special/hijack.c
 extern int hijack_khttpd_verbose;			// from arch/arm/special/hijack.c
 extern int hijack_kftpd_control_port;			// from arch/arm/special/hijack.c
@@ -89,7 +90,7 @@ typedef struct server_parms_s {
 	unsigned int		umask;
 	struct sockaddr_in	portaddr;
 	char			clientip[INET_ADDRSTRLEN];
-	char			hostname[32];		// serverip, or "Host:" field from HTTP header
+	char			hostname[48];		// serverip, or "Host:" field from HTTP header
 	unsigned char		cwd[1024];
 	unsigned char		buf[1024];
 	unsigned char		tmp2[768];
@@ -153,11 +154,12 @@ extract_portaddr (struct sockaddr_in *addr, char *s)
 static int
 ksock_rw (struct socket *sock, const char *buf, int buf_size, int minimum)
 {
-	int		bytecount = 0, sending = 0;
+	int	flags = 0, bytecount = 0, sending = 0, retries = 9;
 
 	if (minimum < 0) {
 		minimum = buf_size;
 		sending = 1;
+		flags = MSG_DONTWAIT;	// asynchronous send
 	}
 	do {
 		int		rc, len = buf_size - bytecount;
@@ -165,35 +167,34 @@ ksock_rw (struct socket *sock, const char *buf, int buf_size, int minimum)
 		struct iovec	iov;
 
 		memset(&msg, 0, sizeof(msg));
-		iov.iov_base       = (char *)&buf[bytecount];
-		iov.iov_len        = len;
-		msg.msg_iov        = &iov;
-		msg.msg_iovlen     = 1;
-
-		if (sending) {
-			int retries = 9;
-			msg.msg_flags = MSG_DONTWAIT;	// asynchronous send
-			again: switch (rc = sock_sendmsg(sock, &msg, len)) {
-				case -EAGAIN:
-					msg.msg_flags = 0;	// use synchronous send instead
-					goto again;
-				case -ENOMEM:
-				case -ENOBUFS:
-					printk("sock_sendmsg(): low memory\n");
-					if (retries--) {
-						current->state = TASK_INTERRUPTIBLE;
-						schedule_timeout(HZ);
-						goto again;
-					}
-			}
-		} else {
+		iov.iov_base	= (char *)&buf[bytecount];
+		iov.iov_len	= len;
+		msg.msg_iov	= &iov;
+		msg.msg_iovlen	= 1;
+		msg.msg_flags	= flags;	// asynchronous send
+		if (sending)
+			rc = sock_sendmsg(sock, &msg, len);
+		else
 			rc = sock_recvmsg(sock, &msg, len, 0);
+		switch (rc) {
+			case -EAGAIN:
+				if (sending) {
+					flags = 0;	// use synchronous send instead
+					rc = 0;
+				}
+				break;
+			case -ENOMEM:
+			case -ENOBUFS:
+				printk("ksock_rw(): low memory\n");
+				if (retries--) {
+					current->state = TASK_INTERRUPTIBLE;
+					schedule_timeout(HZ);
+					rc = 0;
+				}
+				break;
 		}
-		if (rc < 0 || (!sending && rc == 0)) {
-			if (rc && rc != -EPIPE && rc != -ECONNRESET)
-				printk("ksock_rw: %s rc=%d\n", sending ? "sock_sendmsg()" : "sock_recvmsg()", rc);
+		if (rc < 0 || (!sending && rc == 0))
 			break;
-		}
 		bytecount += rc;
 	} while (bytecount < minimum);
 	return bytecount;
@@ -531,8 +532,9 @@ filldir (void *data, const char *name, int namelen, off_t offset, ino_t ino)
 	return 0;			// continue reading directory entries
 }
 
-const char dirlist_html_trailer[] = "</PRE><HR>\r\n</BODY></HTML>\r\n";
-#define DIRLIST_TRAILER_MAX	(sizeof(dirlist_html_trailer))
+static const char dirlist_html_trailer1[] = "</PRE><HR>\r\n%s<FONT SIZE=-2>%s</FONT></BODY></HTML>\r\n";
+static const char dirlist_html_trailer2[] = "<A HREF=\"/drive0/fids/101?.htm\"><FONT SIZE=-1>[Click here for playlists]</FONT></A><BR>\r\n";
+#define DIRLIST_TRAILER_MAX (sizeof(dirlist_html_trailer1) + sizeof(dirlist_html_trailer1) + 25) // 25 is for version string
 
 static int
 send_dirlist_buf (server_parms_t *parms, filldir_parms_t *p, int send_trailer)
@@ -540,10 +542,14 @@ send_dirlist_buf (server_parms_t *parms, filldir_parms_t *p, int send_trailer)
 	int sent;
 
 	if (p->full_listing && send_trailer) {
-		if (parms->use_http)
-			p->buf_used += sprintf(p->buf + p->buf_used, dirlist_html_trailer);
-		else
+		if (parms->use_http) {
+			const char *pl = "";
+			if (hijack_khttpd_playlists)
+				pl = dirlist_html_trailer2;
+			p->buf_used += sprintf(p->buf + p->buf_used, dirlist_html_trailer1, pl, hijack_vXXX_by_Mark_Lord);
+		} else {
 			p->buf_used += sprintf(p->buf + p->buf_used, "total %lu\r\n", p->blockcount);
+		}
 	}
 	sent = ksock_rw(parms->datasock, p->buf, p->buf_used, -1);
 	if (sent != p->buf_used) {
@@ -662,12 +668,12 @@ format_dir (server_parms_t *parms, filldir_parms_t *p, ino_t ino, char *name, in
 
 	b = append_string(b, name, 0);
 	if (parms->use_http) {
-		if (ftype == 'd')
-			*b++ = '/';
 		*b++ = '<';
 		*b++ = '/';
 		*b++ = 'A';
 		*b++ = '>';
+		if (ftype == 'd')
+			*b++ = '/';
 	}
 
 	if (linklen) {
@@ -700,9 +706,8 @@ static const char dirlist_header[] =
 	"<HTML>\r\n"
 	"<HEAD><TITLE>Index of %s</TITLE></HEAD>\r\n"
 	"<BODY>\r\n"
-	"<H2>Index of %s</H2>\r\n"
-	"<PRE>\r\n"
-	"<HR>\r\n";
+	"<FONT SIZE=+1><B>Index of %s</B></FONT>\r\n"
+	"<HR><PRE>\r\n";
 
 static int
 send_dirlist (server_parms_t *parms, char *path, int full_listing)
@@ -768,8 +773,9 @@ send_dirlist (server_parms_t *parms, char *path, int full_listing)
 			p.name		= p.path + pathlen;
 			p.use_http	= parms->use_http;
 			p.sb		= dentry->d_sb;
-			if (parms->use_http)
+			if (parms->use_http) {
 				p.buf_used = sprintf(p.buf, dirlist_header, path, path);
+			}
 			do {
 				p.nam_used = 0;
 				p.filecount = 0;
@@ -1180,7 +1186,7 @@ send_playlist (server_parms_t *parms, char *path)
 	p = &path[13];
 	if (!get_number(&p, &pfid, 16, ""))
 		return &invalid_playlist_path;
-	fid = pfid;	// we know the fid ends in "1", or we wouldn't be in this routine to begin with
+	fid = pfid|1;	// we know the fid ends in "1", but make sure anyway..
 
 	// read the tagfile:
 	if ((response = convert_rcode(prepare_file_xfer(parms, path, &xfer, 0))))
@@ -1227,11 +1233,12 @@ send_playlist (server_parms_t *parms, char *path)
 	used += sprintf(xfer.buf+used, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s\r\n\r\n",
 		(parms->generate_playlist == 2) ? audio_m3u : text_html);
 	if (parms->generate_playlist == 1) {
-		used += sprintf(xfer.buf+used, "<HTML><HEAD><TITLE>Playlists: %s</TITLE></HEAD>\r\n<BODY>"
+		used += sprintf(xfer.buf+used, "<HTML><HEAD><TITLE>%s playlists: %s</TITLE></HEAD>\r\n<BODY>"
 			"<TABLE BGCOLOR=\"WHITE\" BORDER=\"2\"><THEAD>\r\n<TR>"
-			"<TD> <A HREF=\"%x?.m3u\"><B>Play</B></A> <TD> <A HREF=\"%x\"><B>Tags</B></A> <TD ALIGN=CENTER> "
+			"<TD> <A HREF=\"%x.m3u\"><B>Stream</B></A> <TD> <A HREF=\"%x?SERIAL=%%23%x.htm\"><B>Play</B></A> "
+			"<TD> <A HREF=\"%x\"><B>Tags</B></A> <TD ALIGN=CENTER> "
 			"<FONT SIZE=+2><B><EM>%s</EM></B></FONT> <TD> <B>Length</B> <TD> <B>Type</B> <TD> <B>Artist</B> "
-			"<TD> <B>Source</B><TBODY>\r\n", artist_title, pfid, pfid, tags.title);
+			"<TD> <B>Source</B><TBODY>\r\n", parms->hostname, artist_title, pfid, pfid, pfid^1, pfid, tags.title);
 	} else {
 		used += sprintf(xfer.buf+used, "#EXTM3U\r\n");
 	}
@@ -1252,6 +1259,7 @@ open_fidfile:
 			goto aborted;
 		} // else: empty playlist; just continue..
 	}
+	path[6] = subpath[6];	// update the drive number '0'|'1'
 	while (fidx >= 0) {
 		while (sizeof(fid) == read(fidfiles[fidx], (char *)&fid, sizeof(fid))) {
 			int sublen, fd;
@@ -1272,6 +1280,7 @@ open_fidfile:
 			}
 			size = read(fd, parms->tmp3, sizeof(parms->tmp3)-1);
 			close(fd);
+			path[6] = subpath[6];	// update the drive number '0'|'1'
 			if (size <= 0) {
 				// Hmmm.. empty tags file.  This IS a database error, and should never happen.
 				// But we'll just ignore it here.
@@ -1299,7 +1308,8 @@ open_fidfile:
 
 			// spit out an appropriately formed representation for this fid:
 			if (parms->generate_playlist == 1) {
-				used += sprintf(xfer.buf+used, "<TR><TD> <A HREF=\"%x?.m3u\"><em>Play</em></A> ", fid);
+				used += sprintf(xfer.buf+used, "<TR><TD> <A HREF=\"%x?.m3u\"><em>Stream</em></A> ", fid);
+				used += sprintf(xfer.buf+used, "<TD> <A HREF=\"%x?SERIAL=%%23%x.htm\"><em>Play</em></A> ", pfid, fid^1);
 				if (fidtype == 'T') {
 					char href1[24], *href2 = "";
 					href1[0] = '\0';
@@ -1312,7 +1322,7 @@ open_fidfile:
 						fid, href1, tags.title, href2, secs/60, secs%60, tags.type, tags.artist, tags.source);
 				} else {
 					unsigned int entries = str_val(tags.length) / 4;
-					used += sprintf(xfer.buf+used, "<TD> <A HREF=\"%x\"><EM>Tags</EM></A> <TD> <A HREF=\"%x?.html\">%s</A> "
+					used += sprintf(xfer.buf+used, "<TD> <A HREF=\"%x\"><EM>Tags</EM></A> <TD> <A HREF=\"%x?.htm\">%s</A> "
 						"<TD ALIGN=CENTER> %u <TD> %s <TD> %s&nbsp <TD> %s&nbsp \r\n",
 						fid, fid, tags.title, entries, tags.type, tags.artist, tags.source);
 				}
@@ -1526,11 +1536,11 @@ append_path (char *path, char *new, char *tmp)
 //
 // All hosts must accept the above as the standard defaults.
 //
-// In addition, we also need:  NLST, PWD, CWD, CDUP, MKD, RMD, DELE, and maybe SYST
+// In addition, we also need:  NLST, PWD, CWD, CDUP, MKD, RMD, DELE, SYST, and maybe PASV.
 // The ABOR command Would Be Nice.  Plus, the UMASK, CHMOD, and EXEC extensions (below).
 // Apparently Win2K clients still use the (obsolete) RFC775 "XMKD" command as well.
 //
-// Non-standard UNIX extensions for "SITE" command (wu-ftpd, ncftp):
+// Would-Be-Nice non-standard UNIX extensions for "SITE" command (wu-ftpd, ncftp):
 //
 //	Request	Description
 //	UMASK	change umask. Eg. SITE UMASK 002
@@ -1785,21 +1795,28 @@ khttpd_handle_connection (server_parms_t *parms)
 {
 	char	*buf = parms->buf, *cmds = NULL, c, *path, *p, *x;
 	int	buflen = sizeof(parms->buf) - 1, pathlen;
-	int	size, use_index = 1;	// look for index.html?
+	int	size = 0, use_index = 1;	// look for index.html?
 	const http_response_t *response = NULL;
 
 	parms->show_dotfiles = hijack_khttpd_show_dotfiles;
-	size = ksock_rw(parms->clientsock, buf, buflen, 0);
-	if (size <= 0) {
-		if (parms->verbose)
-			printk(KHTTPD": receive failed: %d\n", size);
-		return;
-	}
-	if (size >= buflen) {
-		khttpd_respond(parms, 414, "Request-URI Too Long", "POST not allowed");
-		return;
-	}
+
+	do {
+		int rc = ksock_rw(parms->clientsock, buf+size, buflen-size, 0);
+		if (rc <= 0) {
+			if (parms->verbose)
+				printk(KHTTPD": receive failed: %d\n", rc);
+			return;
+		}
+		size += rc;
+		if (size >= buflen) {
+			khttpd_respond(parms, 414, "Request-URI Too Long", "POST not allowed");
+			return;
+		}
+	} while (size < 5 || buf[size-1] != '\n' || (buf[size-2] != '\n' && buf[size-3] != '\n'));
 	buf[size] = '\0';
+	if (parms->verbose > 1)
+		printk(KHTTPD": request_header = '%s'\n", buf);
+
 	if (strxcmp(buf, "GET ", 1) || !buf[4]) {
 		khttpd_respond(parms, 405, "Method Not Allowed", "Server only supports GET");
 		return;
@@ -1808,7 +1825,7 @@ khttpd_handle_connection (server_parms_t *parms)
 	// find path delimiter
 	while ((c = *p) && c != ' ' && c != '\r' && c != '\n')
 		++p;
-	// HTTP "restart/resume" support:
+	// Look for some HTTP header options
 	for (x = p; *x; ++x) {
 		static const char Range[] = "\nRange: bytes=";
 		static const char Host[] = "\nHost: ";
@@ -1847,7 +1864,7 @@ khttpd_handle_connection (server_parms_t *parms)
 	path = khttpd_fix_hexcodes(path);
 	// a useful shortcut
 	if (!strxcmp(path, "/?playlists", 1)) {
-		khttpd_redirect(parms, "/drive0/fids/101?.html");
+		khttpd_redirect(parms, "/drive0/fids/101?.htm");
 		return;
 	}
 	for (p = path; *p; ++p) {
@@ -1858,6 +1875,8 @@ khttpd_handle_connection (server_parms_t *parms)
 		}
 	}
 	if (cmds && *cmds) {
+		char *end;
+
 		// translate '='/'+' into spaces, and '&' into ';'
 		while ((c = *++p)) {
 			if (c == '=' || c == '+')
@@ -1865,31 +1884,22 @@ khttpd_handle_connection (server_parms_t *parms)
 			else if (c == '&')
 				*p = ';';
 		}
-		if (!strxcmp(cmds, ".html", 1)) {
-			parms->generate_playlist = 1;
-		} else if (!strxcmp(cmds, ".m3u", 1)) {
-			parms->generate_playlist = 2;
-		} else if (!strxcmp(cmds, "FID#", 1)) {	// in .m3u files:  http://host/some_tune_name?FID#xxx.mp3
-			for (p = cmds += 4; *p && *p != '.'; ++p);
-			*p = '\0';
-			sprintf(path, "/drive0/fids/%s", cmds);
+		end = cmds + strlen(cmds);
+		if ((end - cmds) >= 4) {
+			char *saved = end;
+			end -= 5;
+			if (!strxcmp(end, ".html", 1) || !strxcmp(++end, ".htm", 1)) {
+				parms->generate_playlist = 1;
+			} else if (!strxcmp(end, ".m3u", 1)) {
+				parms->generate_playlist = 2;
+			} else if (strxcmp(end, ".mp3", 1)) {	// just ignore a trailing .mp3 extension
+				end = saved;
+			}
 		}
-		if (parms->generate_playlist) {
-			// fixme someday: the tail portion could be used to hold the "parent fid chain"
-			// that we embed back into the outgoing html, allowing up/sideways browser links,
-			// and enabling parent fid info to be shown at the current depth.  Useful and free.
-			if (!hijack_khttpd_playlists)
-				response = &access_not_permitted;
-			else if (!glob_match(path, "/drive?/fids/??*1"))
-				response = &invalid_playlist_path;
-			else if (!*path)
-				response = &(http_response_t){400, "Missing Pathname"};
-			else 
-				response = send_playlist(parms, path);
-			goto quit;
-		}
-		parms->nocache = 1;
-		if (hijack_khttpd_commands) {
+		*end = '\0';
+		if (!strxcmp(cmds, "FID#", 1)) {	// in .m3u files:  http://host/some_tune_name?FID#xxx.mp3
+			sprintf(path, "/drive0/fids/%s", cmds+4);
+		} else if (hijack_khttpd_commands) {
 			hijack_do_command(cmds, p - cmds); // ignore errors
 			if (!*path) {
 				const char r204[] = "HTTP/1.1 204 No Response\r\nConnection: close\r\n\r\n";
@@ -1898,6 +1908,18 @@ khttpd_handle_connection (server_parms_t *parms)
 			}
 		} else {
 			response = &access_not_permitted;
+			goto quit;
+		}
+		parms->nocache = 1;
+		if (parms->generate_playlist) {
+			if (!hijack_khttpd_playlists)
+				response = &access_not_permitted;
+			else if (!glob_match(path, "/drive?/fids/??*1"))
+				response = &invalid_playlist_path;
+			else if (!*path)
+				response = &(http_response_t){400, "Missing Pathname"};
+			else 
+				response = send_playlist(parms, path);
 			goto quit;
 		}
 		use_index = 0;

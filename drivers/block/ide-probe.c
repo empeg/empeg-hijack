@@ -945,7 +945,7 @@ int ideprobe_init (void)
 			if (on_if0>0 && on_if1==0 && retries<15) {
 				retries=15;
 			}
-		} while(on_if1==0 && retries<20);
+		} while(on_if0==0 && retries<20);
 		
 		/* Now we're sure that all the drives have spun up, we can
 		   register them as per normal */

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v196"
+#define HIJACK_VERSION	"v197"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -386,7 +386,7 @@ static const hijack_option_t hijack_option_table[] =
 {"kftpd_show_dotfiles",		&hijack_kftpd_show_dotfiles,	0,			1,	0,	1},
 {"khttpd_show_dotfiles",	&hijack_khttpd_show_dotfiles,	1,			1,	0,	1},
 {"khttpd_port",			&hijack_khttpd_port,		80,			1,	0,	65535},
-{"khttpd_verbose",		&hijack_khttpd_verbose,		0,			1,	0,	1},
+{"khttpd_verbose",		&hijack_khttpd_verbose,		0,			1,	0,	2},
 {"khttpd_dirs",			&hijack_khttpd_dirs,		1,			1,	0,	1},
 {"khttpd_files",		&hijack_khttpd_files,		1,			1,	0,	1},
 {"khttpd_playlists",		&hijack_khttpd_playlists,	1,			1,	0,	1},

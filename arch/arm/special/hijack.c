@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v289"
+#define HIJACK_VERSION	"v290"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -147,7 +147,7 @@ static const min_max_t rhs_stalk_default[] = {
 	{0x34, 0x40},	// IR_KFRONT_PRESSED
 	{0x42, 0x4e},	// IR_KNEXT_PRESSED
 	{0x54, 0x60},	// IR_KPREV_PRESSED
-	{0x68, 0x74},	// IR_KVOLUP_PRESSED
+	{0x68, 0x7a},	// IR_KVOLUP_PRESSED
 	{0x7e, 0x8a},	// IR_KVOLDOWN_PRESSED
 	{0x94, 0xa0},	// IR_KREAR_PRESSED
 	{0xa0, 0xb5}};	// IR_KBOTTOM_PRESSED
@@ -159,7 +159,7 @@ static const min_max_t lhs_stalk_default[] = {
 	{0x34, 0x40},	// IR_KREAR_PRESSED
 	{0x42, 0x4e},	// IR_KPREV_PRESSED
 	{0x54, 0x60},	// IR_KNEXT_PRESSED
-	{0x68, 0x74},	// IR_KVOLDOWN_PRESSED
+	{0x68, 0x7a},	// IR_KVOLDOWN_PRESSED
 	{0x7e, 0x8a},	// IR_KVOLUP_PRESSED
 	{0x94, 0xa0},	// IR_KFRONT_PRESSED
 	{0xa0, 0xb5}};	// IR_KBOTTOM_PRESSED
@@ -1106,10 +1106,10 @@ hijack_enq_button (hijack_buttonq_t *q, unsigned int button, unsigned long hold_
 		hijack_buttondata_t *data = &q->data[q->head = head];
 		data->button = button;
 		data->delay  = hold_time;
-		if (q == &hijack_playerq)
-			input_wakeup_waiters();		// wake up the player software
 	}
 	restore_flags(flags);
+	if (q == &hijack_playerq)
+		input_wakeup_waiters();		// wake-up the player software
 }
 
 // Send a release code
@@ -1155,7 +1155,7 @@ inject_stalk_button (unsigned int button)
 	unsigned char pkt[4] = {0x02, 0x00, 0xff, 0xff};
 	min_max_t *vals, *v;
 	int i;
-	unsigned int rawbutton = button;	//fixme
+	unsigned int rawbutton = button;
 
 	pkt[0] = 0x02;
 	pkt[1] = 0x00;
@@ -1176,7 +1176,7 @@ inject_stalk_button (unsigned int button)
 	}
 	pkt[3] = pkt[1] + pkt[2];
 	if (hijack_stalk_debug)
-		printk("Stalk: out=%02x %02x %02x %02x == %08x\n", pkt[0], pkt[1], pkt[2], pkt[3], rawbutton); //fixme
+		printk("Stalk: out=%02x %02x %02x %02x == %08x\n", pkt[0], pkt[1], pkt[2], pkt[3], rawbutton);
 	hijack_serial_rx_insert(pkt, sizeof(pkt), 0);
 }
 
@@ -1222,10 +1222,12 @@ hijack_playerq_deq (unsigned int *rbutton)	// for use by empeg_input.c
 			break;		// no button available yet
 
 		button = data->button;
-		if ((button & IR_STALK_MASK) == IR_STALK_MASK) {
+		if ((button & IR_STALK_MASK) == IR_STALK_MATCH) {
 			//
 			// Dequeue/issue the stalk button, and loop again
 			//
+			if (hijack_ir_debug)
+				printk("%lu: DEQ.P: %08x.%ld (stalk)\n", jiffies, button, data->delay);
 			hijack_playerq.tail = tail;
 			hijack_playerq.last_deq = jiffies;
 			restore_flags(flags);
@@ -1237,6 +1239,8 @@ hijack_playerq_deq (unsigned int *rbutton)	// for use by empeg_input.c
 			// otherwise leave button on the queue for now.
 			//
 			if (rbutton) {
+				if (hijack_ir_debug)
+					printk("%lu: DEQ.P: %08x.%ld\n", jiffies, button, data->delay);
 				*rbutton = button;
 				hijack_playerq.tail = tail;
 				hijack_playerq.last_deq = jiffies;
@@ -3713,12 +3717,12 @@ handle_stalk_packet (unsigned char *pkt)
 		current_button = -1;
 		input_append_code(NULL, button);
 		if (hijack_stalk_debug)
-			printk("Stalk: in=%02x %02x %02x %02x == %08x\n", pkt[0], pkt[1], pkt[2], pkt[3], button); //fixme
+			printk("Stalk: in=%02x %02x %02x %02x == %08x\n", pkt[0], pkt[1], pkt[2], pkt[3], button);
 	}
 	val = pkt[2];
 	if (val == 0xff) {	// button pressed?
 		if (hijack_stalk_debug)
-			printk("Stalk: in=%02x %02x %02x %02x == no button\n", pkt[0], pkt[1], pkt[2], pkt[3]); //fixme
+			printk("Stalk: in=%02x %02x %02x %02x == no button\n", pkt[0], pkt[1], pkt[2], pkt[3]);
 	} else {
 		min_max_t *v, *vals;
 		int i;
@@ -3731,12 +3735,12 @@ handle_stalk_packet (unsigned char *pkt)
 				current_button = button;
 				input_append_code(NULL, button);
 				if (hijack_stalk_debug)
-					printk("Stalk: in=%02x %02x %02x %02x == %08x\n", pkt[0], pkt[1], pkt[2], pkt[3], button); //fixme
+					printk("Stalk: in=%02x %02x %02x %02x == %08x\n", pkt[0], pkt[1], pkt[2], pkt[3], button);
 				goto done;
 			}
 		}
 		if (hijack_stalk_debug)
-			printk("Stalk: in=%02x %02x %02x %02x == no match\n", pkt[0], pkt[1], pkt[2], pkt[3]); //fixme
+			printk("Stalk: in=%02x %02x %02x %02x == no match\n", pkt[0], pkt[1], pkt[2], pkt[3]);
 		else
 			printk("Stalk: no match for value=0x%02x\n", val);
 	}

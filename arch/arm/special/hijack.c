@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v171"
+#define HIJACK_VERSION "v172"
 
 #include <linux/sched.h>
 #include <linux/kernel.h>
@@ -319,10 +319,11 @@ typedef struct hijack_buttonq_s {
 int hijack_voladj_enabled = 0; // used by voladj code in empeg_audio3.c
 static const char  *voladj_names[] = {" [Off] ", " Low ", " Medium ", " High "};
 static unsigned int voladj_history[VOLADJ_HISTSIZE] = {0,}, voladj_last_histx = 0, voladj_histx = 0;
-static unsigned int hijack_voladj_parms[(1<<VOLADJ_BITS)-1][5] = { // Values as suggested by Richard Lovejoy
-	{0x1800,	 100,	0x1000,	25,	60},  // Low
-	{0x2000,	 409,	0x1000,	27,	70},  // Medium (Normal)
-	{0x2000,	3000,	0x0c00,	30,	80}}; // High
+static unsigned int hijack_voladj_parms[(1<<VOLADJ_BITS)-1][5];
+
+static int voladj_ldefault[] = {0x1800,	 100,	0x1000,	25,	60}; // Low
+static int voladj_mdefault[] = {0x2000,	 409,	0x1000,	27,	70}; // Medium (Normal)
+static int voladj_hdefault[] = {0x2000,	3000,	0x0c00,	30,	80}; // High
 
 #ifdef CONFIG_NET_ETHERNET
 struct semaphore hijack_kftpd_startup_sem	= MUTEX_LOCKED;	// sema for waking up kftpd after we read config.ini
@@ -333,73 +334,96 @@ static hijack_buttonq_t hijack_inputq, hijack_playerq, hijack_userq;
 
 // Externally tuneable parameters for config.ini; the voladj_parms are also tuneable
 //
-static int hijack_button_pacing			= 20;	// minimum spacing between press/release pairs within playerq
-static int hijack_ir_debug			=  0;	// printk() for every ir press/release code
-static int hijack_spindown_seconds		= 30;	// drive spindown timeout in seconds
-       int hijack_extmute_off			=  0;	// buttoncode to inject when EXT-MUTE goes inactive
-       int hijack_extmute_on			=  0;	// buttoncode to inject when EXT-MUTE goes active
+static int hijack_button_pacing;		// minimum spacing between press/release pairs within playerq
+static int hijack_ir_debug;			// printk() for every ir press/release code
+static int hijack_spindown_seconds;		// drive spindown timeout in seconds
+       int hijack_extmute_off;			// buttoncode to inject when EXT-MUTE goes inactive
+       int hijack_extmute_on;			// buttoncode to inject when EXT-MUTE goes active
 #ifdef CONFIG_NET_ETHERNET
-       char hijack_kftpd_password[16]		= "";	// kftpd password
-       int hijack_kftpd_control_port		= 21;	// kftpd control port
-       int hijack_kftpd_data_port		= 20;	// kftpd data port
-       int hijack_kftpd_verbose			=  0;	// kftpd verbosity
-       int hijack_kftpd_show_dotdir		=  0;	// 0 == hide '.' directory in listings; 1 == show '.' in listings
-       int hijack_max_connections		=  4;	// restricts memory use
-       int hijack_khttpd_port			= 80;	// khttpd port
-       int hijack_khttpd_verbose		=  0;	// khttpd verbosity
-       int hijack_khttpd_dirs			=  1;	// 1 == enable directory listings
-       int hijack_khttpd_files			=  1;	// 1 == enable file downloads, except "streaming"
-       int hijack_khttpd_playlists		=  1;	// 1 == enable "?.html" or "?.m3u" functionality
-       int hijack_khttpd_commands		=  1;	// 1 == enable "?commands" capability
+       char hijack_kftpd_password[16];		// kftpd password
+       int hijack_kftpd_control_port;		// kftpd control port
+       int hijack_kftpd_data_port;		// kftpd data port
+       int hijack_kftpd_verbose;		// kftpd verbosity
+       int hijack_kftpd_show_dotdir;		// 0 == hide '.' directory in listings; 1 == show '.' in listings
+       int hijack_max_connections;		// restricts memory use
+       int hijack_khttpd_port;			// khttpd port
+       int hijack_khttpd_verbose;		// khttpd verbosity
+       int hijack_khttpd_dirs;			// 1 == enable directory listings
+       int hijack_khttpd_files;			// 1 == enable file downloads, except "streaming"
+       int hijack_khttpd_playlists;		// 1 == enable "?.html" or "?.m3u" functionality
+       int hijack_khttpd_commands;		// 1 == enable "?commands" capability
 #endif // CONFIG_NET_ETHERNET
-static int hijack_old_style			=  0;	// 1 == don't highlite menu items
-static int hijack_quicktimer_minutes		= 30;	// increment size for quicktimer function
-static int hijack_standby_minutes		= 30;	// number of minutes after screen blanks before we go into standby
-       int hijack_supress_notify		=  0;	// 1 == supress player "notify" and "dhcp" text on serial port
-       int hijack_temperature_correction	= -4;	// adjust all h/w temperature readings by this celcius amount
+static int hijack_old_style;			// 1 == don't highlite menu items
+static int hijack_quicktimer_minutes;		// increment size for quicktimer function
+static int hijack_standby_minutes;		// number of minutes after screen blanks before we go into standby
+       int hijack_supress_notify;		// 1 == supress player "notify" and "dhcp" text on serial port
+       int hijack_temperature_correction;	// adjust all h/w temperature readings by this celcius amount
 
 typedef struct hijack_option_s {
 	char	*name;
 	void	*target;
+	int	defaultval;  // or (void *)
 	int	num_items;
 	int	min;
 	int	max;
 } hijack_option_t; 
 
-static const hijack_option_t hijack_option_table[] = {
-	// config.ini string		address-of-variable		howmany	min	max
-	{"button_pacing",		&hijack_button_pacing,		1,	0,	HZ},
-	{"spindown_seconds",		&hijack_spindown_seconds,	1,	0,	(239 * 5)},
-	{"extmute_off",			&hijack_extmute_off,		1,	0,	IR_NULL_BUTTON},
-	{"extmute_on",			&hijack_extmute_on,		1,	0,	IR_NULL_BUTTON},
-	{"ir_debug",			&hijack_ir_debug,		1,	0,	1},
+static const hijack_option_t hijack_option_table[] =
+{
+// config.ini string		address-of-variable		default			howmany	min	max
+//===========================	==========================	=========		=======	===	================
+{"button_pacing",		&hijack_button_pacing,		20,			1,	0,	HZ},
+{"spindown_seconds",		&hijack_spindown_seconds,	30,			1,	0,	(239 * 5)},
+{"extmute_off",			&hijack_extmute_off,		0,			1,	0,	IR_NULL_BUTTON},
+{"extmute_on",			&hijack_extmute_on,		0,			1,	0,	IR_NULL_BUTTON},
+{"ir_debug",			&hijack_ir_debug,		0,			1,	0,	1},
 #ifdef CONFIG_NET_ETHERNET
- 	{"kftpd_control_port",		&hijack_kftpd_control_port,	1,	0,	65535},
- 	{"kftpd_data_port",		&hijack_kftpd_data_port,	1,	0,	65535},
- 	{"kftpd_password",		&hijack_kftpd_password,		0,	0,	sizeof(hijack_kftpd_password)-1},
- 	{"kftpd_verbose",		&hijack_kftpd_verbose,		1,	0,	1},
- 	{"kftpd_show_dotdir",		&hijack_kftpd_show_dotdir,	1,	0,	1},
- 	{"khttpd_port",			&hijack_khttpd_port,		1,	0,	65535},
- 	{"khttpd_verbose",		&hijack_khttpd_verbose,		1,	0,	1},
- 	{"khttpd_dirs",			&hijack_khttpd_dirs,		1,	0,	1},
- 	{"khttpd_files",		&hijack_khttpd_files,		1,	0,	1},
- 	{"khttpd_playlists",		&hijack_khttpd_playlists,	1,	0,	1},
- 	{"max_connections",		&hijack_max_connections,	1,	0,	20},
+{"kftpd_control_port",		&hijack_kftpd_control_port,	21,			1,	0,	65535},
+{"kftpd_data_port",		&hijack_kftpd_data_port,	20,			1,	0,	65535},
+{"kftpd_password",		&hijack_kftpd_password,		(int)"",		0,	0,	sizeof(hijack_kftpd_password)-1},
+{"kftpd_verbose",		&hijack_kftpd_verbose,		0,			1,	0,	1},
+{"kftpd_show_dotdir",		&hijack_kftpd_show_dotdir,	0,			1,	0,	1},
+{"khttpd_port",			&hijack_khttpd_port,		80,			1,	0,	65535},
+{"khttpd_verbose",		&hijack_khttpd_verbose,		0,			1,	0,	1},
+{"khttpd_dirs",			&hijack_khttpd_dirs,		1,			1,	0,	1},
+{"khttpd_files",		&hijack_khttpd_files,		1,			1,	0,	1},
+{"khttpd_playlists",		&hijack_khttpd_playlists,	1,			1,	0,	1},
+{"max_connections",		&hijack_max_connections,	4,			1,	0,	20},
 #endif // CONFIG_NET_ETHERNET
-	{"old_style",			&hijack_old_style,		1,	0,	1},
-	{button_names[0].name,		button_names[0].name,		0,	0,	8},	// PopUp0
-	{button_names[1].name,		button_names[1].name,		0,	0,	8},	// PopUp1
-	{button_names[2].name,		button_names[2].name,		0,	0,	8},	// PopUp2
-	{button_names[3].name,		button_names[3].name,		0,	0,	8},	// PopUp3
- 	{"quicktimer_minutes",		&hijack_quicktimer_minutes,	1,	1,	120},
- 	{"standby_minutes",		&hijack_standby_minutes,	1,	0,	240},
-	{"supress_notify",		&hijack_supress_notify,		1,	0,	1},	
-	{"temperature_correction",	&hijack_temperature_correction,	1,	-20,	+20},
-	{"voladj_high",			&hijack_voladj_parms[2][0],	5,	0,	0x7ffe},
-	{"voladj_low",			&hijack_voladj_parms[0][0],	5,	0,	0x7ffe},
-	{"voladj_medium",		&hijack_voladj_parms[1][0],	5,	0,	0x7ffe},
-	{NULL,NULL,0,0,0} // end-of-list
-	};
+{"old_style",			&hijack_old_style,		0,			1,	0,	1},
+{button_names[0].name,		button_names[0].name,		(int)"PopUp0",		0,	0,	8},	// PopUp0
+{button_names[1].name,		button_names[1].name,		(int)"PopUp1",		0,	0,	8},	// PopUp1
+{button_names[2].name,		button_names[2].name,		(int)"PopUp2",		0,	0,	8},	// PopUp2
+{button_names[3].name,		button_names[3].name,		(int)"PopUp3",		0,	0,	8},	// PopUp3
+{"quicktimer_minutes",		&hijack_quicktimer_minutes,	30,			1,	1,	120},
+{"standby_minutes",		&hijack_standby_minutes,	30,			1,	0,	240},
+{"supress_notify",		&hijack_supress_notify,		0,			1,	0,	1},	
+{"temperature_correction",	&hijack_temperature_correction,	-4,			1,	-20,	+20},
+{"voladj_low",			&hijack_voladj_parms[0][0],	(int)voladj_ldefault,	5,	0,	0x7ffe},
+{"voladj_medium",		&hijack_voladj_parms[1][0],	(int)voladj_mdefault,	5,	0,	0x7ffe},
+{"voladj_high",			&hijack_voladj_parms[2][0],	(int)voladj_hdefault,	5,	0,	0x7ffe},
+{NULL,NULL,0,0,0,0} // end-of-list
+};
+
+static void
+reset_hijack_options (void)
+{
+	const hijack_option_t *h = hijack_option_table;
+	while (h->name) {
+		int n = h->num_items, *val = h->target;
+		if (n == 1) {
+			*val = h->defaultval;
+		} else if (n) {
+			
+			int *def = (int *)h->defaultval;
+			while (n--)
+				*val++ = *def++;
+		} else {
+			strcpy(h->target, (char *)h->defaultval);
+		}
+		++h;
+	}
+}
 
 #define HIJACK_USERQ_SIZE	8
 static const unsigned int intercept_all_buttons[] = {1};
@@ -3915,11 +3939,7 @@ hijack_read_config_file (const char *path)
 		printk("hijack.c: open(%s) failed (errno=%d)\n", path, rc);
 	} else if (rc > 0 && buf && *buf) {
 
-		// Ugh.
-		strcpy(button_names[0].name,"Popup0");
-		strcpy(button_names[1].name,"Popup1");
-		strcpy(button_names[2].name,"Popup2");
-		strcpy(button_names[3].name,"Popup3");
+		reset_hijack_options();
 
 		if (ir_setup_translations(buf))
 			show_message("IR Translation Errors", 5*HZ);
@@ -4063,6 +4083,7 @@ hijack_init (void)	// invoked from empeg_display.c
 
 	if (!initialized) {
 		initialized = 1;
+		reset_hijack_options();
 		(void)init_temperature();
 		hijack_initq(&hijack_inputq);
 		hijack_initq(&hijack_playerq);

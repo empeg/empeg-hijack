@@ -1,8 +1,6 @@
-// kftpd by Mark Lord
+// kftpd / khttpd, by Mark Lord
 //
-// This version can UPLOAD and DOWNLOAD files, directories..
-//
-// To Do:  fix various buffers to use PATH_MAX (4096) instead of 256 or 512 bytes
+// This version can UPLOAD and DOWNLOAD files, directories, serve playlists, remote commands, ..
 
 #define __KERNEL_SYSCALLS__
 
@@ -73,7 +71,7 @@ typedef struct server_parms_s {
 	char			icy_metadata;		// bool
 	char			need_password;		// bool
 	char			rename_pending;		// bool
-	char			spare;			// bool
+	char			nocache;		// bool
 	unsigned int		data_port;
 	off_t			start_offset;		// starting offset for next FTP/HTTP file transfer
 	off_t			end_offset;		// for current HTTP file read
@@ -984,9 +982,11 @@ khttp_send_file_header (server_parms_t *parms, char *path, off_t length, char *b
 		if (parms->end_offset != -1)
 			len += sprintf(buf+len, "Content-Range: bytes %lu-%lu/%lu\r\n", parms->start_offset, parms->end_offset, length);
 	}
+	if (parms->nocache || !strxcmp(path, "/proc/", 1) || !strxcmp(path, "/dev/", 1))
+		len += sprintf(buf+len, "Cache-control: no-cache\r\nPragma: no-cache\r\nExpires: Tue, 01 Jan 1999 01:00:00 GMT\r\n");
 	if (mimetype)
 		len += sprintf(buf+len, "Content-Type: %s\r\n", mimetype);
-	if (*title) {	// tune title for WinAmp, XMMS, Save-To-Disk, etc..
+	if (title[0]) {	// tune title for WinAmp, XMMS, Save-To-Disk, etc..
 		if (parms->icy_metadata)
 			len += sprintf(buf+len, "icy-name:%s\r\n", title);
 		else
@@ -1289,7 +1289,7 @@ send_file (server_parms_t *parms, char *path)
 			else if (parms->start_offset && parms->end_offset == -1)
 				parms->end_offset = filesize - 1;
 		}
-		if (!parms->use_http || !khttp_send_file_header(parms, path, filesize, parms->tmp3, sizeof(parms->tmp3))) {
+		if (!parms->use_http || !khttp_send_file_header(parms, path, filesize, xfer.buf, xfer.buf_size)) {
 			filepos = parms->start_offset;
 			do {
 				int read_size = xfer.buf_size;
@@ -1788,6 +1788,7 @@ khttpd_handle_connection (server_parms_t *parms)
 				response = &access_not_permitted;
 			goto quit;
 		}
+		parms->nocache = 1;
 		if (hijack_khttpd_commands) {
 			hijack_do_command(cmds, p - cmds); // ignore errors
 			if (!*path) {

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v173"
+#define HIJACK_VERSION	"v174"
 const char hijack_version[] = HIJACK_VERSION;
 
 #include <linux/sched.h>
@@ -389,13 +389,14 @@ static const hijack_option_t hijack_option_table[] =
 {"khttpd_dirs",			&hijack_khttpd_dirs,		1,			1,	0,	1},
 {"khttpd_files",		&hijack_khttpd_files,		1,			1,	0,	1},
 {"khttpd_playlists",		&hijack_khttpd_playlists,	1,			1,	0,	1},
+{"khttpd_commands",		&hijack_khttpd_commands,	1,			1,	0,	1},
 {"max_connections",		&hijack_max_connections,	4,			1,	0,	20},
 #endif // CONFIG_NET_ETHERNET
 {"old_style",			&hijack_old_style,		0,			1,	0,	1},
-{button_names[0].name,		button_names[0].name,		(int)"PopUp0",		0,	0,	8},	// PopUp0
-{button_names[1].name,		button_names[1].name,		(int)"PopUp1",		0,	0,	8},	// PopUp1
-{button_names[2].name,		button_names[2].name,		(int)"PopUp2",		0,	0,	8},	// PopUp2
-{button_names[3].name,		button_names[3].name,		(int)"PopUp3",		0,	0,	8},	// PopUp3
+{button_names[0].name,		button_names[0].name,		(int)"PopUp0",		0,	0,	8},
+{button_names[1].name,		button_names[1].name,		(int)"PopUp1",		0,	0,	8},
+{button_names[2].name,		button_names[2].name,		(int)"PopUp2",		0,	0,	8},
+{button_names[3].name,		button_names[3].name,		(int)"PopUp3",		0,	0,	8},
 {"quicktimer_minutes",		&hijack_quicktimer_minutes,	30,			1,	1,	120},
 {"standby_minutes",		&hijack_standby_minutes,	30,			1,	0,	240},
 {"supress_notify",		&hijack_supress_notify,		0,			1,	0,	1},	

@@ -805,14 +805,14 @@ khttpd_respond (server_parms_t *parms, int rcode, const char *title, const char 
 		"<HTML><HEAD>\r\n"
 		"<TITLE>%d %s</TITLE>\r\n"
 		"</HEAD><BODY>\r\n"
-		"<H1>%s</H1>\r\n"
+		"<H1>%d %s</H1>\r\n"
 		"%s<P>\r\n"
 		"</BODY></HTML>\r\n";
 
 	char		*buf = parms->cwd;
 	unsigned int	len, rc;
 
-	len = sprintf(buf, kttpd_response, rcode, title, rcode, title, title, text ? text : "");
+	len = sprintf(buf, kttpd_response, rcode, title, rcode, title, rcode, title, text ? text : "");
 	rc = ksock_rw(parms->clientsock, buf, len, -1);
 	if (rc != len && parms->verbose)
 		printk("%s: respond(): ksock_rw(%d) returned %d, data='%s'\n", parms->servername, len, rc, buf);
@@ -1783,14 +1783,14 @@ khttpd_handle_connection (server_parms_t *parms)
 		else if (!strxcmp(cmds, ".m3u", 1))
 			parms->generate_playlist = 2;
 		if (parms->generate_playlist) {
-			if (!glob_match(path, "/drive?/fids/??*1"))
+			if (!hijack_khttpd_playlists)
+				response = &access_not_permitted;
+			else if (!glob_match(path, "/drive?/fids/??*1"))
 				response = &invalid_playlist_path;
 			else if (!*path)
 				response = &(http_response_t){400, "Missing Pathname"};
-			else if (hijack_khttpd_playlists)
+			else 
 				response = send_playlist(parms, path);
-			else
-				response = &access_not_permitted;
 			goto quit;
 		}
 		parms->nocache = 1;
@@ -1818,7 +1818,7 @@ khttpd_handle_connection (server_parms_t *parms)
 	} else if (hijack_khttpd_files || (hijack_khttpd_playlists && parms->icy_metadata)) {
 		response = convert_rcode(send_file(parms, path));
 	} else {
-		response = &(http_response_t){403, "Access Not Permitted"};
+		response = &access_not_permitted;
 	}
 quit:
 	if (response)

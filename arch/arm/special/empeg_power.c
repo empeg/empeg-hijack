@@ -194,8 +194,13 @@ int getbitset(void)
 		if (dev->displaystate)	  bitset|=EMPEG_POWER_FLAG_DISPLAY;
 	}
 	
-	if (empeg_on_dc_power)
+	if (empeg_on_dc_power) {
 		bitset|=EMPEG_POWER_FLAG_DC;
+		if (!(gplr&EMPEG_EXTPOWER))	// without this, player always comes up in standby at home
+			bitset|=EMPEG_POWER_FLAG_ACCESSORY;
+	} else {
+		bitset &= ~EMPEG_POWER_FLAG_ACCESSORY;
+	}
 	if (saved_unstable == (bitset & unstable_bits)) {
 		 /* It hasn't changed, so keep the timeout up to date */
 		stable_time = jiffies;

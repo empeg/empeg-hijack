@@ -154,14 +154,15 @@ static const char png_iend[] = {0,0,0,0,'I','E','N','D',0xae,0x42,0x60,0x82};
 // these two are shared with arch/arm/special/hijack.c
 struct semaphore	notify_screen_grab_sem = MUTEX_LOCKED;
 unsigned char		*notify_screen_grab_buffer = NULL;
+static struct semaphore	one_at_a_time = MUTEX;
+
 
 #define PNG_BYTES 1124
 
 // /proc/empeg_screen read() routine:
 static int
-hijack_proc_screen_read (char *buf, char **start, off_t offset, int len, int unused)
+hijack_proc_screen_png_read (char *buf, char **start, off_t offset, int len, int unused)
 {
-	static struct semaphore	one_at_a_time = MUTEX;
 	unsigned long		flags, crc, checksum;
 	unsigned char		*displaybuf, *p, *crcstart;
 
@@ -195,7 +196,7 @@ hijack_proc_screen_read (char *buf, char **start, off_t offset, int len, int unu
 }
 
 // /proc/empeg_screen directory entry:
-static struct proc_dir_entry proc_screen_entry = {
+static struct proc_dir_entry proc_screen_png_entry = {
 	0,			/* inode (dynamic) */
 	16,			/* length of name */
 	"empeg_screen.png",	/* name */
@@ -203,23 +204,42 @@ static struct proc_dir_entry proc_screen_entry = {
 	1, 0, 0, 		/* links, owner, group */
 	PNG_BYTES,		/* size */
 	NULL, 			/* use default operations */
-	&hijack_proc_screen_read, /* get_info() */
+	&hijack_proc_screen_png_read, /* get_info() */
 };
 
-extern struct file_operations  flash_fops;
-static struct inode_operations kflash_ops = {
-	&flash_fops,
-	NULL,
-};
+// /proc/empeg_screen read() routine:
+static int
+hijack_proc_screen_raw_read (char *buf, char **start, off_t offset, int len, int unused)
+{
+	unsigned long flags;
 
-static struct proc_dir_entry proc_kflash_entry = {
+	if (offset || !buf)
+		return -EINVAL;
+
+	// "buf" is guaranteed to be a 4096 byte scratchpad for our use,
+	//   so we just dump directly to it.
+
+	down(&one_at_a_time);		// stop other processes from grabbing the screen
+	save_flags_cli(flags);
+	notify_screen_grab_buffer = buf;
+	restore_flags(flags);
+
+	down(&notify_screen_grab_sem);	// wait for screen capture
+	up(&one_at_a_time);		// allow other processes to grab the screen
+
+	return EMPEG_SCREEN_BYTES;
+}
+
+// /proc/empeg_screen directory entry:
+static struct proc_dir_entry proc_screen_raw_entry = {
 	0,			/* inode (dynamic) */
-	12,			/* length of name */
-	"empeg_kernel",		/* name */
-	S_IFBLK|S_IRUSR|S_IWUSR,/* mode */
-	1, 0, 0,		/* links, owner, group */
-	MKDEV(60,8),		/* size holds device number */
-	&kflash_ops,		/* inode operations */
+	16,			/* length of name */
+	"empeg_screen.raw",	/* name */
+	S_IFREG | S_IRUGO, 	/* mode */
+	1, 0, 0, 		/* links, owner, group */
+	EMPEG_SCREEN_BYTES,	/* size */
+	NULL, 			/* use default operations */
+	&hijack_proc_screen_raw_read, /* get_info() */
 };
 
 #define DRIVE0		1
@@ -403,11 +423,30 @@ static struct proc_dir_entry proc_notify_entry = {
 	0				// deleted flag
 };
 
+extern struct file_operations  flash_fops;
+static struct inode_operations kflash_ops = {
+	&flash_fops,
+	NULL,
+};
+
+static struct proc_dir_entry proc_kflash_entry = {
+	0,			/* inode (dynamic) */
+	12,			/* length of name */
+	"empeg_kernel",		/* name */
+	S_IFBLK|S_IRUSR|S_IWUSR,/* mode */
+	1, 0, 0,		/* links, owner, group */
+	MKDEV(60,8),		/* size holds device number */
+	&kflash_ops,		/* inode operations */
+};
+
 void hijack_notify_init (void)
 {
+#ifdef CONFIG_NET_ETHERNET
+	proc_register(&proc_root, &proc_screen_raw_entry);
+	proc_register(&proc_root, &proc_screen_png_entry);
+#endif // CONFIG_NET_ETHERNET
 	proc_register(&proc_root, &proc_notify_entry);
 #ifdef CONFIG_NET_ETHERNET
-	proc_register(&proc_root, &proc_screen_entry);
 	proc_register(&proc_root, &proc_kflash_entry);
 #endif // CONFIG_NET_ETHERNET
 }

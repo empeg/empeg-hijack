@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v144"
+#define HIJACK_VERSION "v145"
 
 #include <linux/sched.h>
 #include <linux/kernel.h>
@@ -3685,11 +3685,13 @@ fix_visuals (unsigned char *buf)
 				if ((buf[0x4c] & 0x04) == 0) {	// MP3 visuals visible ?
 					info_screenrow = 15;
 					restore_carvisuals = (buf[0x40] & 3) + 2 + (buf[0x4d] & 1);
+					//printk("1restore=%d, x40=%02x, x4c=%02x, x4d=%02x\n", restore_carvisuals, buf[0x40], buf[0x4c], buf[0x4d]);
 					// switch to "track" mode on startup (because it's easy to detect later on),
 					// and then restore the original mode when the track info appears in the screen buffer.
 					buf[0x40] = (buf[0x40] & ~0x03) | 0x02;
 					buf[0x4c] =  buf[0x4c]          | 0x04;
 					buf[0x4d] = (buf[0x4d] & ~0x07) | 0x03;
+					//printk("2restore=%d, x40=%02x, x4c=%02x, x4d=%02x\n", restore_carvisuals, buf[0x40], buf[0x4c], buf[0x4d]);
 				}
 				break;
 			case 3: // Aux

@@ -1473,6 +1473,8 @@ kftpd_daemon (unsigned long use_http)	// invoked twice from init/main.c
 	}
 
 	if (server_port && hijack_max_connections > 0) {
+		//struct wait_queue *sleepq = NULL;
+		//sleep_on_timeout(&sleepq, 3*HZ);	// snooze long enough for DHCP negotiations to finish
 		if (make_socket(&parms, &parms.servsock, server_port)) {
 			printk("%s: make_socket(port=%d) failed\n", parms.servername, server_port);
 		} else if (parms.servsock->ops->listen(parms.servsock, 10) < 0) {	// queued=10

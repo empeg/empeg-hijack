@@ -761,7 +761,7 @@ static unsigned long display_animation(unsigned long animation_base)
 	   frame) */
 	init_timer(&animation_timer);
 	animation_timer.data=animation_base;
-	animation_timer.function=display_animation;
+	animation_timer.function= (void (*)(unsigned long))display_animation;
 	if (framenr >= 0) {
 		nexttime = framenr ? (HZ/ANIMATION_FPS) : (HZ/2);
 	} else {

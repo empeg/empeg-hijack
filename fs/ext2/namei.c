@@ -52,6 +52,10 @@ static inline int ext2_match (int len, const char * const name,
 		return 0;
 	if (!de->inode)
 		return 0;
+#if 1 // try to speed up Empeg track/tag matching by looking at last (Empeg filetype) character first
+	if (name[len-1] != de->name[len-1])
+		return 0;
+#endif
 	return !memcmp(name, de->name, len);
 }
 

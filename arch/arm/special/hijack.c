@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v125"
+#define HIJACK_VERSION "v126"
 
 #include <linux/sched.h>
 #include <linux/kernel.h>
@@ -2225,6 +2225,7 @@ message_display (int firsttime)
 		rowcol = (geom.first_row+4)|((geom.first_col+6)<<16);
 		rowcol = draw_string(rowcol, message_text, COLOR3);
 		hijack_last_moved = jiffies ? jiffies : -1;
+		blanker_triggered = 0;
 	} else if (jiffies_since(hijack_last_moved) >= message_time) {
 		hijack_deactivate(HIJACK_INACTIVE);
 	}
@@ -2783,12 +2784,11 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 			break;
 	}
 {
-	extern int notify_screen_grab_needed;	// arch/arm/notify.c
-	if (notify_screen_grab_needed) {
+	extern unsigned char *notify_screen_grab_buffer;	// arch/arm/notify.c
+	if (notify_screen_grab_buffer) {
 		extern struct semaphore notify_screen_grab_sem;
-		extern char notify_screen_grab_buf[EMPEG_SCREEN_BYTES];
-		notify_screen_grab_needed = 0;
-		memcpy(notify_screen_grab_buf, buf, EMPEG_SCREEN_BYTES);
+		memcpy(notify_screen_grab_buffer, buf, EMPEG_SCREEN_BYTES);
+		notify_screen_grab_buffer = NULL;
 		up(&notify_screen_grab_sem);
 	}
 }

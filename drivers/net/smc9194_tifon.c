@@ -492,7 +492,7 @@ static void smc_shutdown( int ioaddr );
 #ifndef NO_AUTOPROBE
 /* This routine will find the IRQ of the driver if one is not
  . specified in the input to the device.  */
-static int smc_findirq( int ioaddr );
+//static int smc_findirq( int ioaddr );
 #endif
 
 /*
@@ -501,7 +501,7 @@ static int smc_findirq( int ioaddr );
 */
 #ifndef SUPPORT_OLD_KERNEL
 static void smc_setmulticast( int ioaddr, int count, struct dev_mc_list *  );
-static int crc32( char *, int );
+int crc32( char *, int );
 #endif
 
 #ifdef SUPPORT_OLD_KERNEL
@@ -666,7 +666,7 @@ static void smc_setmulticast( int ioaddr, int count, struct dev_mc_list * addrs 
   Finds the CRC32 of a set of bytes.
   Again, from Peter Cammaert's code. 
 */
-static int crc32( char * s, int length ) { 
+int crc32( char * s, int length ) { 
   /* indices */
   int perByte;
   int perBit;
@@ -980,7 +980,7 @@ int smc_init(struct device *dev)
   return -ENODEV;
 }
 
-#ifndef NO_AUTOPROBE
+#if 0 //ndef NO_AUTOPROBE
 /*----------------------------------------------------------------------
  . smc_findirq 
  . 

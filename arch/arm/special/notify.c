@@ -15,6 +15,31 @@
 
 #include <linux/proc_fs.h>
  
+#ifdef CONFIG_NET_ETHERNET
+extern int crc32 (char *buf, int len);	// drivers/net/smc9194_tifon.c
+#else
+int crc32( char * s, int length ) { 
+  /* indices */
+  int perByte;
+  int perBit;
+  /* crc polynomial for Ethernet */
+  const unsigned long poly = 0xedb88320;
+  /* crc value - preinitialized to all 1's */
+  unsigned long crc_value = 0xffffffff; 
+
+  for ( perByte = 0; perByte < length; perByte ++ ) {
+    unsigned char	c;
+	
+    c = *(s++);
+    for ( perBit = 0; perBit < 8; perBit++ ) {
+      crc_value = (crc_value>>1)^
+	(((crc_value^c)&0x01)?poly:0);
+      c >>= 1;
+    }
+  }
+  return	crc_value;
+} 
+#endif
 extern int do_remount(const char *dir,int flags,char *data);
 extern int hijack_supress_notify, hijack_reboot;							// hijack.c
 extern int get_number (unsigned char **src, int *target, unsigned int base, const char *nextchars);	// hijack.c
@@ -27,7 +52,7 @@ extern signed long schedule_timeout(signed long timeout);						// kernel/sched.c
 
 unsigned char notify_labels[] = "#AFGLMNSTV";	// 'F' must match next line
 #define NOTIFY_FIDLINE		2		// index of 'F' in notify_labels[]
-#define NOTIFY_MAX_LINES	(sizeof(notify_labels))
+#define NOTIFY_MAX_LINES	(sizeof(notify_labels)) // gives one extra for '\0'
 #define NOTIFY_MAX_LENGTH	64
 static char notify_data[NOTIFY_MAX_LINES][NOTIFY_MAX_LENGTH] = {{0,},};
 static const char notify_prefix[] = "  serial_notify_thread.cpp";
@@ -248,119 +273,102 @@ static struct proc_dir_entry proc_notify_entry = {
 	0				// deleted flag
 };
 
-typedef struct tiff_field_s {
-	unsigned short	tag;
-	unsigned short	type;
-	unsigned long	count;
-	unsigned long	value_or_offset;
-} tiff_field_t;
+static char *
+pngcpy (char *png, const void *src, int len)
+{
+	const char *s = src;
+	while (--len >= 0)
+		*png++ = *s++;
+	return png;
+}
 
-typedef struct grayscale_tiff_s {
-	// header
-	unsigned short	II;			// 'II'
-	unsigned short	fortytwo;		// 42 (decimal)
-	unsigned long	ifd0_offset;		// 10
-	unsigned short	padding;		//  0  // to align the tiff fields on 4-byte boundaries
+static char *
+deflate0 (char *p, const char *screen, unsigned long *checksum)
+{
+	const char *end_of_screen = screen + EMPEG_SCREEN_BYTES;
+	unsigned long s1 = 1, s2 = 0;
 
-	// "ifd0"				// tag,type,count,value
-	unsigned short	ifd0_count;		// 12  // count of tiff_field's that follow
-	tiff_field_t	cols;			// 256, 3,    1,   128
-	tiff_field_t	rows;			// 257, 3,    1,    32
-	tiff_field_t	bitspersample;		// 258, 3,    1,     4	// ??
-	tiff_field_t	compression;		// 259, 3,    1,     1	// byte packed (2 pixels/byte)
-	tiff_field_t	photometric;		// 262, 3,    1,     1	// black is zero
-	tiff_field_t	bitorder;		// 266, 3,    1,     1	// columns go from msb to lsb of bytes
-	tiff_field_t	stripoffsets;		// 273, 3,    1,    12 + (12 * sizeof(tiff_field_t)) + (5 * 4)
-	tiff_field_t	rowsperstrip;		// 278, 3,    1,    32
-	tiff_field_t	stripbytecounts;	// 279, 3,    1,    128*32*2/8 
-	tiff_field_t	xresolution;		// 282, 5,    1,    12 + (12 * sizeof(tiff_field_t)) + (1 * 4)
-	tiff_field_t	yresolution;		// 283, 5,    1,    12 + (12 * sizeof(tiff_field_t)) + (3 * 4)
-	tiff_field_t	resolutionunit;		// 296, 3,    1,     2  // resolution is in inches
-	unsigned long	ifd1_offset;		//        0		// no ifd1 in this file
+	do {
+		const char *end_of_col = screen + (EMPEG_SCREEN_COLS/2);
+		*p++ = 0;	// filter type 0
+		s2 += s1;
+		do {
+			unsigned char b, c;
+			b = *screen++;
+			c = *screen++;
+			b = (b & 0x30) | (b << 6);
+			b |= ((c & 3) << 2) | ((c >> 4) & 3);
+			s1 += b;
+			s2 += s1;
+			*p++ = b;
+		} while (screen != end_of_col);
+	} while (screen != end_of_screen);
+	s1 %= 65521;
+	s2 %= 65521;
+	*checksum = htonl((s2 << 16) | s1);
+	return p;
+}
 
-	// longer field values
-	unsigned long	xresolution_numerator;	// 128 * 13		// 128 pixels in 13/4" of space
-	unsigned long	xresolution_denominator;//        4 
-	unsigned long	yresolution_numerator;	//  32 * 13		// 32 pixels in 13/16" of space
-	unsigned long	yresolution_denominator;//       16
+static const char png_ihdr[] = {137,'P','N','G','\r','\n',26,'\n',0,0,0,13,'I','H','D','R',
+				0,0,0,EMPEG_SCREEN_COLS,0,0,0,EMPEG_SCREEN_ROWS,2,0,0,0,0,0xb5,0xf9,0x37,0x58};
+static const char png_idat[] = {0,0,4,0x2b,'I','D','A','T',0x48,0x0d,0x01,0x20,0x04,0xdf,0xfb};
+static const char png_iend[] = {0,0,0,0,'I','E','N','D',0xae,0x42,0x60,0x82};
 
-	// image data
-	unsigned char	strip0[128*32*4/8];	// the row by row image data
-} grayscale_tiff_t;
+static void
+make_png (char *displaybuf, char *png)
+{
+	unsigned long crc, checksum;
+	char *p, *crcstart;
 
-static grayscale_tiff_t proc_screen_tiff = {
-	'I'|('I'<<8),						// II
-	42,							// fortytwo
-	10,							// ifd0_offset
-	0,							// padding
-	12,							// ifd0_count
-	{256,3,1,128},						// cols
-	{257,3,1, 32},						// rows
-	{258,3,1,  4},						// bitspersample
-	{259,3,1,  1},						// compression
-	{262,3,1,  1},						// photometric
-	{266,3,1,  1},						// bitorder
-	{273,3,1, 12 + (12 * sizeof(tiff_field_t)) + (5 * 4)},	// stripoffsets
-	{278,3,1, 32},						// rowsperstrip
-	{279,3,1,128 * 32 * 4 / 8},				// stripbytecounts
-	{282,5,1, 12 + (12 * sizeof(tiff_field_t)) + (1 * 4)},	// xresolution
-	{283,5,1, 12 + (12 * sizeof(tiff_field_t)) + (3 * 4)},	// yresolution
-	{296,3,1,  2},						// resolutionunit
-	       0,						// ifd1_offset
-	128 * 13,						// yresolution_numerator
-	       4,						// yresolution_denominator
-	 32 * 13,						// xresolution_numerator
-	      16,						// xresolution_denominator
-	{0,}							// strip0[128*32*2/8]
-	};
+	p = pngcpy(png, png_ihdr, sizeof(png_ihdr));
+	crcstart = p + 4;	// len field is not part of CRC
+	p = pngcpy(p , png_idat, sizeof(png_idat));
+	p = deflate0(p, displaybuf, &checksum);
+	p = pngcpy(p, &checksum, 4);
+	crc = crc32(crcstart, p - crcstart) ^ 0xffffffff;
+	crc = htonl(crc);
+	p = pngcpy(p, &crc, 4);
+	p = pngcpy(p, png_iend, sizeof(png_iend));
+}
 
-// these three are shared with arch/arm/special/hijack.c
+// these two are shared with arch/arm/special/hijack.c
 struct semaphore	notify_screen_grab_sem = MUTEX_LOCKED;
-unsigned char		notify_screen_grab_buf[EMPEG_SCREEN_BYTES];
-int			notify_screen_grab_needed = 0;
+unsigned char		*notify_screen_grab_buffer = NULL;
+
+#define PNG_BYTES 1124
 
 // /proc/empeg_screen read() routine:
 static int
 hijack_proc_screen_read (char *buf, char **start, off_t offset, int len, int unused)
 {
-	int		i, remaining;
-	unsigned char	*t, *d;
 	unsigned long	flags;
+	unsigned char	*displaybuf;
 
-	if (offset == 0) {
-		save_flags_cli(flags);
-		notify_screen_grab_sem = MUTEX_LOCKED;
-		notify_screen_grab_needed = 1;
-		down(&notify_screen_grab_sem);
-		restore_flags(flags);
+	if (offset)
+		return -EINVAL;
+	displaybuf = kmalloc(EMPEG_SCREEN_BYTES, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+	save_flags_cli(flags);
+	notify_screen_grab_sem = MUTEX_LOCKED;
+	notify_screen_grab_buffer = displaybuf;
+	down(&notify_screen_grab_sem);
+	restore_flags(flags);
 
-		t = proc_screen_tiff.strip0;
-		d = notify_screen_grab_buf;
-		for (i = 0; i < sizeof(proc_screen_tiff.strip0); ++i) {
-			static const unsigned char colors1[4] = {0x00,0x03,0x07,0x0f};
-			static const unsigned char colors2[4] = {0x00,0x30,0x70,0xf0};
-			unsigned char b = *d++ & 0x33;
-			*t++ = colors2[b & 0xf] | colors1[b >> 4];
-		}
-	}
-	remaining = sizeof(proc_screen_tiff) - offset;
-	if (len > remaining)
-	        len = (remaining < 0) ? 0 : remaining;
-	if (len > 0) {
-	        *start = buf + offset;
-	        memcpy(buf, ((unsigned char *)&proc_screen_tiff) + offset, len);
-	}
-	return len;
+	make_png(displaybuf, buf);
+	kfree(displaybuf);
+
+	return PNG_BYTES;
 }
 
 // /proc/empeg_screen directory entry:
 static struct proc_dir_entry proc_screen_entry = {
 	0,			/* inode (dynamic) */
-	17,			/* length of name */
-	"empeg_screen.tiff",	/* name */
+	16,			/* length of name */
+	"empeg_screen.png",	/* name */
 	S_IFREG | S_IRUGO, 	/* mode */
 	1, 0, 0, 		/* links, owner, group */
-	sizeof(proc_screen_tiff), /* size */
+	PNG_BYTES,		/* size */
 	NULL, 			/* use default operations */
 	&hijack_proc_screen_read, /* get_info() */
 };

@@ -865,7 +865,7 @@ khttpd_respond (server_parms_t *parms, int rcode, const char *title, const char 
 	char		*buf = parms->cwd;
 	unsigned int	len, rc;
 
-	len = sprintf(buf, kttpd_response, rcode, title, rcode, title, title, text);
+	len = sprintf(buf, kttpd_response, rcode, title, rcode, title, title, text ? text : "");
 	rc = ksock_rw(parms->clientsock, buf, len, -1);
 	if (rc != len)
 		printk("%s: respond(): ksock_rw(%d) returned %d\n", parms->servername, len, rc);
@@ -908,6 +908,7 @@ typedef struct mime_type_s {
 static const mime_type_t mime_types[] = {
 	{"*.tiff",		"image/tiff"			},
 	{"*.jpg",		"image/jpeg"			},
+	{"*.png",		"image/x-png"			},
 	{"*.html",		"text/html"			},
 	{"*.txt",		 text_plain			},
 	{"*.text",		 text_plain			},
@@ -1400,13 +1401,20 @@ khttpd_handle_connection (server_parms_t *parms)
 				(void) hijack_do_command(cmds, p - cmds); // fixme? handle errors, or ignore them?
 			}
 		}
-		if (path[n] == '/') {
+		n = strlen(path);
+printk("path='%s', n=%d\n", path, n);
+		if (n == 0) {
+			khttpd_respond(parms, 404, "Bad/missing pathname", NULL);
+			return 0;
+		}
+		if (path[n-1] == '/') {
+			int rc;
 			struct stat statbuf;
-			while (n > 0 && path[n] == '/')
-				path[n--] = '\0';
-			strcat(path, "/index.html");
-			if (0 > sys_newstat(path, &statbuf) || (statbuf.st_mode & S_IFMT) != S_IFREG) {
-				path[n+1] = '\0';
+			strcat(path, "index.html");
+			rc = sys_newstat(path, &statbuf);
+printk("stat('%s') rc=%d, mode=0%o\n", path, rc, statbuf.st_mode);
+			if (rc < 0 || (statbuf.st_mode & S_IFMT) == S_IFDIR) {
+				path[n] = '\0';
 				response = send_dirlist(parms, path, 1);
 				return 0;
 			}

@@ -31,6 +31,7 @@ static void (*hijack_movefunc)(int) = NULL;
 static int menu_item = 0, menu_size = 0, menu_top = 0;
 static unsigned int ir_lasttime = 0, ir_selected = 0, ir_releasewait = 0, ir_knob_down = 0, ir_left_down = 0, ir_right_down = 0, ir_trigger_count = 0;
 static unsigned long ir_lastbutton = 0;
+static int hijack_player_menu_is_active = 0;
 
 #define KNOBDATA_BITS 2
 static const unsigned long knobdata_pressed [1<<KNOBDATA_BITS] = {IR_KNOB_PRESSED, IR_RIO_SHUFFLE_PRESSED, IR_RIO_INFO_PRESSED, IR_RIO_REPEAT_PRESSED};
@@ -190,12 +191,12 @@ draw_pixel (int pixel_row, unsigned int pixel_col, int color)
 	*pixel_pair = (*pixel_pair & ~pixel_mask) ^ (color & pixel_mask);
 }
 
-static unsigned int hijack_space_width = 3;
+static unsigned char kfont_spacing = 0;  // 0 == proportional
 
 static int
 draw_char (unsigned int pixel_row, int pixel_col, unsigned char c, unsigned char color, unsigned char inverse)
 {
-	unsigned int num_cols;
+	unsigned char num_cols;
 	const unsigned char *font_entry;
 	unsigned char *displayrow;
 
@@ -205,10 +206,12 @@ draw_char (unsigned int pixel_row, int pixel_col, unsigned char c, unsigned char
 	if (c > '~' || c < ' ')
 		c = ' ';
 	font_entry = &kfont[c - ' '][0];
-	if (c == ' ')
-		num_cols = hijack_space_width;
-	else
-		for (num_cols = KFONT_WIDTH; !font_entry[num_cols-2]; --num_cols);
+	if (!(num_cols = kfont_spacing)) {  // variable width font spacing?
+		if (c == ' ')
+			num_cols = 3;
+		else
+			for (num_cols = KFONT_WIDTH; !font_entry[num_cols-2]; --num_cols);
+	}
 	if (pixel_col + num_cols + 1 >= EMPEG_SCREEN_COLS)
 		return -1;
 	for (pixel_row = 0; pixel_row < KFONT_HEIGHT; ++pixel_row) {
@@ -257,13 +260,13 @@ static unsigned int
 draw_number (unsigned int rowcol, unsigned int number, const char *format, int color)
 {
 	unsigned char buf[16];
-	unsigned int saved_width;
+	unsigned char saved;
 
-	saved_width = hijack_space_width;
-	hijack_space_width = 6; /* matches digit widths */
 	sprintf(buf, format, number);
+	saved = kfont_spacing;
+	kfont_spacing = KFONT_WIDTH; // use fixed font spacing for numbers
 	rowcol = draw_string(rowcol, buf, color);
-	hijack_space_width = saved_width;
+	kfont_spacing = saved;
 	return rowcol;
 	
 }
@@ -371,8 +374,7 @@ voladj_display (int firsttime)
 	save_flags_cli(flags);
 	voladj_history[voladj_histx = (voladj_histx + 1) % VOLADJ_HISTSIZE] = voladj_multiplier;
 	restore_flags(flags);
-	rowcol = draw_string(ROWCOL(0,0), hijack_on_dc_power ? "(DC)" : "(AC)", COLOR2);
-	rowcol = draw_string(rowcol, " Volume Adjust:  ", COLOR2);
+	rowcol = draw_string(ROWCOL(0,0), "Auto Volume Adjust: ", COLOR2);
 	(void)draw_string(rowcol, voladj_names[voladj_enabled], COLOR3);
 	mult = voladj_multiplier;
 	sprintf(buf, "Current Multiplier: %2u.%02u", mult >> MULT_POINT, (mult & MULT_MASK) * 100 / (1 << MULT_POINT));
@@ -566,7 +568,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v34 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v35 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -990,6 +992,30 @@ hijack_move_repeat (void)
 	}
 }
 
+static int
+check_if_player_menu_is_active2 (void *buf, int centre)
+{
+	int row;
+
+	// look for the menu pattern on the top 3 screen rows
+	for (row = centre-1; row <= centre+1; ++row) {
+		unsigned char menu = (row == centre) ? 0x11 : 0x00;
+		unsigned char *teststart = ((unsigned char *)buf) + (row * (EMPEG_SCREEN_COLS/2)) + 9;
+		unsigned char *screenbyte = teststart + 48;
+		do {
+			if (*--screenbyte != menu)
+				return 0;
+		} while (screenbyte > teststart);
+	}
+	return 1;
+}
+
+static int
+check_if_player_menu_is_active (void *buf)
+{
+	return check_if_player_menu_is_active2(buf,1) || check_if_player_menu_is_active2(buf,3);
+}
+
 // This routine covertly intercepts all display updates,
 // giving us a chance to substitute our own display.
 //
@@ -1049,6 +1075,7 @@ hijack_display (struct display_dev *dev, unsigned char *player_buf)
 			hijack_deactivate();
 			break;
 	}
+	hijack_player_menu_is_active = (buf == player_buf) ? check_if_player_menu_is_active(buf) : 0;
 	restore_flags(flags);
 
 	// Prevent screen burn-in on an inactive/unattended player:
@@ -1147,7 +1174,7 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 				case IR_RIO_NEXTTRACK_RELEASED:
 				case IR_RIO_PREVTRACK_RELEASED:
 				case IR_RIO_MENU_RELEASED:
-				case IR_KNOB_RELEASED:  // this one often arrives in pairs
+				case IR_KNOB_RELEASED:  // note: this one often arrives in pairs
 					break;
 				case IR_KW_PAUSE_PRESSED:
 				case IR_RIO_PAUSE_PRESSED:
@@ -1178,24 +1205,29 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 		ir_lasttime = jiffies;
 	}
 	switch (data) {
-		case IR_KNOB_PRESSED:
 		case IR_RIO_MENU_PRESSED:
-			hijacked = 1; // we ALWAYS hijack these, and later send them with the release (below)
-			// fall thru
-			ir_knob_down = jiffies ? jiffies : 1;
+			if (hijack_status == HIJACK_INACTIVE && !hijack_player_menu_is_active) {
+				hijacked = 1; // hijack it and later send it with the release (below)
+				ir_knob_down = jiffies ? jiffies : 1;
+			}
 			break;
 		case IR_RIO_MENU_RELEASED:
-			if (hijack_status == HIJACK_INACTIVE && !hijacked) {
-				if (ir_knob_down && jiffies_since(ir_knob_down) < (HZ/2))  // short press?
+			if (hijack_status == HIJACK_INACTIVE && !hijack_player_menu_is_active) {
+				if (ir_knob_down && !hijacked && jiffies_since(ir_knob_down) < (HZ/2))
 					real_input_append_code(dev, IR_RIO_MENU_PRESSED); // time to send the menu_pressed
 			}
 			ir_knob_down = 0;
 			break;
-		case IR_KNOB_RELEASED:  // these often arrive in pairs
-			if (hijack_status == HIJACK_INACTIVE && !hijacked) {
-				if (ir_knob_down && jiffies_since(ir_knob_down) < (HZ/2))  // short press?
-					real_input_append_code(dev, knobdata_pressed[knobdata_index]); // time to send the knob_pressed
-				data = knobdata_released[knobdata_index]; // and the knob_release_data
+		case IR_KNOB_PRESSED:
+			hijacked = 1; // hijack it and later send it with the release (below)
+			ir_knob_down = jiffies ? jiffies : 1;
+			break;
+		case IR_KNOB_RELEASED:  // note: this one often arrives in pairs
+			if (hijack_status == HIJACK_INACTIVE && ir_knob_down && !hijacked) {
+				int index = hijack_player_menu_is_active ? 0 : knobdata_index;
+				if (jiffies_since(ir_knob_down) < (HZ/2)) // short press?
+					real_input_append_code(dev, knobdata_pressed[index]); // time to send the knob_pressed
+				data = knobdata_released[index]; // and the knob_release_data
 			}
 			ir_knob_down = 0;
 			break;

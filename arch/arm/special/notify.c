@@ -23,7 +23,8 @@ extern int hijack_current_mixer_input;
 extern int hijack_current_mixer_volume;
 extern int hijack_player_started;
 extern int hijack_do_command (void *sparms, char *buf);
-extern int strxcmp (const char *str, const char *pattern, int partial);					// khttpd.c
+extern int strxcmp (const char *str, const char *pattern, int partial);					// hijack.c
+extern int hijack_glob_match (const char *n, const char *p);						// hijack.c
 extern int do_remount(const char *dir,int flags,char *data);						// fs/super.c
 extern int get_filesystem_info(char *);									// fs/super.c
 extern int hijack_suppress_notify, hijack_reboot;							// hijack.c
@@ -170,16 +171,16 @@ int
 remount_drives (int writeable)
 {
 	int	did_something = 0, len, flags;
-	char	buf[400], *b, *message, *match, mount_opts[] = "nocheck";
+	char	buf[400], *b, *message, cur_rw, mount_opts[] = "nocheck";
 
 	if (writeable) {
 		flags = (MS_NODIRATIME | MS_NOATIME);
-		message = "Remounting read-write";
-		match = "ext2 ro";
+		message = "Remounted read-write";
+		cur_rw = 'o';
 	} else {
 		flags = MS_RDONLY;
-		message = "Remounting read-only";
-		match = "ext2 rw";
+		message = "Remounted read-only";
+		cur_rw = 'w';
 	}
 		
 	lock_kernel();
@@ -195,19 +196,16 @@ remount_drives (int writeable)
 		while (*++b != ' ');
 		while (*++b != ' ');
 		*b++ = '\0';
-		if (!strxcmp(fstype, match, 1)) {
-			if (!did_something) {
-				did_something = 1;
-				show_message(message, 99*HZ);
-			}
-			printk("hijack: %s: %s\n", message, fsname); 
+		if (hijack_glob_match(fstype, "ext? r?*") && fstype[6] == cur_rw) {
+			did_something = 1;
 			(void)do_remount(fsname, flags, mount_opts);
+			printk("hijack: %s: %s\n", message, fsname); 
 		}
 		while (*b && *b++ != '\n');
 	}
 	unlock_kernel();
 	if (did_something)
-		show_message(writeable ? "Remounted read-write" : "Remounted read-only", HZ);
+		show_message(message, HZ);
 	return !did_something;
 }
 

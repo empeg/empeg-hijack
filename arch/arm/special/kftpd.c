@@ -93,7 +93,7 @@ typedef struct server_parms_s {
 	char			have_portaddr;		// bool
 	char			icy_metadata;		// bool
 	char			streaming;		// bool
-	char			apple_iTunes;		// bool
+	//char			apple_iTunes;		// bool
 	char			need_password;		// bool, FTP only
 	char			rename_pending;		// bool
 	char			nocache;		// bool
@@ -1250,7 +1250,8 @@ send_playlist (server_parms_t *parms, char *path)
 			secs = str_val(tags.duration) / 1000;
 			used  = sprintf(xfer.buf, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s\r\n\r\n"
 				"#EXTM3U\r\n#EXTINF:%u,%s\r\nhttp://%s/", audio_m3u, secs, artist_title, parms->hostname);
-			used += encode_url(xfer.buf+used, artist_title, parms->apple_iTunes);
+			//used += encode_url(xfer.buf+used, artist_title, parms->apple_iTunes);
+			used += encode_url(xfer.buf+used, artist_title, 0);
 			used += sprintf(xfer.buf+used, ".m3u?FID=%x&EXT=.%s\r\n", pfid^1, tags.codec);
 			(void)ksock_rw(parms->datasock, xfer.buf, used, -1);
 			goto cleanup;
@@ -1419,7 +1420,8 @@ open_fidfile:
 						combine_artist_title(tags.artist, tags.title, artist_title, sizeof(artist_title));
 						subpath[sublen - 1] = '0';
 						used += sprintf(xfer.buf+used, "#EXTINF:%u,%s\r\nhttp://%s/", secs, artist_title, parms->hostname);
-						used += encode_url(xfer.buf+used, artist_title, parms->apple_iTunes);
+						//used += encode_url(xfer.buf+used, artist_title, parms->apple_iTunes);
+						used += encode_url(xfer.buf+used, artist_title, 0);
 						used += sprintf(xfer.buf+used, "?FID=%x&EXT=.%s\r\n", fid^1, tags.codec);
 					}
 					break;
@@ -2079,10 +2081,10 @@ khttpd_handle_connection (server_parms_t *parms)
 		static const char Range[] = "\nRange: bytes=";
 		static const char Host[] = "\nHost: ";
 		if (*x == '\n') {
-			if (!strxcmp(x, "\nUser-Agent: iTunes", 1) || !strxcmp(x, "\nUA-OS: MacOS", 1)) {
-				parms->apple_iTunes = 1;
-			} else if (!strxcmp(x, "\nUser-Agent: NSPlayer", 1) || !strxcmp(x, "\nUser-Agent: Windows-Media-Player", 1)) {
+			if (!strxcmp(x, "\nUser-Agent: NSPlayer", 1) || !strxcmp(x, "\nUser-Agent: Windows-Media-Player", 1) || !strxcmp(x, "\nUser-Agent: iTunes", 1)) {
 				parms->streaming = 1;
+			//} else if (!strxcmp(x, "\nUser-Agent: iTunes", 1) || !strxcmp(x, "\nUA-OS: MacOS", 1)) {
+			//	parms->apple_iTunes = 1;
 			} else if (!strxcmp(x, "\nIcy-MetaData:1", 1)) {
 				parms->streaming = 1;
 				parms->icy_metadata = 1;

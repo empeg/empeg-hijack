@@ -56,7 +56,7 @@ static int *ir_numeric_input = NULL, player_menu_is_active = 0, player_sound_adj
 
 #define KNOBDATA_BITS 2
 #ifdef EMPEG_KNOB_SUPPORTED
-static unsigned long ir_knob_down, ir_delayed_knob_release = 0;
+static unsigned long ir_knob_busy = 0, ir_knob_down = 0, ir_delayed_knob_release = 0;
 static const unsigned long knobdata_pressed [] = {IR_KNOB_PRESSED, IR_RIO_SHUFFLE_PRESSED, IR_RIO_INFO_PRESSED, IR_RIO_INFO_PRESSED};
 static const unsigned long knobdata_released[] = {IR_KNOB_RELEASED,IR_RIO_SHUFFLE_RELEASED,IR_RIO_INFO_RELEASED,IR_RIO_INFO_PRESSED};
 static int knobdata_index = 0;
@@ -366,7 +366,7 @@ top:	if (s && row < EMPEG_SCREEN_ROWS) {
 		unsigned char c;
 		while ((c = *s)) {
 			int col_adj;
-			if (c == '\n' || -1 == (col_adj = draw_char(row, col, c, color, inverse))) {
+			if ((c == '\n' && *s++) || -1 == (col_adj = draw_char(row, col, c, color, inverse))) {
 				col  = 0;
 				row += KFONT_HEIGHT;
 				goto top;
@@ -975,7 +975,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v61 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v62 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1272,6 +1272,8 @@ reboot_display (int firsttime)
 {
 	static unsigned char left_pressed, right_pressed;
 	unsigned long flags, button;
+	int rc;
+
         if (firsttime) {
 		clear_hijack_displaybuf(COLOR0);
 		(void) draw_string(ROWCOL(0,0), "Press & hold Left/Right\n  buttons to reboot.", COLOR3);
@@ -1280,35 +1282,37 @@ reboot_display (int firsttime)
 		hijack_buttonlist = intercept_all_buttons;
 		return NEED_REFRESH;
 	}
+	if (left_pressed && right_pressed) {
+		state_cleanse();	// Ensure flash is updated first
+		machine_restart(NULL);	// Reboot the machine NOW!
+	}
+	rc = NO_REFRESH;
 	save_flags_cli(flags);
 	if (hijack_dataq_tail != hijack_dataq_head) {
-		int quit = 0;
 		hijack_dataq_tail = (hijack_dataq_tail + 1) % HIJACK_DATAQ_SIZE;
 		button = hijack_dataq[hijack_dataq_tail];
 		switch (button) {
 			case IR_LEFT_BUTTON_PRESSED:
-				if (left_pressed++)
-					quit = 1;
+				left_pressed++;
 				break;
 			case IR_RIGHT_BUTTON_PRESSED:
-				if (right_pressed++)
-					quit = 1;
+				right_pressed++;
 				break;
 			default:
-				if ((button & 0x80000001) == 0)
-					quit = 1;
+				if ((button & 0x80000001) == 0) {
+					hijack_buttonlist = NULL;
+					ir_selected = 1; // return to main menu
+				}
 				break;
 		}
-		if (quit) {
-			hijack_buttonlist = NULL;
-			ir_selected = 1; // return to main menu
-		} else if (left_pressed && right_pressed) {
-			state_cleanse();	// Ensure flash is updated first
-			machine_restart(NULL);	// Reboot the machine NOW!
+		if (left_pressed && right_pressed) {
+			clear_hijack_displaybuf(COLOR0);
+			(void) draw_string(ROWCOL(2,30), "Rebooting..", COLOR3);
+			rc = NEED_REFRESH;
 		}
 	}
 	restore_flags(flags);
-	return NO_REFRESH;
+	return rc;
 }
 
 static int
@@ -1519,6 +1523,18 @@ toggle_input_source (void)
 	(void)real_input_append_code(button|0x80000000);
 }
 
+//static int
+//tuner_is_active (void)
+//{
+//	switch (get_current_mixer_source()) {
+//		case SOUND_MASK_RADIO:  // FM radio
+//		case SOUND_MASK_LINE1:  // AM radio
+//			return 1;
+//		default:
+//			return 0;
+//	}
+//}
+
 static int
 timer_check_expiry (struct display_dev *dev)
 {
@@ -1591,11 +1607,12 @@ hijack_display (struct display_dev *dev, unsigned char *player_buf)
 	}
 #ifdef EMPEG_KNOB_SUPPORTED
 	if (ir_knob_down && jiffies_since(ir_knob_down) > (HZ*2)) {
+		ir_knob_busy = 1;
 		ir_knob_down = jiffies - HZ;  // allow repeated cycling if knob is held down
 		if (!ir_knob_down)
 			ir_knob_down = -1;
+		hijack_deactivate(HIJACK_INACTIVE);
 		toggle_input_source();
-		hijack_deactivate(HIJACK_INACTIVE_PENDING);
 	}
 	if (ir_delayed_knob_release && jiffies_since(ir_delayed_knob_release) > (HZ+(HZ/4))) {
 		ir_delayed_knob_release = 0;
@@ -1610,7 +1627,7 @@ hijack_display (struct display_dev *dev, unsigned char *player_buf)
 		case HIJACK_INACTIVE:
 			if (ir_trigger_count >= 3
 #ifdef EMPEG_KNOB_SUPPORTED
-			 || (ir_knob_down && jiffies_since(ir_knob_down) >= HZ)
+			 || (!ir_knob_busy && ir_knob_down && jiffies_since(ir_knob_down) >= HZ)
 #endif // EMPEG_KNOB_SUPPORTED
 			 || (ir_menu_down && jiffies_since(ir_menu_down) >= HZ)) {
 				activate_dispfunc(menu_display, menu_move);
@@ -1878,6 +1895,7 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 #ifdef EMPEG_KNOB_SUPPORTED
 		case IR_KNOB_PRESSED:
 			hijacked = 1; // hijack it and later send it with the release
+			ir_knob_busy = 0;
 			if (!ir_delayed_knob_release)
 				ir_knob_down = jiffies ? jiffies : -1;
 			if (hijack_status == HIJACK_ACTIVE)
@@ -1885,7 +1903,9 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 			break;
 		case IR_KNOB_RELEASED:
 			if (ir_knob_down) {
-				if (hijack_status != HIJACK_INACTIVE) {
+				if (ir_knob_busy) {
+					ir_knob_busy = 0;
+				} else if (hijack_status != HIJACK_INACTIVE) {
 					hijacked = 1;
 					if (hijack_dispfunc == voladj_prefix) {
 						hijack_deactivate(HIJACK_INACTIVE);
@@ -2188,10 +2208,11 @@ get_file (const char *path, unsigned char **buffer)
 	*buffer = NULL;
 	lock_kernel();
 	file = filp_open(path,O_RDONLY,0);
-	if (!file) {
+	if (!file || !file->f_dentry || !file->f_dentry->d_inode) {
 		rc = -ENOENT;
 	} else {
-		if ((size = file->f_dentry->d_inode->i_size) > 0) {
+		size = file->f_dentry->d_inode->i_size;
+		if (size > 0) {
 			unsigned char *buf = (unsigned char *)kmalloc(size+1, GFP_KERNEL);
 			if (!buf) {
 				rc = -ENOMEM;
@@ -2222,7 +2243,7 @@ hijack_read_config_file (const char *path)
 	int rc = get_file(path, &buf);
 	if (rc < 0) {
 		printk("hijack.c: open(%s) failed (errno=%d)\n", path, rc);
-	} else if (rc > 0) {
+	} else if (rc > 0 && buf && *buf) {
 
 		ir_setup_translations(buf);
 

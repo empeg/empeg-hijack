@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v271"
+#define HIJACK_VERSION	"v272"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -111,6 +111,11 @@ static void (*hijack_movefunc)(int) = NULL;
 // 02 01 2b 2c == ATT button pressed while shifted
 // 02 01 ff 00 == no button pressed, shift still active (ATT got released)
 // 02 00 ff ff == all buttons released
+//
+// Trivia: command to adjust the A/D conversions, which normally won't occur
+// until the reading has "stabilized", as follows:  0x01 0x08 <fuzz> <loops>
+// where <fuzz> is the +/- factor and <loops> specifies trips round the
+// main A/D loop before it gets sent.  Reply will be 0x01 0x08 0x00 0x08.
 //
 // The button order in the stalk tables below is FIXED; do not modify it!!
 // Also, the hijack_option_table[] depends upon this order.
@@ -491,6 +496,7 @@ static	int hijack_standby_minutes;		// number of minutes after screen blanks bef
 	int hijack_time_offset;			// adjust system time-of-day clock by this many minutes
 	int hijack_temperature_correction;	// adjust all h/w temperature readings by this celcius amount
 	int hijack_standbyLED_on, hijack_standbyLED_off;	// on/off duty cycle for standby LED
+static	int hijack_keypress_flash;		// flash display when buttons are pressed
 
 
 // Bass Treble Adjustment stuff follows  --genixia
@@ -563,6 +569,7 @@ static const hijack_option_t hijack_option_table[] =
 {"extmute_on",			&hijack_extmute_on,		0,			1,	0,	IR_NULL_BUTTON},
 {"fake_tuner",			&hijack_fake_tuner,		0,			1,	0,	1},
 {"ir_debug",			&hijack_ir_debug,		0,			1,	0,	1},
+{"keypress_flash",		&hijack_keypress_flash,		0,			1,	0,	1},
 #ifdef CONFIG_NET_ETHERNET
 {"kftpd_control_port",		&hijack_kftpd_control_port,	21,			1,	0,	65535},
 {"kftpd_data_port",		&hijack_kftpd_data_port,	20,			1,	0,	65535},
@@ -3527,6 +3534,7 @@ hijack_handle_buttons (const char *player_buf)
 }
 
 static unsigned int ir_downkey = IR_NULL_BUTTON, ir_delayed_rotate = 0;
+static unsigned int do_keypress_flash = 0;
 
 static void
 input_append_code2 (unsigned int rawbutton)
@@ -3555,6 +3563,8 @@ input_append_code2 (unsigned int rawbutton)
 				ir_downkey = rawbutton;
 		}
 	}
+	if (!released && button > 0xf)	// don't flash for front panel, or releases
+		do_keypress_flash = hijack_keypress_flash;
 	if (ir_translate_table != NULL) {
 		unsigned short	mixer		= get_current_mixer_source();
 		unsigned short	carhome		= empeg_on_dc_power ? IR_FLAGS_CAR : IR_FLAGS_HOME;
@@ -3933,8 +3943,22 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 			}
 		}
 	}
+	if (do_keypress_flash) {
+		if (do_keypress_flash == 2)
+			do_keypress_flash = 0;
+		refresh = NEED_REFRESH;
+	}
 	if (refresh == NEED_REFRESH) {
-		display_blat(dev, buf);
+		if (do_keypress_flash == 1) {
+			unsigned char tbuf[EMPEG_SCREEN_BYTES], *t = tbuf + EMPEG_SCREEN_BYTES, *b = buf + EMPEG_SCREEN_BYTES;
+			do_keypress_flash = 2;	// for next time
+			while (b != buf) {
+				*--t = (*--b) ^ 0x33;
+			}
+			display_blat(dev, tbuf);
+		} else {
+			display_blat(dev, buf);
+		}
 		hijack_last_refresh = jiffies;
 	}
 }

@@ -1106,7 +1106,7 @@ vitals_display (int firsttime)
 	rowcol = draw_string(rowcol, buf, PROMPTCOLOR);
 
 	// Virtual Memory Pages Status:  Physical,Cached,Buffers,Free
-	sprintf(buf,"\nCach:%lu,Buf:%lu,Free:%u",
+	sprintf(buf,"\nCac:%lu,Buf:%lu,Fre:%u",
 		page_cache_size, buffermem/PAGE_SIZE, nr_free_pages);
 	rowcol = draw_string(rowcol, buf, PROMPTCOLOR);
 
@@ -1661,7 +1661,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,18), " Enhancements.v104 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,18), " Enhancements.v105 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -2195,11 +2195,11 @@ hijack_move_repeat (void)
 }
 
 static int
-test_row (unsigned char *displaybuf, unsigned short row, unsigned char color)
+test_row (void *displaybuf, unsigned short row, unsigned long color)
 {
-	const unsigned int offset = 10;
-	unsigned char *first = displaybuf + (row * (EMPEG_SCREEN_COLS/2)) + offset;
-	unsigned char *test  = first + ((EMPEG_SCREEN_COLS/2) - (offset << 1));
+	const unsigned int offset = 12;
+	unsigned long *first = ((unsigned long *)displaybuf) + (((row * (EMPEG_SCREEN_COLS/2)) + offset) / sizeof(long));
+	unsigned long *test  = first + (((EMPEG_SCREEN_COLS/2) - (offset << 1)) / sizeof(long));
 	do {
 		if (*--test != color)
 			return 0;
@@ -2225,23 +2225,23 @@ check_if_equalizer_is_active (unsigned char *displaybuf)
 static int
 check_if_sound_adjust_is_active (void *player_buf)
 {
-	return (test_row(player_buf,  8, 0x00) && test_row(player_buf,  9, 0x11)
-	     && test_row(player_buf, 16, 0x11) && test_row(player_buf, 17, 0x00));
+	return (test_row(player_buf,  8, 0x00000000) && test_row(player_buf,  9, 0x11111111)
+	     && test_row(player_buf, 16, 0x11111111) && test_row(player_buf, 17, 0x00000000));
 }
 
 static int
 check_if_search_is_active (void *player_buf)
 {
-	return (test_row(player_buf,  4, 0x00) && test_row(player_buf,  5, 0x11)
-	     && test_row(player_buf, 11, 0x00) && test_row(player_buf, 12, 0x11));
+	return ((test_row(player_buf,  4, 0x00000000) && test_row(player_buf,  5, 0x11111111))
+	     || (test_row(player_buf,  6, 0x00000000) && test_row(player_buf,  7, 0x11111111)));
 }
 
 static int
 check_if_playermenu_is_active (void *player_buf)
 {
-	if (test_row(player_buf, 2, 0x00)) {
-		if ((test_row(player_buf, 0, 0x00) && test_row(player_buf, 1, 0x11))
-		 || (test_row(player_buf, 3, 0x11) && test_row(player_buf, 4, 0x00)))
+	if (test_row(player_buf, 2, 0x00000000)) {
+		if ((test_row(player_buf, 0, 0x00000000) && test_row(player_buf, 1, 0x11111111))
+		 || (test_row(player_buf, 3, 0x11111111) && test_row(player_buf, 4, 0x00000000)))
 			return 1;
 	}
 	return 0;

@@ -138,6 +138,9 @@
 #include <asm/arch/empeg.h>
 #include <asm/uaccess.h>
 
+/* No hard disk found image */
+#include "nohd_img.h"
+
 #ifdef NO_ANIMATION
 /* The Rio logo for the splash screen */
 #include "rio_logo.h"

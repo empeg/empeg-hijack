@@ -1,9 +1,9 @@
+#ifndef EMPEG_DISPLAY_H
+#define EMPEG_DISPLAY_H
+
 // pinched from empeg_display.c
 
 #define ANIMATION_FPS		12
-
-/* No hard disk found image */
-#include "nohd_img.h"
 
 #define DEBUGK donothing
 
@@ -109,3 +109,4 @@ struct display_dev
 	unsigned power : 1;
 };
 
+#endif // EMPEG_DISPLAY_H

@@ -1,6 +1,6 @@
 // Empeg display/IR hijacking by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v111"
+#define HIJACK_VERSION "v112"
 //
 // Includes: font, drawing routines
 //           extensible menu system
@@ -202,7 +202,8 @@ static unsigned int hijack_voladj_parms[(1<<VOLADJ_BITS)-1][5] = { // Values as 
 	{0x2000,	 409,	0x1000,	27,	70},  // Medium (Normal)
 	{0x2000,	3000,	0x0c00,	30,	80}}; // High
 
-struct semaphore hijack_kftp_startup_sem;	// sema for waking up kftpd after we read config.ini
+struct semaphore hijack_kftpd_startup_sem;	// sema for waking up kftpd after we read config.ini
+struct semaphore hijack_khttpd_startup_sem;	// sema for waking up khttpd after we read config.ini
 
 // Externally tuneable parameters for config.ini; the voladj_parms are also tuneable
 static hijack_buttonq_t hijack_inputq, hijack_playerq, hijack_userq;
@@ -212,6 +213,7 @@ static int hijack_supress_notify		=  0;	// 1 == supress player "notify" (and "dh
 static int hijack_old_style			=  0;	// 1 == don't highlite menu items
 static int hijack_quicktimer_minutes		= 30;	// increment size for quicktimer function
 static int hijack_standby_minutes		= 30;	// number of minutes after screen blanks before we go into standby
+       int hijack_khttpd_port			= 80;	// khttpd port
        int hijack_kftpd_control_port		= 21;	// kftpd control port
        int hijack_kftpd_data_port		= 20;	// kftpd data port
 
@@ -234,6 +236,7 @@ static const hijack_option_t hijack_option_table[] = {
 	{"voladj_high",			&hijack_voladj_parms[2][0],	5,	0,	0x7ffe},
  	{"quicktimer_minutes",		&hijack_quicktimer_minutes,	1,	1,	120},
  	{"standby_minutes",		&hijack_standby_minutes,	1,	0,	240},
+ 	{"khttpd_port",			&hijack_khttpd_port,		1,	0,	65535},
  	{"kftpd_control_port",		&hijack_kftpd_control_port,	1,	0,	65535},
  	{"kftpd_data_port",		&hijack_kftpd_data_port,	1,	0,	65535},
 	{NULL,NULL,0,0,0} // end-of-list
@@ -3701,7 +3704,8 @@ hijack_read_config_file (const char *path)
 	if (buf)
 		kfree(buf);
 	hijack_set_voladj_parms();
-	up(&hijack_kftp_startup_sem);	// wake-up kftpd now that we've parsed config.ini for port numbers
+	up(&hijack_kftpd_startup_sem);	// wake-up kftpd now that we've parsed config.ini for port numbers
+	up(&hijack_khttpd_startup_sem);	// wake-up kftpd now that we've parsed config.ini for port numbers
 }
 
 #ifdef RESTORE_CARVISUALS

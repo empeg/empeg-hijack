@@ -113,7 +113,7 @@ bad:
 }
 #endif
 
-asmlinkage ssize_t sys_read(unsigned int fd, char * buf, size_t count)
+asmlinkage ssize_t do_sys_read(unsigned int fd, char * buf, size_t count)
 {
 	ssize_t ret;
 	struct file * file;
@@ -149,24 +149,6 @@ asmlinkage ssize_t sys_read(unsigned int fd, char * buf, size_t count)
 	extern pid_t hijack_player_init_pid;  // set to -1 by do_execve("/empeg/bin/player")
 	extern void  hijack_process_config_ini (char *, off_t);
 
-#if 0
-	static int babble = 0;
-	if (++babble < 300) {
-		printk("\nHIJACK: read(%s): PID=%d(%s), offset=%d/%d, count=%d\n",
-			file->f_dentry->d_name.name, current->pid, current->comm,
-			(int)file->f_pos, (int)file->f_dentry->d_inode->i_size, (int)count);
-		//
-		// Here's what we see; note the peculiar first entry in the trace here,
-		// which explains why we now have the check for (file->f_pos == 0) below:
-		//
-		// HIJACK: read(config.ini): PID=9(player), offset=8192/8268, count=76
-		// HIJACK: read(config.ini): PID=9(player), offset=0   /8268, count=4096
-		// HIJACK: read(config.ini): PID=9(player), offset=4096/8268, count=4096
-		// HIJACK: read(config.ini): PID=9(player), offset=8192/8268, count=4096
-		// HIJACK: read(config.ini): PID=9(player), offset=8268/8268, count=4096
-		//
-	}
-#endif
 	if (hijack_player_init_pid == -1 && !strcmp(current->comm, "player")) {
 		if (file->f_pos == 0 && !strcmp(file->f_dentry->d_name.name, "config.ini")) {
 			hijack_player_init_pid = current->pid;
@@ -216,6 +198,40 @@ out:
 bad_file:
 	unlock_kernel();
 	return ret;
+}
+
+asmlinkage ssize_t sys_read(unsigned int fd, char * buf, size_t count)
+{
+	ssize_t ret;
+	extern int reading_fidfile;	// set to 1 in mangle_fids()
+
+	// When the player performs bulk readahead of music,
+	// the player UI becomes extremely unresponsive for long periods.
+	// This is likely due to (1) the large I/O size used,
+	// in combination with (2) lack of IDE DMA, and (3) filesystem readahead.
+	// Here we try a nasty hack to combat this, by forcing smaller read chunks,
+	// and voluntary suspensions between chunks to give the UI some CPU time.
+	//
+	if (reading_fidfile == current->pid) {
+		size_t offset = 0, per_read = 16384;
+		while (offset < count) {
+			if (per_read > (count - offset))
+				per_read = (count - offset);
+			ret = do_sys_read(fd, buf + offset, per_read);
+			if (ret > 0) {
+				offset += ret;
+				if (ret > 8192) {
+					current->state = TASK_INTERRUPTIBLE;
+					schedule_timeout(2);	// 1 is not enough; 2 works rather well
+					current->state = TASK_RUNNING;
+				}
+			}
+			if (ret != per_read)
+				return offset ? offset : ret;
+		}
+		return offset;
+	}
+	return do_sys_read(fd, buf, count);
 }
 
 asmlinkage ssize_t sys_write(unsigned int fd, const char * buf, size_t count)

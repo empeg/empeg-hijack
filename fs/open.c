@@ -896,6 +896,8 @@ static int sys_open2(const char *path, int flags, int mode)
 	return fd;
 }
 
+int reading_fidfile;	// Ugly hack for use by sys_read()
+
 asmlinkage int sys_open(const char * filename, int flags, int mode)
 {
 	char * tmp;
@@ -907,6 +909,15 @@ asmlinkage int sys_open(const char * filename, int flags, int mode)
 	if (!IS_ERR(tmp)) {
 		extern char hijack_zoneinfo[];
 		fd = sys_open2(tmp, flags, mode);
+
+		// Ugly hack for use by sys_read():
+		if (fd >= 0 && 0 == strcmp(current->comm, "player")) {
+			if (0 == strncmp(tmp, "/empeg/fids", 11))
+				reading_fidfile = current->pid;
+			else
+				reading_fidfile = 0;
+		}
+
 		if (hijack_zoneinfo[0]) {
 			if (fd == -ENOENT && tmp[0] == '/') {
 				static const char localtime[] = "/home/empeg/arm-empeg-linux-new/etc/localtime";

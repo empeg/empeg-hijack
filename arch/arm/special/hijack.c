@@ -1,7 +1,14 @@
+
+int hijack_status = 0, hijack_knob_wait = 0;
+#define HIJACK_INACTIVE		0
+#define HIJACK_KNOB_WAIT	1
+#define HIJACK_MENU_ACTIVE	2
+#define HIJACK_GAME_ACTIVE	3
+#define HIJACK_VOLADJ_ACTIVE	4
+
 //
 // Empeg kernel font routines, by Mark Lord <mlord@pobox.com>
 //
-
 #define EMPEG_SCREEN_ROWS 32	/* pixels */
 #define EMPEG_SCREEN_COLS 128	/* pixels */
 
@@ -102,47 +109,74 @@ const unsigned char kfont[94][8] = {
 	{0x02,0x01,0x02,0x04,0x02,0x00,0x00,0x00}  // ~
 	};
 
-static unsigned int draw_fontchar (unsigned char *display, unsigned int row, unsigned int col, const unsigned char *s)
-{
-	unsigned int max_offset = 0;
+#define KFONT_HEIGHT	8	// kfont characters are 8 pixels high (and variable width)
+#define COLOR0		0	// blank pixels
+#define COLOR1		1	// prefix with '-' for inverse video
+#define COLOR2		2	// prefix with '-' for inverse video
+#define COLOR3		3	// prefix with '-' for inverse video
 
-	if (row >= (EMPEG_SCREEN_ROWS/8) || col >= EMPEG_SCREEN_COLS)
+static unsigned char hijacked_displaybuf[EMPEG_SCREEN_ROWS][EMPEG_SCREEN_COLS/2];
+
+static void clear_hijacked_displaybuf (int color)
+{
+	color &= 3;
+	color |= color << 4;
+	memset(hijacked_displaybuf,color,EMPEG_SCREEN_SIZE);
+}
+
+static unsigned int
+draw_font_entry (unsigned char *displayrow, unsigned int pixel_col, const unsigned char *font_entry, int color)
+{
+	unsigned int  pixel_row, max_offset = 0;
+	unsigned char inverse = 0;
+
+	if (pixel_col >= EMPEG_SCREEN_COLS)
 		return 0;
-	display += row * ((EMPEG_SCREEN_COLS/2)*8);
-	for (row = 0; row < 8; ++row) {
+	if (color < 0)
+		color = inverse = -color;
+	color &= 3;
+	color |= color << 4;
+	if (inverse)
+		inverse = color;
+	for (pixel_row = 0; pixel_row < KFONT_HEIGHT; ++pixel_row) {
 		unsigned int offset = 0;
+		unsigned char pixel_mask = (pixel_col & 1) ? 0xf0 : 0x0f;
 		do {
-			unsigned char *d = display + ((col + offset) >> 1);
-			unsigned char mask = ((col + offset) & 1) ? 0xf0 : 0x0f;
-			*d = (*d & ~mask) | ((s[offset] & (1 << row)) ? (0x33 & mask) : 0);
-		} while (s[offset++] && (col + offset) < EMPEG_SCREEN_COLS);
+			unsigned char font_bit    = font_entry[offset] & (1 << pixel_row);
+			unsigned char new_pixel   = font_bit ? (color & pixel_mask) : 0;
+			unsigned char *pixel_pair = displayrow + ((pixel_col + offset) >> 1);
+			*pixel_pair = ((inverse & pixel_mask) | (*pixel_pair & (pixel_mask = ~pixel_mask))) ^ new_pixel;
+		} while (font_entry[offset++] && (pixel_col + offset) < EMPEG_SCREEN_COLS);
 		if (offset > max_offset)
 			max_offset = offset;
-		display += (EMPEG_SCREEN_COLS/2);
+		displayrow += (EMPEG_SCREEN_COLS / 2);
 	}
 	return max_offset;
 }
 
-static unsigned int draw_string (void *display, unsigned int row, unsigned int col, const unsigned char *s)
+static unsigned int
+draw_string (int text_row, unsigned int pixel_col, const unsigned char *s, int color)
 {
-	unsigned char c;
-
-	while ((c = *s++)) {
-		if (c >= 0x21 && c <= 0x7e) {
-			col += draw_fontchar((unsigned char *)display, row, col, kfont[c - 0x21]);
-		} else {
-			col += draw_fontchar((unsigned char *)display, row, col, "");
-			col += draw_fontchar((unsigned char *)display, row, col, "");
-			col += draw_fontchar((unsigned char *)display, row, col, "");
+	if (text_row < (EMPEG_SCREEN_ROWS / KFONT_HEIGHT)) {
+		unsigned char *displayrow = ((unsigned char *)hijacked_displaybuf) + (text_row * (KFONT_HEIGHT * EMPEG_SCREEN_COLS / 2));
+		unsigned char c;
+		while ((c = *s++) != 0) {
+			if (c >= 0x21 && c <= 0x7e) {
+				pixel_col += draw_font_entry(displayrow, pixel_col, kfont[c - 0x21], color);
+			} else {
+				// output a "space" (three columns with no pixels set)
+				pixel_col += draw_font_entry(displayrow, pixel_col, "", color);
+				pixel_col += draw_font_entry(displayrow, pixel_col, "", color);
+				pixel_col += draw_font_entry(displayrow, pixel_col, "", color);
+			}
 		}
 	}
-	return col;
+	return pixel_col;
 }
 
 //
 // Empeg kernel BreakOut game, by Mark Lord <mlord@pobox.com>
 //
-#define GAME_ROWS (EMPEG_SCREEN_ROWS)
 #define GAME_COLS (EMPEG_SCREEN_COLS/2)
 #define GAME_VBOUNCE 0xff
 #define GAME_BRICKS 0xee
@@ -152,32 +186,30 @@ static unsigned int draw_string (void *display, unsigned int row, unsigned int c
 #define GAME_OVER 0x11
 #define GAME_PADDLE_SIZE 8
 
-static unsigned char game_buffer[GAME_ROWS][GAME_COLS];
 static short game_over, game_row, game_col, game_hdir, game_vdir, game_paddle_col, game_paddle_lastdir, game_speed, game_bricks;
 static unsigned long game_starttime, game_ball_lastmove, game_paddle_lastmove, game_animbase = 0, game_animtime;
-static unsigned int game_is_active = 0, game_knob_down, game_left_down, game_right_down, game_select_count = 0, game_paused;
+static unsigned int ir_selected = 0, ir_knob_down = 0, ir_left_down = 0, ir_right_down = 0, ir_trigger_count = 0, game_paused;
 
 unsigned long jiffies_since(unsigned long past_jiffies);
 
 static void game_start (void)
 {
 	int i;
-	game_is_active = 1;
-	memset(game_buffer,0,EMPEG_SCREEN_SIZE);
+	clear_hijacked_displaybuf(COLOR0);
 	game_paddle_col = GAME_COLS / 2;
 	for (i = 0; i < GAME_COLS; ++i) {
-		game_buffer[0][i] = GAME_VBOUNCE;
-		game_buffer[GAME_ROWS-1][i] = GAME_OVER;
-		game_buffer[GAME_BRICKS_ROW][i] = GAME_BRICKS;
+		hijacked_displaybuf[0][i] = GAME_VBOUNCE;
+		hijacked_displaybuf[EMPEG_SCREEN_ROWS-1][i] = GAME_OVER;
+		hijacked_displaybuf[GAME_BRICKS_ROW][i] = GAME_BRICKS;
 	}
-	for (i = 0; i < GAME_ROWS; ++i)
-		game_buffer[i][0] = game_buffer[i][GAME_COLS-1] = GAME_HBOUNCE;
-	memset(&game_buffer[GAME_ROWS-3][game_paddle_col],GAME_VBOUNCE,GAME_PADDLE_SIZE);
+	for (i = 0; i < EMPEG_SCREEN_ROWS; ++i)
+		hijacked_displaybuf[i][0] = hijacked_displaybuf[i][GAME_COLS-1] = GAME_HBOUNCE;
+	memset(&hijacked_displaybuf[EMPEG_SCREEN_ROWS-3][game_paddle_col],GAME_VBOUNCE,GAME_PADDLE_SIZE);
 	game_hdir = 1;
 	game_vdir = 1;
 	game_row = 6;
 	game_col = jiffies % GAME_COLS;
-	if (game_buffer[game_row][game_col] == GAME_HBOUNCE)
+	if (hijacked_displaybuf[game_row][game_col] == GAME_HBOUNCE)
 		game_col = game_col ? GAME_COLS - 1 : 1;
 	game_ball_lastmove = jiffies;
 	game_bricks = GAME_COLS - 2;
@@ -186,6 +218,7 @@ static void game_start (void)
 	game_speed = 16;
 	game_animtime = 0;
 	game_starttime = jiffies;
+	hijack_status = HIJACK_GAME_ACTIVE;
 }
 
 static void game_finale (void)
@@ -195,20 +228,20 @@ static void game_finale (void)
 	unsigned int *frameptr=(unsigned int*)game_animbase;
 	static int framenr, frameadj;
 
-	(void)draw_string(game_buffer, 2, 40, game_bricks ? "Game Over" : "You Win");
+	(void)draw_string(2, 40, game_bricks ? "Game Over" : "You Win", COLOR3);
 	// freeze the display for two seconds, so user knows game is over
 	if (jiffies_since(game_ball_lastmove) < (HZ*2))
 		return;
 	if (game_bricks) {
-		(void)draw_string(game_buffer, 1, 20, "Enhancements.V13");
-		(void)draw_string(game_buffer, 2, 30, "by Mark Lord");
+		(void)draw_string(1, 17, " Enhancements.V14 ", -COLOR3);
+		(void)draw_string(2, 30, "by Mark Lord", COLOR3);
 		if (jiffies_since(game_ball_lastmove) < (HZ*3))
 			return;
 	}
 
 	// just exit if the user lost
 	if (game_animbase == 0 || game_bricks > 0) {
-		game_is_active = 0;
+		hijack_status = HIJACK_INACTIVE;
 		return;
 	}
 
@@ -220,14 +253,14 @@ static void game_finale (void)
 		framenr = 0;
 		frameadj = 1;
 	} else if (framenr < 0) {
-		game_is_active = 0;
+		hijack_status = HIJACK_INACTIVE;
 		return;
 	} else if (!frameptr[framenr]) {
 		frameadj = -1;  // play it again, backwards
 		framenr += frameadj;
 	}
 	s=(unsigned char*)(game_animbase+frameptr[framenr]);
-	d = (unsigned char *)game_buffer;
+	d = (unsigned char *)hijacked_displaybuf;
 	for(a=0;a<2048;a+=2) {
 		*d++=((*s&0xc0)>>2)|((*s&0x30)>>4);
 		*d++=((*s&0x0c)<<2)|((*s&0x03));
@@ -239,7 +272,7 @@ static void game_finale (void)
 
 static void game_move_right (void)
 {
-	unsigned char *paddlerow = game_buffer[GAME_ROWS-3];
+	unsigned char *paddlerow = hijacked_displaybuf[EMPEG_SCREEN_ROWS-3];
 	int i = 3;
 	unsigned long flags;
 	save_flags_cli(flags);
@@ -258,7 +291,7 @@ static void game_move_right (void)
 
 static void game_move_left (void)
 {
-	unsigned char *paddlerow = game_buffer[GAME_ROWS-3];
+	unsigned char *paddlerow = hijacked_displaybuf[EMPEG_SCREEN_ROWS-3];
 	int i = 3;
 	unsigned long flags;
 	save_flags_cli(flags);
@@ -277,8 +310,8 @@ static void game_move_left (void)
 
 static void game_nuke_brick (short row, short col)
 {
-	if (col > 0 && col < GAME_COLS && game_buffer[row][col] == GAME_BRICKS) {
-		game_buffer[row][col] = 0;
+	if (col > 0 && col < GAME_COLS && hijacked_displaybuf[row][col] == GAME_BRICKS) {
+		hijacked_displaybuf[row][col] = 0;
 		if (--game_bricks <= 0)
 			game_over = 1;
 	}
@@ -290,22 +323,22 @@ static void game_move_ball (void)
 		game_finale();
 		return;
 	}
-	if (game_left_down && jiffies_since(game_left_down) >= (HZ/15)) {
-		game_left_down = jiffies ? jiffies : 1;
+	if (ir_left_down && jiffies_since(ir_left_down) >= (HZ/15)) {
+		ir_left_down = jiffies ? jiffies : 1;
 		game_move_left();
 	}
-	if (game_right_down && jiffies_since(game_right_down) >= (HZ/15)) {
-		game_right_down = jiffies ? jiffies : 1;
+	if (ir_right_down && jiffies_since(ir_right_down) >= (HZ/15)) {
+		ir_right_down = jiffies ? jiffies : 1;
 		game_move_right();
 	}
 	// Yeah, I know, this allows minor cheating.. but some folks may crave for it
 	if (game_paused || (jiffies_since(game_ball_lastmove) < (HZ/game_speed)))
 		return;
 	game_ball_lastmove = jiffies;
-	game_buffer[game_row][game_col] = 0;
+	hijacked_displaybuf[game_row][game_col] = 0;
 	game_row += game_vdir;
 	game_col += game_hdir;
-	if (game_buffer[game_row][game_col] == GAME_HBOUNCE) {
+	if (hijacked_displaybuf[game_row][game_col] == GAME_HBOUNCE) {
 		// need to bounce horizontally
 		game_hdir = 0 - game_hdir;
 		game_col += game_hdir;
@@ -315,7 +348,7 @@ static void game_move_ball (void)
 		game_nuke_brick(game_row,game_col-1);
 		game_nuke_brick(game_row,game_col+1);
 	}
-	if (game_buffer[game_row][game_col] == GAME_VBOUNCE) {
+	if (hijacked_displaybuf[game_row][game_col] == GAME_VBOUNCE) {
 		// need to bounce vertically
 		game_vdir = 0 - game_vdir;
 		game_row += game_vdir;
@@ -329,30 +362,60 @@ static void game_move_ball (void)
 			}
 		}
 	}
-	if (game_buffer[game_row][game_col] == GAME_OVER)
+	if (hijacked_displaybuf[game_row][game_col] == GAME_OVER)
 		game_over = 1;
-	game_buffer[game_row][game_col] = GAME_BALL;
+	hijacked_displaybuf[game_row][game_col] = GAME_BALL;
+}
+
+static int  menu_item = 0, menu_size = 0;
+
+static void menu_draw (void)
+{
+	const char *menu[] = {"Volume Adjust Preset", "Break-Out Game", "[exit]", NULL};
+	clear_hijacked_displaybuf(COLOR0);
+	for (menu_size = 0; menu[menu_size] != NULL; ++menu_size)
+		(void)draw_string(menu_size, 0, menu[menu_size], (menu_size == menu_item) ? COLOR3 : COLOR2);
+}
+
+static void menu_start (void)
+{
+	menu_item = 0;
+	menu_draw();
+	hijack_knob_wait = HIJACK_MENU_ACTIVE;
+	hijack_status = HIJACK_KNOB_WAIT;
+}
+
+static void menu_move (int amount)
+{
+	menu_item += amount;
+	if (menu_item >= menu_size)
+		menu_item = 0;
+	else if (menu_item < 0)
+		menu_item = menu_size - 1;
 }
 
 extern void voladj_next_preset(int);
 extern int  voladj_enabled;
-static int  voladj_display_active = 0;
 static const char *voladj_names[4] = {"Off", "Normal", "High", "Max"};
-static unsigned long prev_pressed = 0, bottom_button_down = 0;
 
-static void voladj_display_setting (int started)
+static void voladj_display_setting (int firsttime)
 {
-	if (!started) {
-		unsigned int col;
-		memset(game_buffer,0,EMPEG_SCREEN_SIZE);
-		col  = draw_string(game_buffer, 1, 14, "Volume adjust:  ");
-		col += draw_string(game_buffer, 1, col, voladj_names[voladj_enabled]);
-		voladj_display_active = 1;
-		game_is_active = 1;
-	} else if (!bottom_button_down) {
-		voladj_display_active = 0;
-		game_is_active = 0;
+	unsigned int col;
+	clear_hijacked_displaybuf(COLOR0);
+	col  = draw_string(0,   0, "Volume Adjust:  ", COLOR2);
+	(void) draw_string(0, col, voladj_names[voladj_enabled], COLOR3);
+	if (firsttime) {
+		hijack_knob_wait = HIJACK_VOLADJ_ACTIVE;
+		hijack_status = HIJACK_KNOB_WAIT;
+	} else if (ir_selected) {
+		//hijack_status = HIJACK_INACTIVE;
+		menu_start(); // return to main menu
 	}
+}
+
+static void voladj_move (int amount)
+{
+	voladj_enabled = (voladj_enabled + amount) & 3;
 }
 
 // This routine covertly intercepts all display updates,
@@ -361,25 +424,75 @@ static void voladj_display_setting (int started)
 int hijacked_display(struct display_dev *dev)
 {
 	unsigned long flags;
+
 	save_flags_cli(flags);
-	if (!game_is_active) {
-		if (game_select_count >= 3 || (game_knob_down && jiffies_since(game_knob_down) >= HZ)) {
-			game_select_count = 0;
-			game_is_active = 1;
-			game_start();
+	if (hijack_status == HIJACK_INACTIVE) {
+		if (ir_trigger_count >= 3 || (ir_knob_down && jiffies_since(ir_knob_down) >= HZ)) {
+			ir_trigger_count = 0;
+			menu_start();
 		}
 	}
-	if (game_is_active) {
-		if (voladj_display_active)
-			voladj_display_setting(1);
-		else
+	if (hijack_status != HIJACK_INACTIVE) {
+		if (hijack_status == HIJACK_GAME_ACTIVE) {
 			game_move_ball();
+		} else if (hijack_status == HIJACK_VOLADJ_ACTIVE) {
+			voladj_display_setting(0);
+		} else if (hijack_status == HIJACK_KNOB_WAIT) {
+			if (!ir_knob_down) {
+				ir_selected = 0;
+				hijack_status = hijack_knob_wait;
+				hijack_knob_wait = 0;
+			}
+		} else if (hijack_status == HIJACK_MENU_ACTIVE) {
+			menu_draw();
+			if (ir_selected) {
+				ir_selected = 0;
+				switch (menu_item) {
+					case 0:
+						voladj_display_setting(1);
+						break;
+					case 1:
+						game_start();
+						break;
+					default:
+						hijack_knob_wait = HIJACK_INACTIVE;
+						hijack_status = HIJACK_KNOB_WAIT;
+						break;
+				}
+			}
+		} else {
+			hijack_status = HIJACK_INACTIVE;
+		}
 		restore_flags(flags);
-		display_blat(dev, (unsigned char *)game_buffer);
+		display_blat(dev, (unsigned char *)hijacked_displaybuf);
 		return 1; // display WAS hijacked
 	}
 	restore_flags(flags);
 	return 0; // display was NOT hijacked
+}
+
+static unsigned long prev_pressed = 0;
+
+static int check_selected (unsigned long data)
+{
+	int rc = 0;
+	switch (hijack_status) {
+		case HIJACK_VOLADJ_ACTIVE:
+		case HIJACK_MENU_ACTIVE:
+			ir_selected = 1;
+			rc = 1; // input WAS hijacked
+			break;
+		case HIJACK_INACTIVE:
+			// ugly Kenwood remote hack: press/release CD 3 times in a row to activate menu
+			if (prev_pressed == (data & 0x7fffffff))
+				++ir_trigger_count;
+			else
+				ir_trigger_count = 1;
+			break;
+		default:
+			rc = 1; // input WAS hijacked
+	}
+	return rc;
 }
 
 // This routine covertly intercepts all button presses/releases,
@@ -388,96 +501,108 @@ int hijacked_display(struct display_dev *dev)
 int hijacked_input (unsigned long data)
 {
 	int rc = 0;
+	unsigned long flags;
 
-	//printk("Button: %08x\n",data);
+	//printk("Button: %08x, status=%d, ir_knob_down=%u, ir_selected=%u\n", data, hijack_status, ir_knob_down, ir_selected);
+	save_flags_cli(flags);
 	switch (data) {
-		case 0x00b9461e: // IR_KW_CD_PRESSED
-			// ugly Kenwood remote hack: press CD 3 times in a row to start game
-			if (prev_pressed == data)
-				++game_select_count;
-			else
-				game_select_count = 1;
+		case 0x80b9461e: // IR_KW_CD_RELEASED
+			rc = check_selected(data);
 			break;
 		case 0x0020df0b: // IR_RIO_SELECTMODE_PRESSED
 		case 0x00000008: // IR_KNOB_PRESSED
-			game_knob_down = jiffies ? jiffies : 1;
-			if (game_is_active)
+			ir_knob_down = jiffies ? jiffies : 1;
+			if (hijack_status != HIJACK_INACTIVE) {
+				switch (hijack_status) {
+					case HIJACK_VOLADJ_ACTIVE:
+					case HIJACK_MENU_ACTIVE:
+						ir_selected = 1;
+						break;
+				}
 				rc = 1; // input WAS hijacked
+			}
 			break;
 		case 0x8020df0b: // IR_RIO_SELECTMODE_RELEASED
-		case 0x00000009: // IR_KNOB_RELEASED
-			game_knob_down = 0;
-			if (game_is_active)
+			rc = check_selected(data);
+			// fall thru
+		case 0x00000009: // IR_KNOB_RELEASED  (these come in pairs sometimes)
+			ir_knob_down = 0;
+			if (hijack_status != HIJACK_INACTIVE) {
 				rc = 1; // input WAS hijacked
+			}
 			break;
 		case 0x0000000a: // IR_KNOB_RIGHT
-			if (game_is_active) {
-				game_move_right();
+			if (hijack_status != HIJACK_INACTIVE) {
+				switch (hijack_status) {
+					case HIJACK_MENU_ACTIVE:   menu_move(1); break;
+					case HIJACK_GAME_ACTIVE:   game_move_right(); break;
+					case HIJACK_VOLADJ_ACTIVE: voladj_move(1); break;
+				}
 				rc = 1; // input WAS hijacked
 			}
 			break;
 		case 0x0000000b: // IR_KNOB_LEFT
-			if (game_is_active) {
-				game_move_left();
+			if (hijack_status != HIJACK_INACTIVE) {
+				switch (hijack_status) {
+					case HIJACK_MENU_ACTIVE:   menu_move(-1); break;
+					case HIJACK_GAME_ACTIVE:   game_move_left(); break;
+					case HIJACK_VOLADJ_ACTIVE: voladj_move(-1); break;
+				}
 				rc = 1; // input WAS hijacked
 			}
 			break;
 		case 0x00b9460a: // IR_KW_PREVTRACK_PRESSED
 		case 0x0020df10: // IR_RIO_PREVTRACK_PRESSED
-			game_left_down = jiffies ? jiffies : 1;
-			if (game_is_active)
+			ir_left_down = jiffies ? jiffies : 1;
+			if (hijack_status != HIJACK_INACTIVE) {
+				switch (hijack_status) {
+					case HIJACK_MENU_ACTIVE:   menu_move(-1); break;
+					case HIJACK_VOLADJ_ACTIVE: voladj_move(-1); break;
+				}
 				rc = 1; // input WAS hijacked
+			}
 			break;
 		case 0x80b9460a: // IR_KW_PREVTRACK_RELEASED
 		case 0x8020df10: // IR_RIO_PREVTRACK_RELEASED
-			game_left_down = 0;
-			if (game_is_active)
+			ir_left_down = 0;
+			if (hijack_status != HIJACK_INACTIVE)
 				rc = 1; // input WAS hijacked
 			break;
 		case 0x00b9460b: // IR_KW_NEXTTRACK_PRESSED
 		case 0x0020df11: // IR_RIO_NEXTTRACK_PRESSED
-			game_right_down = jiffies ? jiffies : 1;
-			if (game_is_active)
+			ir_right_down = jiffies ? jiffies : 1;
+			if (hijack_status != HIJACK_INACTIVE) {
+				switch (hijack_status) {
+					case HIJACK_MENU_ACTIVE:   menu_move(1); break;
+					case HIJACK_VOLADJ_ACTIVE: voladj_move(1); break;
+				}
 				rc = 1; // input WAS hijacked
+			}
 			break;
 		case 0x80b9460b: // IR_KW_NEXTTRACK_RELEASED
 		case 0x8020df11: // IR_RIO_NEXTTRACK_RELEASED
-			game_right_down = 0;
-			if (game_is_active)
+			ir_right_down = 0;
+			if (hijack_status != HIJACK_INACTIVE)
 				rc = 1; // input WAS hijacked
 			break;
 		case 0x00b9460e:// IR_KW_PAUSE_PRESSED
 		case 0x0020df16: // IR_RIO_PAUSE_PRESSED
-			if (game_is_active) {
-				game_paused = !game_paused;
+			if (hijack_status != HIJACK_INACTIVE) {
+				if (hijack_status == HIJACK_GAME_ACTIVE)
+					game_paused = !game_paused;
 				rc = 1; // input WAS hijacked
 			}
 			break;
 		case 0x80b9460e: // IR_KW_PAUSE_RELEASED
 		case 0x8020df16: // IR_RIO_PAUSE_RELEASED
-			if (game_is_active)
+			if (hijack_status == HIJACK_GAME_ACTIVE)
 				rc = 1; // input WAS hijacked
-			break;
-		case 0x00000006: // IR_BOTTOM_BUTTON_PRESSED
-			bottom_button_down = jiffies ? jiffies : 1;
-			break;
-		case 0x00000007: // IR_BOTTOM_BUTTON_RELEASED
-			bottom_button_down = 0;
-			break;
-		case 0x00000004: // IR_LEFT_BUTTON_PRESSED
-		case 0x00000002: // IR_RIGHT_BUTTON_PRESSED
-			if (bottom_button_down) {
-				// don't change setting on first button press
-				if (prev_pressed == 0x00000004 || prev_pressed == 0x00000002)
-					voladj_next_preset((data == 0x00000002) ? 1 : -1);
-				voladj_display_setting(0);
-				rc = 1; // input WAS hijacked
-			}
 			break;
 	}
 	// save button PRESSED codes in prev_pressed
 	if ((data & 0x80000001) == 0 || ((int)data) > 16)
 		prev_pressed = data;
+	restore_flags(flags);
 	return rc;
 }
 

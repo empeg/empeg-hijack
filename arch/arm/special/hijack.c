@@ -30,12 +30,13 @@ static int  (*hijack_dispfunc)(int) = NULL;
 static void (*hijack_movefunc)(int) = NULL;
 static int menu_item = 0, menu_size = 0, menu_top = 0;
 static unsigned int ir_lasttime = 0, ir_selected = 0, ir_releasewait = 0, ir_knob_down = 0, ir_left_down = 0, ir_right_down = 0, ir_trigger_count = 0;
-static unsigned long ir_lastbutton = 0;
+static unsigned long ir_lastbutton = 0, ir_delayed_knob_release = 0;
+void real_input_append_code(void *dev, unsigned long data); // empeg_input.c
 static int hijack_player_menu_is_active = 0;
 
 #define KNOBDATA_BITS 2
-static const unsigned long knobdata_pressed [1<<KNOBDATA_BITS] = {IR_KNOB_PRESSED, IR_RIO_SHUFFLE_PRESSED, IR_RIO_INFO_PRESSED, IR_RIO_REPEAT_PRESSED};
-static const unsigned long knobdata_released[1<<KNOBDATA_BITS] = {IR_KNOB_RELEASED,IR_RIO_SHUFFLE_RELEASED,IR_RIO_INFO_RELEASED,IR_RIO_REPEAT_RELEASED};
+static const unsigned long knobdata_pressed [1<<KNOBDATA_BITS] = {IR_KNOB_PRESSED, IR_RIO_SHUFFLE_PRESSED, IR_RIO_INFO_PRESSED, IR_RIO_INFO_PRESSED};
+static const unsigned long knobdata_released[1<<KNOBDATA_BITS] = {IR_KNOB_RELEASED,IR_RIO_SHUFFLE_RELEASED,IR_RIO_INFO_RELEASED,IR_RIO_INFO_PRESSED};
 static int knobdata_index = 0;
 
 #define HIJACK_DATAQ_SIZE	8
@@ -533,11 +534,11 @@ knobdata_display (int firsttime)
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
 	(void)draw_string(ROWCOL(0,0), "Knob Press Redefinition", COLOR2);
-	switch (knobdata_pressed[knobdata_index]) {
-		case IR_KNOB_PRESSED:		s = "[default]";break;
-		case IR_RIO_SHUFFLE_PRESSED:	s = "Shuffle";	break;
-		case IR_RIO_INFO_PRESSED:	s = "Info";	break;
-		case IR_RIO_REPEAT_PRESSED:	s = "Repeat";	break;
+	switch (knobdata_released[knobdata_index]) {
+		case IR_KNOB_RELEASED:		s = "[default]";break;
+		case IR_RIO_SHUFFLE_RELEASED:	s = "Shuffle";	break;
+		case IR_RIO_INFO_RELEASED:	s = "Info";	break;
+		case IR_RIO_INFO_PRESSED:	s = "Details";	break;
 	}
 	rowcol = draw_string(ROWCOL(2,0), "Quick press = ", COLOR2);
 	(void)draw_string(rowcol, s, COLOR3);
@@ -568,7 +569,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v35 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v36 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1117,7 +1118,6 @@ static void hijack_enq_button (unsigned long data)
 		hijack_dataq[hijack_dataq_head = head] = data;
 }
 
-void real_input_append_code(void *dev, unsigned long data); // empeg_input.c
 // This routine covertly intercepts all button presses/releases,
 // giving us a chance to ignore them or to trigger our own responses.
 //
@@ -1129,6 +1129,10 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 
 	save_flags_cli(flags);
 	blanker_activated = 0;
+	if (ir_delayed_knob_release && jiffies_since(ir_delayed_knob_release) > (HZ+(HZ/4))) {
+		ir_delayed_knob_release = 0;
+		real_input_append_code(dev, knobdata_released[knobdata_index] | 0x80000000);
+	}
 	if (hijack_status != HIJACK_INACTIVE) {
 		if (hijack_buttonlist && hijack_status == HIJACK_ACTIVE) {
 			if (hijack_buttonlist[0] < 2) {
@@ -1212,22 +1216,28 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 			}
 			break;
 		case IR_RIO_MENU_RELEASED:
-			if (hijack_status == HIJACK_INACTIVE && !hijack_player_menu_is_active) {
-				if (ir_knob_down && !hijacked && jiffies_since(ir_knob_down) < (HZ/2))
-					real_input_append_code(dev, IR_RIO_MENU_PRESSED); // time to send the menu_pressed
+			if (ir_knob_down && hijack_status == HIJACK_INACTIVE && !hijack_player_menu_is_active) {
+				if (!hijacked && jiffies_since(ir_knob_down) < (HZ/2))
+					real_input_append_code(dev, IR_RIO_MENU_PRESSED);
 			}
 			ir_knob_down = 0;
 			break;
 		case IR_KNOB_PRESSED:
 			hijacked = 1; // hijack it and later send it with the release (below)
-			ir_knob_down = jiffies ? jiffies : 1;
+			if (!ir_delayed_knob_release)
+				ir_knob_down = jiffies ? jiffies : 1;
 			break;
 		case IR_KNOB_RELEASED:  // note: this one often arrives in pairs
-			if (hijack_status == HIJACK_INACTIVE && ir_knob_down && !hijacked) {
+			if (ir_knob_down && hijack_status == HIJACK_INACTIVE && !hijacked) {
 				int index = hijack_player_menu_is_active ? 0 : knobdata_index;
-				if (jiffies_since(ir_knob_down) < (HZ/2)) // short press?
-					real_input_append_code(dev, knobdata_pressed[index]); // time to send the knob_pressed
-				data = knobdata_released[index]; // and the knob_release_data
+				data = knobdata_released[index];
+				if (jiffies_since(ir_knob_down) < (HZ/2)) {	// short press?
+					real_input_append_code(dev, knobdata_pressed[index]);
+					if (knobdata_pressed[index] == knobdata_released[index]) {
+						hijacked = 1; // eat the released code for now
+						ir_delayed_knob_release = jiffies ? jiffies : 1;
+					}
+				}
 			}
 			ir_knob_down = 0;
 			break;
@@ -1374,11 +1384,16 @@ hijack_ioctl (struct inode *inode, struct file *filp, unsigned int cmd, unsigned
 				restore_flags(flags);
 				return index;
 			}
+			rc = 0;
 			add_wait_queue(&hijack_menu_waitq, &wait);
 			while (1) {
 				current->state = TASK_INTERRUPTIBLE;
 				if (menu_item == index && hijack_dispfunc == userland_display)
 					break;
+				if (signal_pending(current)) {
+					rc = -EINTR;
+					break;
+				}
 				restore_flags(flags);
 				schedule();
 				save_flags_cli(flags);
@@ -1386,7 +1401,7 @@ hijack_ioctl (struct inode *inode, struct file *filp, unsigned int cmd, unsigned
 			current->state = TASK_RUNNING;
 			remove_wait_queue(&hijack_menu_waitq, &wait);
 			restore_flags(flags);
-			return 0;
+			return rc;
 		}
 		case EMPEG_HIJACK_DISPWRITE:	// copy buffer to screen
 		{
@@ -1442,21 +1457,28 @@ hijack_ioctl (struct inode *inode, struct file *filp, unsigned int cmd, unsigned
 			struct wait_queue wait = {current, NULL};
 			save_flags_cli(flags);
 			add_wait_queue(&hijack_dataq_waitq, &wait);
+			rc = 0;
 			while (1) {
 				current->state = TASK_INTERRUPTIBLE;
 				if (hijack_dataq_tail != hijack_dataq_head)
 					break;
+				if (signal_pending(current)) {
+					rc = -EINTR;
+					break;
+				}
 				restore_flags(flags);
 				schedule();
 				save_flags_cli(flags);
 			}
 			current->state = TASK_RUNNING;
 			remove_wait_queue(&hijack_dataq_waitq, &wait);
-			hijack_dataq_tail = (hijack_dataq_tail + 1) % HIJACK_DATAQ_SIZE;
-			button = hijack_dataq[hijack_dataq_tail];
-			restore_flags(flags);
-			return put_user(button, (int *)arg);
-
+			if (!rc) {
+				hijack_dataq_tail = (hijack_dataq_tail + 1) % HIJACK_DATAQ_SIZE;
+				button = hijack_dataq[hijack_dataq_tail];
+				restore_flags(flags);
+				rc = put_user(button, (int *)arg);
+			}
+			return rc;
 		}
 		case EMPEG_HIJACK_POLLBUTTONS:	// See if any input is available
 		{

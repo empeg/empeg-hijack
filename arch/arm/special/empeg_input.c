@@ -182,7 +182,7 @@ struct input_dev
 #endif
 };
 
-static struct input_dev input_devices[1];
+struct input_dev input_devices[1];
 
 /* Used to disallow multiple opens. */
 static int users = 0;

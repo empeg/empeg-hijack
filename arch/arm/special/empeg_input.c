@@ -970,6 +970,26 @@ static ssize_t input_read(struct file *filp, char *dest, size_t count,
 	return n;
 }
 
+// input_write() exists solely for DisplayServer
+static ssize_t
+input_write(struct file *filp, const char *buf, size_t count, loff_t *ppos)
+{
+	static struct empeg_ir_write {
+		int type;
+		input_code ircode;
+	} data;
+	struct input_dev *dev = filp->private_data;
+
+	if ( count < sizeof(struct empeg_ir_write) ) return count;
+	if (copy_from_user(&data, buf, sizeof(struct empeg_ir_write)))
+		return -EFAULT;
+	if ( data.type )
+		input_append_code(dev,data.ircode);
+	else
+		input_on_remote_code(dev,data.ircode);
+	return count;
+}
+
 unsigned int input_poll(struct file *filp, poll_table *wait)
 {
 	struct input_dev *dev = filp->private_data;
@@ -1013,7 +1033,7 @@ int input_ioctl(struct inode *inode, struct file *filp, unsigned int cmd,
 static struct file_operations input_fops = {
 	NULL, /* ir_lseek */
 	input_read,
-	NULL, /* ir_write */
+	input_write, /* for DisplayServer */
 	NULL, /* ir_readdir */
 	input_poll, /* ir_poll */
 	input_ioctl,

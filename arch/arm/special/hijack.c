@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v376"
+#define HIJACK_VERSION	"v377"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -5311,16 +5311,15 @@ static void
 init_zoneinfo (void)
 {
 	extern void *hijack_get_state_read_buffer (void);
-
 	unsigned char *tz = hijack_get_state_read_buffer() + 0x51;
-	int fd, z, e;
-	struct dirent de;
+	int fd, z;
 	mm_segment_t old_fs = get_fs();
 	set_fs(KERNEL_DS);
 
 	strcpy(hijack_zoneinfo, "/usr/share/zoneinfo");
-	for (z = 0; z < sizeof(tz); ++z) {
-		int dcount = tz[z] + 2;		// 2 extra:  '.' and '..'
+	for (z = 0; z < 4; ++z) {
+		int e, dcount = tz[z] + 2;		// 2 extra:  '.' and '..'
+		struct dirent de;
 		fd = sys_open(hijack_zoneinfo, O_RDONLY, 0);
 		if (fd == -1)
 			break;

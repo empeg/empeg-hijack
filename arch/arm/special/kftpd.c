@@ -31,13 +31,16 @@
 #define KHTTPD	"khttpd"
 #define KFTPD	"kftpd"
 
+extern int hijack_reboot;
+extern unsigned char * do_button (unsigned char *s, int raw);
+extern int remount_drives (int writeable);
+extern void hijack_serial_insert (const char *buf, int size, int port);	// drivers/char/serial_sa1100.c
 extern int hijack_glob_match (const char *n, const char *p);
 extern tm_t *hijack_convert_time(time_t, tm_t *);	// from arch/arm/special/notify.c
 extern void sys_exit(int);
 extern char hijack_khttpd_style[];			// from arch/arm/special/hijack.c
 extern const char hijack_vXXX_by_Mark_Lord[];		// from arch/arm/special/hijack.c
 extern int strxcmp (const char *str, const char *pattern, int partial);	// hijack.c
-extern int hijack_do_command(const char *command, unsigned int size);	// notify.c 
 extern void show_message (const char *message, unsigned long time);	// hijack.c
 extern void printline (const char *msg, char *s);	// from arch/arm/special/hijack.c
 extern int hijack_khttpd_port;				// from arch/arm/special/hijack.c
@@ -460,7 +463,7 @@ filldir (void *data, const char *name, int namelen, off_t offset, ino_t ino)
 }
 
 static const char dirlist_html_trailer1[] = "</PRE><HR>\r\n%s<FONT SIZE=-2>%s</FONT></BODY></HTML>\r\n";
-static const char dirlist_html_trailer2[] = "<A HREF=\"/drive0/fids/101?.htm\"><FONT SIZE=-1>[Click here for playlists]</FONT></A><BR>\r\n";
+static const char dirlist_html_trailer2[] = "<A HREF=\"/?FID=101.htm\"><FONT SIZE=-1>[Click here for playlists]</FONT></A><BR>\r\n";
 #define DIRLIST_TRAILER_MAX (sizeof(dirlist_html_trailer1) + sizeof(dirlist_html_trailer1) + 25) // 25 is for version string
 
 static int
@@ -723,7 +726,7 @@ send_dirlist (server_parms_t *parms, char *path, int full_listing)
 						rc = format_dir(parms, &p, ino, name, namelen);
 						if (rc < 0) {
 							if (parms->verbose)
-								printk("%s: format_dir('%s') returned %d\n", parms->servername, p.name, rc);
+								printk("%s: format_dir(\"%s\") returned %d\n", parms->servername, p.name, rc);
 							break;
 						}
 					}
@@ -765,7 +768,7 @@ khttpd_respond (server_parms_t *parms, int rcode, const char *title, const char 
 	len = sprintf(buf, kttpd_response, rcode, title, rcode, title, rcode, title, text ? text : "");
 	rc = ksock_rw(parms->clientsock, buf, len, -1);
 	if (rc != len && parms->verbose)
-		printk(KHTTPD": respond(): ksock_rw(%d) returned %d, data='%s'\n", len, rc, buf);
+		printk(KHTTPD": respond(): ksock_rw(%d) returned %d, data=\"%s\"\n", len, rc, buf);
 }
 
 
@@ -1190,15 +1193,15 @@ send_playlist (server_parms_t *parms, char *path)
 
 	// If tagfile is for a "tune", then send a .m3u playlist for it, and quit
 	if (fidtype == 'T') {
-		path[strlen(path)-1] = '0';
 		if (!strxcmp(tags.codec, "mp3", 0)) {
 			secs = str_val(tags.duration) / 1000;
 			used  = sprintf(xfer.buf, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s\r\n\r\n"
 				"#EXTM3U\r\n#EXTINF:%u,%s\r\nhttp://%s/", audio_m3u, secs, artist_title, parms->hostname);
 			used += encode_url(xfer.buf+used, artist_title, parms->apple_iTunes);
-			used += sprintf(xfer.buf+used, "?FID#%x.%s\r\n", pfid^1, tags.codec);
+			used += sprintf(xfer.buf+used, "?FID=%x.%s\r\n", pfid^1, tags.codec);
 			(void)ksock_rw(parms->datasock, xfer.buf, used, -1);
 		} else { // wma, wav
+			path[strlen(path)-1] = '0';
 			khttpd_redirect(parms, path);
 		}
 		goto cleanup;
@@ -1213,12 +1216,12 @@ send_playlist (server_parms_t *parms, char *path)
 			used += sprintf(xfer.buf+used,
 				"<HTML><HEAD><TITLE>%s playlists: %s</TITLE></HEAD>\r\n"
 				"<BODY><TABLE BGCOLOR=\"WHITE\" BORDER=\"2\"><THEAD>\r\n"
-				"<TR><TD> <A HREF=\"%x?.m3u\"><B>Stream</B></A> ",
+				"<TR><TD> <A HREF=\"/?FID=%x.m3u\"><B>Stream</B></A> ",
 				parms->hostname, artist_title, pfid);
 			if (hijack_khttpd_commands)
-				used += sprintf(xfer.buf+used, "<TD> <A HREF=\"%x?SERIAL=%%23%x.htm\"><B>Play</B></A> ", pfid, pfid^1);
+				used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?FID=%x&SERIAL=%%23%x.htm\"><B>Play</B></A> ", pfid, pfid^1);
 			if (hijack_khttpd_files)
-				used += sprintf(xfer.buf+used, "<TD> <A HREF=\"%x\"><B>Tags</B></A> ", pfid);
+				used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?FID=%x\"><B>Tags</B></A> ", pfid);
 			used += sprintf(xfer.buf+used, "<TD ALIGN=CENTER> <FONT SIZE=+2><B><EM>%s</EM></B></FONT> <TD> <B>Length</B> "
 				"<TD> <B>Type</B> <TD> <B>Artist</B> <TD> <B>Source</B><TBODY>\r\n", tags.title);
 			break;
@@ -1316,20 +1319,20 @@ open_fidfile:
 			// spit out an appropriately formed representation for this fid:
 			switch (parms->generate_playlist) {
 				case 1:	// html
-					used += sprintf(xfer.buf+used, "<TR><TD> <A HREF=\"%x?.m3u\"><em>Stream</em></A> ", fid);
+					used += sprintf(xfer.buf+used, "<TR><TD> <A HREF=\"/?FID=%x.m3u\"><em>Stream</em></A> ", fid);
 					if (hijack_khttpd_commands)
-						used += sprintf(xfer.buf+used, "<TD> <A HREF=\"%x?SERIAL=%%23%x.htm\"><em>Play</em></A> ", pfid, fid^1);
+						used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?FID=%x&SERIAL=%%23%x.htm\"><em>Play</em></A> ", pfid, fid^1);
 					if (hijack_khttpd_files)
-						used += sprintf(xfer.buf+used, "<TD> <A HREF=\"%x\"><EM>Tags</EM></A> ", fid);
+						used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?FID=%x\"><EM>Tags</EM></A> ", fid);
 					if (fidtype == 'T') {
 						if (hijack_khttpd_files)
-							used += sprintf(xfer.buf+used, "<TD> <A HREF=\"%x\">%s</A> ", fid^1, tags.title);
+							used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?FID=%x\">%s</A> ", fid^1, tags.title);
 						else
 							used += sprintf(xfer.buf+used, "<TD> %s ", tags.title);
 						used += sprintf(xfer.buf+used, "<TD ALIGN=CENTER> %u:%02u <TD> %s <TD> %s&nbsp <TD> %s&nbsp \r\n",
 							secs/60, secs%60, tags.type, tags.artist, tags.source);
 					} else {
-						used += sprintf(xfer.buf+used, "<TD> <A HREF=\"%x?.htm\">%s</A> "
+						used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?FID=%x.htm\">%s</A> "
 							"<TD ALIGN=CENTER> %u <TD> %s <TD> %s&nbsp <TD> %s&nbsp \r\n",
 							fid, tags.title, entries, tags.type, tags.artist, tags.source);
 					}
@@ -1340,7 +1343,7 @@ open_fidfile:
 						subpath[sublen - 1] = '0';
 						used += sprintf(xfer.buf+used, "#EXTINF:%u,%s\r\nhttp://%s/", secs, artist_title, parms->hostname);
 						used += encode_url(xfer.buf+used, artist_title, parms->apple_iTunes);
-						used += sprintf(xfer.buf+used, "?FID#%x.%s\r\n", fid^1, tags.codec);
+						used += sprintf(xfer.buf+used, "?FID=%x.%s\r\n", fid^1, tags.codec);
 					}
 					break;
 				case 3: // xml
@@ -1449,7 +1452,7 @@ kftpd_do_rmdir (server_parms_t *parms, const char *path)
 	int	rc, response = 250;;
 
 	if ((rc = sys_rmdir(path))) {
-		printk(KFTPD": rmdir('%s') failed, rc=%d\n", path, rc);
+		printk(KFTPD": rmdir(\"%s\") failed, rc=%d\n", path, rc);
 		response = 550;
 	}
 	return response;
@@ -1461,7 +1464,7 @@ kftpd_do_mkdir (server_parms_t *parms, const char *path)
 	int	rc, response = 0;
 
 	if ((rc = sys_mkdir(path, 0777 & ~parms->umask))) {
-		printk(KFTPD": mkdir('%s') failed, rc=%d\n", path, rc);
+		printk(KFTPD": mkdir(\"%s\") failed, rc=%d\n", path, rc);
 		response = 550;
 	} else {
 		(void) kftpd_dir_response(parms, 257, path, "directory created");
@@ -1476,7 +1479,7 @@ kftpd_do_chmod (server_parms_t *parms, unsigned int mode, const char *path)
 
 	if ((rc = sys_chmod(path, mode))) {
 		if (rc != -ENOENT && parms->verbose)
-			printk(KFTPD": chmod('%s',%d) failed, rc=%d\n", path, mode, rc);
+			printk(KFTPD": chmod(\"%s\",%d) failed, rc=%d\n", path, mode, rc);
 		response = 550;
 	}
 	return response;
@@ -1488,7 +1491,7 @@ kftpd_do_delete (server_parms_t *parms, const char *path)
 	int	rc, response = 250;
 
 	if ((rc = sys_unlink(path))) {
-		printk(KFTPD": unlink('%s') failed, rc=%d\n", path, rc);
+		printk(KFTPD": unlink(\"%s\") failed, rc=%d\n", path, rc);
 		response = 550;
 	}
 	return response;
@@ -1563,6 +1566,83 @@ append_path (char *path, char *new, char *tmp)
 		}
 	}
 	*p = '\0';
+}
+
+static unsigned char
+fromhex (unsigned char x)
+{
+	if (INRANGE(x,'0','9'))
+		return x - '0';
+	x = TOUPPER(x);
+	if (INRANGE(x, 'A', 'F'))
+		return x - 'A' + 10;
+	return 16;
+}
+
+static void
+khttpd_fix_hexcodes (char *buf)
+{
+	char *s = buf;
+	unsigned char *x, x1, x2;
+
+	while (*s) {
+		while (*s && *s != '%')
+			++s;
+		x = s + 1;
+		if ((x1 = *x++) && (x2 = *x++)) {
+			if ((x1 = fromhex(x1)) < 16 && (x2 = fromhex(x2)) < 16) {
+				*s++ = (x1 << 4) | x2;
+				do {
+					*(x - 2) = *x;
+				} while (*x++);
+			}
+		}
+	}
+}
+
+int
+hijack_do_command (void *sparms, char *buf)
+{
+	int		rc = 0;
+	char		*nextline = buf;
+	server_parms_t	*parms = sparms;
+
+	while (!rc && *nextline) {
+		char *s;
+		s = nextline;
+		while (*nextline && *++nextline != '\n' && *nextline != ';' && *nextline != '&');
+		if (*nextline)
+			*nextline++ = '\0';
+		khttpd_fix_hexcodes(s);		// process %xx escapes
+		if (!strxcmp(s, "BUTTON=", 1)) {
+			s = do_button(s+7, 0);
+		} else if (!strxcmp(s, "BUTTONRAW=", 1)) {
+			s = do_button(s+10, 1);
+		} else if (!strxcmp(s, "RW", 0)) {
+			rc = remount_drives(1);
+		} else if (!strxcmp(s, "RO", 0)) {
+			rc = remount_drives(0);
+		} else if (!strxcmp(s, "REBOOT", 0)) {
+			(void) remount_drives(0);
+			hijack_reboot = 1;
+		} else if (!strxcmp(s, "POPUP ", 1) && *(s += 6)) {
+			int secs;
+			if (get_number(&s, &secs, 10, NULL) && *s++ == ' ' && *s)
+				show_message(s, secs * HZ);
+			else
+				rc = -EINVAL;
+		} else if (!strxcmp(s, "SERIAL=", 1) && *(s += 7)) {
+			hijack_serial_insert(s, strlen(s), 1);
+			hijack_serial_insert("\n", 1, 1);
+		} else if (parms && !strxcmp(s, "FID=", 1)) {
+			sprintf(parms->cwd, "/drive0/fids/%s", s+4);
+		} else if (parms && !strxcmp(s, "STYLE=", 1) && *(s += 6) && strlen(s) < sizeof(parms->style)) {
+			strcpy(parms->style, s);
+		} else {
+			rc = -EINVAL;
+		}
+	}
+	return rc;
 }
 
 /////////////////////////////////////////////////////////////////////////////////
@@ -1647,7 +1727,7 @@ kftpd_handle_command (server_parms_t *parms)
 	if (buf[n - 1] == '\r')
 		buf[--n] = '\0';
 	if (parms->verbose)
-		printk(KFTPD": '%s'\n", buf);
+		printk(KFTPD": \"%s\"\n", buf);
 
 	// first look for commands that have hardcoded reponses:
 	for (r = simple_response_table; r->text; ++r) {
@@ -1717,7 +1797,7 @@ kftpd_handle_command (server_parms_t *parms)
 			response = kftpd_do_chmod(parms, mode, path);
 		}
 	} else if (!strxcmp(buf, "SITE ", 1)) {
-		response = hijack_do_command(&buf[5], n - 5) ? 541 : 200;
+		response = hijack_do_command(NULL, &buf[5]) ? 541 : 200;
 	} else if (!strxcmp(buf, "PORT ", 1)) {
 		parms->have_portaddr = 0;
 		if (extract_portaddr(&parms->portaddr, &buf[5])) {
@@ -1803,41 +1883,6 @@ got_response:
 	return quit;
 }
 
-static unsigned char
-fromhex (unsigned char x)
-{
-	if (INRANGE(x,'0','9'))
-		return x - '0';
-	x = TOUPPER(x);
-	if (INRANGE(x, 'A', 'F'))
-		return x - 'A' + 10;
-	return 16;
-}
-
-static char *
-khttpd_fix_hexcodes (char *buf)
-{
-	char *s = buf;
-	unsigned char x1, x2;
-
-	while (*s) {
-		while (*s && *s++ != '%');
-		if ((x1 = *s) && (x2 = *++s)) {
-			if ((x1 = fromhex(x1)) < 16 && (x2 = fromhex(x2)) < 16) {
-				int len = s - buf;
-				*s = (x1 << 4) | x2;
-				buf = s;
-				while (len-- > 2) {
-					--buf;
-					*buf = *(buf - 2);
-				}
-				++s;
-			}
-		}
-	}
-	return buf;
-}
-
 static void
 khttpd_handle_connection (server_parms_t *parms)
 {
@@ -1864,7 +1909,7 @@ khttpd_handle_connection (server_parms_t *parms)
 	} while (size < 5 || buf[size-1] != '\n' || (buf[size-2] != '\n' && buf[size-3] != '\n'));
 	buf[size] = '\0';
 	if (parms->verbose > 1)
-		printk(KHTTPD": request_header = '%s'\n", buf);
+		printk(KHTTPD": request_header = \"%s\"\n", buf);
 
 	if (strxcmp(buf, "GET ", 1) || !buf[4]) {
 		khttpd_respond(parms, 405, "Method Not Allowed", "Server only supports GET");
@@ -1909,7 +1954,7 @@ khttpd_handle_connection (server_parms_t *parms)
 	}
 	*p = '\0'; // zero-terminate the GET line
 	if (parms->verbose)
-		printk(KHTTPD": GET '%s'\n", path);
+		printk(KHTTPD": GET \"%s\"\n", path);
 	// a useful shortcut
 	if (!strxcmp(path, "/?playlists", 1)) {
 		khttpd_redirect(parms, "/drive0/fids/101?.htm");
@@ -1922,18 +1967,18 @@ khttpd_handle_connection (server_parms_t *parms)
 			break;
 		}
 	}
-	path = khttpd_fix_hexcodes(path);
+	// move path to an alternate buffer so we can edit/replace it later, if needed
+	khttpd_fix_hexcodes(strcpy(parms->cwd, path));
+	path = parms->cwd;
 	if (cmds && *cmds) {
 		char *end;
 
-		// translate '='/'+' into spaces, and '&' into ';'
+		parms->nocache = 1;
+		// translate '+' into ' '
 		while ((c = *++p)) {
-			if (c == '=' || c == '+')
+			if (c == '+')
 				*p = ' ';
-			else if (c == '&')
-				*p = ';';
 		}
-		cmds = khttpd_fix_hexcodes(cmds);
 		end = cmds + strlen(cmds);
 		if ((end - cmds) >= 4) {
 			char *saved = end;
@@ -1946,31 +1991,14 @@ khttpd_handle_connection (server_parms_t *parms)
 				parms->generate_playlist = 2;
 			} else if (!strxcmp(end, ".xml", 1)) {
 				parms->generate_playlist = 3;
-				// look for alternative style-sheet to embed in the xml:
-				if (!strxcmp(cmds, "STYLE ", 1)) {
-					int len;
-					cmds += 6;
-					len = strlen(cmds) - 4;	// (discard ".xml" extension)
-					if (len > 0) {
-						if (len >= sizeof(parms->style))
-							len = sizeof(parms->style) - 1;
-						cmds[len] = '\0';
-						p = parms->style;
-						do {
-							*p++ = *cmds;
-						} while (*++cmds);
-					}
-				}
 			} else if (strxcmp(end, ".mp3", 1)) {	// just ignore a trailing .mp3 extension
 				end = saved;
 			}
 		}
 		*end = '\0';
 		if (*cmds) {
-			if (!strxcmp(cmds, "FID#", 1)) {	// in .m3u files:  http://host/some_tune_name?FID#xxx.mp3
-				sprintf(path, "/drive0/fids/%s", cmds+4);
-			} else if (hijack_khttpd_commands) {
-				hijack_do_command(cmds, p - cmds); // ignore errors
+			if (hijack_khttpd_commands) {
+				hijack_do_command(parms, cmds); // ignore errors
 				if (!*path) {
 					const char r204[] = "HTTP/1.1 204 No Response\r\nConnection: close\r\n\r\n";
 					ksock_rw(parms->clientsock, r204, sizeof(r204)-1, -1);
@@ -1981,7 +2009,6 @@ khttpd_handle_connection (server_parms_t *parms)
 				goto quit;
 			}
 		}
-		parms->nocache = 1;
 		if (parms->generate_playlist) {
 			if (!hijack_khttpd_playlists)
 				response = &access_not_permitted;
@@ -1993,7 +2020,6 @@ khttpd_handle_connection (server_parms_t *parms)
 				response = send_playlist(parms, path);
 			goto quit;
 		}
-		// use_index = 0;	// Mmm...
 	}
 	if (!(pathlen = strlen(path))) {
 		response = &(http_response_t){400, "Missing Pathname"};

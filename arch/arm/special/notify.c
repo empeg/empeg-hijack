@@ -21,6 +21,7 @@
 #define IR_INTERNAL		((void *)-1)
 
 extern int hijack_player_started;
+extern int hijack_do_command (void *sparms, char *buf);
 extern int strxcmp (const char *str, const char *pattern, int partial);					// hijack.c
 extern int get_button_code (unsigned char **s_p, unsigned int *button, int eol_okay, const char *nextchars); // hijack.c
 extern int hijack_reboot;										// hijack.c
@@ -32,7 +33,6 @@ extern void input_append_code(void *dev, unsigned long button);						// hijack.c
 extern void show_message (const char *message, unsigned long time);					// hijack.c
 extern long sleep_on_timeout(struct wait_queue **p, long timeout);					// kernel/sched.c
 extern signed long schedule_timeout(signed long timeout);						// kernel/sched.c
-extern void hijack_serial_insert (const char *buf, int size, int port);					// drivers/char/serial_sa1100.c
 
 unsigned char notify_labels[] = "#AFGLMNSTV";	// 'F' must match next line
 #define NOTIFY_FIDLINE		2		// index of 'F' in notify_labels[]
@@ -288,7 +288,7 @@ static struct proc_dir_entry proc_screen_raw_entry = {
 	&hijack_proc_screen_raw_read, /* get_info() */
 };
 
-static int
+int
 remount_drives (int writeable)
 {
 	int	len, flags;
@@ -333,7 +333,7 @@ remount_drives (int writeable)
 
 #define RELEASECODE(b)	(((b) > 0xf) ? (b) | 0x80000000 : (b) | 1)
 
-static unsigned char *
+unsigned char *
 do_button (unsigned char *s, int raw)
 {
 	unsigned int button;
@@ -360,62 +360,23 @@ do_button (unsigned char *s, int raw)
 	return s;
 }
 
-int
-hijack_do_command (const char *buffer, unsigned int count)
-{
-	int	rc = 0;
-	char	*nextline, *kbuf;
-
-	// make a zero-terminated writeable copy to simplify parsing:
-	if (!(kbuf = kmalloc(count + 1, GFP_KERNEL)))
-		return -ENOMEM;
-	memcpy(kbuf, buffer, count);
-	kbuf[count] = '\0';
-	nextline = kbuf;
-
-	while (!rc && *nextline) {
-		unsigned char *s;
-		s = nextline;
-		if (*s == '#')	// ignore eol?
-			return rc;
-		while (*nextline && *++nextline != '\n' && *nextline != ';');
-		if (*nextline)
-			*nextline++ = '\0';
-		if (!strxcmp(s, "BUTTON ", 1)) {
-			s = do_button(s+7, 0);
-		} else if (!strxcmp(s, "BUTTONRAW ", 1)) {
-			s = do_button(s+10, 1);
-		} else if (!strxcmp(s, "RW", 0)) {
-			rc = remount_drives(1);
-		} else if (!strxcmp(s, "RO", 0)) {
-			rc = remount_drives(0);
-		} else if (!strxcmp(s, "REBOOT", 0)) {
-			remount_drives(0);
-			hijack_reboot = 1;
-		} else if (!strxcmp(s, "POPUP ", 1)) {
-			int secs;
-			s += 6;
-			if (*s && get_number(&s, &secs, 10, NULL) && *s++ == ' ' && *s)
-				show_message(s, secs * HZ);
-			else
-				rc = -EINVAL;
-		} else if (!strxcmp(s, "SERIAL ", 1) && *(s += 7)) {
-			hijack_serial_insert(s, strlen(s), 1);
-			hijack_serial_insert("\n", 1, 1);
-		} else {
-			rc = -EINVAL;
-		}
-	}
-	kfree(kbuf);
-	return rc;
-}
-
 static int
 proc_notify_write (struct file *file, const char *buffer, unsigned long count, void *data)
 {
-	int rc = hijack_do_command(buffer, count); 
-	if (!rc)
-		rc = count;
+	int rc;
+	unsigned char *kbuf;
+
+	// make a zero-terminated writeable copy to simplify parsing:
+	if (!(kbuf = kmalloc(count + 1, GFP_KERNEL))) {
+		rc = -ENOMEM;
+	} else {
+		memcpy(kbuf, buffer, count);
+		kbuf[count] = '\0';
+		rc = hijack_do_command(NULL, kbuf); 
+		kfree(kbuf);
+		if (!rc)
+			rc = count;
+	}
 	return rc;
 }
 

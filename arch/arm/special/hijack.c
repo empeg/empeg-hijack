@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v211"
+#define HIJACK_VERSION	"v212"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -3387,7 +3387,7 @@ printline (const char *msg, char *s)
 	e = findchars(s, "\n\r");
 	c = *e;
 	*e = '\0';
-	printk("%s: '%s'\n", msg, s);
+	printk("%s: \"%s\"\n", msg, s);
 	*e = c;
 }
 
@@ -3561,7 +3561,7 @@ remove_menu_entry (const char *label)
 			if (!item->label)
 				break;
 		} else if (!strxcmp(item->label, label, 0)) {
-			printk("hijack: removed menu entry: '%s'\n", label);
+			printk("hijack: removed menu entry: \"%s\"\n", label);
 			found = 1;
 		}
 	}

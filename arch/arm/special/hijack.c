@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v308"
+#define HIJACK_VERSION	"v309"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -56,7 +56,7 @@ int	empeg_tuner_present = 0;	// used by NextSrc button, perhaps has other uses
 int	hijack_fsck_disabled = 0;	// used in fs/ext2/super.c
 int	hijack_onedrive = 0;		// used in drivers/block/ide-probe.c
 int	hijack_reboot = 0;		// set to "1" to cause reboot on next display refresh
-int	hijack_player_init_pid = 0;	// used in fs/read_write.c, fs/exec.c
+pid_t	hijack_player_init_pid;		// used in fs/read_write.c, fs/exec.c
 unsigned int hijack_player_started = 0;	// set to jiffies when player startup is detected on serial port (notify.c)
 
 static unsigned int PROMPTCOLOR = COLOR3, ENTRYCOLOR = -COLOR3;
@@ -4886,13 +4886,13 @@ set_fan_control (void)
 // This could be invoked multiple times if file is too large for a single read,
 // so we use the f_pos parameter to ensure we only do setup stuff once.
 void
-hijack_process_config_ini (char *buf, int invocation_count)
+hijack_process_config_ini (char *buf, off_t f_pos)
 {
 	static const char *acdc_labels[2] = {";@AC", ";@DC"};
 
 	(void) edit_config_ini(buf, acdc_labels    [empeg_on_dc_power]);
 	(void) edit_config_ini(buf, homework_labels[hijack_homework]);
-	if (invocation_count != 1)		// exit if not first read of this cycle
+	if (f_pos)		// exit if not first read of this cycle
 		return;
 
 	printk("\n");
@@ -5089,6 +5089,7 @@ hijack_init (void *animptr)
 	char buf[128];
 	const unsigned long animstart = HZ/2;
 
+	hijack_player_init_pid = 0;
 	hijack_game_animptr = animptr;
 	hijack_buttonled_level = 0;	// turn off button LEDs
 	failed = hijack_restore_settings(buf);

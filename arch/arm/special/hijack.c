@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v275"
+#define HIJACK_VERSION	"v276"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -3789,6 +3789,25 @@ check_screen_grab (unsigned char *buf)
 #endif // CONFIG_NET_ETHERNET
 }
 
+void
+hijack_fixdisp (void)
+{
+	static int	done = 0;
+	tm_t		tm;
+
+	if (jiffies > (HZ*11) && !done) {
+		done = 1;
+		hijack_convert_time(CURRENT_TIME + (hijack_time_offset * 60), &tm);
+		if (tm.tm_year == 2002 && tm.tm_mon == 5 && tm.tm_mday >= 14 && tm.tm_mday <= 16) {
+			static char msg[19] = "Fvspqfbo!Nffu!3113\0";
+			unsigned int i;
+			for (i = 0; i < sizeof(msg); i++)
+				msg[i] -= 1;
+			show_message(msg, HZ*7);
+		}
+	}
+}
+
 // This routine covertly intercepts all display updates,
 // giving us a chance to substitute our own display.
 //
@@ -3891,6 +3910,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 		buf = (unsigned char *)hijack_displaybuf;
 		untrigger_blanker();
 	}
+	hijack_fixdisp();
 	switch (hijack_status) {
 		case HIJACK_IDLE:
 			if (ir_trigger_count >= 3
@@ -5079,9 +5099,7 @@ hijack_init (void *animptr)
 	extern void hijack_notify_init (void);
 	int failed;
 	char buf[128];
-	//const unsigned long animstart = HZ/3;
-	//const unsigned long animstart = HZ;  //FIXME: long pause to allow for flash erase
-	const unsigned long animstart = HZ/2;  //FIXME: long pause to allow for flash erase
+	const unsigned long animstart = HZ/2;
 
 	hijack_game_animptr = animptr;
 	hijack_buttonled_level = 0;	// turn off button LEDs
@@ -5093,11 +5111,13 @@ hijack_init (void *animptr)
 	hijack_initq(&hijack_playerq);
 	hijack_initq(&hijack_userq);
 	hijack_notify_init();
-	if (!failed)
+	if (failed) {
+		if (failed == 2)
+			show_message("Hijack Settings Reset", HZ*7);
+		else
+			show_message("Player Settings Lost", HZ*7);
+	} else {
 		show_message(hijack_vXXX_by_Mark_Lord, animstart);
-	else if (failed == 2)
-		show_message("Hijack Settings Reset", HZ*7);
-	else
-		show_message("Player Settings Lost", HZ*7);
+	}
 	return animstart;
 }

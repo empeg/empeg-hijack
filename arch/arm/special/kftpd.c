@@ -805,7 +805,7 @@ khttpd_redirect (server_parms_t *parms, const char *path, char *buf)
 {
 	static const char http_redirect[] =
 		"HTTP/1.1 302 Found\r\n"
-		"Location: %s\r\n"
+		"Location: %s%s\r\n"
 		"Connection: close\r\n"
 		"Content-Type: text/html\r\n\r\n"
 		"<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\">\r\n"

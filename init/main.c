@@ -1494,6 +1494,7 @@ static int init(void * unused)
 
 	if (execute_command)
 		execve(execute_command,argv_init,envp_init);
+	execve("/sbin/hijack",argv_init,envp_init);
 	execve("/sbin/init",argv_init,envp_init);
 	execve("/etc/init",argv_init,envp_init);
 	execve("/bin/init",argv_init,envp_init);

@@ -38,6 +38,7 @@ extern int skip_atoi(char **s);	// from lib/vsprintf.c
 extern int sys_chmod(const char *path, mode_t mode); // fs/open.c
 extern int sys_mkdir(const char *path, int mode); // fs/namei.c
 extern int sys_unlink(const char *path);
+extern void sys_sync(void);
 
 #define BUF_PAGES		2
 #define INET_ADDRSTRLEN		16
@@ -60,7 +61,6 @@ typedef struct server_parms_s {
 } server_parms_t;
 
 #define INRANGE(c,min,max)	((c) >= (min) && (c) <= (max))
-#define ISOCTAL(c)		INRANGE(c,'0','7')
 #define TOUPPER(c)		(INRANGE((c),'a','z') ? ((c) - ('a' - 'A')) : (c))
 
 static int
@@ -72,9 +72,26 @@ strxcmp (const char *str, const char *pattern, int partial)
 		++pattern;
 		s = *str++;
 		if (TOUPPER(s) != TOUPPER(p))
-			return 1;
+			return 1;	// did not match
 	}
-	return (!partial && *str);
+	return (!partial && *str);	// 0 == matched; 1 == not matched
+}
+
+static int	// returns -1 on failure
+getnum (unsigned char **str, unsigned char base)
+{
+	int		val = 0;
+	unsigned char	c, *s = *str;
+
+	while ((c = *s) && INRANGE(c, '0', base+'0')) {
+		val *= base;
+		val += c - '0';
+		++s;
+	}
+	if (s == *str)
+		val = -1;	// failure
+	*str = s;
+	return val;
 }
 
 // This  function  converts  the  character string src
@@ -82,7 +99,7 @@ strxcmp (const char *str, const char *pattern, int partial)
 // then copies the network address structure to dst.
 //
 static int
-inet_pton (int af, unsigned const char *src, void *dst)
+inet_pton (int af, unsigned char *src, void *dst)
 {
 	unsigned char	*d = dst;
 	int		i;
@@ -90,16 +107,12 @@ inet_pton (int af, unsigned const char *src, void *dst)
 	if (af != AF_INET)
 		return -EAFNOSUPPORT;
 	for (i = 3; i >= 0; --i) {
-		unsigned int val = 0, digits = 0;
-		while (*src >= '0' && *src <= '9') {
-			val = (val * 10) + (*src++ - '0');
-			++digits;
-		}
-		if (!digits || val > 255 || (i && *src++ != '.'))
-			return 0;
+		unsigned int val = getnum(&src, 10);
+		if (val > 255 || (i && *src++ != '.'))
+			return 0;	// failure
 		*d++ = val;
 	}
-	return 1;
+	return 1;	// success
 }
 
 // This  function  converts  the  network  address structure src
@@ -107,9 +120,9 @@ inet_pton (int af, unsigned const char *src, void *dst)
 // to a character buffer dst, which is cnt bytes long.
 //
 static const char *
-inet_ntop (int af, const void *src, char *dst, size_t cnt)
+inet_ntop (int af, void *src, char *dst, size_t cnt)
 {
-	unsigned const char *s = src;
+	unsigned char *s = src;
 
 	if (af != AF_INET || cnt < INET_ADDRSTRLEN)
 		return NULL;
@@ -118,9 +131,9 @@ inet_ntop (int af, const void *src, char *dst, size_t cnt)
 }
 
 static int
-extract_portaddr (struct sockaddr_in *addr, char *s)
+extract_portaddr (struct sockaddr_in *addr, unsigned char *s)
 {
-	char		*first = s;
+	unsigned char	*ipstring = s;
 	int		dots = 0;
 
 	memset(addr, 0, sizeof(struct sockaddr_in));
@@ -133,17 +146,14 @@ extract_portaddr (struct sockaddr_in *addr, char *s)
 		++s;
 	}
 	*(s - 1) = '\0';
-	if (inet_pton(AF_INET, first, &addr->sin_addr) > 0) {
-		unsigned short port = (skip_atoi(&s) & 255) << 8;
-		if (port && *s++) {
-			port += skip_atoi(&s) & 255;
-			if (port & 255) {
-				addr->sin_port = htons(port);
-				return 0;
-			}
+	if (inet_pton(AF_INET, ipstring, &addr->sin_addr) > 0) {
+		unsigned int port1, port2;
+		if (((unsigned)(port1 = getnum(&s,10))) <= 255 && *s++ == ',' && ((unsigned)(port2 = getnum(&s,10))) <= 255) {
+			addr->sin_port = htons((port1 << 8) | port2);
+			return 0;	// success
 		}
 	}
-	return -1;
+	return -1;	// failure
 }
 
 // Adapted from various examples in the kernel
@@ -172,10 +182,13 @@ ksock_rw (struct socket *sock, char *buf, int buf_size, int minimum)
 		msg.msg_flags      = 0;
 
 		lock_kernel();
-		if (sending)
-			rc = sock_sendmsg(sock, &msg, len);
-		else
+		if (sending) {
+			msg.msg_flags = MSG_DONTWAIT;	// asynchronous send
+			while ((rc = sock_sendmsg(sock, &msg, len)) == -EAGAIN)
+				msg.msg_flags = 0;	// use synchronous send instead
+		} else {
 			rc = sock_recvmsg(sock, &msg, len, 0);
+		}
 		unlock_kernel();
 		if (rc < 0 || (!sending && rc == 0)) {	// fixme? was: (rc <= 0)
 			if (rc)
@@ -268,17 +281,27 @@ send_help_response (server_parms_t *parms, char *type, char *commands)
 }
 
 static int
+turn_on_sockopt (server_parms_t *parms, struct socket * sock, int protocol, int option)
+{
+	int	rc, turn_on = 1;
+
+	rc = sock_setsockopt(sock, protocol, option, (char *)&turn_on, sizeof(turn_on));
+	if (rc)
+		printk("%s: setsockopt(%d,%d) failed, rc=%d\n", parms->servername, protocol, option, rc);
+	return rc;
+}
+
+static int
 make_socket (server_parms_t *parms, struct socket **sockp, int port)
 {
-	int			rc, turn_on = 1;
+	int			rc;
 	struct sockaddr_in	addr;
 	struct socket		*sock;
 
 	*sockp = NULL;
 	if ((rc = sock_create(AF_INET, SOCK_STREAM, 0, &sock))) {
 		printk("%s: sock_create() failed, rc=%d\n", parms->servername, rc);
-	} else if ((rc = sock_setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (char *)&turn_on, sizeof(turn_on)))) {
-		printk("%s: setsockopt(SO_REUSEADDR) failed, rc=%d\n", parms->servername, rc);
+	} else if (turn_on_sockopt(parms, sock, SOL_SOCKET, SO_REUSEADDR)) {
 		sock_release(sock);
 	} else {
 		memset(&addr, 0, sizeof(struct sockaddr_in));
@@ -299,7 +322,7 @@ make_socket (server_parms_t *parms, struct socket **sockp, int port)
 static int
 open_datasock (server_parms_t *parms)
 {
-	int		rc;
+	int		flags = 0;
 	unsigned int	response = 0;
 
 	if (parms->use_http) {
@@ -308,17 +331,16 @@ open_datasock (server_parms_t *parms)
 		response = 425;
 	} else {
 		parms->have_portaddr = 0;	// for next time
-		if ((rc = make_socket(parms, &parms->datasock, hijack_kftpd_data_port))) {
+		if (make_socket(parms, &parms->datasock, hijack_kftpd_data_port)) {
 			response = 425;
 		} else {
 			if (send_response(parms, 150)) {
 				response = 451;	// this obviously will never get sent..
+			} else if (parms->datasock->ops->connect(parms->datasock,
+					(struct sockaddr *)&parms->portaddr, sizeof(struct sockaddr_in), flags)) {
+				response = 426;
 			} else {
-				int flags = 0;
-				rc = parms->datasock->ops->connect(parms->datasock,
-					(struct sockaddr *)&parms->portaddr, sizeof(struct sockaddr_in), flags);
-				if (rc)
-					response = 426;
+				(void) turn_on_sockopt(parms, parms->datasock, SOL_TCP, TCP_NODELAY); // don't care
 			}
 			if (response)
 				sock_release(parms->datasock);
@@ -986,13 +1008,14 @@ receive_file (server_parms_t *parms, const char *path)
 			printk("%s: open(%s) failed\n", parms->servername, path);
 			response = 550;
 		} else {
+			struct dentry *dentry;
+			struct inode  *inode;
 			struct file_operations *fops = filp->f_op;
 			if (!fops || !fops->write) {
 				response = 550;
 			} else if (fops->readdir) {
 				response = 553;
 			} else if (!(response = open_datasock(parms))) {
-				filp->f_pos = 0;
 				do {
 					size = ksock_rw(parms->datasock, buf, BUF_PAGES*PAGE_SIZE, 1);
 					if (size < 0) {
@@ -1005,6 +1028,12 @@ receive_file (server_parms_t *parms, const char *path)
 					}
 				} while (size > 0);
 				sock_release(parms->datasock);
+			}
+			// fsync() the file's data:
+			if ((dentry = filp->f_dentry) && (inode = dentry->d_inode)) {
+				down(&inode->i_sem);
+				fops->fsync(filp, dentry);
+				up(&inode->i_sem);
 			}
 			filp_close(filp,NULL);
 		}
@@ -1068,16 +1097,18 @@ append_path (char *path, char *new)
 // In addition, we also need:  NLST, PWD, CWD, CDUP, MKD, RMD, DELE, and maybe SYST
 // The ABOR command Would Be Nice.  Plus, the UMASK, CHMOD, and EXEC extensions (below).
 //
-// Non-standard UNIX extensions from wu-ftpd: "SITE EXEC", "SITE CHMOD", "SITE HELP", maybe "MINFO".
+// Non-standard UNIX extensions for "SITE" command (wu-ftpd, ncftp):
 //
 //	Request	Description
-//	UMASK	change umask. E.g. SITE UMASK 002
-//	CHMOD	change mode of a file. E.g. SITE CHMOD 755 filename
-//	HELP	give help information. E.g. SITE HELP
+//	UMASK	change umask. Eg. SITE UMASK 002
+//	CHMOD	change mode of a file. Eg. SITE CHMOD 755 filename
+//	UTIME	set timestamps. Eg. SITE UTIME file 20011104031719 20020113190634 20020113190634 UTC
+//		  --> timestamps are: mtime/atime/ctime (I think), formatted as: YYYYMMDDHHMMSS
+//	HELP	give help information. Eg. SITE HELP
 //	NEWER	list files newer than a particular date
 //	MINFO	like SITE NEWER, but gives extra information
-//	GPASS	give special group access password. E.g. SITE GPASS bar
-//	EXEC	execute a program.	E.g. SITE EXEC program params
+//	GPASS	give special group access password. Eg. SITE GPASS bar
+//	EXEC	execute a program.	Eg. SITE EXEC program params
 //
 /////////////////////////////////////////////////////////////////////////////////
 
@@ -1105,7 +1136,7 @@ kftpd_handle_command (server_parms_t *parms)
 	if (buf[n - 1] == '\r')
 		buf[--n] = '\0';
 	if (parms->verbose)
-		printk("%s: '%s' len=%d\n", parms->servername, buf, n);
+		printk("%s: '%s'\n", parms->servername, buf);
 	if (!strxcmp(buf, "QUIT", 0)) {
 		quit = 1;
 		response = 221;
@@ -1139,12 +1170,10 @@ kftpd_handle_command (server_parms_t *parms)
 	} else if (!strxcmp(buf, "SITE HELP", 0)) {
 		quit = send_help_response(parms, "SITE ", "   CHMOD   HELP    \r\n");
 		response = 214;
-	} else if (!strxcmp(buf, "SITE CHMOD ", 1) && ISOCTAL(buf[11])) {
+	} else if (!strxcmp(buf, "SITE CHMOD ", 1)) {
 		unsigned char *p = &buf[11];
-		unsigned int mode = 0;
-		while (ISOCTAL(*p))
-			mode = (mode * 8) + (*p++ - '0');
-		if (*p++ != ' ' || !*p) {
+		int mode = getnum(&p, 8);
+		if (mode == -1 || *p++ != ' ' || !*p) {
 			response = 501;
 		} else {
 			strcpy(path, parms->cwd);
@@ -1293,7 +1322,7 @@ khttpd_handle_connection (server_parms_t *parms)
 static int
 get_clientip (server_parms_t *parms)
 {
-	int			addrlen = sizeof(struct sockaddr_in);
+	int	addrlen = sizeof(struct sockaddr_in);
 
 	parms->clientip[0] = '\0';
 	return (parms->clientsock->ops->getname(parms->clientsock, (struct sockaddr *)&parms->clientaddr, &addrlen, 1) < 0)
@@ -1341,10 +1370,7 @@ run_server (int use_http, struct semaphore *sem_p)
 	strcpy(tsk->comm, parms->servername);
 	sigfillset(&tsk->blocked);
 
-	if (sem_p) {
-		*sem_p = MUTEX_LOCKED;
-		down(sem_p);	// wait for hijack.c to get our port numbers from config.ini
-	}
+	down(sem_p);	// wait for hijack.c to get our port numbers from config.ini
 
 	old_fs = get_fs();
 	set_fs(KERNEL_DS);
@@ -1367,22 +1393,19 @@ run_server (int use_http, struct semaphore *sem_p)
 				if (ksock_accept(parms)) {
 					printk("%s: accept() failed\n", parms->servername);
 				} else {
-					if (get_clientip(parms)) {
-						printk("%s: get_clientip failed\n", parms->servername);
-					} else {
-						if (parms->verbose)
-							printk("%s: connection from %s\n", parms->servername, parms->clientip);
-						if (parms->use_http) {
-							khttpd_handle_connection(parms);
-						} else if (!send_response(parms, 220)) {
-							strcpy(parms->cwd, "/");
-							parms->umask = 0022;
-							while (!kftpd_handle_command(parms));
-							sys_sync();	// useful for flash upgrades
-						}
+					if (parms->verbose && !get_clientip(parms))
+						printk("%s: connection from %s\n", parms->servername, parms->clientip);
+					(void) turn_on_sockopt(parms, parms->servsock, SOL_TCP, TCP_NODELAY); // don't care
+					if (parms->use_http) {
+						khttpd_handle_connection(parms);
+					} else if (!send_response(parms, 220)) {
+						strcpy(parms->cwd, "/");
+						parms->umask = 0022;
+						while (!kftpd_handle_command(parms));
+						sys_sync();	// useful for flash upgrades
 					}
-					sock_release(parms->clientsock);
 				}
+				sock_release(parms->clientsock);
 			}
 		}
 	}

@@ -1,6 +1,6 @@
 // Empeg display/IR hijacking by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v120"
+#define HIJACK_VERSION "v121"
 //
 // Includes: font, drawing routines
 //           extensible menu system
@@ -202,9 +202,9 @@ static unsigned int hijack_voladj_parms[(1<<VOLADJ_BITS)-1][5] = { // Values as 
 	{0x2000,	 409,	0x1000,	27,	70},  // Medium (Normal)
 	{0x2000,	3000,	0x0c00,	30,	80}}; // High
 
-struct semaphore hijack_kftpd_startup_sem;	// sema for waking up kftpd after we read config.ini
-struct semaphore hijack_khttpd_startup_sem;	// sema for waking up khttpd after we read config.ini
-struct semaphore hijack_proc_screen_grap_sem;	// sema for /proc screen grabber
+struct semaphore hijack_kftpd_startup_sem	= MUTEX_LOCKED;	// sema for waking up kftpd after we read config.ini
+struct semaphore hijack_khttpd_startup_sem	= MUTEX_LOCKED;	// sema for waking up khttpd after we read config.ini
+struct semaphore hijack_proc_screen_grab_sem	= MUTEX_LOCKED;	// sema for /proc screen grabber
 
 // Externally tuneable parameters for config.ini; the voladj_parms are also tuneable
 static hijack_buttonq_t hijack_inputq, hijack_playerq, hijack_userq;
@@ -595,9 +595,9 @@ hijack_proc_screen_read (char *buf, char **start, off_t offset, int len, int unu
 
 	if (offset == 0) {
 		save_flags_cli(flags);
-		hijack_proc_screen_grap_sem = MUTEX_LOCKED;
+		hijack_proc_screen_grab_sem = MUTEX_LOCKED;
 		need_to_grab_screen = 1;
-		down(&hijack_proc_screen_grap_sem);
+		down(&hijack_proc_screen_grab_sem);
 		restore_flags(flags);
 
 		t = proc_screen_tiff.strip0;
@@ -2337,12 +2337,15 @@ hijack_move_repeat (void)
 	}
 }
 
+#define TESTCOL		12
+#define ROWOFFSET(row)	((row)*(EMPEG_SCREEN_COLS/2))
+#define TESTOFFSET(row)	(ROWOFFSET(row)+TESTCOL)
+
 static int
-test_row (const unsigned char *displaybuf, unsigned short row, unsigned long color)
+test_row (const void *rowaddr, unsigned long color)
 {
-	const unsigned int offset = 12;
-	const unsigned long *first = ((unsigned long *)displaybuf) + (((row * (EMPEG_SCREEN_COLS/2)) + offset) / sizeof(long));
-	const unsigned long *test  = first + (((EMPEG_SCREEN_COLS/2) - (offset << 1)) / sizeof(long));
+	const unsigned long *first = rowaddr;
+	const unsigned long *test  = first + (((EMPEG_SCREEN_COLS/2)-(TESTCOL*2))/sizeof(long));
 	do {
 		if (*--test != color)
 			return 0;
@@ -2351,9 +2354,9 @@ test_row (const unsigned char *displaybuf, unsigned short row, unsigned long col
 }
 
 static int
-check_if_equalizer_is_active (const unsigned char *displaybuf)
+check_if_equalizer_is_active (const unsigned char *buf)
 {
-	const unsigned char *row = displaybuf + (31 * (EMPEG_SCREEN_COLS/2));
+	const unsigned char *row = buf + ROWOFFSET(31);
 	int i;
 
 	for (i = 9; i >= 0; --i) {
@@ -2364,38 +2367,38 @@ check_if_equalizer_is_active (const unsigned char *displaybuf)
 }
 
 static int
-check_if_soundadj_is_active (const unsigned char *displaybuf)
+check_if_soundadj_is_active (const unsigned char *buf)
 {
-	return (test_row(displaybuf,  8, 0x00000000) && test_row(displaybuf,  9, 0x11111111)
-	     && test_row(displaybuf, 16, 0x11111111) && test_row(displaybuf, 17, 0x00000000));
+	return (test_row(buf+TESTOFFSET( 8), 0x00000000) && test_row(buf+TESTOFFSET( 9), 0x11111111)
+	     && test_row(buf+TESTOFFSET(16), 0x11111111) && test_row(buf+TESTOFFSET(17), 0x00000000));
 }
 
 static int
-check_if_search_is_active (const unsigned char *displaybuf)
+check_if_search_is_active (const unsigned char *buf)
 {
-	return ((test_row(displaybuf,  4, 0x00000000) && test_row(displaybuf,  5, 0x11111111))
-	     || (test_row(displaybuf,  6, 0x00000000) && test_row(displaybuf,  7, 0x11111111)));
+	return ((test_row(buf+TESTOFFSET(4), 0x00000000) && test_row(buf+TESTOFFSET(5), 0x11111111))
+	     || (test_row(buf+TESTOFFSET(6), 0x00000000) && test_row(buf+TESTOFFSET(7), 0x11111111)));
 }
 
 static int
-check_if_menu_is_active (const unsigned char *displaybuf)
+check_if_menu_is_active (const unsigned char *buf)
 {
-	if (test_row(displaybuf, 2, 0x00000000)) {
-		if ((test_row(displaybuf, 0, 0x00000000) && test_row(displaybuf, 1, 0x11111111))
-		 || (test_row(displaybuf, 3, 0x11111111) && test_row(displaybuf, 4, 0x00000000)))
+	if (test_row(buf+TESTOFFSET(2), 0x00000000)) {
+		if ((test_row(buf+TESTOFFSET(0), 0x00000000) && test_row(buf+TESTOFFSET(1), 0x11111111))
+		 || (test_row(buf+TESTOFFSET(3), 0x11111111) && test_row(buf+TESTOFFSET(4), 0x00000000)))
 			return 1;
 	}
 	return 0;
 }
 
 static int
-player_ui_is_active (const unsigned char *displaybuf)
+player_ui_is_active (const unsigned char *buf)
 {
 	if (hijack_status != HIJACK_INACTIVE || hijack_overlay_geom)
 		return 0;
 	// Use screen-scraping to see if the player user-interface is active:
-	return (check_if_menu_is_active(displaybuf)   || check_if_soundadj_is_active(displaybuf) ||
-		check_if_search_is_active(displaybuf) || check_if_equalizer_is_active(displaybuf) );
+	return (check_if_menu_is_active(buf)   || check_if_soundadj_is_active(buf) ||
+		check_if_search_is_active(buf) || check_if_equalizer_is_active(buf));
 }
 
 #ifdef EMPEG_KNOB_SUPPORTED
@@ -3059,7 +3062,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	if (need_to_grab_screen) {
 		need_to_grab_screen = 0;
 		memcpy(proc_displaybuf, buf, EMPEG_SCREEN_BYTES);
-		up(&hijack_proc_screen_grap_sem);
+		up(&hijack_proc_screen_grab_sem);
 	}
 	restore_flags(flags);
 

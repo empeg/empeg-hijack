@@ -137,6 +137,7 @@
 #include <asm/io.h>
 #include <linux/empeg.h>
 #include <asm/uaccess.h>
+#include <asm/arch/empegcar.h>	// for EMPEG_FLASHBASE
 
 #ifdef NO_ANIMATION
 /* The Rio logo for the splash screen */
@@ -147,8 +148,6 @@
 /* Animations for both empeg and rio players. */
 #include "empeg_ani.h"
 #include "rio_ani.h"
-
-/* Animation speed (in fps) */
 #endif
 
 /* No hard disk found image */
@@ -833,6 +832,17 @@ static void handle_splash(struct display_dev *dev)
 	} else {
 		ani_ptr=(unsigned long*)empeg_ani;
 	}
+{
+	// look for custom animation at tail end of kernel flash partition:
+	unsigned char *p = (unsigned char *)(EMPEG_FLASHBASE + 0x10000 + 0xa0000 - 4);
+	if (p[0] == 'A' && p[1] == 'N' && p[2] == 'I' && p[3] == 'M') {
+		unsigned int offset = *(unsigned int *)(p - 4);
+		if (offset >= 0x90000 && offset < (0xa0000 - (1024 + 8 + 8))) {
+			printk("Found custom animation at offset 0x%x\n", offset);
+			ani_ptr = (unsigned long *)(EMPEG_FLASHBASE + 0x10000 + offset);
+		}
+	}
+}
 	display_animation((unsigned long)ani_ptr);
 
 	/* Work out time to play animation: 1s (0.5 start & end) + frames */
@@ -841,7 +851,7 @@ static void handle_splash(struct display_dev *dev)
 	while(*ani_ptr++) animation_time+=(HZ/ANIMATION_FPS);
 #endif
 
-	/* Setup timer to display user's image (if present) in 4 seconds */
+	/* Setup timer to display user's image (if present) after the animation finishes */
 	if (logo_type & LOGO_CUSTOM) {
 		printk("Scheduling custom logo.\n");
 		init_timer(&display_timer);

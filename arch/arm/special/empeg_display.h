@@ -3,6 +3,7 @@
 
 // pinched from empeg_display.c
 
+/* Animation speed (in fps) */
 #define ANIMATION_FPS		12
 
 #define DEBUGK donothing

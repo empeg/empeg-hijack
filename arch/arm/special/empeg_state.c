@@ -253,6 +253,11 @@ typedef struct player_savearea_fields_s {
 static int hijack_saved_volume;
 extern int empeg_on_dc_power;
 
+void * hijack_get_state_read_buffer (void)
+{
+	return state_devices[0].read_buffer;
+}
+
 //
 // This gets invoked from hijack.c whenever hijack_volumelock_enabled
 // is toggled from 0 -> 1.  It saves the current volume level for

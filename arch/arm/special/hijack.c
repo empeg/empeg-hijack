@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v375"
+#define HIJACK_VERSION	"v376"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -15,6 +15,8 @@ const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 #include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/kernel_stat.h>
+#include <linux/unistd.h>
+#include <linux/dirent.h>
 
 #include <linux/empeg.h>
 #include <asm/uaccess.h>
@@ -5061,6 +5063,9 @@ set_fan_control (void)
 
 #endif // CONFIG_EMPEG_I2C_FAN_CONTROL
 
+char hijack_zoneinfo[128];
+static void init_zoneinfo(void);
+
 // invoked from fs/read_write.c on each read of config.ini at each player start-up.
 // This could be invoked multiple times if file is too large for a single read,
 // so we use the f_pos parameter to ensure we only do setup stuff once.
@@ -5077,6 +5082,7 @@ hijack_process_config_ini (char *buf, off_t f_pos)
 	if (f_pos)		// exit if not first read of this cycle
 		return;
 
+	init_zoneinfo();
 	printk("\n");
 	reset_hijack_options();
 	if (ir_setup_translations(buf))
@@ -5301,6 +5307,39 @@ hijack_restore_settings (char *buf, char *msg)
 	return failed;
 }
 
+static void
+init_zoneinfo (void)
+{
+	extern void *hijack_get_state_read_buffer (void);
+
+	unsigned char *tz = hijack_get_state_read_buffer() + 0x51;
+	int fd, z, e;
+	struct dirent de;
+	mm_segment_t old_fs = get_fs();
+	set_fs(KERNEL_DS);
+
+	strcpy(hijack_zoneinfo, "/usr/share/zoneinfo");
+	for (z = 0; z < sizeof(tz); ++z) {
+		int dcount = tz[z] + 2;		// 2 extra:  '.' and '..'
+		fd = sys_open(hijack_zoneinfo, O_RDONLY, 0);
+		if (fd == -1)
+			break;
+		for (e = 0; e <= dcount; ++e) {
+			extern asmlinkage int old_readdir(unsigned int fd, void * dirent, unsigned int count);
+			if (old_readdir(fd, &de, 1) < 0) {
+				sys_close(fd);
+				goto done;
+			}
+		}
+		sys_close(fd);
+		strcat(hijack_zoneinfo, "/");
+		strcat(hijack_zoneinfo, de.d_name);
+	}
+done:
+	printk("Timezone: %s\n", hijack_zoneinfo);
+	set_fs(old_fs);
+}
+
 unsigned long	// invoked once from empeg_display.c
 hijack_init (void *animptr)
 {
@@ -5309,6 +5348,7 @@ hijack_init (void *animptr)
 	char buf[128], msg[32];
 	unsigned long anistart = HZ;
 
+	hijack_zoneinfo[0] = '\0';
 	hijack_khttpd_new_fid_dirs = 1;	// look for new fids directory structure
 	hijack_player_init_pid = 0;
 	hijack_game_animptr = animptr;

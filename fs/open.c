@@ -875,8 +875,6 @@ hijack_mangle_fids (unsigned char *path, int creating)
 	}
 }
 
-int hijack_have_zoneinfo = 0;	// set to 0 by do_execve("/empeg/bin/player")
-
 static int sys_open2(const char *path, int flags, int mode)
 {
 	int fd, error;
@@ -900,7 +898,6 @@ static int sys_open2(const char *path, int flags, int mode)
 
 asmlinkage int sys_open(const char * filename, int flags, int mode)
 {
-	static char zoneinfo[128];
 	char * tmp;
 	int fd;
 	extern char *getname2(const char *filename, int creating);
@@ -908,19 +905,16 @@ asmlinkage int sys_open(const char * filename, int flags, int mode)
 	tmp = getname2(filename, (mode & O_CREAT) != 0);
 	fd = PTR_ERR(tmp);
 	if (!IS_ERR(tmp)) {
+		extern char hijack_zoneinfo[];
 		fd = sys_open2(tmp, flags, mode);
-		if (hijack_have_zoneinfo) {
+		if (hijack_zoneinfo[0]) {
 			if (fd == -ENOENT && tmp[0] == '/') {
-				if ((tmp[1] == 'h' && !strcmp(tmp, "/home/empeg/arm-empeg-linux-new/etc/localtime"))
-				 || (tmp[1] == 'e' && !strcmp(tmp, "/etc/localtime"))) {
-					fd = sys_open2(zoneinfo, flags, mode);
+				static const char localtime[] = "/home/empeg/arm-empeg-linux-new/etc/localtime";
+				if ((tmp[1] == 'h' && !strcmp(tmp, localtime))
+				 || (tmp[1] == 'e' && !strcmp(tmp, localtime + 31))) {
+					fd = sys_open2(hijack_zoneinfo, flags, mode);
 				}
 			}
-		} else if (0 == strncmp(tmp, "/usr/share/zoneinfo/", 20)) {
-			strcpy(zoneinfo, tmp);
-		} else if (0 == strcmp(tmp, "/empeg/var/tags")) {
-			printk("Timezone is %s\n", zoneinfo);
-			hijack_have_zoneinfo = 1;
 		}
 		putname(tmp);
 	}

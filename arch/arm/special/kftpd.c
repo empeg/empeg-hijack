@@ -876,7 +876,7 @@ get_tag (char *s, char *tag, char *buf, int buflen)
 {
 	*buf = '\0';
 	while (*s) {
-		if (*s == *tag && !strxcmp(s, tag, 1)) {
+		if (!strxcmp(s, tag, 1)) {
 			char *val = buf;
 			s += strlen(tag);
 			while (*s && *s != '\n' && --buflen > 0)

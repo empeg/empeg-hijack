@@ -51,6 +51,7 @@ extern int sys_readlink(const char *path, char *buf, int bufsiz);
 extern int sys_chmod(const char *path, mode_t mode); // fs/open.c
 extern int sys_mkdir(const char *path, int mode); // fs/namei.c
 extern int sys_unlink(const char *path);
+extern int sys_rename(const char * oldname, const char * newname);
 extern int sys_newstat(char *, struct stat *);
 extern int sys_newfstat(int, struct stat *);
 extern int sys_fsync(int);
@@ -71,7 +72,9 @@ typedef struct server_parms_s {
 	char			have_portaddr;		// bool
 	char			icy_metadata;		// bool
 	char			need_password;		// bool
-	short			data_port;
+	char			rename_pending;		// bool
+	char			spare;			// bool
+	unsigned int		data_port;
 	off_t			start_offset;		// starting offset for next FTP/HTTP file transfer
 	off_t			end_offset;		// for current HTTP file read
 	unsigned int		umask;
@@ -207,7 +210,7 @@ static response_t response_table[] = {
 	{250,	" Okay"},
 	{257,	" Okay"},
 	{331,	" Password required"},
-	{350,	" Restarting next transfer"},	//350 Restarting at 999. Send STORE or RETRIEVE to initiate transfer.
+	{350,	" Next command required"},
 	{425,	" Connection error"},
 	{426,	" Connection failed"},
 	{431,	" No such directory"},
@@ -215,6 +218,7 @@ static response_t response_table[] = {
 	{500,	" Bad command"},
 	{501,	" Bad syntax"},
 	{502,	" Not implemented"},
+	{503,	" Bad command sequence"},
 	{530,	" Login incorrect"},
 	{541,	" Remote command failed"},
 	{550,	" Failed"},
@@ -931,7 +935,7 @@ get_fid_mime_title (char *path, char *buf, int bufsize, char *title, int titlele
 				case 'm': mimetype = audio_wma;	 break;
 				case 'a': mimetype = audio_wav;	 break;
 			}
-			get_tag(buf, "artist=", title, 32);
+			get_tag(buf, "artist=", title, 48);
 			size = strlen(title);
 			if (size) {
 				title += size;
@@ -955,7 +959,7 @@ khttp_send_file_header (server_parms_t *parms, char *path, off_t length, char *b
 	int		len;
 	const char	*mimetype, *rcode = "200 OK";
 	off_t		clength = length;
-	char		title[96], ext[8];
+	char		title[128], ext[8];
 
 	title[0] = '\0';
 	if (glob_match(path, "/drive?/fids/*0")) {
@@ -1114,8 +1118,8 @@ send_playlist (server_parms_t *parms, char *path)
 {
 	http_response_t	*response = NULL;
 	unsigned int	secs;
-	char		subpath[] = "/driveX/fids/XXXXXXXXXX", type[12], codec[4], title[64], artist[32], source[32];
-	int		rootfid, fid, done_header = 0, size;
+	char		subpath[] = "/drive0/fids/XXXXXXXXXX", type[12], length[12], codec[4], title[64], artist[48], source[48];
+	int		rootfid, fid, done_header = 0, size, used = 0;
 	file_xfer_t	xfer;
 	int		fd[16], fdx = -1;	// up to 16 levels of playlist recursion
 	char		*p = &path[13];	// point just after "/drive?/fids/" portion
@@ -1154,7 +1158,7 @@ send_playlist (server_parms_t *parms, char *path)
 		response = &(http_response_t){408, "Missing playlist tag"};
 		goto cleanup;
 	}
-	set_sockopt(parms, parms->datasock, SOL_TCP, TCP_NODELAY, 0);
+	//fixme set_sockopt(parms, parms->datasock, SOL_TCP, TCP_NODELAY, 0);
 	fid = rootfid;
 
 open_playlist_fid:
@@ -1163,18 +1167,22 @@ open_playlist_fid:
 		printk("%s: send_playlist(): nested too deep\n", parms->servername);
 		goto aborted;
 	}
-	sprintf(subpath, "/drive0/fids/%x", fid & ~1);
+	sprintf(subpath+13, "%x", fid & ~1);
 	fd[fdx] = open_fid_file(subpath);
 	if (fd[fdx] < 0) {
-		printk("%s: send_playlist(): open('%s') failed, rc=%d\n", parms->servername, subpath, fd[fdx--]);
-		// playlist must have been empty; just continue..
+		int rc = fd[fdx--];
+		if (rc != -ENOENT) {
+			printk("%s: send_playlist(): open('%s') failed, rc=%d\n", parms->servername, subpath, rc);
+			goto aborted;
+		} // else: playlist must have been empty; just continue..
 	}
 	while (fdx >= 0) {
 		while (sizeof(fid) == read(fd[fdx], (char *)&fid, sizeof(fid))) {
 			int	tags_fd;
 			char	*tags_buf = parms->tmp3;
+
 			fid |= 1;
-			sprintf(subpath, "/drive0/fids/%x", fid);
+			sprintf(subpath+13, "%x", fid);
 			tags_fd = open_fid_file(subpath);	// get tagfile
 			if (tags_fd < 0) {
 				printk("%s: send_playlist(): open('%s') failed, rc=%d\n", parms->servername, subpath, tags_fd);
@@ -1190,21 +1198,20 @@ open_playlist_fid:
 			(void) get_tag(tags_buf, "type=", type, sizeof(type));
 			if (parms->generate_playlist == 2 && *type != 't')
 				goto open_playlist_fid;
-			size = 0;
 			if (!done_header) {
 				done_header = 1;
-				size  = sprintf(xfer.buf, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s\r\n\r\n",
+				used += sprintf(xfer.buf+used, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s\r\n\r\n",
 					(parms->generate_playlist == 2) ? audio_m3u : text_html);
 				if (parms->generate_playlist == 1) {
 					const char *hyphen = *artist ? " - " : "";
-					size += sprintf(xfer.buf+size, "<HTML><HEAD><TITLE>%s%s%s</TITLE></HEAD>\r\n<BODY>\r\n"
-						"<H2>%s%s%s</H2><TABLE BORDER=2><THEAD>\r\n"
-						"<HTML><BODY><TABLE BORDER=2><THEAD>\r\n"
+					used += sprintf(xfer.buf+used, "<HTML><HEAD><TITLE>%s%s%s</TITLE></HEAD>\r\n<BODY>\r\n"
+						"<H2>%s%s%s</H2><TABLE BORDER=\"2\"><THEAD>\r\n"
+						"<HTML><BODY><TABLE BORDER=\"2\"><THEAD>\r\n"
 						"<TR><TD> <A HREF=\"%x?.m3u\"><FONT SIZE=-1><EM>Play All</EM></FONT></A> <TD> <B>Title</B> <TD> <B>Length</B> <TD> <B>Type</B> "
 						"<TD> <B>Artist</B> <TD> <B>Source</B> <TBODY>\r\n",
 						artist, hyphen, title, artist, hyphen, title, rootfid|1);
 				} else {
-					size += sprintf(xfer.buf+size, "#EXTM3U\r\n");
+					used += sprintf(xfer.buf+used, "#EXTM3U\r\n");
 				}
 			}
 			(void) get_tag(tags_buf, "artist=", artist, sizeof(artist));
@@ -1214,21 +1221,38 @@ open_playlist_fid:
 				strcpy(title, subpath);
 			secs = get_duration(tags_buf);
 			if (parms->generate_playlist == 1) {
-				const char *extra = (*type == 't') ? "0" : "1?.html";
-				size += sprintf(xfer.buf+size, "<TR><TD> <A HREF=\"%x?.m3u\"><em>Play</em></A> ", fid);
-				size += sprintf(xfer.buf+size, "<TD> <A HREF=\"%x%s\">%s</A> <TD> %u:%02u <TD> %s "
-				  "<TD> %s <TD> %s \r\n", fid>>4, extra, title, secs/60, secs%60, type, artist, source);
+				used += sprintf(xfer.buf+used, "<TR><TD> <A HREF=\"%x?.m3u\"><em>Play</em></A> ", fid);
+				if (*type == 't') {
+					if (hijack_khttpd_files) {
+						used += sprintf(xfer.buf+used, "<TD> <A HREF=\"%x\">%s</A> <TD> %u:%02u <TD> %s "
+							"<TD> %s <TD> %s \r\n", fid&~1, title, secs/60, secs%60, type, artist, source);
+					} else {
+						used += sprintf(xfer.buf+used, "<TD> %s <TD ALIGN=CENTER> %u:%02u <TD> %s "
+							"<TD> %s <TD> %s \r\n", title, secs/60, secs%60, type, artist, source);
+					}
+				} else {
+					unsigned int bytes = 0;
+					if (get_tag(tags_buf, "length=", length, sizeof(length))) {
+						p = length;
+						(void) get_number(&p, &bytes, 10, NULL);
+						sprintf(length, "%d", bytes / 4);
+					}
+					used += sprintf(xfer.buf+used, "<TD> <A HREF=\"%x?.html\">%s</A> <TD ALIGN=CENTER> %s <TD> %s "
+						"<TD> %s <TD> %s \r\n", fid|1, title, length, type, artist, source);
+				}
 			} else if (*type == 't') {
-				size += sprintf(xfer.buf+size, "#EXTINF:%u,%s - %s\r\nhttp://%s%s\r\n",
+				used += sprintf(xfer.buf+used, "#EXTINF:%u,%s - %s\r\nhttp://%s%s\r\n",
 					secs, artist, title, parms->serverip, subpath);
-				xfer.buf[size-3] = '0';	// convert subpath into tune path
+				xfer.buf[used-3] = '0';	// convert subpath into tune path
 			}
-			if (size != ksock_rw(parms->datasock, xfer.buf, size, -1))
+			if (used >= (xfer.buf_size - 512) && (used -= ksock_rw(parms->datasock, xfer.buf, used, -1)))
 				goto cleanup;
 		}
 		close(fd[fdx--]);
 	}
 aborted:
+	if (used && (used -= ksock_rw(parms->datasock, xfer.buf, used, -1)))
+		goto cleanup;
 	if (done_header) {
 		if (parms->generate_playlist == 1) {
 			static char trailer[] = "</TABLE></BODY></HTML>\r\n";
@@ -1468,11 +1492,13 @@ static response_t simple_response_table[] = {
 static int
 kftpd_handle_command (server_parms_t *parms)
 {
-	char		*path = parms->tmp2, *buf = parms->buf;
-	unsigned int	response = 0;
-	int		n, quit = 0, bufsize = sizeof(parms->buf) - 1;
 	response_t	*r;
+	unsigned int	response = 0;
+	int		n, quit = 0, bufsize = (sizeof(parms->buf) / 2) - 1;
+	char		*path = parms->tmp2, *buf = parms->buf, *rnfr_name = parms->buf + bufsize + 1;
 
+	if (bufsize > 511)
+		bufsize = 511;	// limit path lengths, so we can use the other half for other stuff
 	n = ksock_rw(parms->clientsock, buf, bufsize, 0);
 	if (n < 0) {
 		printk("%s: ksock_rw() failed, rc=%d\n", parms->servername, n);
@@ -1588,10 +1614,28 @@ kftpd_handle_command (server_parms_t *parms)
 			append_path(path, &buf[5], parms->tmp3);
 			response = do_delete(parms, path);
 		}
+	} else if (!strxcmp(buf, "RNFR ", 1)) {
+		if (!buf[5]) {
+			response = 501;
+		} else {
+			parms->rename_pending = 2;
+			strcpy(rnfr_name, parms->cwd);
+			append_path(rnfr_name, &buf[5], parms->tmp3);
+			response = 350;
+		}
+	} else if (!strxcmp(buf, "RNTO ", 1)) {
+		if (!buf[5]) {
+			response = 501;
+		} else if (!parms->rename_pending) {
+			response = 503;
+		} else {
+			strcpy(path, parms->cwd);
+			append_path(path, &buf[5], parms->tmp3);
+			response = sys_rename(rnfr_name, path) ? 451 : 250;
+		}
 	} else if (!strxcmp(buf, "REST ", 1)) {
 		char *p = &buf[5];
 		int offset;
-		//350 Restarting at 999. Send STORE or RETRIEVE to initiate transfer.
 		if (!get_number(&p, &offset, 10, "\r\n") || *p) {
 			response = 501;
 		} else {
@@ -1616,6 +1660,8 @@ kftpd_handle_command (server_parms_t *parms)
 		response = 500;
 	}
 got_response:
+	if (parms->rename_pending)
+		--parms->rename_pending;
 	if (response)
 		kftpd_send_response(parms, response);
 	return quit;

@@ -175,7 +175,7 @@ onewire_read:
 	@ Wait for 10us for line to be pulled high if necessary
 1:	ldr	r0,[r9,#OSCR]
 	cmp	r0,r3
-	bne	1b
+	blt	1b			@ instead of "bne", prevents lockups
 
 	@ Read bit
 	ldr	r1,[r10,#GPLR]

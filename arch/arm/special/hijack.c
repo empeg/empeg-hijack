@@ -444,9 +444,7 @@ static void vitals_refresh (unsigned long ignored, int firsttime)
 		clear_hijacked_displaybuf(COLOR0);
 		sprintf(buf, "HwRev:%02d, Build:%x", permset[0], permset[3]);
 		(void)draw_string(0, 0, buf, COLOR2);
-		sprintf(buf, "Flash:%dk, Ram:%dk", permset[9]==0xffffffff?1024:permset[9], permset[8]==0xffffffff?8192:permset[8]);
-		(void)draw_string(1, 0, buf, COLOR2);
-#if 0 // locks up the machine.
+#if 1 // locks up the machine.
 {
 		unsigned long flags;
 		save_flags_cli(flags);
@@ -456,13 +454,15 @@ static void vitals_refresh (unsigned long ignored, int firsttime)
 		if (temp & 0x80)
 			temp = -(128 - (temp ^ 0x80));
 		sprintf(buf, "Temperature: %dC/%dF", temp, temp * 180 / 100 + 32);
-		(void)draw_string(2, 0, buf, COLOR2);
+		(void)draw_string(1, 0, buf, COLOR2);
 }
 #else
+		sprintf(buf, "Flash:%dk, Ram:%dk", permset[9]==0xffffffff?1024:permset[9], permset[8]==0xffffffff?8192:permset[8]);
+		(void)draw_string(1, 0, buf, COLOR2);
+#endif
 		si_meminfo(&i);
 		sprintf(buf, "Free: %lu/%lu", i.freeram, i.totalram);
 		(void)draw_string(2, 0, buf, COLOR2);
-#endif
 		(void)get_loadavg(buf);
 		temp = 0;
 		for (col = 0;; ++col) {
@@ -526,7 +526,7 @@ static void game_finale (void)
 	if (jiffies_since(game_ball_lastmove) < (HZ*2))
 		return;
 	if (game_bricks) {
-		(void)draw_string(1, 20, " Enhancements.v22 ", -COLOR3);
+		(void)draw_string(1, 20, " Enhancements.v23 ", -COLOR3);
 		(void)draw_string(2, 33, "by Mark Lord", COLOR3);
 		if (jiffies_since(game_ball_lastmove) < (HZ*3))
 			return;

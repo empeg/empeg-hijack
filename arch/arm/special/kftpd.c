@@ -930,8 +930,11 @@ find_tags (char *buf, int buflen, char *labels[], char *values[])
 			if (!*values[i] && !strxcmp(buf, labels[i], 1)) {
 				buf += strlen(labels[i]);
 				if ((c = *buf) && c != '\n' && c != '\r') {
-					values[i] = buf;
 					--remaining;
+					if (!strcmp(buf,"vorbis") && !strcmp(labels[i],"codec="))
+						values[i] = "ogg";
+					else
+						values[i] = buf;
 				}
 				break;
 			}
@@ -1003,8 +1006,6 @@ khttp_send_file_header (server_parms_t *parms, char *path, off_t length, char *b
 			buf[size] = '\0';
 			close(fd);
 			find_tags(buf, size, labels, (char **)&tags);
-			if (0 == strcmp(tags.codec,"vorbis"))
-				tags.codec = "ogg";
 			buf += size + 1;
 			c = tags.type[0];
 			if (TOUPPER(c) != 'P' && tags.codec[0]) {
@@ -1248,8 +1249,6 @@ send_playlist (server_parms_t *parms, char *path)
 
 	// parse the tagfile for the tags we are interested in:
 	find_tags(parms->tmp3, size, labels, (char **)&tags);
-	if (0 == strcmp(tags.codec,"vorbis"))
-		tags.codec = "ogg";
 	fidtype = TOUPPER(tags.type[0]);
 	if (fidtype != 'T' && fidtype != 'P') {
 		response = &(http_response_t){408, "Invalid tag file"};
@@ -1382,8 +1381,6 @@ open_fidfile:
 
 			// parse the tagfile for the tags we are interested in:
 			find_tags(parms->tmp3, size, labels, (char **)&tags);
-			if (0 == strcmp(tags.codec,"vorbis"))
-				tags.codec = "ogg";
 			fidtype = TOUPPER(tags.type[0]);
 			if (fidtype == 'P') {
 				if (parms->generate_playlist == m3u) {

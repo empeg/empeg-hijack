@@ -12,30 +12,6 @@
 //           Knob-Press re-definition
 //           IR Button Press Display
 //
-//
-// /* Basic sequence for userland app to bind into the menu, display, and IR buttons */
-// /* Not shown: all "rc" return codes have to be checked for success/failure */
-//
-//    #include <asm/arch/hijack.h>
-//    int fd;
-//    unsigned long data, buttons[5] = {5,
-//       IR_KW_PREVTRACK_PRESSED,
-//       IR_KW_PREVTRACK_RELEASED,
-//       IR_KW_NEXTTRACK_PRESSED,
-//       IR_KW_NEXTTRACK_RELEASED};
-//    unsigned char screenbuf[EMPEG_SCREEN_BYTES] = {0,};
-//
-//    fd = open("/dev/display");
-//    top: while (1) {
-//       rc = ioctl(fd, EMPEG_HIJACK_WAITMENU, "MyStuff");
-//       rc = ioctl(fd,EMPEG_HIJACK_BINDBUTTONS, buttons);
-//       while (looping) {
-//          rc = ioctl(fd,EMPEG_HIJACK_DISPWRITE, screenbuf); /* or ioctl(fd,EMPEG_HIJACK_DISPTEXT, "Some\nText"); */
-//          rc = ioctl(fd,EMPEG_HIJACK_WAITBUTTONS, &data);
-//       }
-//       rc = ioctl(fd,EMPEG_HIJACK_UNBINDBUTTONS, NULL); /* VERY important! */
-//    }
-//
 
 #include <asm/arch/hijack.h>
 
@@ -590,7 +566,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v33 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v34 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1428,7 +1404,7 @@ hijack_ioctl (struct inode *inode, struct file *filp, unsigned int cmd, unsigned
 		}
 		case EMPEG_HIJACK_WAITBUTTONS:	// Wait for next hijacked IR code
 		{
-			// Invocation:  rc = ioctl(fd, EMPEG_HIJACK_DISPWRITE, (unsigned long *)&data);
+			// Invocation:  rc = ioctl(fd, EMPEG_HIJACK_WAITBUTTONS, (unsigned long *)&data);
 			// IR code is written to "data" on return
 			unsigned long button;
 			struct wait_queue wait = {current, NULL};
@@ -1444,6 +1420,22 @@ hijack_ioctl (struct inode *inode, struct file *filp, unsigned int cmd, unsigned
 			}
 			current->state = TASK_RUNNING;
 			remove_wait_queue(&hijack_dataq_waitq, &wait);
+			hijack_dataq_tail = (hijack_dataq_tail + 1) % HIJACK_DATAQ_SIZE;
+			button = hijack_dataq[hijack_dataq_tail];
+			restore_flags(flags);
+			return put_user(button, (int *)arg);
+
+		}
+		case EMPEG_HIJACK_POLLBUTTONS:	// See if any input is available
+		{
+			// Invocation:  rc = ioctl(fd, EMPEG_HIJACK_POLLBUTTONS, (unsigned long *)&data);
+			// IR code is written to "data" on return
+			unsigned long button;
+			save_flags_cli(flags);
+			if (hijack_dataq_tail == hijack_dataq_head) {
+				restore_flags(flags);
+				return -EAGAIN;
+			}
 			hijack_dataq_tail = (hijack_dataq_tail + 1) % HIJACK_DATAQ_SIZE;
 			button = hijack_dataq[hijack_dataq_tail];
 			restore_flags(flags);

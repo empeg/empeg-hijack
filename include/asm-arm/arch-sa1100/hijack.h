@@ -2,6 +2,31 @@
 #define KERNEL_HIJACK_H
 
 #include <asm/arch/empeg.h>
+
+// /* Basic sequence for userland app to bind into the menu, display, and IR buttons */
+// /* Not shown: all "rc" return codes have to be checked for success/failure */
+//
+//    #include <asm/arch/hijack.h>
+//    int fd;
+//    unsigned long data, buttons[5] = {5,
+//       IR_KW_PREVTRACK_PRESSED,
+//       IR_KW_PREVTRACK_RELEASED,
+//       IR_KW_NEXTTRACK_PRESSED,
+//       IR_KW_NEXTTRACK_RELEASED};
+//    unsigned char screenbuf[EMPEG_SCREEN_BYTES] = {0,};
+//
+//    fd = open("/dev/display");
+//    top: while (1) {
+//       rc = ioctl(fd, EMPEG_HIJACK_WAITMENU, "MyStuff");
+//       rc = ioctl(fd,EMPEG_HIJACK_BINDBUTTONS, buttons);
+//       while (looping) {
+//          rc = ioctl(fd,EMPEG_HIJACK_DISPWRITE, screenbuf); /* or ioctl(fd,EMPEG_HIJACK_DISPTEXT, "Some\nText"); */
+//          rc = ioctl(fd,EMPEG_HIJACK_WAITBUTTONS, &data);
+//       }
+//       rc = ioctl(fd,EMPEG_HIJACK_UNBINDBUTTONS, NULL); /* VERY important! */
+//    }
+//
+
 #define EMPEG_HIJACK_WAITMENU		_IO(EMPEG_DISPLAY_MAGIC, 81)	// Create menu item and wait for it to be selected
 #define EMPEG_HIJACK_DISPWRITE		_IO(EMPEG_DISPLAY_MAGIC, 82)	// Copy buffer to screen
 #define EMPEG_HIJACK_BINDBUTTONS	_IO(EMPEG_DISPLAY_MAGIC, 83)	// Specify IR codes to be hijacked
@@ -10,6 +35,7 @@
 #define EMPEG_HIJACK_DISPCLEAR		_IO(EMPEG_DISPLAY_MAGIC, 86)	// Clear screen
 #define EMPEG_HIJACK_DISPTEXT		_IO(EMPEG_DISPLAY_MAGIC, 87)	// Write text to screen
 #define EMPEG_HIJACK_DISPGEOM		_IO(EMPEG_DISPLAY_MAGIC, 88)	// Set screen overlay geometry (ignored for now)
+#define EMPEG_HIJACK_POLLBUTTONS	_IO(EMPEG_DISPLAY_MAGIC, 89)	// Read next IR code; EBUSY if none available
 
 #define EMPEG_SCREEN_ROWS		32				// pixels
 #define EMPEG_SCREEN_COLS		128				// pixels

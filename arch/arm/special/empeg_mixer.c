@@ -30,7 +30,7 @@
 #include <asm/arch/SA-1100.h>
 #include <asm/uaccess.h>
 #include <asm/delay.h>
-
+#include <asm/arch/hijack.h>
 #include <linux/empeg.h>
 
 #ifdef	CONFIG_PROC_FS
@@ -49,6 +49,7 @@
 
 #define MIXER_DEBUG			0
 #define RADIO_DEBUG			0
+#define EQ_DEBUG			0
 
 #define MIXER_NAME			"mixer-empeg"
 #define MIXER_NAME_VERBOSE		"empeg dsp mixer"
@@ -122,6 +123,8 @@ static unsigned int eq_reg_last = 0;
 static unsigned int radio_sensitivity;
 static int radio_fm_level_p1 = 512, radio_fm_level_q1 = 0;
 static int radio_fm_deemphasis = 50;
+static struct empeg_eq_section_t hijack_eq_real[20];
+	   int eq_hijacked = 0;                  // hijack.c will reset this flag in hijack_tone_init();
 /* stereo detect */
 static unsigned stereo_level = 0;
 static unsigned sampling_rate = 44100;
@@ -1148,6 +1151,45 @@ static int empeg_mixer_setvolume(mixer_dev *dev, int vol)
 	return vol;
 }
 
+void
+hijack_tone_set (int bass_value, int bass_freq, int bass_q, int treble_value, int treble_freq, int treble_q)
+{
+	int i;
+	struct empeg_eq_section_t sections[20];
+	if (eq_hijacked == 0) { 
+		for (i=0; i<20; i++) {				// Save the real eq first time around.
+			hijack_eq_real[i]=eq_current[i];
+		}
+		eq_hijacked = 1;
+	}
+	for (i=0; i<20; i++){
+		sections[i]=eq_current[i];
+	}
+	if (bass_value != 64) {
+		sections[8].word1  = bass_freq;
+		sections[18].word1 = bass_freq;
+		sections[8].word2  = bass_q | bass_value;       // set the Bass
+		sections[18].word2 = bass_q | bass_value;
+	} else { // flat
+		sections[8]  = hijack_eq_real[8];
+		sections[18] = hijack_eq_real[18];		// reset the eq
+	}
+	
+	if (treble_value != 64) {
+		sections[9].word1  = treble_freq;
+		sections[19].word1 = treble_freq;
+		sections[9].word2  = treble_q | treble_value;	// set the treble.
+		sections[19].word2 = treble_q | treble_value;
+	} else { // flat
+		sections[9]  = hijack_eq_real[9];		// reset the eq.
+		sections[19] = hijack_eq_real[19];
+	}
+	(void)empeg_mixer_eq_set(sections);
+	(void)empeg_mixer_eq_apply();
+	
+
+}
+
 static int empeg_mixer_getdb(mixer_dev *dev)
 {
 	return volume_table[dev->volume].db;
@@ -1162,6 +1204,11 @@ static void empeg_mixer_inflict_flags(mixer_dev *dev)
 static void empeg_mixer_eq_set(struct empeg_eq_section_t *sections)
 {
 	int i, order;
+
+#if EQ_DEBUG 
+	printk ("Bass words: %04x %04x - %04x %04x\n", sections[8].word1, sections[8].word2, sections[18].word1, sections[18].word2 );
+	printk ("Treble words: %04x %04x - %04x %04x\n", sections[9].word1, sections[9].word2, sections[19].word1, sections[19].word2 );
+#endif
 	
 	for(i=0; i<20; i++) {
 		eq_current[i].word1 = sections[i].word1;

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v238"
+#define HIJACK_VERSION	"v239"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -41,6 +41,7 @@ extern tm_t *hijack_convert_time(time_t, tm_t *);			// from arch/arm/special/not
 
 extern int get_current_mixer_input(void);				// arch/arm/special/empeg_mixer.c
 extern void empeg_mixer_select_input(int input);			// arch/arm/special/empeg_mixer.c
+extern void hijack_tone_set(int, int, int, int, int, int);					// arch/arm/special/empeg_mixer.c
 extern int empeg_readtherm(volatile unsigned int *timerbase, volatile unsigned int *gpiobase);	// arch/arm/special/empeg_therm.S
 extern int empeg_inittherm(volatile unsigned int *timerbase, volatile unsigned int *gpiobase);	// arch/arm/special/empeg_therm.S
        int display_ioctl (struct inode *inode, struct file *filp, unsigned int cmd, unsigned long arg); //arch/arm/special/empeg_display.c
@@ -155,7 +156,9 @@ typedef struct button_name_s {
 #define IR_FAKE_KNOBSEEK	(IR_NULL_BUTTON-11)
 #define IR_FAKE_CLOCK		(IR_NULL_BUTTON-12)
 #define IR_FAKE_NEXTSRC		(IR_NULL_BUTTON-13)
-#define IR_FAKE_HIJACKMENU	(IR_NULL_BUTTON-14)	// This MUST be the lowest numbered FAKE code
+#define IR_FAKE_BASSADJ		(IR_NULL_BUTTON-14)
+#define IR_FAKE_TREBLEADJ	(IR_NULL_BUTTON-15)
+#define IR_FAKE_HIJACKMENU	(IR_NULL_BUTTON-16)	// This MUST be the lowest numbered FAKE code
 #define ALT			BUTTON_FLAGS_ALTNAME
 
 typedef struct ir_translation_s {
@@ -191,6 +194,8 @@ static button_name_t button_names[] = {
 	{IR_FAKE_VOLADJ1,		"VolAdjLow"},	// index 4 assumed later in hijack_option_table[]
 	{IR_FAKE_VOLADJ2,		"VolAdjMed"},	// index 5 assumed later in hijack_option_table[]
 	{IR_FAKE_VOLADJ3,		"VolAdjHigh"},	// index 6 assumed later in hijack_option_table[]
+	{IR_FAKE_BASSADJ,		"BassAdj"},
+	{IR_FAKE_TREBLEADJ,		"TrebleAdj"},
 	{IR_FAKE_VOLADJOFF,		"VolAdjOff"},
 	{IR_FAKE_KNOBSEEK,		"KnobSeek"},
 	{IR_FAKE_CLOCK,			"Clock"},
@@ -395,6 +400,58 @@ static int hijack_standby_minutes;		// number of minutes after screen blanks bef
        int hijack_time_offset;			// adjust system time-of-day clock by this many minutes
        int hijack_temperature_correction;	// adjust all h/w temperature readings by this celcius amount
 
+
+// Bass Treble Adjustment stuff follows  --genixia
+
+static int hijack_bass_freq;            	// Sets center frequency for Bass Adjustment
+static int hijack_bass_q;			// Sets Q factor for Bass Adjustment
+static int hijack_bass_adj;			// Sets gain for Bass Adjustment
+static int hijack_treble_freq;          	// Sets center frequency for Bass Adjustment
+static int hijack_treble_adj;			// Sets gain for Treble Adjustment
+static int hijack_treble_q;			// Sets Q factor for Treble Adjustment
+extern int eq_hijacked;				// flag to save current eq values before overwriting. 0 saves.
+
+// dB LUT used by Bass/Treble Adjustments
+typedef struct hijack_db_table_s {
+	char		name[8];
+	unsigned int	value;
+} hijack_db_table_t;
+
+const hijack_db_table_t hijack_db_table[27] =
+{
+	// No easy way to calculate logs at runtime. Small table solves a lot of problems.
+	// Some of these values have mathematical errors - bit 0 must be unset for some reason.
+	// dB   , actual ratio.
+	{"[Off]"	, 64	},	// "64" is "special":  hijack_tone_set() recognizes/treats it as "flat".
+	{"+0.5 dB"	, 68	},
+	{"+1.0 dB"	, 72	},
+	{"+1.5 dB"	, 76	},
+	{"+2.0 dB"	, 82	},
+	{"+2.5 dB"	, 86	},
+	{"+3.0 dB"	, 90	},
+	{"+3.5 dB"	, 96	},
+	{"+4.0 dB"	, 102	},
+	{"+4.5 dB"	, 108	},
+	{"+5.0 dB"	, 114	},
+	{"+5.5 dB"	, 122	},
+	{"+6.0 dB"	, 128	},
+	
+	{"-6.0 dB"	, 32	},
+	{"-5.5 dB"	, 34	},
+	{"-5.0 dB"	, 36	},
+	{"-4.5 dB"	, 38	},
+	{"-4.0 dB"	, 40	},
+	{"-3.5 dB"	, 42	},
+	{"-3.0 dB"	, 44	},
+	{"-2.5 dB"	, 48	},
+	{"-2.0 dB"	, 50	},
+	{"-1.5 dB"	, 52	},
+	{"-1.0 dB"	, 56	},
+	{"-0.5 dB"	, 60	},
+};
+
+// End Bass/Treble defs.
+
 typedef struct hijack_option_s {
 	char	*name;
 	void	*target;
@@ -402,7 +459,7 @@ typedef struct hijack_option_s {
 	int	num_items;
 	int	min;
 	int	max;
-} hijack_option_t; 
+} hijack_option_t;
 
 char hijack_khttpd_style[64];
 
@@ -447,11 +504,15 @@ static const hijack_option_t hijack_option_table[] =
 {"fake_tuner",			&hijack_fake_tuner,		0,			1,	0,	1},
 {"time_offset",			&hijack_time_offset,		0,			1,	-24*60,	24*60},
 {"trace_tuner",			&hijack_trace_tuner,		0,			1,	0,	1},
-{"supress_notify",		&hijack_supress_notify,		0,			1,	0,	1},	
+{"supress_notify",		&hijack_supress_notify,		0,			1,	0,	1},
 {"temperature_correction",	&hijack_temperature_correction,	-4,			1,	-20,	+20},
 {button_names[4].name,		&hijack_voladj_parms[0][0],	(int)voladj_ldefault,	5,	0,	0x7ffe},
 {button_names[5].name,		&hijack_voladj_parms[1][0],	(int)voladj_mdefault,	5,	0,	0x7ffe},
 {button_names[6].name,		&hijack_voladj_parms[2][0],	(int)voladj_hdefault,	5,	0,	0x7ffe},
+{"bass_freq",			&hijack_bass_freq,		0x6a7d,			1,	0x0000,	0xffff}, // For now, these are the internal register format.
+{"bass_q",			&hijack_bass_q,			0x4b00,			1,	0x0000,	0xffff}, // Useful in config.ini to set my suggested values as default
+{"treble_freq",			&hijack_treble_freq,		0x6d50,			1,	0x0000,	0xffff}, // and for testing purposes. We shouldn't advertise these settings
+{"treble_q",			&hijack_treble_q,		0xc800,			1,	0x0000,	0xffff}, // as we don't know what they really mean.  --genixia
 {NULL,NULL,0,0,0,0} // end-of-list
 };
 
@@ -469,6 +530,8 @@ static const char carvisuals_menu_label	[] = "Restore DC/Car Visuals";
 static const char homevisuals_menu_label[] = "Restore Visuals (v2beta11)";	// fixme: workaround for beta11
 static const char blankerfuzz_menu_label[] = "Screen Blanker Sensitivity";
 static const char blanker_menu_label	[] = "Screen Blanker Timeout";
+static const char bass_menu_label       [] = "Tone: Bass Adjust";
+static const char treble_menu_label     [] = "Tone: Treble Adjust";
 
 #define HIJACK_USERQ_SIZE	8
 static const unsigned int intercept_all_buttons[] = {1};
@@ -1094,7 +1157,7 @@ hijack_set_voladj_parms (void)
 	empeg_state_dirty = 1;
 	if (hijack_voladj_enabled) {
 		unsigned const int *p = hijack_voladj_parms[hijack_voladj_enabled - 1];
-		hijack_voladj_intinit(p[0],p[1],p[2],p[3],p[4]);	
+		hijack_voladj_intinit(p[0],p[1],p[2],p[3],p[4]);
 	}
 }
 
@@ -1205,10 +1268,10 @@ hijack_read_temperature (void)
 	//   It starts the chip doing continuous conversions - or should do,
 	//   if the config byte is set up for this (which it should be).
 	//   Writing the config byte is dangerous, as I said before.
-	//   
+	//
 	//   It takes between 0.5s-1s to do a conversion.
 	//   Read temperature reads the result of the last conversion.
-	//   
+	//
 	//   If you're trying to prevent HDD damage at low temperatures, use GPIO16;
 	//   you can use this to hold the HDDs in reset, which puts them into deep sleep mode.
 	//   The initial boot code has stuff in there to do this, which is currently disabled;
@@ -1387,7 +1450,7 @@ vitals_display (int firsttime)
 	clear_hijack_displaybuf(COLOR0);
 
 	// Model, Drives, Temperature:
-	if (permset[0] < 7) 
+	if (permset[0] < 7)
 		model = 1;
 	else if (permset[0] < 9)
 		model = 2;
@@ -2046,7 +2109,7 @@ popup_move (int direction)
 			popup_index = 0;
 		current_popup->popup_index = popup_index;
 		if (current_popup->old == IR_FAKE_POPUP0) {
-		 	popup0_index = current_popup->popup_index & 7;
+			popup0_index = current_popup->popup_index & 7;
 			empeg_state_dirty = 1;
 		}
 	}
@@ -2117,7 +2180,7 @@ popup_activate (unsigned int button)
 		current_popup = &popup0_default_translation.hdr;
 	if (current_popup != NULL) {
 		if (current_popup->old == IR_FAKE_POPUP0)
-		 	current_popup->popup_index = (current_popup->popup_index & ~7) | popup0_index;
+			current_popup->popup_index = (current_popup->popup_index & ~7) | popup0_index;
 		activate_dispfunc(popup_display, popup_move);
 	}
 }
@@ -2299,7 +2362,7 @@ game_display (int firsttime)
 
 /* Time Alignment Setup Code - Christian Hack 2002 - christianh@pdd.edmi.com.au */
 /* Allows user adjustment of channel delay for time alignment. Time alignment   */
-/* is actually done in empeg_audio3.c. thru global var hijack_delaytime         */ 
+/* is actually done in empeg_audio3.c. thru global var hijack_delaytime         */
 static void
 delaytime_move (int direction)
 {
@@ -2333,7 +2396,7 @@ delaytime_display (int firsttime)
 	(void) draw_string(ROWCOL(0,0), delaytime_menu_label, PROMPTCOLOR);
 	rowcol = draw_string(ROWCOL(2,0), "Shift: ", PROMPTCOLOR);
 	if (hijack_delaytime) {
-		/* Remove sign, it's decoded also in empeg_audio3.c */ 
+		/* Remove sign, it's decoded also in empeg_audio3.c */
 		tmp = (hijack_delaytime >= 0) ? (hijack_delaytime) : (-hijack_delaytime);
 		sprintf(buf, "%2d.%d msec %s", (tmp /  10), (tmp % 10), (hijack_delaytime > 0) ? "Right" : "Left");
 		(void) draw_string_spaced(rowcol, buf, ENTRYCOLOR);
@@ -2345,6 +2408,73 @@ delaytime_display (int firsttime)
 	} else {
 		rowcol = draw_string_spaced(rowcol, "[Off]", ENTRYCOLOR);
 	}
+	return NEED_REFRESH;
+}
+
+// wrapper function used to set treble and bass on boot.
+static void
+hijack_tone_init (void)
+{
+	eq_hijacked = 0;	// tell hijack_tone_set to save current eq sections.
+	(void) hijack_tone_set(hijack_db_table[hijack_bass_adj].value, hijack_bass_freq, hijack_bass_q,
+		hijack_db_table[hijack_treble_adj].value, hijack_treble_freq, hijack_treble_q);
+	printk("hijack_tone_init completed.\n");
+}
+
+static void
+tone_move (int direction)
+{
+	int val = *ir_numeric_input;
+	if (direction == 0) {
+		val = 0;
+	} else if (direction > 0) {
+		if (val == 24)
+			val = 0;
+		else if (val != 12)
+			++val;
+	} else { // (direction < 0)
+		if (val == 0)
+			val = 24;
+		else if (val != 13)
+			--val;
+	}
+	*ir_numeric_input = val;
+	empeg_state_dirty = 1;
+	(void) hijack_tone_set(hijack_db_table[hijack_bass_adj].value, hijack_bass_freq, hijack_bass_q,
+		hijack_db_table[hijack_treble_adj].value, hijack_treble_freq, hijack_treble_q);
+}
+
+static int
+bass_display (int firsttime)
+{
+	unsigned int rowcol;
+
+	if (firsttime)
+		ir_numeric_input = &hijack_bass_adj;
+	else if (!hijack_last_moved)
+		return NO_REFRESH;
+	hijack_last_moved = 0;
+	clear_hijack_displaybuf(COLOR0);
+	(void) draw_string(ROWCOL(0,0), bass_menu_label, PROMPTCOLOR);
+	rowcol = draw_string(ROWCOL(2,30), "Adjust: ", PROMPTCOLOR);
+	(void) draw_string_spaced(rowcol, hijack_db_table[hijack_bass_adj].name, ENTRYCOLOR);
+	return NEED_REFRESH;
+}
+
+static int
+treble_display (int firsttime)
+{
+	unsigned int rowcol;
+
+	if (firsttime)
+		ir_numeric_input = &hijack_treble_adj;
+	else if (!hijack_last_moved)
+		return NO_REFRESH;
+	hijack_last_moved = 0;
+	clear_hijack_displaybuf(COLOR0);
+	(void) draw_string(ROWCOL(0,0), treble_menu_label, PROMPTCOLOR);
+	rowcol = draw_string(ROWCOL(2,30), "Adjust: ", PROMPTCOLOR);
+	(void) draw_string_spaced(rowcol, hijack_db_table[hijack_treble_adj].name, ENTRYCOLOR);
 	return NEED_REFRESH;
 }
 
@@ -2509,7 +2639,7 @@ reboot_display (int firsttime)
 	hijack_buttondata_t data;
 	int rc;
 
-        if (firsttime) {
+	if (firsttime) {
 		clear_hijack_displaybuf(COLOR0);
 		(void) draw_string(ROWCOL(0,0), "Press & hold Left/Right\n  buttons to reboot.\n(or press 2 on the remote)\nAny other button aborts", PROMPTCOLOR);
 		left_pressed = right_pressed = 0;
@@ -2625,6 +2755,8 @@ static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 	{ blankerfuzz_menu_label,	blankerfuzz_display,	blankerfuzz_move,	0},
 	{ blanker_menu_label,		blanker_display,	blanker_move,		0},
 	{"Show Flash Savearea",		savearea_display,	savearea_move,		0},
+	{ bass_menu_label,		bass_display,		tone_move,		0},
+	{ treble_menu_label,		treble_display,		tone_move,		0},
 	{"Vital Signs",			vitals_display,		NULL,			0},
 #ifdef DEBUG_JIFFIES
 	{"Vitals v2beta11",		debug_display,		NULL,			0},
@@ -2760,14 +2892,14 @@ static inline int
 check_if_soundadj_is_active (const unsigned char *buf)
 {
 	return (test_row(buf+TESTOFFSET( 8), 0x00000000) && test_row(buf+TESTOFFSET( 9), 0x11111111)
-	     && test_row(buf+TESTOFFSET(16), 0x11111111) && test_row(buf+TESTOFFSET(17), 0x00000000));
+		&& test_row(buf+TESTOFFSET(16), 0x11111111) && test_row(buf+TESTOFFSET(17), 0x00000000));
 }
 
 static inline int
 check_if_search_is_active (const unsigned char *buf)
 {
 	return ((test_row(buf+TESTOFFSET(4), 0x00000000) && test_row(buf+TESTOFFSET(5), 0x11111111))
-	     || (test_row(buf+TESTOFFSET(6), 0x00000000) && test_row(buf+TESTOFFSET(7), 0x11111111)));
+		|| (test_row(buf+TESTOFFSET(6), 0x00000000) && test_row(buf+TESTOFFSET(7), 0x11111111)));
 }
 
 static inline int
@@ -2828,7 +2960,7 @@ do_nextsrc (void)
 				button = IR_KW_TAPE_PRESSED;
 			break;
 		case IR_FLAGS_MAIN:
-			if (empeg_tuner_present || hijack_fake_tuner) 
+			if (empeg_tuner_present || hijack_fake_tuner)
 				button = IR_RIO_TUNER_PRESSED;
 			break;
 	}
@@ -2961,10 +3093,10 @@ quicktimer_display (int firsttime)
 	timer_started = jiffies;
 	if (firsttime) {
 		if (timer_timeout) {
-	    		timer_timeout = 0;
+			timer_timeout = 0;
 			hijack_beep(60, 100, 30);
 		} else {
-	    		timer_timeout = hijack_quicktimer_minutes * (60*HZ);
+			timer_timeout = hijack_quicktimer_minutes * (60*HZ);
 			hijack_beep(80, 100, 30);
 		}
 		ir_numeric_input = &timer_timeout;
@@ -3029,6 +3161,14 @@ hijack_handle_button (unsigned int button, unsigned long delay, int any_ui_is_ac
 	switch (button) {
 		case IR_FAKE_HIJACKMENU:
 			activate_dispfunc(menu_display, menu_move);
+			hijacked = 1;
+			break;
+		case IR_FAKE_BASSADJ:
+			activate_dispfunc(bass_display, tone_move);
+			hijacked = 1;
+			break;
+		case IR_FAKE_TREBLEADJ:
+			activate_dispfunc(treble_display, tone_move);
 			hijacked = 1;
 			break;
 		case IR_FAKE_VOLADJOFF:
@@ -3216,7 +3356,7 @@ hijack_handle_button (unsigned int button, unsigned long delay, int any_ui_is_ac
 				if (button == IR_KW_4_RELEASED)
 					activate_dispfunc(quicktimer_display, timer_move);
 			}
-			break;    	    
+			break;
 	}
 done:
 	ir_lastpressed = button; // used for detection of CD-CD-CD sequence
@@ -3301,7 +3441,7 @@ input_append_code2 (unsigned int rawbutton)
 						// So we must now look for a shortpress translation
 						delayed_send = 1;
 						continue; // look for shortpress translation instead
-					  //else we need to send the "release" sequence for a longpress
+					//else we need to send the "release" sequence for a longpress
 					}
 					// We just matched the "release" for either a longpress or shortpress.
 					// Send the "press" sequence (if shortpress), then the final "release" (either)
@@ -3463,6 +3603,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	// Send initial button sequences, if any
 	if (!sent_initial_buttons && hijack_player_started) {
 		sent_initial_buttons = 1;
+		hijack_tone_init();
 		input_append_code(IR_INTERNAL, IR_FAKE_INITIAL);
 		input_append_code(IR_INTERNAL, RELEASECODE(IR_FAKE_INITIAL));
 	}
@@ -4362,7 +4503,6 @@ reset_hijack_options (void)
 		if (n == 1) {
 			*val = h->defaultval;
 		} else if (n) {
-			
 			int *def = (int *)h->defaultval;
 			while (n--)
 				*val++ = *def++;
@@ -4529,7 +4669,8 @@ typedef struct hijack_savearea_acdc_s {	// 32-bits total
 	unsigned voladj			: VOLADJ_BITS;		// 2 bits
 	unsigned spare6			: 6;			// 6 bits
 
-	unsigned spare8			: 8;			// 8 bits
+	unsigned bass_adj		: 4;			// 4 bits
+	unsigned treble_adj		: 4;			// 4 bits
 } hijack_savearea_acdc_t;
 
 // The "master" 16-byte savearea struct, with AC/DC substructs, and common data fields:
@@ -4585,6 +4726,8 @@ hijack_save_settings (unsigned char *buf)
 	acdc->delaytime			= hijack_delaytime;
 	acdc->buttonled_level		= hijack_buttonled_on_level;
 	acdc->voladj			= hijack_voladj_enabled;
+	acdc->bass_adj			= (hijack_bass_adj >> 1);
+	acdc->treble_adj		= (hijack_treble_adj >> 1);
 	savearea.blanker_timeout	= blanker_timeout;
 	savearea.force_power		= hijack_force_power;
 	savearea.blanker_sensitivity	= blanker_sensitivity;
@@ -4614,7 +4757,7 @@ hijack_restore_settings (char *buf)
 	if (!failed) {
 		unsigned char layout_version = ((hijack_savearea_t *)buf)->layout_version;
 		if (layout_version == SAVEAREA_LAYOUT) // valid layout_version?
-        		memcpy(&savearea, buf, sizeof(savearea));
+			memcpy(&savearea, buf, sizeof(savearea));
 		else
 			failed = 2;
 	}
@@ -4632,6 +4775,8 @@ hijack_restore_settings (char *buf)
 	hijack_delaytime		= acdc->delaytime;
 	hijack_buttonled_on_level	= acdc->buttonled_level;
 	hijack_voladj_enabled		= acdc->voladj;
+	hijack_bass_adj			= (acdc->bass_adj << 1);
+	hijack_treble_adj		= (acdc->treble_adj << 1);
 	if ((knob & (1 << KNOBDATA_BITS)) == 0) {
 		popup0_index		= 0;
 		knobdata_index		= knob;

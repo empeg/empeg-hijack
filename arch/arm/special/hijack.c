@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v286"
+#define HIJACK_VERSION	"v287"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -229,7 +229,7 @@ typedef struct button_name_s {
 #define ALT			BUTTON_FLAGS_ALTNAME
 
 typedef struct ir_translation_s {
-	unsigned int	old;		// original button, IR_NULL_BUTTON means "end-of-table"
+	unsigned int	old;		// original button, if known
 	unsigned short	flags;		// boolean flags
 	unsigned char	count;		// how many codes in new[]
 	unsigned char	popup_index;	// for PopUp translations only: most recent menu position
@@ -239,10 +239,10 @@ typedef struct ir_translation_s {
 // a default translation for PopUp0 menu:
 static struct {
 		ir_translation_t	hdr;
-		unsigned int		buttons[9];
+		unsigned int		buttons[2];
 	} seektool_default_translation =
-	{	{IR_FAKE_POPUP0, 0, 2, 0},
-		{IR_KNOB_PRESSED|ALT,	IR_FAKE_POPUP0}
+	{	{IR_NULL_BUTTON, 0, 2, 0},
+		{IR_FAKE_POPUP0, IR_KNOB_PRESSED|ALT}
 	};
 
 // a default translation for PopUp0 menu:
@@ -2941,7 +2941,7 @@ check_if_seek_tool_is_active (const unsigned char *buf)
 
 	if (!check_for_seek_pattern(buf, playsym) && !check_for_seek_pattern(buf, pausesym))
 		return 0;
-	if (*(unsigned long *)(buf + 20))
+	if (0x11111111 == *(unsigned long *)(buf + 20))
 		return 2;	// Seek-Tool is active, and has the knob
 	return 1;		// Seek-Tool is on-screen, but does not have knob
 }
@@ -2954,7 +2954,7 @@ popup_activate (unsigned int button, int seek_tool)
 	current_popup = ir_next_match(NULL, button);
 
 	if (seek_tool) {
-		seektool_default_translation.buttons[1] = button;
+		seektool_default_translation.buttons[0] = button;
 		current_popup = &seektool_default_translation.hdr;
 	} else if (current_popup == NULL && button == IR_FAKE_POPUP0) {
 		current_popup = &popup0_default_translation.hdr;

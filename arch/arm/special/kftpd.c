@@ -1260,7 +1260,7 @@ send_playlist (server_parms_t *parms, char *path)
 				sprintf(dbuf, "%u:%02u", secs/60, secs%60);
 				used += encode_tag1(xfer.buf+used, "duration", dbuf);
 				used += encode_tag1(xfer.buf+used, "offset", tags.offset);
-				used += sprintf(xfer.buf+used, ">\r\n");
+				used += sprintf(xfer.buf+used, "/>\r\n");
 				goto sendit;
 			}
 			used += sprintf(xfer.buf+used, ">\r\n\t<items>\r\n");

@@ -1095,7 +1095,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v75 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v76 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1765,6 +1765,8 @@ hijack_handle_button(unsigned long data, unsigned long delay)
 		hijacked = 1;
 		goto done;
 	}
+	if (hijack_status == HIJACK_ACTIVE && hijack_dispfunc == userland_display)
+		goto done;	// just pass key codes straight through to userland
 	switch (data) {
 #ifdef EMPEG_KNOB_SUPPORTED
 		case IR_KNOB_PRESSED:
@@ -1841,7 +1843,7 @@ hijack_handle_button(unsigned long data, unsigned long delay)
 			if (hijack_status != HIJACK_INACTIVE) {
 				if (hijack_status == HIJACK_ACTIVE && ir_numeric_input && *ir_numeric_input)
 					hijack_move(0);
-				else if (hijack_dispfunc != userland_display)
+				else
 					hijack_deactivate(HIJACK_INACTIVE_PENDING);
 				hijacked = 1;
 			}

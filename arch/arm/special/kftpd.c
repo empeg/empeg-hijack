@@ -160,7 +160,7 @@ ksock_rw (int have_lock, struct socket *sock, char *buf, int bufsize, int minimu
 			rc = sock_sendmsg(sock, &msg, len);
 		else
 			rc = sock_recvmsg(sock, &msg, len, 0);
-		if (rc <= 0)	// fixme?  (len < 0) ??
+		if (rc <= 0)	// fixme?  NO! (len < 0) ??
 			break;
 		bytecount += rc;
 	} while (bytecount < minimum);
@@ -378,9 +378,8 @@ filldir (void *parms, const char *name, int namelen, off_t offset, ino_t ino)
 	tm_t			tm;
 	char			*buf, *b, c, *lname = NULL;
 	int			llen = 0;
+	struct buffer_head	*bh = NULL;
 
-	if (p->rc)
-		return -EIO;
 	i = iget(p->super, ino);
 	if (!i) {
 		printk("kftpd: iget(%lu) failed\n", ino);
@@ -388,9 +387,20 @@ filldir (void *parms, const char *name, int namelen, off_t offset, ino_t ino)
 		return p->rc;	// non-zero rc causes readdir() to stop, but with no indication of an error!
 	}
 
-	b = buf = p->buf + p->bytecount;
-
+	// Get target of symbolic link: UGLY HACK, COPIED FROM ext2_readlink(); FIXME: broken for /proc/
 	mode = i->i_mode;
+	if ((mode & S_IFMT) == S_IFLNK && i->i_sb) {
+		llen = i->i_sb->s_blocksize - 1;
+		if (i->i_blocks) {
+			int err;
+			bh = ext2_bread(i, 0, 0, &err);
+			lname = bh ? bh->b_data : NULL;
+		} else {
+			lname = (char *) i->u.ext2_i.i_data;
+		}
+	}
+
+	b = buf = p->buf + p->bytecount;
 	switch (mode & S_IFMT) {
 		case S_IFLNK:	c = 'l'; break;
 		case S_IFDIR:	c = 'd'; break;
@@ -422,19 +432,6 @@ filldir (void *parms, const char *name, int namelen, off_t offset, ino_t ino)
 
 	b = format_time(gmtime(i->i_mtime, &tm), p->current_year, b);
 
-	// Get target of symbolic link: UGLY HACK, COPIED FROM ext2_readlink()
-	if (buf[0] == 'l' && i->i_sb) {
-		llen = i->i_sb->s_blocksize - 1;
-		if (i->i_blocks) {
-			int err;
-			struct buffer_head * bh;
-			bh = ext2_bread(i, 0, 0, &err);
-			lname = bh ? bh->b_data : NULL;
-		} else {
-			lname = (char *) i->u.ext2_i.i_data;
-		}
-	}
-
 	*b++ = ' ';
 	if (p->use_http) {
 		b = append_string(b, "<A HREF=\"", 9, 0);
@@ -462,6 +459,7 @@ filldir (void *parms, const char *name, int namelen, off_t offset, ino_t ino)
 	*b   = '\0';
 
 	// free up the inode structure
+	if (bh) brelse (bh);
 	iput(i);
 	i = NULL;
 
@@ -479,7 +477,7 @@ static const char dirlist_header[] =
 	"<HTML>\n"
 	"<HEAD><TITLE>Index of %s</TITLE></HEAD>\n"
 	"<BODY>\n"
-	"<H1>Index of %s</H1>\n"
+	"<H2>Index of %s</H2>\n"
 	"<PRE>\n"
 	"<HR>\n";
 
@@ -521,23 +519,22 @@ send_dirlist (server_parms_t *parms, const char *path)
 			filp->f_pos = 0;
 			do {
 				rc = filp->f_op->readdir(filp, &p, filldir); // anything "< 0" is an error
-				if (p.bytecount && !p.rc) {
-					up(&inode->i_sem);
-					sent = ksock_rw(0, parms->datasock, p.buf, p.bytecount, -1);
-					if (sent != p.bytecount) {
-						p.rc = -EIO;
-						printk("%s: ksock_rw(%lu) returned %u\n", servername, p.bytecount, sent);
-					}
-					p.bytecount = 0;
-					down(&inode->i_sem);
+				if (!p.bytecount)
+					break;
+				up(&inode->i_sem);
+				sent = ksock_rw(0, parms->datasock, p.buf, p.bytecount, -1);
+				down(&inode->i_sem);
+				if (sent != p.bytecount) {
+					p.rc = sent < 0 ? sent : -EIO;
+					printk("%s: ksock_rw(%lu) returned %u\n", servername, p.bytecount, sent);
 				}
-			} while (rc >= 0 && !p.rc && filp->f_pos < inode->i_size);
+				p.bytecount = 0;
+			} while (rc >= 0 && !p.rc);
 			up(&inode->i_sem);
 
 			if (p.rc) {
-				printk("%s: filldir()/ksock_rw() error %d\n", servername, p.rc);
-				response = "426 ksock_rw() error";
-			} else if (rc) {
+				response = "426 ksock_rw() error 1";
+			} else if (rc < 0) {
 				printk("%s: readdir() returned %d\n", servername, rc);
 				response = "426 readdir() error";
 			} else {
@@ -554,7 +551,7 @@ send_dirlist (server_parms_t *parms, const char *path)
 			if (!parms->use_http)
 				sock_release(parms->datasock);
 			free_page((unsigned long)p.buf);
-			p.buf = NULL;
+			p.buf = NULL;	// paranoia
 		}
 		filp_close(filp,NULL);
 	}
@@ -906,6 +903,7 @@ khttpd_handle_connection (server_parms_t *parms)
 		for (n = 0; path[n] && path[n] != ' '; ++n); // ignore and strip off all the other http parameters
 		path[n--] = '\0';
 		printk("%s: '%s'\n", parms->servername, buf);
+		// fixme? (maybe):  need to translate incoming char sequences of "%2F" to slashes
 		if (path[n] == '/') {
 			while (n > 0 && path[n] == '/')
 				path[n--] = '\0';

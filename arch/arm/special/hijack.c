@@ -1,5 +1,7 @@
 // Empeg display/IR hijacking by Mark Lord <mlord@pobox.com>
 //
+#define HIJACK_VERSION "v111"
+//
 // Includes: font, drawing routines
 //           extensible menu system
 //           VolAdj settings and display
@@ -191,6 +193,7 @@ typedef struct hijack_buttonq_s {
 #define VOLADJ_HISTSIZE		128	/* must be a power of two */
 #define VOLADJ_FIXEDPOINT(whole,fraction) ((((whole)<<MULT_POINT)|((unsigned int)((fraction)*(1<<MULT_POINT))&MULT_MASK)))
 #define VOLADJ_BITS 2
+
 int hijack_voladj_enabled = 0; // used by voladj code in empeg_audio3.c
 static const char  *voladj_names[] = {" [Off] ", " Low ", " Medium ", " High "};
 static unsigned int voladj_history[VOLADJ_HISTSIZE] = {0,}, voladj_last_histx = 0, voladj_histx = 0;
@@ -198,6 +201,8 @@ static unsigned int hijack_voladj_parms[(1<<VOLADJ_BITS)-1][5] = { // Values as 
 	{0x1800,	 100,	0x1000,	25,	60},  // Low
 	{0x2000,	 409,	0x1000,	27,	70},  // Medium (Normal)
 	{0x2000,	3000,	0x0c00,	30,	80}}; // High
+
+struct semaphore hijack_kftp_startup_sem;	// sema for waking up kftpd after we read config.ini
 
 // Externally tuneable parameters for config.ini; the voladj_parms are also tuneable
 static hijack_buttonq_t hijack_inputq, hijack_playerq, hijack_userq;
@@ -207,6 +212,8 @@ static int hijack_supress_notify		=  0;	// 1 == supress player "notify" (and "dh
 static int hijack_old_style			=  0;	// 1 == don't highlite menu items
 static int hijack_quicktimer_minutes		= 30;	// increment size for quicktimer function
 static int hijack_standby_minutes		= 30;	// number of minutes after screen blanks before we go into standby
+       int hijack_kftpd_control_port		= 21;	// kftpd control port
+       int hijack_kftpd_data_port		= 20;	// kftpd data port
 
 typedef struct hijack_option_s {
 	const char	*name;
@@ -227,6 +234,8 @@ static const hijack_option_t hijack_option_table[] = {
 	{"voladj_high",			&hijack_voladj_parms[2][0],	5,	0,	0x7ffe},
  	{"quicktimer_minutes",		&hijack_quicktimer_minutes,	1,	1,	120},
  	{"standby_minutes",		&hijack_standby_minutes,	1,	0,	240},
+ 	{"kftpd_control_port",		&hijack_kftpd_control_port,	1,	0,	65535},
+ 	{"kftpd_data_port",		&hijack_kftpd_data_port,	1,	0,	65535},
 	{NULL,NULL,0,0,0} // end-of-list
 	};
 
@@ -1665,7 +1674,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,18), " Enhancements.v110", -COLOR3);
+			(void)draw_string(ROWCOL(1,18), " Enhancements."HIJACK_VERSION, -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -3692,6 +3701,7 @@ hijack_read_config_file (const char *path)
 	if (buf)
 		kfree(buf);
 	hijack_set_voladj_parms();
+	up(&hijack_kftp_startup_sem);	// wake-up kftpd now that we've parsed config.ini for port numbers
 }
 
 #ifdef RESTORE_CARVISUALS

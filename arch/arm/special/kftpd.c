@@ -1,14 +1,12 @@
-// kftpd 0.2 by Mark Lord
+// kftpd by Mark Lord
 //
-// This version can only LIST directories (buggy), and RETRieve files.  STOR is not implemented yet.
+// This version can only LIST directories and RETRieve files.  STOR is not implemented yet.
+//
+#define KFTPD_VERSION "v0.3"
 
-#if 0
-#define SERVER_CONTROL_PORT	21
-#define SERVER_DATA_PORT	20
-#else
-#define SERVER_CONTROL_PORT	91	// Eg.  ftp  10.0.0.24  91
-#define SERVER_DATA_PORT	90
-#endif
+extern int hijack_kftpd_control_port;			// from arch/arm/special/hijack.c
+extern int hijack_kftpd_data_port;			// from arch/arm/special/hijack.c
+extern struct semaphore hijack_kftp_startup_sem;	// from arch/arm/special/hijack.c
 
 #include <linux/config.h>
 #include <linux/mm.h>
@@ -198,7 +196,6 @@ send_response (struct socket *sock, const char *response)
 	char	buf[256];
 	int	length, rc;
 
-	//printk("kftp: sending: %s\n", response);
 	strcpy(buf, response);
 	strcat(buf, "\r\n");
 	length = strlen(buf);
@@ -217,26 +214,22 @@ make_socket (struct socket **sockp, int port)
 	struct socket		*sock;
 
 	*sockp = NULL;
-	rc = sock_create(AF_INET, SOCK_STREAM, 0, &sock);
-	if (rc) {
+	if ((rc = sock_create(AF_INET, SOCK_STREAM, 0, &sock))) {
 		printk("kftp: sock_create() failed, rc=%d\n", rc);
+	} else if ((rc = sock_setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (char *)&turn_on, sizeof(turn_on)))) {
+		printk("kftp: setsockopt() failed, rc=%d\n", rc);
+		sock_release(sock);
 	} else {
-		rc = sock_setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (char *)&turn_on, sizeof(turn_on));
+		memset(&servaddr, 0, sizeof(servaddr));
+		servaddr.sin_family	 = AF_INET;
+		servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+		servaddr.sin_port        = htons(port);
+		rc = sock->ops->bind(sock, (struct sockaddr *)&servaddr, sizeof(servaddr));
 		if (rc) {
-			printk("kftp: setsockopt() failed, rc=%d\n", rc);
+			printk("kftp: bind(port=%d) failed: %d\n", port, rc);
 			sock_release(sock);
 		} else {
-			memset(&servaddr, 0, sizeof(servaddr));
-			servaddr.sin_family	 = AF_INET;
-			servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
-			servaddr.sin_port        = htons(port);
-			rc = sock->ops->bind(sock, (struct sockaddr *)&servaddr, sizeof(servaddr));
-			if (rc) {
-				printk("kftp: bind(port=%d) failed: %d\n", port, rc);
-				sock_release(sock);
-			} else {
-				*sockp = sock;
-			}
+			*sockp = sock;
 		}
 	}
 	return rc;
@@ -253,7 +246,7 @@ open_datasock (struct socket *sock, struct socket **newsock)
 		response = "425 no PORT specified";
 	} else {
 		have_portaddr = 0;	// for next time
-		if ((rc = make_socket(&datasock, SERVER_DATA_PORT))) {
+		if ((rc = make_socket(&datasock, hijack_kftpd_data_port))) {
 			response = "425 make_socket(datasock) failed";
 		} else {
 			if (send_response(sock, "150 opening BINARY mode data connection")) {
@@ -419,21 +412,18 @@ typedef struct filldir_parms_s {
 	unsigned long		blockcount;
 	struct socket		*datasock;
 	struct super_block	*super;
+	unsigned long		bytecount;
+	unsigned char		buf[4096];
 } filldir_parms_t;
 
-// Fixme: modify this to just collect data from readdir (including ino information?)
-// until buffer fills, and then return.  Caller can then format/send data.
-// Choose buffer size here to match size of packet buffer that will be used (tricky).
-// Or still do the formatting here, just don't send it.
-//
 static int	// callback routine for filp->f_op->readdir()
 filldir (void *parms, const char *name, int namelen, off_t offset, ino_t ino)
 {
 	filldir_parms_t		*p = parms;
-	unsigned int		len, mode, sent;
+	unsigned int		mode;
 	struct inode		*i;
 	struct tm		tm;
-	char			buf[512], *b, c;
+	char			*buf, *b, c;
 
 	if (p->rc)
 		return -EIO;
@@ -444,7 +434,8 @@ filldir (void *parms, const char *name, int namelen, off_t offset, ino_t ino)
 		return p->rc;	// non-zero rc causes readdir() to stop, but with no indication of an error!
 	}
 
-	b = buf;
+	b = buf = &p->buf[p->bytecount];
+
 	mode = i->i_mode;
 	switch (mode & S_IFMT) {
 		case S_IFLNK:	c = 'l'; break;
@@ -468,10 +459,12 @@ filldir (void *parms, const char *name, int namelen, off_t offset, ino_t ino)
 	*b++ = MODE_XBIT('T', mode & S_IXOTH, mode & S_ISVTX);
 
 	b += sprintf(b, "%5u %-8u %-8u", i->i_nlink, i->i_uid, i->i_gid);
-	if (buf[0] == 'c' || buf[0] == 'b')
+	if (buf[0] == 'c' || buf[0] == 'b') {
 		b += sprintf(b, " %3u, %3u", MAJOR(i->i_rdev), MINOR(i->i_rdev));
-	else
+	} else {
 		b += sprintf(b, " %8lu", i->i_size);
+		p->blockcount += i->i_blocks;
+	}
 
 	b = format_time(gmtime(i->i_mtime, &tm), p->current_year, b);
 
@@ -481,7 +474,7 @@ filldir (void *parms, const char *name, int namelen, off_t offset, ino_t ino)
 
 	// Get target of symbolic link: UGLY HACK, COPIED FROM ext2_readlink()
 	if (buf[0] == 'l' && i->i_sb) {
-		len = i->i_sb->s_blocksize - 1;
+		unsigned int len = i->i_sb->s_blocksize - 1;
 		if (i->i_blocks) {
 			int err;
 			struct buffer_head * bh;
@@ -508,12 +501,9 @@ filldir (void *parms, const char *name, int namelen, off_t offset, ino_t ino)
 	i = NULL;
 
 	//printk("kftp: %s", buf);
-	len  = b - buf;
-	sent = ksock_rw(0, p->datasock, buf, len, -1);
-	if (sent != len) {
-		p->rc = -EIO;
-		printk("kftp: ksock_rw(%d) returned %d\n", len, sent);
-	}
+	p->bytecount += (b - buf);
+	if (sizeof(p->buf) - p->bytecount < 1024)
+		return -EAGAIN;	// time to empty the buffer
 	return p->rc;	// non-zero rc causes readdir() to stop, but with no indication of an error!
 }
 
@@ -534,23 +524,34 @@ send_dirlist (struct socket *sock, const char *path)
 		if (!filp->f_dentry || !filp->f_dentry->d_inode || !filp->f_op || !filp->f_op->readdir) {
 			response = "550 directory read error";
 		} else if (!(response = open_datasock(sock, &datasock))) {
-			filldir_parms_t	p;
-			struct inode	*inode = filp->f_dentry->d_inode;
+
 			unsigned char	buf[64];
 			unsigned int	len, sent;
 			struct tm	tm;
+			struct inode	*inode = filp->f_dentry->d_inode;
+			filldir_parms_t	p;
 
 			p.current_year	= gmtime(CURRENT_TIME, &tm)->tm_year;
 			p.rc		= 0;
 			p.blockcount	= 0;
-			p.super		= inode->i_sb;
 			p.datasock	= datasock;
+			p.super		= inode->i_sb;
 
 			down(&inode->i_sem);	// This can go inside the loop
 			filp->f_pos = 0;
 			do {
 				// the return code is not meaningful unless negative:
+				p.bytecount = 0;
 				rc = filp->f_op->readdir(filp, &p, filldir);
+				if (p.bytecount && !p.rc) {
+					up(&inode->i_sem);
+					sent = ksock_rw(0, datasock, p.buf, p.bytecount, -1);
+					if (sent != p.bytecount) {
+						p.rc = -EIO;
+						printk("kftp: ksock_rw(%lu) returned %u\n", p.bytecount, sent);
+					}
+					down(&inode->i_sem);
+				}
 			} while (rc >= 0 && !p.rc && filp->f_pos < inode->i_size);
 			up(&inode->i_sem);
 
@@ -562,7 +563,7 @@ send_dirlist (struct socket *sock, const char *path)
 				response = "426 readdir() error";
 			} else {
 				len = sprintf(buf, "total %lu\r\n", p.blockcount);
-				sent = ksock_rw(0, datasock, buf, --len, -1);
+				sent = ksock_rw(0, datasock, buf, len, -1);
 				if (sent != len) {
 					printk("kftp: ksock_rw(%d) returned %d\n", len, sent);
 					response = "426 ksock_rw() error 2";
@@ -622,8 +623,6 @@ append_path (char *path, char *new)
 	*p = '\0';
 }
 
-// FIXME:  allow upper/lower/mixed case for commands
-//
 /////////////////////////////////////////////////////////////////////////////////
 //
 // In order to make FTP workable without needless error messages, the
@@ -660,9 +659,17 @@ append_path (char *path, char *new)
 /////////////////////////////////////////////////////////////////////////////////
 
 
-// FIXME: Dunno if we have these in the kernel
-#define strcasecmp	strcmp
-#define strncasecmp	strncmp
+static void
+make_keyword_uppercase (char *keyword)
+{
+	char c = *keyword;
+
+	while (c && c != ' ') {
+		if (c >= 'a' && c <= 'z')
+			*keyword -= ('a' - 'A');
+		c = *++keyword;
+	}
+}
 
 static int
 handle_command (struct socket *sock)
@@ -688,41 +695,46 @@ handle_command (struct socket *sock)
 	} else {
 		buf[n] = '\0';	// overwrite '\r'
 		printk("kftp: '%s'\n", buf);
-		if (!strcasecmp(buf, "QUIT")) {
+		make_keyword_uppercase(buf);
+		if (!strcmp(buf, "QUIT")) {
 			quit = 1;
 			response = "221 happy fishing";
-		} else if (!strncasecmp(buf, "USER ", 5)) {
+		} else if (!strncmp(buf, "USER ", 5)) {
 			response = "230 user logged in";
-		} else if (!strncasecmp(buf, "PASS ", 5)) {
+		} else if (!strncmp(buf, "PASS ", 5)) {
 			response = "202 password okay";
-		} else if (!strncasecmp(buf, "SYST", 4)) {
+		} else if (!strncmp(buf, "SYST", 4)) {
 			response = "215 UNIX Type: L8";
-		} else if (!strcasecmp(buf, "STRU F")) {
+		} else if (!strcmp(buf, "MODE S")) {
+			response = "200 mode-s okay";
+		} else if (!strcmp(buf, "STRU F")) {
 			response = "200 stru-f okay";
-		} else if (!strncasecmp(buf, "TYPE ", 5)) {
+		} else if (!strncmp(buf, "TYPE ", 5)) {
 			if (buf[5] != 'A' && buf[5] != 'I') {
 				response = "501 unsupported xfer TYPE";
 			} else {
 				binary_mode = (buf[5] == 'I');
 				response = "200 type okay";
 			}
-		} else if (!strncasecmp(buf, "CWD ",4)) {
+		} else if (!strncmp(buf, "CWD ",4)) {
 			append_path(cwd, &buf[4]);
 			response = dir_response(257, cwd, "directory changed");
-		} else if (!strcasecmp(buf, "CDUP")) {
+		} else if (!strcmp(buf, "CDUP")) {
 			append_path(cwd, "..");
 			response = dir_response(257, cwd, NULL);
-		} else if (!strcasecmp(buf, "PWD")) {
+		} else if (!strcmp(buf, "NOOP")) {
+			response = "200 noop okay";
+		} else if (!strcmp(buf, "PWD")) {
 			response = dir_response(257, cwd, NULL);
-		} else if (!strcasecmp(buf, "HELP SITE")) {
+		} else if (!strcmp(buf, "HELP SITE")) {
 			response = "214-The following SITE commands are recognized.\r\n   CHMOD   EXEC\r\n214 done";
-		} else if (!strncasecmp(buf, "SITE CHMOD ", 11)) {
+		} else if (!strncmp(buf, "SITE CHMOD ", 11)) {
 			response = "500 Not implemented yet";
-		} else if (!strcasecmp(buf, ABOR) || !strcasecmp(buf, "ABOR")) {
+		} else if (!strcmp(buf, ABOR) || !strcmp(buf, "ABOR")) {
 			response = "200 Aborted";
-		} else if (!strncasecmp(buf, "SITE EXEC ", 10)) {
+		} else if (!strncmp(buf, "SITE EXEC ", 10)) {
 			response = "500 Not implemented yet";
-		} else if (!strncasecmp(buf, "PORT ", 5)) {
+		} else if (!strncmp(buf, "PORT ", 5)) {
 			have_portaddr = 0;
 			if (extract_portaddr(&portaddr, &buf[5])) {
 				response = "501 bad port address";
@@ -730,9 +742,9 @@ handle_command (struct socket *sock)
 				have_portaddr = 1;
 				response = "200 port accepted";
 			}
-		} else if (!strncasecmp(buf, "STOR ", 5)) {
+		} else if (!strncmp(buf, "STOR ", 5)) {
 			response = "502 upload not supported yet";
-		} else if (!strncasecmp(buf, "LIST", 4)) {
+		} else if (!strncmp(buf, "LIST", 4)) {
 			strcpy(path, cwd);
 			if (buf[4] == ' ') {
 				buf[4] = '\0';
@@ -745,7 +757,7 @@ handle_command (struct socket *sock)
 				if (!response)
 					response = "226 transmission completed";
 			}
-		} else if (!strncasecmp(buf, "RETR ", 5)) {
+		} else if (!strncmp(buf, "RETR ", 5)) {
 			strcpy(path, cwd);
 			if (!buf[5]) {
 				response = "501 missing path";
@@ -759,6 +771,8 @@ handle_command (struct socket *sock)
 			response = "500 bad command";
 		}
 	}
+	if (response)
+		printk("kftpd: %s\n", response);
 	rc = response ? send_response(sock, response) : -1;
 	return quit ? -1 : rc;
 }
@@ -775,13 +789,14 @@ handle_connection (struct socket *sock, struct sockaddr_in *clientaddr)
 		printk("kftpd: inet_ntop(%08x) failed\n", (uint32_t)clientaddr->sin_addr.s_addr);
 	} else {
 		printk("kftpd: connection from %s\n", clientip);
-		if (!send_response(sock, "220 connected")) {
+		if (!send_response(sock, "220 connected KFTPD "KFTPD_VERSION)) {
 			strcpy(cwd, "/");
 			while (handle_command(sock) == 0);
 		}
 	}
 	sock_release(sock);
 }
+
 
 int kftpd (void *unused)
 {
@@ -795,26 +810,31 @@ int kftpd (void *unused)
 	strcpy(tsk->comm, "kftpd");
 	sigfillset(&tsk->blocked);
 
-	rc = make_socket(&servsock, SERVER_CONTROL_PORT);
-	if (rc) {
-		printk("kftpd: make_socket(port=%d) failed, rc=%d\n", SERVER_CONTROL_PORT, rc);
-		return 0;
-	}
-	rc = servsock->ops->listen(servsock, 1); /* allow only one client at a time */
-	if (rc < 0) {
-		printk("kftpd: listen(port=%d) failed, rc=%d\n", SERVER_CONTROL_PORT, rc);
-		return 0;
-	}
-	while (1) {
-		struct socket		*clientsock;
-		struct sockaddr_in	clientaddr;
-		int			clientaddr_len = sizeof(clientaddr);
+	hijack_kftp_startup_sem = MUTEX_LOCKED;
+	down(&hijack_kftp_startup_sem);	// wait for hijack.c to get our port numbers from config.ini
 
-		clientsock = ksock_accept(servsock, (struct sockaddr *)&clientaddr, &clientaddr_len);
-		if (!clientsock) {
-			printk("kftpd: accept() failed\n");
-		} else {
-			handle_connection(clientsock, &clientaddr);
+	if (hijack_kftpd_control_port > 0 && hijack_kftpd_data_port > 0) {
+		rc = make_socket(&servsock, hijack_kftpd_control_port);
+		if (rc) {
+			printk("kftpd: make_socket(port=%d) failed, rc=%d\n", hijack_kftpd_control_port, rc);
+			return 0;
+		}
+		rc = servsock->ops->listen(servsock, 1); /* allow only one client at a time */
+		if (rc < 0) {
+			printk("kftpd: listen(port=%d) failed, rc=%d\n", hijack_kftpd_control_port, rc);
+			return 0;
+		}
+		while (1) {
+			struct socket		*clientsock;
+			struct sockaddr_in	clientaddr;
+			int			clientaddr_len = sizeof(clientaddr);
+	
+			clientsock = ksock_accept(servsock, (struct sockaddr *)&clientaddr, &clientaddr_len);
+			if (!clientsock) {
+				printk("kftpd: accept() failed\n");
+			} else {
+				handle_connection(clientsock, &clientaddr);
+			}
 		}
 	}
 	return 0;

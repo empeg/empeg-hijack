@@ -1,0 +1,16 @@
+drwxr-xr-x   14 502      220          1024 Dec 22  2001 .
+drwxr-xr-x   14 502      220          1024 Dec 22  2001 ..
+drwxr-xr-x    2 0        0           12288 Dec 22  2001 lost+found
+drwxr-xr-x    4 0        0            1024 Dec 22  2001 empeg
+drwxr-xr-x    2 0        0            1024 Jul  4  2000 dev
+drwxr-xr-x    2 0        0            1024 Apr 13  1999 tmp
+drwxr-xr-x    2 0        0            1024 Apr 13  1999 etc
+drwxr-xr-x    2 0        0            1024 Dec 22  2001 bin
+drwxr-xr-x    2 0        0            1024 Feb  8  2000 lib
+drwxr-xr-x    3 0        0            1024 Jun  1  1999 usr
+drwxr-xr-x    2 0        0            1024 Jul  6  1999 drive0
+drwxr-xr-x    2 0        0            1024 Dec 22  2001 sbin
+drwxr-xr-x    2 0        0            1024 Jun  2  1999 drive1
+drwxr-xr-x    2 0        0            1024 Jun  3  1999 proc
+lrwxrwxrwx    1 0        0              10 Dec 22  2001 swapfile -> ./dev/hda6
+total 50

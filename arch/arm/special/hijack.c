@@ -53,8 +53,8 @@ static unsigned long hijack_last_moved = 0, hijack_userdata = 0, hijack_last_ref
 static int  (*hijack_dispfunc)(int) = NULL;
 static void (*hijack_movefunc)(int) = NULL;
 static int menu_item = 0, menu_size = 0, menu_top = 0;
-static unsigned int ir_selected = 0, ir_releasewait = 0, ir_knob_down = 0, ir_left_down = 0, ir_right_down = 0, ir_trigger_count = 0;
-static unsigned long ir_prev_pressed = 0;
+static unsigned int ir_lasttime = 0, ir_selected = 0, ir_releasewait = 0, ir_knob_down = 0, ir_left_down = 0, ir_right_down = 0, ir_trigger_count = 0;
+static unsigned long ir_lastbutton = 0;
 
 #define KNOBDATA_BITS 2
 static const unsigned long knobdata_pressed [1<<KNOBDATA_BITS] = {IR_KNOB_PRESSED, IR_RIO_SHUFFLE_PRESSED, IR_RIO_INFO_PRESSED, IR_RIO_REPEAT_PRESSED};
@@ -590,7 +590,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v31 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v32 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -794,23 +794,35 @@ unsigned long calculator_buttons[CALCULATOR_BUTTONS_SIZE] = {CALCULATOR_BUTTONS_
 	IR_KW_7_PRESSED,       IR_KW_7_RELEASED,       IR_RIO_7_PRESSED,         IR_RIO_7_RELEASED,
 	IR_KW_8_PRESSED,       IR_KW_8_RELEASED,       IR_RIO_8_PRESSED,         IR_RIO_8_RELEASED,
 	IR_KW_9_PRESSED,       IR_KW_9_RELEASED,       IR_RIO_9_PRESSED,         IR_RIO_9_RELEASED,
-	IR_KW_CD_PRESSED,      IR_KW_CD_RELEASED,      IR_RIO_SELECTMODE_PRESSED,IR_RIO_SELECTMODE_RELEASED,
-	IR_KW_PLAY_PRESSED,    IR_KW_PLAY_RELEASED,    IR_RIO_PLAY_PRESSED,      IR_RIO_PLAY_RELEASED,
-	IR_KW_DIRECT_PRESSED,  IR_KW_DIRECT_RELEASED,  IR_RIO_SEARCH_PRESSED,    IR_RIO_SEARCH_RELEASED,
+	IR_KW_CD_PRESSED,      IR_KW_CD_RELEASED,      IR_RIO_MENU_PRESSED,      IR_RIO_MENU_RELEASED,
 	IR_KW_STAR_RELEASED,   IR_KW_STAR_PRESSED,     IR_RIO_CANCEL_RELEASED,   IR_RIO_CANCEL_PRESSED};
+
+static const unsigned char calculator_operators[] = {'=','+','-','*','/'};
+
+static long
+calculator_do_op (long total, long value, long operator)
+{
+	switch (calculator_operators[operator]) {
+		case '=': total  = value; break;
+		case '+': total += value; break;
+		case '-': total -= value; break;
+		case '*': total *= value; break;
+		case '/': total = value ? total / value : 0; break;
+	}
+	return total;
+}
 
 static int
 calculator_display (int firsttime)
 {
-	static long total, value, operator;
-	const unsigned char calculator_operators[] = {'=','+','-','*','/'};
+	static long total, value, operator, prev;
 	unsigned int i;
 	unsigned long flags, button;
 	unsigned char opstring[3] = {' ','\0'};
 
 	save_flags_cli(flags);
 	if (firsttime) {
-		total = value = operator = 0;
+		total = value = operator = prev = 0;
 		hijack_buttonlist = calculator_buttons;;
 		hijack_dataq_tail = hijack_dataq_head = 0;
 	} else while (hijack_dataq_tail != hijack_dataq_head) {
@@ -823,40 +835,36 @@ calculator_display (int firsttime)
 		if ((i & 1)) { // very clever:  if (first_or_third_column_from_table) {
 			i = (i - 1) / 4;
 			switch (i) {
-				case 10: // CD or SELECTMODE: toggle operators
-					operator = (operator + 1) % sizeof(calculator_operators);
-					break;
-				case 11: // PLAY: execute operation
-					switch (calculator_operators[operator]) {
-						case '=': total  = value; break;
-						case '+': total += value; break;
-						case '-': total -= value; break;
-						case '*': total *= value; break;
-						case '/': total /= value; break;
+				case 10: // CD or MENU: toggle operators
+					if (prev < 10) {
+						total = calculator_do_op(total, value, operator);
+						value = operator = 0;
+					} else {
+						operator = (operator + 1) % sizeof(calculator_operators);
 					}
-					// fall thru
-				case 12: // DIRECTOK / SEARCH: clear entry
-					value = operator = 0;
 					break;
-				case 13: // * or CANCEL: exit
-					hijack_buttonlist = NULL;
-					ir_selected = 1; // return to main menu
+				case 11: // * or CANCEL: CE,CA,Quit
+					if (value) {
+						value = 0;
+					} else if (total) {
+						total = 0;
+					} else {
+						hijack_buttonlist = NULL;
+						ir_selected = 1; // return to main menu
+					}
 					break;
 				default: // 0,1,2,3,4,5,6,7,8,9
 					if ((value / 1000000000) == 0)
 						value = (value * 10) + ((value < 0) ? -i : i);
 					break;
 			}
+			prev = i;
 		}
 	}
 	restore_flags(flags);
 	clear_hijack_displaybuf(COLOR0);
-	(void) draw_string(ROWCOL(0,0), "CD/SelectMode: =+-*/", COLOR2);
-	(void) draw_string(ROWCOL(1,0), "Play/Pause: execute!", COLOR2);
-	(void) draw_string(ROWCOL(2,83), "*/Cancel", COLOR2);
-	(void) draw_string(ROWCOL(3,83), " to quit", COLOR2);
-	opstring[0] = calculator_operators[0];
-	(void) draw_string(ROWCOL(2,0), opstring, COLOR3);
+	(void) draw_string(ROWCOL(0,0), "Menu/CD: =+-*/", COLOR2);
+	(void) draw_string(ROWCOL(1,0), "Cancel/*: CE,CA,quit", COLOR2);
 	(void) draw_number(ROWCOL(2,8), total, "%11d", COLOR3);
 	opstring[0] = calculator_operators[operator];
 	(void) draw_string(ROWCOL(3,0), opstring, COLOR3);
@@ -949,7 +957,7 @@ menu_display (int firsttime)
 		save_flags_cli(flags);
 		if (ir_selected)
 			activate_dispfunc(menu_userdata[item], menu_displayfunc[item], menu_movefunc[item]);
-		else if (jiffies_since(hijack_last_refresh) > (5 * HZ))
+		else if (jiffies_since(ir_lasttime) > (HZ*5))
 			hijack_deactivate(); // menu timed-out
 		restore_flags(flags);
 	}
@@ -1006,7 +1014,8 @@ hijack_move_repeat (void)
 // This routine covertly intercepts all display updates,
 // giving us a chance to substitute our own display.
 //
-void hijack_display(struct display_dev *dev, unsigned char *player_buf)
+void
+hijack_display (struct display_dev *dev, unsigned char *player_buf)
 {
 	unsigned char *buf = (unsigned char *)hijack_displaybuf;
 	unsigned long flags;
@@ -1018,7 +1027,7 @@ void hijack_display(struct display_dev *dev, unsigned char *player_buf)
 			if (ir_trigger_count >= 3 || (ir_knob_down && jiffies_since(ir_knob_down) >= HZ)) {
 				menu_item = menu_top = 0;
 				activate_dispfunc(0, menu_display, menu_move);
-			} else if (!maxtemp_threshold || read_temperature() < (maxtemp_threshold + MAXTEMP_OFFSET)) {
+			} else if (jiffies_since(ir_lasttime) < (HZ*5) || !maxtemp_threshold || read_temperature() < (maxtemp_threshold + MAXTEMP_OFFSET)) {
 				buf = player_buf;
 			} else {
 				unsigned int rowcol;
@@ -1137,7 +1146,7 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 					if (hijack_dispfunc != userland_display)
 						hijack_deactivate();
 					break;
-				case IR_RIO_SELECTMODE_PRESSED:
+				case IR_RIO_MENU_PRESSED:
 				case IR_KW_CD_PRESSED:
 				case IR_KNOB_PRESSED:
 					ir_selected = 1;
@@ -1156,7 +1165,7 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 				case IR_KW_PREVTRACK_RELEASED:
 				case IR_RIO_NEXTTRACK_RELEASED:
 				case IR_RIO_PREVTRACK_RELEASED:
-				case IR_RIO_SELECTMODE_RELEASED:
+				case IR_RIO_MENU_RELEASED:
 				case IR_KNOB_RELEASED:  // this one often arrives in pairs
 					break;
 				case IR_KW_PAUSE_PRESSED:
@@ -1168,14 +1177,12 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 					break;
 			}
 		}
-	} else if (data == IR_KW_CD_PRESSED || data == IR_RIO_SELECTMODE_PRESSED) {
-		static unsigned long prev_presstime = 0;
+	} else if (data == IR_KW_CD_PRESSED) {
 		// ugly Kenwood remote hack: press/release CD quickly 3 times to activate menu
-		if (ir_prev_pressed == (data & 0x7fffffff) && prev_presstime && jiffies_since(prev_presstime) < HZ)
+		if (ir_lastbutton == data && jiffies_since(ir_lasttime) < HZ)
 			++ir_trigger_count;
 		else
 			ir_trigger_count = 1;
-		prev_presstime = jiffies;
 	}
 	// Update button states
 	if (ir_releasewait && data == ir_releasewait) {
@@ -1184,24 +1191,31 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 	} else if (hijacked && (data & 0x80000001) == 0 && data != IR_KNOB_LEFT && data != IR_KNOB_RIGHT) {
 		ir_releasewait = data | ((((int)data) > 16) ? 0x80000000 : 0x00000001);
 	}
-	// save button PRESSED codes in ir_prev_pressed
-	if ((data & 0x80000001) == 0 || ((int)data) > 16)
-		ir_prev_pressed = data;
+	// save button PRESSED codes in ir_lastbutton
+	if ((data & 0x80000001) == 0 || ((int)data) > 16) {
+		ir_lastbutton = data;
+		ir_lasttime = jiffies;
+	}
 	switch (data) {
 		case IR_KNOB_PRESSED:
-			hijacked = 1; // we ALWAYS hijack the KNOB presses, and send them with the release (below)
+		case IR_RIO_MENU_PRESSED:
+			hijacked = 1; // we ALWAYS hijack these, and later send them with the release (below)
 			// fall thru
-		case IR_RIO_SELECTMODE_PRESSED:
 			ir_knob_down = jiffies ? jiffies : 1;
+			break;
+		case IR_RIO_MENU_RELEASED:
+			if (hijack_status == HIJACK_INACTIVE && !hijacked) {
+				if (ir_knob_down && jiffies_since(ir_knob_down) < (HZ/2))  // short press?
+					real_input_append_code(dev, IR_RIO_MENU_PRESSED); // time to send the menu_pressed
+			}
+			ir_knob_down = 0;
 			break;
 		case IR_KNOB_RELEASED:  // these often arrive in pairs
 			if (hijack_status == HIJACK_INACTIVE && !hijacked) {
 				if (ir_knob_down && jiffies_since(ir_knob_down) < (HZ/2))  // short press?
-					real_input_append_code(dev, knobdata_pressed[knobdata_index]); // time to send the knob_press_data
+					real_input_append_code(dev, knobdata_pressed[knobdata_index]); // time to send the knob_pressed
 				data = knobdata_released[knobdata_index]; // and the knob_release_data
 			}
-			// fall thru
-		case IR_RIO_SELECTMODE_RELEASED:
 			ir_knob_down = 0;
 			break;
 		case IR_KW_PREVTRACK_PRESSED:

@@ -1,6 +1,6 @@
 // kftpd by Mark Lord
 //
-// This version can only LIST directories and RETRieve files.  STOR is not implemented yet.
+// This version can UPLOAD and DOWNLOAD files, directories..
 //
 
 extern int hijack_khttpd_port;				// from arch/arm/special/hijack.c
@@ -44,8 +44,13 @@ typedef struct server_parms_s {
 	struct socket		*clientsock;
 	struct socket		*servsock;
 	struct socket		*datasock;
+	struct sockaddr_in	clientaddr;
 	int			use_http;
 	int			data_port;
+	unsigned int		umask;
+#ifdef SUPPORT_PASSIVE_FTP
+	int			passive_ftp;
+#endif // SUPPORT_PASSIVE_FTP
 	char			clientip[INET_ADDRSTRLEN];
 	char			servername[8];
 	int			have_portaddr;
@@ -127,22 +132,17 @@ extract_portaddr (struct sockaddr_in *addr, char *s)
 
 // Adapted from various examples in the kernel
 static int
-ksock_rw (int have_lock, struct socket *sock, char *buf, int bufsize, int minimum)
+ksock_rw (struct socket *sock, char *buf, int bufsize, int minimum)
 {
 	struct msghdr	msg;
 	struct iovec	iov;
-	mm_segment_t	oldfs = 0;
 	int		bytecount = 0, sending = 0;
 
-	if (!have_lock) {
-		oldfs = get_fs();
-		set_fs(KERNEL_DS);
-	}
+	lock_kernel();
 	if (minimum < 0) {
 		minimum = bufsize;
 		sending = 1;
 	}
-
 	do {
 		int rc, len = bufsize - bytecount;
 
@@ -164,11 +164,7 @@ ksock_rw (int have_lock, struct socket *sock, char *buf, int bufsize, int minimu
 			break;
 		bytecount += rc;
 	} while (bytecount < minimum);
-
-	if (!have_lock) {
-		set_fs(oldfs);
-		unlock_kernel();
-	}
+	unlock_kernel();
 	return bytecount;
 }
 
@@ -181,7 +177,7 @@ send_response (server_parms_t *parms, const char *response)
 	strcpy(buf, response);
 	strcat(buf, "\r\n");
 	length = strlen(buf);
-	if ((rc = ksock_rw(0, parms->clientsock, buf, length, -1)) != length) {
+	if ((rc = ksock_rw(parms->clientsock, buf, length, -1)) != length) {
 		printk("%s: ksock_rw(response) '%s' failed: %d\n", parms->servername, response, rc);
 		return -1;
 	}
@@ -217,40 +213,84 @@ make_socket (struct socket **sockp, int port)
 	return rc;
 }
 
+#ifdef SUPPORT_PASSIVE_FTP
+static const char *
+passive_listen (server_parms_t *parms)
+{
+	const char		*response = NULL;
+	int			rc;
+
+	if ((rc = make_socket(&parms->datasock, hijack_kftpd_data_port))) {
+		response = "425 make_socket(datasock) failed";
+	} else if (parms->datasock->ops->listen(parms->datasock, 1) < 0) {
+		response = "425 listen(datasock) failed";
+		sock_release(parms->datasock);
+	}
+	return response;
+}
+
+static const char *
+passive_accept (server_parms_t *parms)
+{
+	const char		*response = NULL;
+	struct socket		*datasock = parms->datasock;
+	struct sockaddr_in	addr;
+	int			addrlen = sizeof(addr);
+
+	if (datasock->ops->accept(datasock, datasock, datasock->file->f_flags) < 0) {
+		response = "425 accept(datasock) failed";
+	} else if (datasock->ops->getname(datasock, (struct sockaddr *)&addr, &addrlen, 1) < 0) {
+		response = "425 getname(datasock) failed";
+	} else if (addr.sin_family != AF_INET || addr.sin_addr.s_addr != parms->clientaddr.sin_addr.s_addr) {
+		response = "425 client_addr(datasock) mismatch";
+	}
+	if (response)
+		sock_release(datasock);
+	return response;
+}
+#endif // SUPPORT_PASSIVE_FTP
+
 static const char *
 open_datasock (server_parms_t *parms)
 {
 	int		rc;
 	const char	*response = NULL;
 
-	if (parms->use_http) {
-		parms->datasock = parms->clientsock;
-	} else if (!parms->have_portaddr) {
-		response = "425 no PORT specified";
-	} else {
-		parms->have_portaddr = 0;	// for next time
-		if ((rc = make_socket(&parms->datasock, hijack_kftpd_data_port))) {
-			response = "425 make_socket(datasock) failed";
+#ifdef SUPPORT_PASSIVE_FTP
+	if (parms->passive_ftp) {
+		if (passive_accept(parms)) {
+			response = "425 data connection failed";
+			sock_release(parms->datasock);
+		}
+	} else
+#endif // SUPPORT_PASSIVE_FTP
+	{
+
+		if (parms->use_http) {
+			parms->datasock = parms->clientsock;
+		} else if (!parms->have_portaddr) {
+			response = "425 no PORT specified";
 		} else {
-			if (send_response(parms, "150 opening BINARY mode data connection")) {
-				response = "451 error";
+			parms->have_portaddr = 0;	// for next time
+			if ((rc = make_socket(&parms->datasock, hijack_kftpd_data_port))) {
+				response = "425 make_socket(datasock) failed";
 			} else {
-				int flags = 0;
-				rc = parms->datasock->ops->connect(parms->datasock,
-					(struct sockaddr *)&parms->portaddr, sizeof(struct sockaddr_in), flags);
-				if (rc)
-					response = "425 data connection failed";
+				if (send_response(parms, "150 opening BINARY mode data connection")) {
+					response = "451 error";
+				} else {
+					int flags = 0;
+					rc = parms->datasock->ops->connect(parms->datasock,
+						(struct sockaddr *)&parms->portaddr, sizeof(struct sockaddr_in), flags);
+					if (rc)
+						response = "425 data connection failed";
+				}
+				if (response)
+					sock_release(parms->datasock);
 			}
-			if (response)
-				sock_release(parms->datasock);
 		}
 	}
 	return response;
 }
-
-// gmtime - convert time_t into tm_t
-//
-// Adapted from version found in MINIX source tree
 
 typedef struct tm_s
 {
@@ -279,7 +319,7 @@ static char *MONTHS[12] =
 	  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
 
 static tm_t *
-gmtime (time_t time, tm_t *tm)
+convert_time (time_t time, tm_t *tm)
 {
 	unsigned long clock, day;
 	const int *days_per_month;
@@ -350,6 +390,7 @@ typedef struct filldir_parms_s {
 	int			rc;
 	int			use_http;
 	int			current_year;
+	char			*servername;
 	unsigned long		blockcount;
 	struct socket		*datasock;
 	struct super_block	*super;
@@ -361,46 +402,50 @@ typedef struct filldir_parms_s {
 static char *
 append_string (char *b, const char *s, int len, int quoted)
 {
-	while (len-- && *s) {
+	while (*s) {
 		if (quoted && (*s == '\\' || *s == '"'))
 			*b++ = '\\';
 		*b++ = *s++;
+		if (len && !--len)
+			break;
 	}
 	return b;
 }
+
+extern int s_readlink(struct inode *i, char *buf, int bufsiz);
 
 static int	// callback routine for filp->f_op->readdir()
 filldir (void *parms, const char *name, int namelen, off_t offset, ino_t ino)
 {
 	filldir_parms_t		*p = parms;
-	unsigned int		mode;
 	struct inode		*i;
-	tm_t			tm;
-	char			*buf, *b, c, *lname = NULL;
-	int			llen = 0;
 	struct buffer_head	*bh = NULL;
+	unsigned long		mode, llen = 0;
+	char			*buf, *b, *lname = NULL;
+	tm_t			tm;
+	char			c;
 
 	i = iget(p->super, ino);
 	if (!i) {
-		printk("kftpd: iget(%lu) failed\n", ino);
+		printk("%s: iget(%lu) failed\n", p->servername, ino);
 		p->rc = -ENOENT;
 		return p->rc;	// non-zero rc causes readdir() to stop, but with no indication of an error!
 	}
 
-	// Get target of symbolic link: UGLY HACK, COPIED FROM ext2_readlink(); fixme?: broken for /proc/
+	b = buf = p->buf + p->bytecount;
 	mode = i->i_mode;
 	if ((mode & S_IFMT) == S_IFLNK && i->i_sb) {
+		// Get target of symbolic link: UGLY HACK, COPIED FROM ext2_readlink(); fixme?: broken for /proc/
 		llen = i->i_sb->s_blocksize - 1;
 		if (i->i_blocks) {
 			int err;
 			bh = ext2_bread(i, 0, 0, &err);
 			lname = bh ? bh->b_data : NULL;
 		} else {
-			lname = (char *) i->u.ext2_i.i_data;
+			lname = (char *)i->u.ext2_i.i_data;
 		}
 	}
 
-	b = buf = p->buf + p->bytecount;
 	switch (mode & S_IFMT) {
 		case S_IFLNK:	c = 'l'; break;
 		case S_IFDIR:	c = 'd'; break;
@@ -430,29 +475,29 @@ filldir (void *parms, const char *name, int namelen, off_t offset, ino_t ino)
 		p->blockcount += i->i_blocks;
 	}
 
-	b = format_time(gmtime(i->i_mtime, &tm), p->current_year, b);
+	b = format_time(convert_time(i->i_mtime, &tm), p->current_year, b);
 
 	*b++ = ' ';
 	if (p->use_http) {
-		b = append_string(b, "<A HREF=\"", 9, 0);
+		b = append_string(b, "<A HREF=\"", 0, 0);
 		if (lname)
-			b = append_string(b, lname, llen, 1);
+			b = append_string(b, lname, 0, 1);
 		else
 			b = append_string(b, name, namelen, 1);
 		if (buf[0] == 'd')
 			*b++ = '/';
-		b = append_string(b, "\">", 2, 0);
+		b = append_string(b, "\">", 0, 0);
 	}
 	b = append_string(b, name, namelen, 0);
 	if (p->use_http)
-		b = append_string(b, "</A>", 4, 0);
+		b = append_string(b, "</A>", 0, 0);
 
 	if (lname) {
 		*b++ = ' ';
 		*b++ = '-';
 		*b++ = '>';
 		*b++ = ' ';
-		b = append_string(b, lname, llen, 0);
+		b = append_string(b, lname, 0, 0);
 	}
 	*b++ = '\r';
 	*b++ = '\n';
@@ -504,9 +549,10 @@ send_dirlist (server_parms_t *parms, const char *path)
 			tm_t		tm;
 			struct inode	*inode = filp->f_dentry->d_inode;
 
-			p.current_year	= gmtime(CURRENT_TIME, &tm)->tm_year;
+			p.current_year	= convert_time(CURRENT_TIME, &tm)->tm_year;
 			p.rc		= 0;
 			p.use_http	= parms->use_http;
+			p.servername	= parms->servername;
 			p.blockcount	= 0;
 			p.datasock	= parms->datasock;
 			p.super		= inode->i_sb;
@@ -522,7 +568,7 @@ send_dirlist (server_parms_t *parms, const char *path)
 				if (!p.bytecount)
 					break;
 				up(&inode->i_sem);
-				sent = ksock_rw(0, parms->datasock, p.buf, p.bytecount, -1);
+				sent = ksock_rw(parms->datasock, p.buf, p.bytecount, -1);
 				down(&inode->i_sem);
 				if (sent != p.bytecount) {
 					p.rc = sent < 0 ? sent : -EIO;
@@ -542,7 +588,7 @@ send_dirlist (server_parms_t *parms, const char *path)
 					len = sprintf(p.buf, "</PRE><HR>\n</BODY></HTML>\n");
 				else
 					len = sprintf(p.buf, "total %lu\r\n", p.blockcount);
-				sent = ksock_rw(0, parms->datasock, p.buf, len, -1);
+				sent = ksock_rw(parms->datasock, p.buf, len, -1);
 				if (sent != len) {
 					printk("%s: ksock_rw(%d) returned %d\n", servername, len, sent);
 					response = "426 ksock_rw() error 2";
@@ -578,7 +624,7 @@ khttpd_dir_redirect (server_parms_t *parms, const char *path, char *buf)
 	unsigned int	len, rc;
 
 	len = sprintf(buf, http_redirect, path, path);
-	rc = ksock_rw(1, parms->clientsock, buf, len, -1);
+	rc = ksock_rw(parms->clientsock, buf, len, -1);
 	if (rc != len)
 		printk("%s: bad_request(): ksock_rw(%d) returned %d\n", parms->servername, len, rc);
 }
@@ -598,11 +644,11 @@ khttp_send_file_header (server_parms_t *parms, const char *path, unsigned long i
 			while (s > path && *--s != '/');
 			while (s > path && *--s != '/');
 			if (!strncmp(s, "/fids", 5))
-				type = "application/octet-stream";	// or perhaps "audio/mpeg3" ??
+				type = "audio/mpeg3";	// or "application/octet-stream" ??
 		}
 	}
 	len = sprintf(buf, hdr, i_size, type);
-	if (len != ksock_rw(2, parms->datasock, buf, len, -1))
+	if (len != ksock_rw(parms->datasock, buf, len, -1))
 		return "426 error sending header; transfer aborted";
 	return 0;
 }
@@ -612,7 +658,6 @@ send_file (server_parms_t *parms, const char *path)
 {
 	unsigned int	size;
 	struct file	*filp;
-	mm_segment_t	old_fs;
 	const char	*response = NULL, *servername = parms->servername;
 	unsigned char	*buf;
 
@@ -625,8 +670,6 @@ send_file (server_parms_t *parms, const char *path)
 			printk("%s: filp_open(%s) failed\n", servername, path);
 			response = "550 file not found";
 		} else {
-			old_fs = get_fs();
-			set_fs(KERNEL_DS);
 			if (!filp->f_dentry || !filp->f_dentry->d_inode || !filp->f_op) {
 				response = "550 file read error";
 			} else if (filp->f_op->readdir) {
@@ -645,7 +688,7 @@ send_file (server_parms_t *parms, const char *path)
 							printk("%s: filp->f_op->read() failed; rc=%d\n", servername, size);
 							response = "451 error reading file";
 							break;
-						} else if (size && size != ksock_rw(2, parms->datasock, buf, size, -1)) {
+						} else if (size && size != ksock_rw(parms->datasock, buf, size, -1)) {
 							response = "426 error sending data; transfer aborted";
 							break;
 						}
@@ -654,7 +697,125 @@ send_file (server_parms_t *parms, const char *path)
 				if (!parms->use_http)
 					sock_release(parms->datasock);
 			}
-			set_fs(old_fs);
+			filp_close(filp,NULL);
+		}
+		free_page((unsigned long)buf);
+	}
+	unlock_kernel();
+	return response;
+}
+
+// cloned from fs/read_write.c
+//
+static inline loff_t llseek(struct file *file, loff_t offset, int origin)
+{
+	extern loff_t default_llseek(struct file *file, loff_t offset, int origin); // fs/read_write.c
+	loff_t (*fn)(struct file *, loff_t, int);
+
+	fn = default_llseek;
+	if (file->f_op && file->f_op->llseek)
+		fn = file->f_op->llseek;
+	return fn(file, offset, origin);
+}
+
+static const char *
+do_rmdir (server_parms_t *parms, const char *path)
+{
+	extern int	sys_rmdir(const char *path); // fs/namei.c
+	const char	*response = "226 rmdir okay";
+	int		rc;
+
+	if ((rc = sys_rmdir(path))) {
+		printk("%s: rmdir('%s') failed, rc=%d\n", parms->servername, path, rc);
+		response = "550 rmdir failed";
+	}
+	return response;
+}
+
+static const char *
+do_mkdir (server_parms_t *parms, const char *path)
+{
+	extern int	sys_mkdir(const char *path, int mode); // fs/namei.c
+	const char	*response = "226 mkdir okay";
+	int		rc;
+
+	if ((rc = sys_mkdir(path, 0777 & ~parms->umask))) {
+		printk("%s: mkdir('%s') failed, rc=%d\n", parms->servername, path, rc);
+		response = "550 mkdir failed";
+	}
+	return response;
+}
+
+static const char *
+do_chmod (server_parms_t *parms, unsigned int mode, const char *path)
+{
+	extern int	sys_chmod(const char *path, mode_t mode); // fs/open.c
+	const char	*response = "226 chmod okay";
+	int		rc;
+
+	if ((rc = sys_chmod(path, mode))) {
+		printk("%s: chmod('%s',%d) failed, rc=%d\n", parms->servername, path, mode, rc);
+		response = "550 chmod failed";
+	}
+	return response;
+}
+
+static const char *
+do_delete (server_parms_t *parms, const char *path)
+{
+	extern int	sys_unlink(const char *path);
+	const char	*response = "226 delete okay";
+	int		rc;
+
+	if ((rc = sys_unlink(path))) {
+		printk("%s: unlink('%s') failed, rc=%d\n", parms->servername, path, rc);
+		response = "550 delete failed";
+	}
+	return response;
+}
+
+static const char *
+receive_file (server_parms_t *parms, const char *path)
+{
+	int		size, rc;
+	struct file	*filp;
+	const char	*response = NULL, *servername = parms->servername;
+	unsigned char	*buf;
+
+	lock_kernel();
+	if (!(buf = (unsigned char *)__get_free_page(GFP_KERNEL))) {
+		response = "426 out of memory";
+	} else {
+		filp = filp_open(path,O_CREAT|O_TRUNC|O_RDWR, 0666 & ~parms->umask);
+		if (IS_ERR(filp) || !filp) {
+			printk("%s: filp_open(%s) failed\n", servername, path);
+			response = "550 file could not be opened";
+		} else {
+			if (!filp->f_dentry || !filp->f_dentry->d_inode || !filp->f_op) {
+				response = "550 file read error";
+			} else if (filp->f_op->readdir) {
+				response = "550 not a file";
+			} else if (!filp->f_op->write) {
+				response = "550 file write error";
+			} else if (!(response = open_datasock(parms))) {
+				if (llseek(filp, 0, 0) < 0) {
+					response = "550 file write error";
+				} else {
+					filp->f_pos = 0;
+					do {
+						size = ksock_rw(parms->datasock, buf, PAGE_SIZE, 1);
+						if (size < 0) {
+							response = "426 error sending data; transfer aborted";
+							break;
+						} else if (size != (rc = filp->f_op->write(filp, buf, size, &(filp->f_pos)))) {
+							printk("%s: filp->f_op->write(%d) failed; rc=%d\n", servername, size, rc);
+							response = "451 error writing file";
+							break;
+						}
+					} while (size > 0);
+				}
+			}
+			sock_release(parms->datasock);
 			filp_close(filp,NULL);
 		}
 		free_page((unsigned long)buf);
@@ -763,7 +924,7 @@ kftpd_handle_command (server_parms_t *parms)
 	int		n, rc, quit = 0;
 	const char	ABOR[] = {0xf2,'A','B','O','R','\0'};
 
-	n = ksock_rw(0, parms->clientsock, buf, sizeof(buf), 0);
+	n = ksock_rw(parms->clientsock, buf, sizeof(buf), 0);
 	if (n < 0) {
 		printk("%s: client request too short, ksock_rw() failed: %d\n", parms->servername, n);
 		return -1;
@@ -795,7 +956,7 @@ kftpd_handle_command (server_parms_t *parms)
 		} else if (!strncmp(buf, "TYPE ", 5)) {
 			if (buf[5] != 'I') {
 				//response = "502 unsupported xfer TYPE";
-				response = "200 type-A okay"; // fixme?
+				response = "200 type-A okay";
 			} else {
 				response = "200 type-I okay";
 			}
@@ -809,10 +970,29 @@ kftpd_handle_command (server_parms_t *parms)
 			response = "200 noop okay";
 		} else if (!strcmp(buf, "PWD")) {
 			response = dir_response(257, parms->cwd, NULL);
-		} else if (!strcmp(buf, "HELP SITE")) {
-			response = "214-The following SITE commands are recognized.\r\n   CHMOD   EXEC\r\n214 done";
-		} else if (!strncmp(buf, "SITE CHMOD ", 11)) {
-			response = "500 Not implemented yet";
+#ifdef SUPPORT_PASSIVE_FTP
+		} else if (!strncmp(buf, "PASV", 4)) {
+			parms->passive_ftp = 1;
+			// FIXME: need to format serverip:port and send back to client as response:
+			//response = "227 Entering Passive Mode (127,0,0,1,201,14)"
+			response = "500 PASV not implemented";
+#endif // SUPPORT_PASSIVE_FTP
+		} else if (!strcmp(buf, "SITE HELP")) {
+			response = "214-The following SITE commands are recognized.\r\n   CHMOD\r\n214 done";
+		//} else if (!strncmp(buf, "SITE UMASK ", 11)) {
+		//	response = "500 Not implemented yet";
+		} else if (!strncmp(buf, "SITE CHMOD 0", 12)) {
+			unsigned char *p = &buf[12];
+			unsigned int mode = 0;
+			while (*p >= '0' && *p <= '7')
+				mode = (mode * 8) + (*p++ - '0');
+			if (*p++ != ' ' || !*p) {
+				response = "501 missing path";
+			} else {
+				strcpy(path, parms->cwd);
+				append_path(path, p);
+				response = do_chmod(parms, mode, p);
+			}
 		} else if (!strcmp(buf, ABOR) || !strcmp(buf, "ABOR")) {
 			response = "200 Aborted";
 		} else if (!strncmp(buf, "SITE EXEC ", 10)) {
@@ -825,8 +1005,30 @@ kftpd_handle_command (server_parms_t *parms)
 				parms->have_portaddr = 1;
 				response = "200 port accepted";
 			}
-		} else if (!strncmp(buf, "STOR ", 5)) {
-			response = "502 upload not supported yet";
+		} else if (!strncmp(buf, "MKD ", 4)) {
+			strcpy(path, parms->cwd);
+			if (!buf[4]) {
+				response = "501 missing path";
+			} else {
+				append_path(path, &buf[4]);
+				response = do_mkdir(parms, path);
+			}
+		} else if (!strncmp(buf, "RMD ", 4)) {
+			strcpy(path, parms->cwd);
+			if (!buf[4]) {
+				response = "501 missing path";
+			} else {
+				append_path(path, &buf[4]);
+				response = do_rmdir(parms, path);
+			}
+		} else if (!strncmp(buf, "DELE ", 5)) {
+			strcpy(path, parms->cwd);
+			if (!buf[5]) {
+				response = "501 missing path";
+			} else {
+				append_path(path, &buf[5]);
+				response = do_delete(parms, path);
+			}
 		} else if (!strncmp(buf, "LIST", 4)) {
 			int j = 4;
 			if (buf[j] == ' ' && buf[j+1] == '-')
@@ -843,13 +1045,16 @@ kftpd_handle_command (server_parms_t *parms)
 				if (!response)
 					response = "226 transmission completed";
 			}
-		} else if (!strncmp(buf, "RETR ", 5)) {
+		} else if (!strncmp(buf, "RETR ", 5) || !strncmp(buf, "STOR ", 5)) {
 			strcpy(path, parms->cwd);
 			if (!buf[5]) {
 				response = "501 missing path";
 			} else {
 				append_path(path, &buf[5]);
-				response = send_file(parms, path);
+				if (buf[0] == 'R')
+					response = send_file(parms, path);
+				else
+					response = receive_file(parms, path);
 				if (!response)
 					response = "226 transmission completed";
 			}
@@ -878,7 +1083,7 @@ khttpd_bad_request (server_parms_t *parms, int codenum, const char *title, const
 	unsigned int	len, rc;
 
 	len = sprintf(buf, kttpd_response, codenum, title, title, text);
-	rc = ksock_rw(0, parms->clientsock, buf, len, -1);
+	rc = ksock_rw(parms->clientsock, buf, len, -1);
 	if (rc != len)
 		printk("%s: bad_request(): ksock_rw(%d) returned %d\n", parms->servername, len, rc);
 }
@@ -890,7 +1095,7 @@ khttpd_handle_connection (server_parms_t *parms)
 	char		*buf = parms->cwd;
 	int		buflen = CLIENT_CWD_SIZE, n;
 
-	n = ksock_rw(0, parms->clientsock, buf, buflen, 0);
+	n = ksock_rw(parms->clientsock, buf, buflen, 0);
 	if (n < 0) {
 		printk("%s: client request too short, ksock_rw() failed: %d\n", parms->servername, n);
 		return -1;
@@ -924,13 +1129,12 @@ khttpd_handle_connection (server_parms_t *parms)
 static int
 get_clientip (server_parms_t *parms)
 {
-	struct sockaddr_in	addr;
 	int			addrlen = sizeof(struct sockaddr_in);
 
 	parms->clientip[0] = '\0';
-	return (parms->clientsock->ops->getname(parms->clientsock, (struct sockaddr *)&addr, &addrlen, 1) >= 0)
-	 	&& (addr.sin_family == AF_INET)
-	 	&& !inet_ntop(AF_INET, &addr.sin_addr.s_addr, parms->clientip, INET_ADDRSTRLEN);
+	return (parms->clientsock->ops->getname(parms->clientsock, (struct sockaddr *)&parms->clientaddr, &addrlen, 1) < 0)
+	 	|| (parms->clientaddr.sin_family != AF_INET)
+	 	|| !inet_ntop(AF_INET, &parms->clientaddr.sin_addr.s_addr, parms->clientip, INET_ADDRSTRLEN);
 }
 
 static int
@@ -954,16 +1158,17 @@ ksock_accept (server_parms_t *parms)
 }
 
 static void
-run_server (int use_http, struct semaphore *sem_p, int control_port, int data_port)
+run_server (int use_http, struct semaphore *sem_p)
 {
+	mm_segment_t		old_fs;
 	struct task_struct	*tsk = current;
 	server_parms_t		*parms = kmalloc(sizeof(server_parms_t), GFP_KERNEL);
+	int			control_port;
 
 	if (!parms)
 		return;
 	memset(parms, 0, sizeof(parms));
 	parms->use_http  = use_http;
-	parms->data_port = data_port;
 	strcpy(parms->servername, use_http ? "khttpd" : "kftpd");
 
 	// kthread setup
@@ -977,7 +1182,15 @@ run_server (int use_http, struct semaphore *sem_p, int control_port, int data_po
 		down(sem_p);	// wait for hijack.c to get our port numbers from config.ini
 	}
 
-	if (control_port && data_port) {
+	old_fs = get_fs();
+	set_fs(KERNEL_DS);
+	if (use_http) {
+		control_port = hijack_khttpd_port;
+	} else {
+		control_port = hijack_kftpd_control_port;
+		parms->data_port = hijack_kftpd_data_port;
+	}
+	if (control_port) {
 		if (make_socket(&parms->servsock, control_port)) {
 			printk("%s: make_socket(port=%d) failed\n", parms->servername, control_port);
 		} else if (parms->servsock->ops->listen(parms->servsock, use_http ? 5 : 1) < 0) {
@@ -997,6 +1210,7 @@ run_server (int use_http, struct semaphore *sem_p, int control_port, int data_po
 						} else {
 							if (!send_response(parms, "220 connected")) {
 								strcpy(parms->cwd, "/");
+								parms->umask = 0022;
 								while (!kftpd_handle_command(parms));
 							}
 						}
@@ -1006,17 +1220,18 @@ run_server (int use_http, struct semaphore *sem_p, int control_port, int data_po
 			}
 		}
 	}
+	set_fs(old_fs);
 }
 
 int kftpd (void *unused)	// invoked from init/main.c
 {
-	run_server(0, &hijack_kftpd_startup_sem, hijack_kftpd_control_port, hijack_kftpd_data_port);
+	run_server(0, &hijack_kftpd_startup_sem);
 	return 0;
 }
 
 int khttpd (void *unused)	// invoked from init/main.c
 {
-	run_server(1, &hijack_khttpd_startup_sem, hijack_khttpd_port, hijack_khttpd_port);
+	run_server(1, &hijack_khttpd_startup_sem);
 	return 0;
 }
 

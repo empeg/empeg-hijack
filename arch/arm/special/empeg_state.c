@@ -264,8 +264,9 @@ int empeg_state_restore (unsigned char *buffer)
 		if (calculated_crc==stored_crc) {
 			/* Copy from flash */
 			memcpy(buffer,(void*)blockptr,STATE_BLOCK_SIZE);
+			
 			break;
-		}
+			}
 	}
 
 	/* Nothing valid found? Return nulls */

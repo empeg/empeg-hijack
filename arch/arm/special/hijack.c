@@ -1,6 +1,6 @@
 // Empeg display/IR hijacking by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v114"
+#define HIJACK_VERSION "v115"
 //
 // Includes: font, drawing routines
 //           extensible menu system

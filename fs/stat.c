@@ -280,3 +280,4 @@ asmlinkage int sys_readlink(const char * path, char * buf, int bufsiz)
 	unlock_kernel();
 	return error;
 }
+

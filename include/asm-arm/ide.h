@@ -16,7 +16,11 @@
 
 #ifndef MAX_HWIFS
 #ifdef CONFIG_SA1100_EMPEG
+#ifdef CONFIG_NET_ETHERNET  // mk2 or later?
 #define MAX_HWIFS	1
+#else
+#define MAX_HWIFS	2   // mk1
+#endif
 #else
 #define MAX_HWIFS	4
 #endif

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v176"
+#define HIJACK_VERSION	"v177"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -1474,7 +1474,7 @@ fsck_display (int firsttime)
 static void
 homework_move (int direction)
 {
-	hijack_homework = (direction < 0);
+	hijack_homework = !hijack_homework;
 	empeg_state_dirty = 1;
 }
 
@@ -3151,7 +3151,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 						if (hijack_dispfunc == menu_display) {
 							menu_item_t *item = &menu_table[menu_item];
 							activate_dispfunc(item->dispfunc, item->movefunc);
-						} else if (hijack_dispfunc == forcepower_display) {
+						} else if (hijack_dispfunc == forcepower_display || hijack_dispfunc == homework_display) {
 							activate_dispfunc(reboot_display, NULL);
 						} else {
 							activate_dispfunc(menu_display, menu_move);

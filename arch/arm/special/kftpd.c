@@ -776,7 +776,9 @@ khttpd_check_auth (server_parms_t *parms, khttpd_auth_t authtype)
 		"%s Authorization Required<p>"
 		"</body></html>\r\n";
 
-	if (parms->auth >= authtype || (!*hijack_khttpd_basic && !*hijack_khttpd_full)) {
+	if (!*hijack_khttpd_basic && !*hijack_khttpd_full)
+		parms->auth = auth_full;
+	if (parms->auth >= authtype) {
 		return 0;
 	} else {
 		char		*buf = parms->cwd, *auths = (authtype == auth_full) ? "Full" : "Basic";
@@ -2182,14 +2184,15 @@ khttpd_handle_connection (server_parms_t *parms)
 					++x;
 				*x = '\0';
 				decode_base64(user_passwd, parms->user_passwd, sizeof(parms->user_passwd) - 1);	// (-1 to allow for '@' append)
-				if (0 == strcmp(parms->user_passwd, hijack_khttpd_full))
-					parms->auth = auth_full;
-				else if (0 == strcmp(parms->user_passwd, hijack_khttpd_basic))
-					parms->auth = auth_basic;
-				else
-					parms->user_passwd[0] = '\0';
-				if (parms->user_passwd[0])
+				if (parms->user_passwd[0]) {
+					if (*hijack_khttpd_full && 0 == strcmp(parms->user_passwd, hijack_khttpd_full))
+						parms->auth = auth_full;
+					else if (*hijack_khttpd_basic && 0 == strcmp(parms->user_passwd, hijack_khttpd_basic))
+						parms->auth = auth_basic;
+					else
+						parms->user_passwd[0] = '\0';
 					strcat(parms->user_passwd, "@");
+				}
 				*x = c;
 			} else if (!strxcmp(x, Host, 1) && *(x += sizeof(Host) - 1)) {
 				unsigned char *h = x;

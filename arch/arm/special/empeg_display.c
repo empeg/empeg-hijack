@@ -658,7 +658,6 @@ static void display_queue_add(struct display_dev *dev)
 // from hijack.c:
 //
 extern int empeg_on_dc_power;
-extern void hijack_init(void);
 extern void hijack_handle_display (struct display_dev *, unsigned char *);
 extern int hijack_ioctl (struct inode *, struct file *, unsigned int, unsigned long);
 extern unsigned int *hijack_game_animptr;
@@ -836,7 +835,6 @@ static void handle_splash(struct display_dev *dev)
 	animation_time=HZ;
 	while(*ani_ptr++) animation_time+=(HZ/ANIMATION_FPS);
 #endif
-
 	/* Setup timer to display user's image (if present) in 4 seconds */
 	if (logo_type & LOGO_CUSTOM) {
 		printk("Scheduling custom logo.\n");
@@ -854,7 +852,6 @@ static void handle_splash(struct display_dev *dev)
 		add_timer(&display_timer);
 	}
 }
-
 
 
 /* This handles the mmap call. To be able to mmap RAM we need to swing

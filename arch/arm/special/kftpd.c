@@ -4,14 +4,17 @@
 //
 // To Do:  fix various buffers to use PATH_MAX (4096) instead of 256 or 512 bytes
 
+#define __KERNEL_SYSCALLS__
+
 #include <linux/config.h>
+#include <linux/proc_fs.h>
+#include <linux/unistd.h>
 #include <linux/mm.h>
 #include <linux/smp_lock.h>
 #include <linux/socket.h>
 #include <linux/file.h>
 #include <linux/net.h>
 #include <linux/netdevice.h>
-#include <linux/proc_fs.h>
 #include <linux/init.h>
 #include <linux/poll.h>
 
@@ -65,7 +68,7 @@ typedef struct server_parms_s {
 #define INRANGE(c,min,max)	((c) >= (min) && (c) <= (max))
 #define TOUPPER(c)		(INRANGE((c),'a','z') ? ((c) - ('a' - 'A')) : (c))
 
-static int
+int
 strxcmp (const char *str, const char *pattern, int partial)
 {
 	unsigned char s, p;
@@ -115,6 +118,45 @@ inet_pton (int af, unsigned char *src, void *dst)
 		*d++ = val;
 	}
 	return 1;	// success
+}
+
+static int
+site_exec (void *data)
+{
+	char *commandline = data;
+	static char *envp[] = { "HOME=/", "TERM=linux", "PATH=/bin:/sbin:/usr/bin", NULL };
+	static char *argv[32];
+	char **args = argv, *arg, *p;
+
+	// kthread setup
+	current->session = 1;
+	current->pgrp = 1;
+	strcpy(current->comm, "siteexec");
+	sigfillset(&current->blocked);
+	p = arg = commandline;
+	while (1) {
+		if (!*p || *p == ' ' || *p == '\t') {
+			*args++ = arg;
+			if (!*p)
+				break;
+			*p = '\0';
+			arg = p + 1;
+		}
+		++p;
+	}
+	*args++ = NULL;
+	if (argv[0]) {
+		close(0);close(1);close(2);
+		setsid();
+		(void) open("/dev/console",O_RDWR,0);
+		(void) dup(0);
+		(void) dup(0);
+		//printk("invoking execve('%s')\n", argv[0]);
+		//for (args = argv; *args; ++args)
+		//	printk("*arv[] = '%s'\n", *args);
+		execve(argv[0], argv, envp);	// never returns
+	}
+	return 0;
 }
 
 // This  function  converts  the  network  address structure src
@@ -192,7 +234,7 @@ ksock_rw (struct socket *sock, char *buf, int buf_size, int minimum)
 			rc = sock_recvmsg(sock, &msg, len, 0);
 		}
 		unlock_kernel();
-		if (rc < 0 || (!sending && rc == 0)) {	// fixme? was: (rc <= 0)
+		if (rc < 0 || (!sending && rc == 0)) {
 			if (rc)
 				printk("ksock_rw: %s rc=%d\n", sending ? "sock_sendmsg()" : "sock_recvmsg()", rc);
 			break;
@@ -208,7 +250,7 @@ typedef struct response_s {
 } response_t;
 
 static response_t response_table[] = {
-	{150, "Opening BINARY connection"},
+	{150, "Opening data connection"},
 	{200, "Okay"},
 	{202, "Okay"},
 	{214, "Okay"},
@@ -925,7 +967,6 @@ send_file (server_parms_t *parms, char *path)
 				response = 550;
 			} else if (!(response = open_datasock(parms))) {
 				if (!parms->use_http || !(response = khttp_send_file_header(parms, path, inode->i_size, buf))) {
-					filp->f_pos = 0;
 					do {
 						size = fops->read(filp, buf, BUF_PAGES*PAGE_SIZE, &(filp->f_pos));
 						if (size < 0) {
@@ -1028,7 +1069,7 @@ receive_file (server_parms_t *parms, const char *path)
 					if (size < 0) {
 						response = 426;
 						break;
-					} else if (size != (rc = fops->write(filp, buf, size, &(filp->f_pos)))) {
+					} else if (size && size != (rc = fops->write(filp, buf, size, &(filp->f_pos)))) {
 						printk("%s: write(%d) failed; rc=%d\n", parms->servername, size, rc);
 						response = 451;
 						break;
@@ -1037,7 +1078,7 @@ receive_file (server_parms_t *parms, const char *path)
 				sock_release(parms->datasock);
 			}
 			// fsync() the file's data:
-			if ((dentry = filp->f_dentry) && (inode = dentry->d_inode)) {
+			if ((dentry = filp->f_dentry) && (inode = dentry->d_inode) && fops->fsync) {
 				down(&inode->i_sem);
 				fops->fsync(filp, dentry);
 				up(&inode->i_sem);
@@ -1116,6 +1157,7 @@ append_path (char *path, char *new)
 //	MINFO	like SITE NEWER, but gives extra information
 //	GPASS	give special group access password. Eg. SITE GPASS bar
 //	EXEC	execute a program.	Eg. SITE EXEC program params
+//		  --> output should be captured (pipe) and returned using a set of "200" responses
 //
 /////////////////////////////////////////////////////////////////////////////////
 
@@ -1193,8 +1235,11 @@ kftpd_handle_command (server_parms_t *parms)
 		response = 226;
 	} else if (!strxcmp(buf, "ABOR", 0)) {
 		response = 226;
-	//} else if (!strxcmp(buf, "SITE EXEC ", 1)) {
-	//	response = 502;
+	} else if (!strxcmp(buf, "SITE EXEC ", 1)) {
+		static char commandline[256];		// fixme.. static buffer is bad!
+		strcpy(commandline, &buf[10]);
+		kernel_thread(site_exec, commandline, CLONE_FS|CLONE_SIGHAND);
+		response = 200;	//response = 502;	// fixme.. pipe output of command back to user
 	} else if (!strxcmp(buf, "PORT ", 1)) {
 		parms->have_portaddr = 0;
 		if (extract_portaddr(&parms->portaddr, &buf[5])) {

@@ -1,41 +1,16 @@
-// Empeg display/IR hijacking by Mark Lord <mlord@pobox.com>
+// Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v122"
-//
-// Includes: font, drawing routines
-//           extensible menu system
-//           VolAdj settings and display
-//           BreakOut game
-//           Screen blanker (to prevent burn-out)
-//           Vitals display
-//           High temperature warning
-//           ioctl() interface for userland apps
-//           Simple integer calculator
-//           Knob-Press re-definition
-//           IR Button Press Display
-//           Reboot Machine from menu
-//           ... and tons more
-
+#define HIJACK_VERSION "v123"
 
 #include <linux/sched.h>
-#include <linux/timer.h>
-#include <linux/interrupt.h>
-#include <linux/tty.h>
-#include <linux/tty_flip.h>
 #include <linux/kernel.h>
 #include <linux/errno.h>
-#include <linux/kd.h>
 #include <linux/major.h>
 #include <linux/mm.h>
 #include <linux/malloc.h>
 #include <linux/delay.h>
 #include <linux/init.h>
-#include <linux/poll.h>
-#include <asm/pgtable.h> /* For processor cache handling */
 
-#include <asm/segment.h>
-#include <asm/irq.h>
-#include <asm/io.h>
 #include <asm/arch/empeg.h>
 #include <asm/uaccess.h>
 
@@ -67,6 +42,7 @@ extern int empeg_inittherm(volatile unsigned int *timerbase, volatile unsigned i
 int	empeg_on_dc_power;		// used in arch/arm/special/empeg_power.c
 int	hijack_fsck_disabled = 0;	// used in fs/ext2/super.c
 int	hijack_onedrive = 0;		// used in drivers/block/ide-probe.c
+int	hijack_reboot = 0;		// set to "1" to cause reboot on next display refresh
 
 static unsigned int PROMPTCOLOR = COLOR3, ENTRYCOLOR = -COLOR3;
 
@@ -204,13 +180,20 @@ static unsigned int hijack_voladj_parms[(1<<VOLADJ_BITS)-1][5] = { // Values as 
 
 struct semaphore hijack_kftpd_startup_sem	= MUTEX_LOCKED;	// sema for waking up kftpd after we read config.ini
 struct semaphore hijack_khttpd_startup_sem	= MUTEX_LOCKED;	// sema for waking up khttpd after we read config.ini
-struct semaphore hijack_proc_screen_grab_sem	= MUTEX_LOCKED;	// sema for /proc screen grabber
+
+typedef struct hijack_option_s {
+	const char	*name;
+	int		*target;
+	int		num_items;
+	int		min;
+	int		max;
+} hijack_option_t; 
 
 // Externally tuneable parameters for config.ini; the voladj_parms are also tuneable
 static hijack_buttonq_t hijack_inputq, hijack_playerq, hijack_userq;
 static int hijack_button_pacing			=  8;	// minimum spacing between press/release pairs within playerq
        int hijack_temperature_correction	= -4;	// adjust all h/w temperature readings by this celcius amount
-static int hijack_supress_notify		=  0;	// 1 == supress player "notify" (and "dhcp") lines from serial port
+       int hijack_supress_notify		=  0;	// 1 == supress player "notify" (and "dhcp") lines from serial port
 static int hijack_old_style			=  0;	// 1 == don't highlite menu items
 static int hijack_quicktimer_minutes		= 30;	// increment size for quicktimer function
 static int hijack_standby_minutes		= 30;	// number of minutes after screen blanks before we go into standby
@@ -220,14 +203,6 @@ static int hijack_standby_minutes		= 30;	// number of minutes after screen blank
        int hijack_kftpd_data_port		= 20;	// kftpd data port
        int hijack_kftpd_verbose			=  0;	// kftpd verbosity
        int hijack_kftpd_show_dotdir		=  0;	// 0 == hide '.' directory in listings; 1 == show '.' in listings
-
-typedef struct hijack_option_s {
-	const char	*name;
-	int		*target;
-	int		num_items;
-	int		min;
-	int		max;
-} hijack_option_t; 
 
 static const hijack_option_t hijack_option_table[] = {
 	// config.ini string		address-of-variable		howmany	min	max
@@ -411,229 +386,6 @@ const unsigned char kfont [1 + '~' - ' '][KFONT_WIDTH] = {  // variable width fo
 	{0x41,0x3e,0x08,0x00,0x00,0x00}, // }
 	{0x02,0x01,0x02,0x04,0x02,0x00}  // ~
 	};
-
-#ifdef CONFIG_PROC_FS
-#include <linux/proc_fs.h>
-
-
-unsigned char notify_labels[] = "#AFGLMNSTV";	// 'F' must match next line
-#define NOTIFY_FIDLINE		2		// index of 'F' in notify_labels[]
-#define NOTIFY_MAX_LINES	(sizeof(notify_labels))
-#define NOTIFY_MAX_LENGTH	64
-static char notify_data[NOTIFY_MAX_LINES][NOTIFY_MAX_LENGTH] = {{0,},};
-static const char notify_thread[] = "  serial_notify_thread.cpp";
-static const char dhcp_thread[] = "  dhcp_thread.cpp";
-
-int
-hijack_serial_notify (const unsigned char *s, int size)
-{
-	// "return 0" means "send data to serial port"
-	// "return 1" means "discard without sending"
-	//
-	// Note that printk() will probably not work from within this routine
-	static enum {want_title, want_data, want_eol} state = want_title;
-
-	switch (state) {
-		default:
-			state = want_title;
-			// fall thru
-		case want_title:
-		{
-			const int notify_len = sizeof(notify_thread) - 1;
-			const int dhcp_len   = sizeof(dhcp_thread)   - 1;
-
-			if (size >= notify_len && !memcmp(s, notify_thread, notify_len)) {
-				state = want_data;
-				return hijack_supress_notify;
-			} else if (size >= dhcp_len && !memcmp(s, dhcp_thread, dhcp_len)) {
-				state = want_eol;
-				return hijack_supress_notify;
-			}
-			break;
-		}
-		case want_data:
-		{
-			char		*line;
-			unsigned long	flags;
-
-			if (size > 3 && *s == '@' && *++s == '@' && *++s == ' ' && *++s) {
-				size -= 3;
-				while (size > 0 && (s[size-1] <= ' ' || s[size-1] > '~'))
-					--size;
-				if (size > (NOTIFY_MAX_LENGTH - 1))
-					size = (NOTIFY_MAX_LENGTH - 1);
-				if (size > 0) {
-					unsigned char i, c = *s;
-					notify_labels[sizeof(notify_labels)-1] = c;
-					for (i = 0; c != notify_labels[i]; ++i);
-					line = notify_data[i];
-					save_flags_cli(flags);
-					memcpy(line, s, size);
-					line[size] = '\0';
-					restore_flags(flags);
-				}
-				state = want_eol;
-				return hijack_supress_notify;
-			}
-			break;
-		}
-		case want_eol:
-		{
-			if (s[size-1] == '\n')
-				state = want_title;
-			return hijack_supress_notify;
-		}
-	}
-	return 0;
-}
-
-// /proc/empeg_notify read() routine:
-static int
-hijack_proc_notify_read (char *buf, char **start, off_t offset, int len, int unused)
-{
-	int	i;
-
-	len = 0;
-	for (i = 0; i < NOTIFY_MAX_LINES; ++i) {
-		char *n = notify_data[i];
-		if (*n) {
-			unsigned long flags;
-			save_flags_cli(flags);
-			len += sprintf(buf+len, "%s\n", n);
-			restore_flags(flags);
-		}
-	}
-	return len;
-}
-
-// /proc/empeg_notify directory entry:
-struct proc_dir_entry notify_proc_entry = {
-	0,			/* inode (dynamic) */
-	12,			/* length of name */
-	"empeg_notify",  	/* name */
-	S_IFREG | S_IRUGO, 	/* mode */
-	1, 0, 0, 		/* links, owner, group */
-	0, 			/* size */
-	NULL, 			/* use default operations */
-	&hijack_proc_notify_read, /* get_info() */
-};
-
-typedef struct tiff_field_s {
-	unsigned short	tag;
-	unsigned short	type;
-	unsigned long	count;
-	unsigned long	value_or_offset;
-} tiff_field_t;
-
-typedef struct grayscale_tiff_s {
-	// header
-	unsigned short	II;			// 'II'
-	unsigned short	fortytwo;		// 42 (decimal)
-	unsigned long	ifd0_offset;		// 10
-	unsigned short	padding;		//  0  // to align the tiff fields on 4-byte boundaries
-
-	// "ifd0"				// tag,type,count,value
-	unsigned short	ifd0_count;		// 12  // count of tiff_field's that follow
-	tiff_field_t	cols;			// 256, 3,    1,   128
-	tiff_field_t	rows;			// 257, 3,    1,    32
-	tiff_field_t	bitspersample;		// 258, 3,    1,     4	// ??
-	tiff_field_t	compression;		// 259, 3,    1,     1	// byte packed (2 pixels/byte)
-	tiff_field_t	photometric;		// 262, 3,    1,     1	// black is zero
-	tiff_field_t	bitorder;		// 266, 3,    1,     1	// columns go from msb to lsb of bytes
-	tiff_field_t	stripoffsets;		// 273, 3,    1,    12 + (12 * sizeof(tiff_field_t)) + (5 * 4)
-	tiff_field_t	rowsperstrip;		// 278, 3,    1,    32
-	tiff_field_t	stripbytecounts;	// 279, 3,    1,    128*32*2/8 
-	tiff_field_t	xresolution;		// 282, 5,    1,    12 + (12 * sizeof(tiff_field_t)) + (1 * 4)
-	tiff_field_t	yresolution;		// 283, 5,    1,    12 + (12 * sizeof(tiff_field_t)) + (3 * 4)
-	tiff_field_t	resolutionunit;		// 296, 3,    1,     2  // resolution is in inches
-	unsigned long	ifd1_offset;		//        0		// no ifd1 in this file
-
-	// longer field values
-	unsigned long	xresolution_numerator;	// 128 * 13		// 128 pixels in 13/4" of space
-	unsigned long	xresolution_denominator;//        4 
-	unsigned long	yresolution_numerator;	//  32 * 13		// 32 pixels in 13/16" of space
-	unsigned long	yresolution_denominator;//       16
-
-	// image data
-	unsigned char	strip0[128*32*4/8];	// the row by row image data
-} grayscale_tiff_t;
-
-static grayscale_tiff_t proc_screen_tiff = {
-	'I'|('I'<<8),						// II
-	42,							// fortytwo
-	10,							// ifd0_offset
-	0,							// padding
-	12,							// ifd0_count
-	{256,3,1,128},						// cols
-	{257,3,1, 32},						// rows
-	{258,3,1,  4},						// bitspersample
-	{259,3,1,  1},						// compression
-	{262,3,1,  1},						// photometric
-	{266,3,1,  1},						// bitorder
-	{273,3,1, 12 + (12 * sizeof(tiff_field_t)) + (5 * 4)},	// stripoffsets
-	{278,3,1, 32},						// rowsperstrip
-	{279,3,1,128 * 32 * 4 / 8},				// stripbytecounts
-	{282,5,1, 12 + (12 * sizeof(tiff_field_t)) + (1 * 4)},	// xresolution
-	{283,5,1, 12 + (12 * sizeof(tiff_field_t)) + (3 * 4)},	// yresolution
-	{296,3,1,  2},						// resolutionunit
-	       0,						// ifd1_offset
-	128 * 13,						// yresolution_numerator
-	       4,						// yresolution_denominator
-	 32 * 13,						// xresolution_numerator
-	      16,						// xresolution_denominator
-	{0,}							// strip0[128*32*2/8]
-	};
-
-static unsigned char	proc_displaybuf[EMPEG_SCREEN_BYTES];
-static int		need_to_grab_screen = 0;
-
-// /proc/empeg_screen read() routine:
-static int
-hijack_proc_screen_read (char *buf, char **start, off_t offset, int len, int unused)
-{
-	int		i, remaining;
-	unsigned char	*t, *d;
-	unsigned long	flags;
-
-	if (offset == 0) {
-		save_flags_cli(flags);
-		hijack_proc_screen_grab_sem = MUTEX_LOCKED;
-		need_to_grab_screen = 1;
-		down(&hijack_proc_screen_grab_sem);
-		restore_flags(flags);
-
-		t = proc_screen_tiff.strip0;
-		d = proc_displaybuf;
-		for (i = 0; i < sizeof(proc_screen_tiff.strip0); ++i) {
-			static const unsigned char colors1[4] = {0x00,0x03,0x07,0x0f};
-			static const unsigned char colors2[4] = {0x00,0x30,0x70,0xf0};
-			unsigned char b = *d++ & 0x33;
-			*t++ = colors2[b & 0xf] | colors1[b >> 4];
-		}
-	}
-
-	remaining = sizeof(proc_screen_tiff) - offset;
-	if (len > remaining)
-		len = (remaining < 0) ? 0 : remaining;
-	if (len > 0) {
-		*start = buf + offset;
-		memcpy(buf, ((unsigned char *)&proc_screen_tiff) + offset, len);
-	}
-	return len;
-}
-
-// /proc/empeg_screen directory entry:
-struct proc_dir_entry screen_proc_entry = {
-	0,			/* inode (dynamic) */
-	17,			/* length of name */
-	"empeg_screen.tiff",	/* name */
-	S_IFREG | S_IRUGO, 	/* mode */
-	1, 0, 0, 		/* links, owner, group */
-	sizeof(proc_screen_tiff), /* size */
-	NULL, 			/* use default operations */
-	&hijack_proc_screen_read, /* get_info() */
-};
-#endif // CONFIG_PROC_FS
 
 static void
 clear_hijack_displaybuf (unsigned char color)
@@ -865,6 +617,15 @@ hijack_button_enq (hijack_buttonq_t *q, unsigned long button, unsigned long dela
 		data->button = button;
 		data->delay  = delay;
 	}
+}
+
+void
+hijack_button_enq_inputq (unsigned long button, unsigned int hold_time)
+{
+	unsigned long flags;
+	save_flags_cli(flags);
+	hijack_button_enq(&hijack_inputq, button, hold_time);
+	restore_flags(flags);
 }
 
 static int
@@ -1218,6 +979,7 @@ static int
 vitals_display (int firsttime)
 {
 	extern int nr_free_pages;
+	extern const char *notify_fid(void);
 	unsigned int *permset=(unsigned int*)(EMPEG_FLASHBASE+0x2000);
 	unsigned char *sa, buf[80];
 	int rowcol, temp, i, count, model = 0x2a;
@@ -1244,7 +1006,7 @@ vitals_display (int firsttime)
 	// Current Playlist and Fid:
 	save_flags_cli(flags);
 	sa = *empeg_state_writebuf;
-	sprintf(buf, "\nPlaylist:%02x%02x, Fid:%s", sa[0x45], sa[0x44], &notify_data[NOTIFY_FIDLINE][3]);
+	sprintf(buf, "\nPlaylist:%02x%02x, Fid:%s", sa[0x45], sa[0x44], notify_fid());
 	restore_flags(flags);
 	rowcol = draw_string(rowcol, buf, PROMPTCOLOR);
 
@@ -1432,58 +1194,6 @@ onedrive_display (int firsttime)
 		(void)   draw_string(ROWCOL(2,0), " One or Two Drives (slower) ", ENTRYCOLOR);
 	return NEED_REFRESH;
 }
-
-//#define DISPLAY_NOTIFICATIONS
-#ifdef DISPLAY_NOTIFICATIONS
-static void
-notifications_move (int direction)
-{
-	hijack_supress_notify = (direction < 0);
-	empeg_state_dirty = 1;
-}
-
-static int
-notifications_display (int firsttime)
-{
-	unsigned int rowcol;
-
-	if (!firsttime && !hijack_last_moved)
-		return NO_REFRESH;
-	hijack_last_moved = 0;
-	clear_hijack_displaybuf(COLOR0);
-	(void)draw_string(ROWCOL(0,0), "Serial Port Notifications:", PROMPTCOLOR);
-	rowcol = draw_string(ROWCOL(2,0), "Notifications are: ", PROMPTCOLOR);
-	(void)   draw_string(rowcol, hijack_supress_notify ? " Disabled " : " Enabled ", ENTRYCOLOR);
-	return NEED_REFRESH;
-}
-
-static int notify_display_line = 0;
-static void
-notify_move (int direction)
-{
-	notify_display_line += direction;
-	if (notify_display_line < 0)
-		notify_display_line = NOTIFY_MAX_LINES - 1;
-	else if (notify_display_line >= NOTIFY_MAX_LINES)
-		notify_display_line = 0;
-}
-
-static int
-notify_display (int firsttime)
-{
-	unsigned int rowcol;
-	unsigned long flags;
-
-	clear_hijack_displaybuf(COLOR0);
-	save_flags_cli(flags);
-	rowcol = draw_number(ROWCOL(0,0), notify_display_line, "%2d:", COLOR2);
-	rowcol = draw_string(rowcol, "'", COLOR2);
-	rowcol = draw_string(rowcol, notify_data[notify_display_line], COLOR3);
-	rowcol = draw_string(rowcol, "'", COLOR2);
-	restore_flags(flags);
-	return NEED_REFRESH;
-}
-#endif // DISPLAY_NOTIFICATIONS
 
 #ifdef RESTORE_CARVISUALS
 static void
@@ -2113,11 +1823,6 @@ reboot_display (int firsttime)
 		hijack_initq(&hijack_userq);
 		return NEED_REFRESH;
 	}
-	if (left_pressed && right_pressed) {
-		save_flags_clif(flags);	// clif is necessary here
-		state_cleanse();	// Ensure flash savearea is updated first
-		machine_restart(NULL);	// never returns
-	}
 	rc = NO_REFRESH;
 	save_flags_cli(flags);
 	if (hijack_button_deq(&hijack_userq, &data, 0)) {
@@ -2140,10 +1845,8 @@ reboot_display (int firsttime)
 				break;
 		}
 		if (left_pressed && right_pressed) {
-			clear_hijack_displaybuf(COLOR0);
-			(void) draw_string(ROWCOL(2,32), "Rebooting..", PROMPTCOLOR);
+			hijack_reboot = 1;
 			rc = NEED_REFRESH;
-			// reboot on next refresh, AFTER screen has been updated on this pass
 		}
 	}
 	restore_flags(flags);
@@ -2506,7 +2209,7 @@ static int hijack_check_buttonlist (unsigned long data, unsigned long delay)
 	return 0;
 }
 
-static const char   *message_text = NULL;
+static char          message_text[40];
 static unsigned long message_time = 0;
 
 static int
@@ -2527,11 +2230,12 @@ message_display (int firsttime)
 	return NO_REFRESH;	// gets overridden if overlay still active
 }
 
-static void
+void
 show_message (const char *message, unsigned long time)
 {
 	unsigned long flags;
-	message_text = message;
+	strncpy(message_text, message, sizeof(message_text)-1);
+	message_text[sizeof(message_text)-1] = '\0';
 	message_time = time;
 	if (message && *message) {
 		save_flags_cli(flags);
@@ -2589,7 +2293,6 @@ hijack_handle_button (unsigned long button, unsigned long delay, const unsigned 
 {
 	static unsigned long ir_lastpressed = -1;
 	int hijacked = 0;
-
 	blanker_triggered = 0;
 	if (hijack_status == HIJACK_ACTIVE && hijack_buttonlist && hijack_check_buttonlist(button, delay)) {
 		hijacked = 1;
@@ -2943,6 +2646,19 @@ look_for_trackinfo_or_tuner (unsigned char *buf, int row)
 }
 #endif // RESTORE_CARVISUALS
 
+static void
+hijack_reboot_now (void *dev)
+{
+	unsigned long flags;
+
+	clear_hijack_displaybuf(COLOR0);
+	(void) draw_string(ROWCOL(2,32), "Rebooting..", PROMPTCOLOR);
+	display_blat(dev, (unsigned char *)hijack_displaybuf);
+	state_cleanse();		// Ensure flash savearea is updated first
+	save_flags_clif(flags);		// clif is necessary for machine_restart
+	machine_restart(NULL);		// never returns
+}
+
 // This routine covertly intercepts all display updates,
 // giving us a chance to substitute our own display.
 //
@@ -2952,6 +2668,9 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	unsigned char *buf = player_buf;
 	unsigned long flags;
 	int refresh = NEED_REFRESH;
+
+	if (hijack_reboot)
+		hijack_reboot_now(dev);
 
 	save_flags_cli(flags);
 	if (ir_delayed_rotate && jiffies_since(ir_lastevent) >= (HZ/10))
@@ -3061,11 +2780,16 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 			hijack_deactivate(HIJACK_INACTIVE_PENDING);
 			break;
 	}
-	if (need_to_grab_screen) {
-		need_to_grab_screen = 0;
-		memcpy(proc_displaybuf, buf, EMPEG_SCREEN_BYTES);
-		up(&hijack_proc_screen_grab_sem);
+{
+	extern int notify_screen_grab_needed;	// arch/arm/notify.c
+	if (notify_screen_grab_needed) {
+		extern struct semaphore notify_screen_grab_sem;
+		extern char notify_screen_grab_buf[EMPEG_SCREEN_BYTES];
+		notify_screen_grab_needed = 0;
+		memcpy(notify_screen_grab_buf, buf, EMPEG_SCREEN_BYTES);
+		up(&notify_screen_grab_sem);
 	}
+}
 	restore_flags(flags);
 
 	// Prevent screen burn-in on an inactive/unattended player:
@@ -3130,7 +2854,7 @@ match_char (unsigned char **s, unsigned char c)
 	return 0; // match failed
 }
 
-static int
+int
 get_number (unsigned char **src, int *target, unsigned int base, const char *nextchars)
 {
 	int digits;
@@ -3146,7 +2870,7 @@ get_number (unsigned char **src, int *target, unsigned int base, const char *nex
 		s += 2;
 		base = 16;
 	}
-	for (digits = 0; (cp = strchr(hexchars, *s)); ++digits) {
+	for (digits = 0; *s && (cp = strchr(hexchars, *s)); ++digits) {
 		unsigned char d;
 		d = cp - hexchars;
 		if (d > 0xf)
@@ -3159,7 +2883,7 @@ get_number (unsigned char **src, int *target, unsigned int base, const char *nex
 			break;	// numeric overflow
 		++s;
 	}
-	if (!digits || (*s && !strchr(nextchars, *s)))
+	if (!digits || (*s && nextchars && !strchr(nextchars, *s)))
 		return 0; // failure
 	*target = neg ? -data : data;
 	*src = s;
@@ -3929,6 +3653,7 @@ hijack_save_settings (unsigned char *buf)
 void
 hijack_init (void)	// invoked from empeg_display.c
 {
+	extern void hijack_notify_init (void);
 	static int initialized = 0;
 
 	if (!initialized) {
@@ -3938,10 +3663,7 @@ hijack_init (void)	// invoked from empeg_display.c
 		hijack_initq(&hijack_playerq);
 		hijack_initq(&hijack_userq);
 		menu_init();
-#ifdef CONFIG_PROC_FS
-		proc_register(&proc_root, &notify_proc_entry);
-		proc_register(&proc_root, &screen_proc_entry);
-#endif
+		hijack_notify_init();
 	}
 }
 
@@ -3999,6 +3721,5 @@ hijack_restore_settings (unsigned char *buf, int failed)
 	if (failed)
 		show_message("Settings have been lost", 7*HZ);
 	else
-		show_message("Hijack "HIJACK_VERSION" by Mark Lord", HZ);
+		show_message("Hijack "HIJACK_VERSION" by Mark Lord", HZ/5);
 }
-

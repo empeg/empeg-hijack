@@ -1230,15 +1230,19 @@ open_fidfile:
 			sprintf(subpath+13, "%x", fid);
 			fd = open_fid_file(subpath);
 			if (fd < 0) {
+				// Hmmm.. missing tags file.  This IS a database error, and should never happen.  But it does..
+				// But we'll just ignore it here.
 				if (parms->generate_playlist == 1)
-					used += sprintf(xfer.buf+used, "<TR><TD COLSPAN=7><FONT COLOR=RED>open(\"%s\") failed, rc=%d</FONT>\n", subpath, fd);
+					printk(KHTTPD": open(\"%s\") failed, rc=%d\n", subpath, fd);
 				continue;
 			}
 			size = read(fd, parms->tmp3, sizeof(parms->tmp3)-1);
 			close(fd);
 			if (size <= 0) {
+				// Hmmm.. empty tags file.  This IS a database error, and should never happen.
+				// But we'll just ignore it here.
 				if (parms->generate_playlist == 1)
-					used += sprintf(xfer.buf+used, "<TR><TD COLSPAN=7><FONT COLOR=RED>read(\"%s\") failed, rc=%d</FONT>\n", subpath, size);
+					printk(KHTTPD": read(\"%s\") failed, rc=%d\n", subpath, size);
 				continue;
 			}
 			parms->tmp3[size] = '\0';	// Ensure zero-termination of the data

@@ -124,7 +124,6 @@
 
 #define EMPEG_DSP_BEEP			_IOW(EMPEG_DSP_MAGIC, 0, int)
 #define EMPEG_DSP_PURGE			_IOR(EMPEG_DSP_MAGIC, 1, int)
-#define EMPEG_DSP_VOLADJ		_IOW(EMPEG_DSP_MAGIC, 2, int)
 #define EMPEG_DSP_GRAB_OUTPUT		_IOR(EMPEG_DSP_MAGIC, 3, int) /* must be the same in 2.4 */
 
 /* Audio input IOCTLs */

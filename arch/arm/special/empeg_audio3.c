@@ -296,532 +296,6 @@ struct voladj_state* voladj_intinit(
 
   int log_scale;
   int temp_fake;
-
-  initial->output_multiplier = 0x1 << MULT_POINT;
-  initial->desired_multiplier = initial->output_multiplier;
-  initial->buf_size = buf_size;
-  initial->headroom = 3 << (SHORT_FRAC_POINT - 2);
-  initial->real_silence = 25;
-  initial->fake_silence = 60;
-
-  initial->increase = voladj_exp( (voladj_log( factor_per_second )
-        *buf_size) / (4 * 44100));
-  initial->decrease = (1 << (MULT_POINT * 2)) / initial->increase;
-
-  temp_fake = (MAXSAMPLES * minvol) >> (MULT_INTBITS + MULT_POINT);
-  if (initial->fake_silence < temp_fake) {
-    initial->fake_silence = temp_fake;
-  }
-
-  if (minvol > (1 << SHORT_FRAC_POINT)) {
-    initial->minvol = 1 << SHORT_FRAC_POINT;
-  } else if (minvol < 0) {
-    initial->minvol = 0;
-  } else {
-    initial->minvol = minvol;
-  }
-  if (initial->minvol == 0) {
-    initial->log_scale = (1 << MULT_POINT);
-    log_scale = 1.0;
-  } else {
-    log_scale = -1 * (voladj_log( (MAXSAMPLES << MULT_POINT) / 
-        initial->fake_silence ) << MULT_POINT)
-      / voladj_log( minvol );
-    initial->log_scale = log_scale;
-  }
-
-  if (headroom > (1 << SHORT_FRAC_POINT)) {
-    initial->headroom = 1 << SHORT_FRAC_POINT;
-  } else if (headroom < 0) {
-    initial->headroom = 0;
-  } else {
-    initial->headroom = headroom;
-  }
-
-  initial->max_sample = 0;
-
-  /*
-  fprintf(stderr, 
-      "minvol: %x headroom: %x increase: %x decrease %x\n", 
-      initial->minvol, initial->headroom, initial->increase, initial->decrease);
-  fprintf(stderr, 
-      "MULT_TO_16: %d MULT_POINT: %d MULT_INTBITS: %d SHORT_FRAC_VAL: %f \n", 
-      MULT_TO_16, MULT_POINT, MULT_INTBITS, SHORT_FRAC_VAL);
-  fprintf(stderr, 
-      "fake_silence: %d LOG_SCALE: %d \n", 
-      initial->fake_silence, log_scale >> MULT_POINT );
-  fprintf(stderr, 
-      "factor_per_second: %x minvol: %x fake: %x log(minvol) %x\n", 
-      factor_per_second, initial->minvol, initial->fake_silence, voladj_log( (MAXSAMPLES << MULT_POINT) / initial->fake_silence ));
-  */
-
-  return initial;
-
-};
-
-
-/*
- * Here we figure out what multiplier we want, based on the minimum
- * volume that we are aiming for, and the maximum sample that we
- * can see.
- */
-
-int voladj_get_multiplier( struct voladj_state *state, 
-    unsigned short max_sample ) {
-  int max_frac,desired_out, desired_mult;
-  max_frac = (max_sample << MULT_POINT) / MAXSAMPLES;
-  if (max_frac == 0) max_frac = 1;
-  if (max_sample == 0) max_sample = 1;
-  /*
-   * This is the old linear way
-  desired_out = ((int)(state->minvol) * (int)MAXSAMPLES)  +
-    (((int)max_frac) * ( (1 << SHORT_FRAC_POINT) - (int)(state->minvol) )) ;
-  */
-  desired_out = MAXSAMPLES * 
-    voladj_exp( (voladj_log( max_frac ) << MULT_POINT) / state->log_scale);
-  desired_mult = desired_out / max_sample ;
-  desired_mult = (desired_mult  * (int)state->headroom) >> RESULT_SHIFT;
-  if (desired_mult > (1 << (MULT_POINT + MULT_INTBITS))) {
-    desired_mult = (1 << (MULT_POINT + MULT_INTBITS));
-  }
-  if (desired_mult < (1 << MULT_POINT)) {
-    desired_mult = (1 << MULT_POINT);
-  }
-  return desired_mult;
-}
-
-/* 
- * This bit of code searches for any samples that will cause clipping
- * in the future.  The reason we read ahead is so that we never
- * have to do abrupt volume changes.  I'm not so sure that this is
- * necessary, because even gradual volume changes over 4k of data
- * are pretty abrupt to the ear.  Still, I have this nagging feeling
- * that suddenly changing the scaling factor from 100 to 1 would
- * produce some high frequency components.
-*/
-
-int voladj_check( 
-  struct voladj_state *state, 
-  short *lookaheadbuf ) {
-
-  int outmult;
-  int desired_multiplier;
-  int upmult;
-  int downmult;
-  unsigned short max_sample;
-  unsigned short cur_sample;
-  unsigned short max_la_sample;
-
-  int quickadjust = 0;
-  int num_samples = state->buf_size / 2;
-  int i, outputvalue;
-
-  max_la_sample = 0;
-  for( i = 0; i < num_samples; i++ ) {
-    cur_sample = abs( lookaheadbuf[ i ] );
-    if (cur_sample > max_la_sample) {
-      max_la_sample = cur_sample;
-    }
-  }
-
-  max_sample = max_la_sample;
-  if (state->max_sample > max_sample) {
-    max_sample = state->max_sample;
-  }
-  
-  outmult = state->output_multiplier;
-  upmult = (outmult * state->increase) >> RESULT_SHIFT;
-  downmult = (outmult * state->decrease) >> RESULT_SHIFT;
-
-  outputvalue = ( ( (upmult >> MULT_TO_16 ) * 
-    max_sample ) >>  (MULT_POINT - MULT_TO_16 ) );
-
-  desired_multiplier = 0;
-
-  if (outputvalue > MAXSAMPLES ) {
-    desired_multiplier = (((MAXSAMPLES + 1) << MULT_POINT) / max_sample);
-    /*
-    fprintf(stderr, 
-      "avoiding clipping, output_multiplier: %x, new desired_multiplier: %x, max_sample: %x\n", 
-      state->output_multiplier, desired_multiplier, max_sample);
-    */
-  } else if (max_sample < state->real_silence) {
-    desired_multiplier = downmult;
-    if (desired_multiplier < (1 << MULT_POINT)) {
-      desired_multiplier = (1 << MULT_POINT);
-    }
-  } else if (max_sample < state->fake_silence) {
-    max_sample = state->fake_silence;
-  }
-  if (desired_multiplier == 0) {
-    desired_multiplier = voladj_get_multiplier( state, max_sample );
-    if ((desired_multiplier > (1 << (MULT_POINT + MULT_INTBITS)))) {
-      desired_multiplier = downmult;
-    } else {
-      if (desired_multiplier > upmult) {
-        desired_multiplier = upmult;
-      }
-      if (desired_multiplier < downmult) {
-        desired_multiplier = downmult;
-      }
-    }
-  }
-
-  /*
-  printk("sampes prv: %x la: %x comb: %x desmult: %x\n",
-      state->max_sample, max_la_sample, max_sample, desired_multiplier);
-  printk("up: %x down: %x outval: %x\n",
-      state->increase, state->decrease, outputvalue);
-      */
-
-
-  state->desired_multiplier = desired_multiplier;
-  state->max_sample = max_la_sample;
-
-  return desired_multiplier;
-}
-
-void voladj_scale( 
-  struct voladj_state *state, 
-  int desired_multiplier,
-  short *scalebuf 
-  ) {
-
-  int outmult = state->output_multiplier;
-  int output_value,i;
-  short output_sample;
-  int num_samples = state->buf_size / 2;
-
-  /* If there is no scaling to be done, just return immediately.
-   * There's no point going through multiplying every sample by 1!
-   */
-  if ((outmult == (1 << MULT_POINT)) &&
-    (desired_multiplier == (1 << MULT_POINT))) {
-      return;
-  }
-
-  /*
-   * In the previous call to voladj_check we made sure that the
-   * output multiplier was set to a value that will not cause
-   * clipping for any of the samples, so we don't have to worry
-   * about that here.
-   */
-
-  for( i = 0; i < num_samples; i++ ) {
-    if (desired_multiplier != outmult) {
-      outmult = outmult + 
-        ((desired_multiplier - outmult) / (num_samples - i));
-    } 
-    output_value = ((outmult >> MULT_TO_16) 
-      * scalebuf[ i ]) >> (MULT_POINT - MULT_TO_16 ) ;
-
-    /*
-    if ((output_value > MAXSAMPLES)||(output_value < (-1 * (MAXSAMPLES+1)))) {
-      fprintf(stderr, 
-        "Arghh! Got clipping, output_multiplier: %x, insamp: %x, outsamp %x\n", 
-        outmult, scalebuf[i], output_value);
-      fprintf(stderr, 
-        "  output_multiplier: %x, abs(insamp): %x, abs(outsamp) %x\n", 
-        outmult, abs(scalebuf[i]), abs(output_value));
-    }
-    */
-    output_sample = (short)(0x0000ffff & output_value);
-    scalebuf[ i ] = output_sample;
-  }
-
-  state->output_multiplier = outmult;
-}
-
-
-#ifndef __KERNEL__
-/*
- * Initialise all our stuff.  One of the main things this does is
- * convert easy to read floats into fixed point.
- */
-
-struct voladj_state voladj_init( 
-
-  int buf_size,         /* (Fixed) size of blocks in bytes to process */
-  double db_per_second, /* Maximum rate of volume change, in dB/sec */
-  double minvol,        /* Minimum volume to attempt to maintain (0 - 1) */
-  double headroom,       /* Headroom multiplier (0 - 1) */
-  double real_silence,   /* Threshold below which we gradually return to normal */
-  double fake_silence   /* Threshold below which we do no further scaling */
-  ) {
-  struct voladj_state initial;
-
-  double factor_per_second;
-  int intfactor_per_second,intminvol,intheadroom,intreal_silence;
-  int intfake_silence;
-
-  factor_per_second = pow( 10.0 , db_per_second / 10.0 );
-  intfactor_per_second = factor_per_second * SHORT_FRAC_VAL;
-  intminvol = (minvol * SHORT_FRAC_VAL);
-  intheadroom = (headroom * SHORT_FRAC_VAL);
-  intreal_silence = real_silence * (double)MAXSAMPLES;
-  intfake_silence = fake_silence * (double)MAXSAMPLES;
-
-  voladj_intinit(
-      &initial,
-      buf_size,
-      intfactor_per_second,
-      intminvol,
-      intheadroom,
-      intreal_silence,
-      intfake_silence
-      );
-
-  fprintf(stderr, 
-      "minvol: %x headroom: %x increase: %x decrease %x\n", 
-      initial.minvol, initial.headroom, initial.increase, initial.decrease);
-  fprintf(stderr, 
-      "MULT_TO_16: %d MULT_POINT: %d MULT_INTBITS: %d SHORT_FRAC_VAL: %f \n", 
-      MULT_TO_16, MULT_POINT, MULT_INTBITS, SHORT_FRAC_VAL);
-  return initial;
-
-};
-
- 
-
-int main(int argc, char *argv[])
-{
-  static char buffer1[BLOCKSIZE];
-  static char buffer2[BLOCKSIZE];
-  char *actualbuff, *lookaheadbuff, *tempbuf;
-  int i,lookahead;
-  unsigned int len,lastlen;
-  struct voladj_state state;
-
-  state = voladj_init( 
-    BLOCKSIZE,      /* (Fixed) size of blocks in bytes to process */
-    2.0,            /* Maximum rate of volume change, in dB/sec */
-    0.5,            /* Minimum volume to attempt to maintain (0 - 1) */
-    1.0,             /* Headroom multiplier */
-    0.001,
-    0.003
-    );
-
-  for (i = 0; i < BLOCKSIZE; i++) {
-    buffer1[ i ] = 0;
-  }
-  for (i = 0; i < BLOCKSIZE; i++) {
-    buffer2[ i ] = 0;
-  }
-
-  lookahead = 1;
-
-  actualbuff = buffer1;
-  lookaheadbuff = buffer2;
-  lastlen = 0;
-
-  while ((len = fread(lookaheadbuff, 4, BLOCKSIZE / 4, stdin))) {
-
-    if (lookahead) {
-      voladj_check( &state, (short *)lookaheadbuff );
-    } else {
-      actualbuff = lookaheadbuff;
-      voladj_check( &state, (short *)actualbuff );
-      state.output_multiplier = state.desired_multiplier;
-      lastlen = len;
-    } 
-    voladj_scale( &state, state.desired_multiplier, (short *)actualbuff );
-
-    fwrite( actualbuff, 4, lastlen, stdout );
-    tempbuf = actualbuff;
-    actualbuff = lookaheadbuff;
-    lookaheadbuff = tempbuf;
-    lastlen = len;
-  }
-
-  if ( lookahead) {
-    voladj_scale( &state, state.desired_multiplier, (short *)actualbuff );
-    fwrite( actualbuff, 4, lastlen, stdout );
-  }
-
-  return 0;
-}
-
-#endif
-
-
-#ifndef __KERNEL__
-#include <stdio.h>
-#include <string.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <math.h>
-#include <unistd.h>
-#include <sys/ioctl.h>
-#endif
-
-
-/* Volume adjustment
- * By richard.lovejoy@ericsson.com.au
-*/
-
-/*
- * The interesting stuff in this file is voladj_*
- * The main function gives an indication of how to use
- * the functions.  Basically, call voladj_init with the arguments
- * you want, and then pass the address of the returned structure
- * into all subsequent calls.
- *
- * To look ahead, call voladj_check() on the future buffer, and then
- * voladj_scale on the current buffer.
- *
- * To not look ahead, call voladj_check() on the current buffer, and
- * then voladj_scale on the current buffer.
- *
- * If we decide that the look ahead doesn't improve the sound at all,
- * then we can pretty much remove voladj_check, and it becomes
- * even more trivial.
- * 
- * To figure out the desired multiplier, first we figure out the
- * desired output from the given input, and then calculate the
- * multiplier that would give that output.
- *
- * Currently, we use
- *   desired_out = exp( log( input ) / constant )
- * which has the property that 
- *   if in_a:in_b == in_b:in_c
- *   then out_a:out_b == out_b:out_c
- * i.e.  The dynamic range is stretched, but not otherwise distorted.
- *
- * To calculate the constant above, we use the fact that we
- * have a specified minimum output volume, and a specified
- * minimum input volume to scale to that value.
- *
- * This gives us:
- *   exp( log( fake_silence ) / factor ) = minvol;
- * or
- *   factor = log( fake_silence ) / log( minvol );
- *
- * Simply from our fixed point routines, we require that
- *   minvol / fake_silence < 1 << MULT_INTBITS;
- * Otherwise, we can't make our multiplier big enough!
- */ 
-
-#define AUDIO_FILLSZ   4608
-#define BLOCKSIZE   AUDIO_FILLSZ
-
-#define MAXSAMPLES 32767
-
-#define MULT_POINT 12
-#define SHORT_FRAC_POINT MULT_POINT
-#define SHORT_FRAC_VAL ((double)(1 << SHORT_FRAC_POINT))
-#define MULT_INTBITS (30 - (MULT_POINT + SHORT_FRAC_POINT))
-
-#define MULT_TO_16 (MULT_POINT + MULT_INTBITS - 16)
-#define RESULT_SHIFT MULT_POINT
-
-struct voladj_state {
-  int output_multiplier;
-  int desired_multiplier;
-  int buf_size;
-  short real_silence;
-  short fake_silence;
-  short log_scale;
-  short headroom;
-  short minvol;
-  short increase;
-  short decrease;
-  unsigned short max_sample;
-};
-
-int voladj_exp(int inval) {
-  int result = (1 << MULT_POINT);
-  int i = 1;
-  int curval = (1 << MULT_POINT);
-  for (i = 1; curval != 0; i++) {
-    curval = ((curval * inval) / i) >> RESULT_SHIFT;
-    result += curval;
-  }
-  /*
-  printf("expiters: %d\n",i);
-  */
-  return result;
-}
-
-/*
- * These two define ln(2) and 1/ln(2) in our fixed point scheme.
- * They are used because then it's much easier to scale our
- * input number for voladj_log() to a number close to 1
- *
- */
-#define LOGTWO (0x0000b172 >> (16 - MULT_POINT))
-#define INVLOGTWO (0x00017154 >> (16 - MULT_POINT))
-
-int voladj_log(int inval) {
-  int aftercount = 0;
-
-  int result = 0;
-  int x = 0;
-  int i = 1;
-  int curval = 1 << MULT_POINT;
-
-  while (inval < (1 << (MULT_POINT - 1)) ) {
-    inval = inval << 1;
-    aftercount ++;
-  }
-  while (inval > (1 << MULT_POINT)) {
-    inval = inval >> 1;
-    aftercount --;
-  }
-    /*
-    printf("inval: %d\n",inval);
-    */
-
-  x = (1 << MULT_POINT) - inval;
-  for (i = 1; curval != 0; i++) {
-    result += ((curval * x) / i) >> RESULT_SHIFT;
-    curval = (curval * x) >> RESULT_SHIFT;
-  }
-  /*
-  printf("logiters: %d\n",i);
-  */
-  result = ((((result * INVLOGTWO) >> RESULT_SHIFT) + 
-    (aftercount << MULT_POINT)) * LOGTWO) >> RESULT_SHIFT;
-  result = -1 * result;
-  return result;
-}
-
-
-
-/*
- * Initialise all our stuff.  
- * This converts easy to understand parameters into easy to use ones.
- * It also attempts to fix any parameters that are set badly, given
- * our range of precision.
- *
-        voladj_intinit( &(dev->voladj),
-            AUDIO_BUFFER_SIZE,              buffersize
-            ((1 << MULT_POINT) * 2),        factor_per_second 
-            ((1 << MULT_POINT) / 10),       minvol
-            (((1 << MULT_POINT) * 3) / 4),  headroom
-            30,                             real_silence
-            80                              fake_silence
-            );
- */
-
-
-struct voladj_state* voladj_intinit( 
-  struct voladj_state *initial,
-
-  int buf_size,         /* (Fixed) size of blocks in bytes to process */
-  int factor_per_second, /* Maximum rate of volume change
-                            (ratio/sec << MULT_POINT) */
-  int minvol,        /* Minimum volume to attempt to maintain 
-                        (0 - 1 << MULT_POINT) */
-  int headroom,       /* Headroom multiplier 
-                         (0 - 1 << MULT_POINT) */
-  int real_silence,   /* Threshold below which we gradually return to normal 
-                         (Number of samples) */
-  int fake_silence   /* Threshold below which we do no further scaling 
-                        (Number of samples) */
-  ) {
-
-  int log_scale;
-  int temp_fake;
   unsigned long flags;
 
   save_flags_cli(flags);
@@ -1103,8 +577,6 @@ typedef struct
 	int good_data;
 } audio_dev;
 
-unsigned char *delaytime_buffer;
-
 /* cosine tables for beep parameters */
 static unsigned long csin_table_44100[];
 static unsigned long csin_table_38000[];
@@ -1264,6 +736,67 @@ int empeg_audio_open(struct inode *inode, struct file *file)
         return 0;
 }
 
+static unsigned short *delay_buf[2] = {NULL, NULL}, delay_buf_bytes = 0;
+
+/* Main Time Alignment Code - Christian Hack 2002 - christianh@pdd.edmi.com.au	*/
+/* Gotta offset the first x bytes of one channel by hijack_delaytime (0.1ms units) */
+/* which is calced and hardcoded to 44.1kHz in hijack.c				*/
+/* Doing things 2 bytes at a time so we will be slow. This isn't reflected in	*/
+/* units load averages surprisingly						*/
+static void
+delay_one_channel (unsigned short *buf)
+{
+	extern int  hijack_delaytime;
+	unsigned short *bufend, *buftail, *d, *b;
+	int channel = 0, offset = hijack_delaytime;
+	static unsigned int spare = 0;
+
+	if (!offset)
+		return;
+	if (!delay_buf[0]) {
+		// Allocate two halfsize (for single channel) delay buffers
+		const int max_delay = (127 * 441 / 100 + 3) & ~3;	// align to 4-byte boundary
+		delay_buf_bytes  = 2 * max_delay * sizeof(short);	// number of bytes for two buffers
+		if ((delay_buf[0] = kmalloc(delay_buf_bytes, GFP_KERNEL)) == NULL) {
+			printk(AUDIO_NAME ": no memory for delay buffer");
+			hijack_delaytime = 0;
+			return;
+		}
+		/* Ensure buffer is clear so we don't get an initial click */
+		delay_buf[1] = delay_buf[0] + (delay_buf_bytes / (2 * sizeof(short)));
+		memset(delay_buf[0], 0, delay_buf_bytes);	// clear both buffers
+	}
+
+	/* First work out which channel to delay */
+	if (offset < 0) {	// Right channel?
+		channel = 1;
+		offset = -offset;
+	}
+
+	// Convert 0.1ms units into samples: 4.41 samples per 0.1ms (no floating point)
+       	offset *= 441;
+       	offset /= 100;
+       	offset *= 2;	// offset is doubled here because buf[] contains pairs of (Left,Right) samples
+
+	bufend  = buf + (AUDIO_BUFFER_SIZE / sizeof(short));
+	buftail = bufend - offset + channel;
+
+	// copy tail of delayed channel from buf[] into spare delay_buf[];
+	d = delay_buf[spare];	// select the spare buffer
+	for (b = buftail; b < bufend; b += 2)
+		*d++ = *b;
+
+	// shift body of delayed channel in buf[] towards its tail
+	for (b = buftail - 2; b >= buf; b -= 2)
+		b[offset] = b[0];
+
+	// move active delay_buf[] contents into head of delayed channel in buf[]
+	d = delay_buf[spare = !spare];	// select the active buffer: becomes the spare buffer after we finish here
+	bufend = buf + offset;
+	for (b = buf + channel; b < bufend; b += 2)
+		*b = *d++;
+}
+
 static int empeg_audio_write(struct file *file,
 			     const char *buffer, size_t count, loff_t *ppos)
 {
@@ -1309,10 +842,10 @@ static int empeg_audio_write(struct file *file,
 	/* Fill as many buffers as we can */
 	while(count > 0 && dev->free > 0) {
 		unsigned long flags;
+		unsigned short *buf;
                 int multiplier;
 		extern void hijack_voladj_update_history(int);
 		extern int  hijack_voladj_enabled;
-		extern int  hijack_delaytime;
 
 		/* Critical sections kept as short as possible to give good
 		   latency for other tasks */
@@ -1328,40 +861,45 @@ static int empeg_audio_write(struct file *file,
                 dev->head++;
 		if (dev->head == AUDIO_NOOF_BUFFERS)
 			dev->head = 0;
-
+		buf = (unsigned short *)dev->buffers[thisbufind].data;
 		copy_from_user(dev->buffers[thisbufind].data,buffer,AUDIO_BUFFER_SIZE);
+		delay_one_channel(buf);
+
 		total += AUDIO_BUFFER_SIZE;
 		/* Oops, we missed this in previous versions */
 		buffer += AUDIO_BUFFER_SIZE;
 		dev->stats.samples += AUDIO_BUFFER_SIZE;
 		count -= AUDIO_BUFFER_SIZE;
 
-                dev->voladj.desired_multiplier = voladj_check( &(dev->voladj), 
-                        (short *) (dev->buffers[thisbufind].data) );
+		if (hijack_voladj_enabled)
+			multiplier = voladj_check( &(dev->voladj), (short *) (dev->buffers[thisbufind].data) );
+		else
+			multiplier = (1 << MULT_POINT);
+		dev->voladj.desired_multiplier = multiplier;
+		hijack_voladj_update_history(multiplier);
+
 #if AUDIO_DEBUG_VERBOSE
 	printk("mults: des=%x,out=%x\n", dev->voladj.desired_multiplier, dev->voladj.output_multiplier);
 #endif
-
-
 		save_flags_cli(flags);
-                if (dev->used > 1) {
-                    dev->used--;
-                    restore_flags(flags);
-                    voladj_scale( &(dev->voladj), 
-                        dev->voladj.desired_multiplier,
-                        (short *) (dev->buffers[ dev->prevhead ].data) );
-                    save_flags_cli(flags);
-                    dev->used++;
-                } else {
-                    dev->voladj.output_multiplier = 1 << MULT_POINT;
-                }
+		if (hijack_voladj_enabled) {
+			if (dev->used > 1) {
+				dev->used--;
+				restore_flags(flags);
+				voladj_scale( &(dev->voladj), dev->voladj.desired_multiplier,
+						(short *) (dev->buffers[ dev->prevhead ].data) );
+				save_flags_cli(flags);
+				dev->used++;
+			} else {
+				dev->voladj.output_multiplier = 1 << MULT_POINT;
+			}
+		}
 
-		/* Now the buffer is ready, we can tell the IRQ section
-		   there's new data */
+		/* Now the buffer is ready, we can tell the IRQ section there's new data */
 		dev->used++;
 		restore_flags(flags);
 
-                dev->prevhead = thisbufind;
+		dev->prevhead = thisbufind;
 	}
 
 	/* Update hwm */
@@ -1394,7 +932,8 @@ static int empeg_audio_purge(audio_dev *dev)
 	dev->free=MAX_FREE_BUFFERS;
 	
 	/* Clear delay buffer out otherwise we get it when the next data comes through */
-	memset(delaytime_buffer, 0, AUDIO_BUFFER_SIZE / 2);
+	if (delay_buf[0])
+		memset(delay_buf[0], 0, delay_buf_bytes);	// clear both buffers
 
 	/* Let it run again */
 	restore_flags(flags);
@@ -1435,25 +974,6 @@ static int empeg_audio_ioctl(struct inode *inode, struct file *file,
 		                    dev->buffers[pretail].data,
 				    AUDIO_BUFFER_SIZE);
         }	
-	case EMPEG_DSP_VOLADJ: {
-		int factor_per_second, minvol, headroom,
-                  real_silence, fake_silence;
-		int *ptr = (int *)arg;
-		get_user_ret(factor_per_second, ptr, -EFAULT);
-		get_user_ret(minvol, ptr + 1, -EFAULT);
-		get_user_ret(headroom, ptr + 2, -EFAULT);
-		get_user_ret(real_silence, ptr + 3, -EFAULT);
-		get_user_ret(fake_silence, ptr + 4, -EFAULT);
-                voladj_intinit( &(dev->voladj),
-                    AUDIO_BUFFER_SIZE,
-                    factor_per_second >> (16 - MULT_POINT),
-                    (minvol << MULT_POINT) / MAXSAMPLES,
-                    headroom >> (16 - MULT_POINT),
-                    real_silence,
-                    fake_silence
-                    );
-		return 0;
-	}
 	}
 
 	/* invalid command */

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v218"
+#define HIJACK_VERSION	"v219"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -476,8 +476,6 @@ static int hijack_force_power = 0;
 
 #define TIMERACTION_BITS 1
 static int timer_timeout = 0, timer_started = 0, timer_action = 0;
-
-static int delaytime = 0;
 
 static int hijack_homework = 0;
 static const char *homework_labels[] = {";@HOME", ";@WORK"};
@@ -2081,24 +2079,17 @@ static void
 delaytime_move (int direction)
 {
 	if (direction == 0) {
-		delaytime = 0;
+		hijack_delaytime = 0;
 	} else {
 		/* Delay time is simply in 0.1ms increments */
-		delaytime -= direction;
+		hijack_delaytime += direction;
 
 		/* Value is in tenths of ms - negative values mean right channel delayed, positive = left */
-		if (delaytime > 127)
-			delaytime = -127;
-		else if (delaytime < -127)
-			delaytime = 127;
-
-		/* Convert 0.1ms units into samples - 4.41 samples per 0.1ms - no floating point */
+		if (hijack_delaytime > 127)
+			hijack_delaytime = 127;
+		else if (hijack_delaytime < -127)
+			hijack_delaytime = -127;
 	}
-	hijack_delaytime = delaytime * 441;
-	hijack_delaytime /= 100;
-
-	//printk("Delay time = %d * 0.1ms (%d samples)\n", delaytime, hijack_delaytime);
-
 	empeg_state_dirty = 1;
 }
 
@@ -2109,17 +2100,17 @@ delaytime_display (int firsttime)
 	unsigned char buf[20];
 
 	if (firsttime)
-		ir_numeric_input = &delaytime;
+		ir_numeric_input = &hijack_delaytime;
 	else if (!hijack_last_moved)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
 	(void) draw_string(ROWCOL(0,0), delaytime_menu_label, PROMPTCOLOR);
-	rowcol = draw_string(ROWCOL(2,0), "Delay: ", PROMPTCOLOR);
-	if (delaytime) {
+	rowcol = draw_string(ROWCOL(2,0), "Shift: ", PROMPTCOLOR);
+	if (hijack_delaytime) {
 		/* Remove sign, it's decoded also in empeg_audio3.c */ 
-		tmp = (delaytime >= 0) ? (delaytime) : (-delaytime);
-		sprintf(buf, "%2d.%d ms %s", (tmp /  10), (tmp % 10), (delaytime) ? ((delaytime > 0) ? "Left" : "Right") : "");
+		tmp = (hijack_delaytime >= 0) ? (hijack_delaytime) : (-hijack_delaytime);
+		sprintf(buf, "%2d.%d msec %s", (tmp /  10), (tmp % 10), (hijack_delaytime > 0) ? "Right" : "Left");
 		(void) draw_string_spaced(rowcol, buf, ENTRYCOLOR);
 
 		/* Speed of sound is roughly 1200km/h = 333m/s */
@@ -2440,7 +2431,7 @@ static int
 menu_display (int firsttime)
 {
 	static int old_menu_item, moving;
-	static const hijack_geom_t geom = {2, 2+6+KFONT_HEIGHT, 2, EMPEG_SCREEN_COLS-2};
+	static const hijack_geom_t geom = {2, 2+6+KFONT_HEIGHT, 0, EMPEG_SCREEN_COLS-0};
 	unsigned int rowcol = (geom.first_row+4)|((geom.first_col+6)<<16);
 
 	if (firsttime) {
@@ -4403,7 +4394,7 @@ hijack_save_settings (unsigned char *buf)
 	savearea.force_power		= hijack_force_power;
 	savearea.homework		= hijack_homework;
 	savearea.byte3_leftover		= 0;
-	savearea.delaytime		= delaytime;
+	savearea.delaytime		= hijack_delaytime;
 	savearea.byte6_leftover		= 0;
 	memcpy(buf+HIJACK_SAVEAREA_OFFSET, &savearea, sizeof(savearea));
 }
@@ -4444,12 +4435,7 @@ hijack_restore_settings (char *buf)
 	carvisuals_enabled		= savearea.restore_visuals;
 	homevisuals_enabled		= savearea.fix_beta11;
 	hijack_fsck_disabled		= savearea.fsck_disabled;
-
-	delaytime = hijack_delaytime	= savearea.delaytime;
-
-	/* Calc'd on startup otherwise they won't take effect until setting is changed */
-	hijack_delaytime = delaytime * 441;
-	hijack_delaytime /= 100;
+	hijack_delaytime		= savearea.delaytime;
 
 	return failed;
 }

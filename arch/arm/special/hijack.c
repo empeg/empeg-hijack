@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v203"
+#define HIJACK_VERSION	"v204"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -367,7 +367,7 @@ typedef struct hijack_option_s {
 	int	max;
 } hijack_option_t; 
 
-char hijack_khttpd_xsl[64];
+char hijack_khttpd_style[64];
 
 static const hijack_option_t hijack_option_table[] =
 {
@@ -394,7 +394,7 @@ static const hijack_option_t hijack_option_table[] =
 {"khttpd_files",		&hijack_khttpd_files,		1,			1,	0,	1},
 {"khttpd_playlists",		&hijack_khttpd_playlists,	1,			1,	0,	1},
 {"khttpd_commands",		&hijack_khttpd_commands,	1,			1,	0,	1},
-{"khttpd_xsl",			&hijack_khttpd_xsl,		(int)"/default.xsl",	0,	0,	sizeof(hijack_khttpd_xsl)-1},
+{"khttpd_style",		&hijack_khttpd_style,		(int)"/default.xsl",	0,	0,	sizeof(hijack_khttpd_style)-1},
 {"max_connections",		&hijack_max_connections,	4,			1,	0,	20},
 #endif // CONFIG_NET_ETHERNET
 {"old_style",			&hijack_old_style,		0,			1,	0,	1},

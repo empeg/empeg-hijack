@@ -32,7 +32,7 @@
 #define KFTPD	"kftpd"
 
 extern void sys_exit(int);
-extern char hijack_khttpd_xsl[];			// from arch/arm/special/hijack.c
+extern char hijack_khttpd_style[];			// from arch/arm/special/hijack.c
 extern const char hijack_vXXX_by_Mark_Lord[];		// from arch/arm/special/hijack.c
 extern int strxcmp (const char *str, const char *pattern, int partial);	// hijack.c
 extern int hijack_do_command(const char *command, unsigned int size);	// notify.c 
@@ -92,7 +92,7 @@ typedef struct server_parms_s {
 	struct sockaddr_in	portaddr;
 	char			clientip[INET_ADDRSTRLEN];
 	char			hostname[48];		// serverip, or "Host:" field from HTTP header
-	char			xsl[64];		// path for stylesheet to embed into xml output
+	char			style[64];		// path for stylesheet to embed into xml output
 	unsigned char		cwd[1024];
 	unsigned char		buf[1024];
 	unsigned char		tmp2[768];
@@ -1307,7 +1307,7 @@ send_playlist (server_parms_t *parms, char *path)
 				"<?xml-stylesheet type=\"%s\" href=\"%s\"?>\r\n"
 				"<playlist host=\"%s\" type=\"%s\" tagfid=\"%x\" fid=\"%x\" length=\"%s\" "
 				"year=\"%s\" genre=\"%s\" options=\"%s\"",
-				text_xsl, parms->xsl, parms->hostname, tagtype, pfid, pfid^1,
+				text_xsl, parms->style, parms->hostname, tagtype, pfid, pfid^1,
 				tags.length, tags.year, tags.genre, tags.options);
 			used += encode_tag1(xfer.buf+used, "title",   tags.title);
 			used += encode_tag1(xfer.buf+used, "artist",  tags.artist);
@@ -2024,10 +2024,10 @@ khttpd_handle_connection (server_parms_t *parms)
 					cmds += 6;
 					len = strlen(cmds) - 4;	// (discard ".xml" extension)
 					if (len > 0) {
-						if (len >= sizeof(parms->xsl))
-							len = sizeof(parms->xsl) - 1;
+						if (len >= sizeof(parms->style))
+							len = sizeof(parms->style) - 1;
 						cmds[len] = '\0';
-						p = parms->xsl;
+						p = parms->style;
 						do {
 							*p++ = *cmds;
 						} while (*++cmds);
@@ -2179,7 +2179,7 @@ kftpd_daemon (unsigned long use_http)	// invoked twice from init/main.c
 		server_port	= hijack_khttpd_port;
 		parms.verbose	= hijack_khttpd_verbose;
 		parms.use_http	= 1;
-		strcpy(parms.xsl, hijack_khttpd_xsl);
+		strcpy(parms.style, hijack_khttpd_style);
 	} else {
 		server_port	= hijack_kftpd_control_port;
 		parms.data_port	= hijack_kftpd_data_port;

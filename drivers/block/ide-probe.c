@@ -885,7 +885,7 @@ int ideprobe_init (void)
 			if (on_if0==1 && retries<15) {
 				retries=15;
 			}
-		} while(on_if0<2 && retries<20);  // change 2 -> 1 for single drive only
+		} while(on_if0<1 && retries<20);  // change 2 -> 1 for single drive only
 
 		/* Initialise drives */
 		hwif_init(&ide_hwifs[0]);

@@ -352,18 +352,18 @@ static void kfont_display (int firsttime)
 	unsigned int col = 0, row = 0;
 	unsigned char c;
 
-	clear_hijacked_displaybuf(COLOR0);
-	for (c = (unsigned char)' '; c <= (unsigned char)'~'; ++c) {
-		unsigned char s[2] = {0,0};
-		s[0] = c;
-		col = draw_string(row, col, &s[0], COLOR2);
-		if (col > (EMPEG_SCREEN_COLS - (KFONT_WIDTH - 1))) {
-			col = 0;
-			if (++row >= (EMPEG_SCREEN_ROWS / KFONT_HEIGHT))
-				break;
-		}
-	}
 	if (firsttime) {
+		clear_hijacked_displaybuf(COLOR0);
+		for (c = (unsigned char)' '; c <= (unsigned char)'~'; ++c) {
+			unsigned char s[2] = {0,0};
+			s[0] = c;
+			col = draw_string(row, col, &s[0], COLOR3);
+			if (col > (EMPEG_SCREEN_COLS - (KFONT_WIDTH - 1))) {
+				col = 0;
+				if (++row >= (EMPEG_SCREEN_ROWS / KFONT_HEIGHT))
+					break;
+			}
+		}
 		hijack_knob_wait = HIJACK_FONTS_ACTIVE;
 		hijack_status = HIJACK_KNOB_WAIT;
 	} else if (ir_selected) {
@@ -429,7 +429,7 @@ static void game_finale (void)
 	if (jiffies_since(game_ball_lastmove) < (HZ*2))
 		return;
 	if (game_bricks) {
-		(void)draw_string(1, 17, " Enhancements.V16 ", -COLOR3);
+		(void)draw_string(1, 17, " Enhancements.V17 ", -COLOR3);
 		(void)draw_string(2, 30, "by Mark Lord", COLOR3);
 		if (jiffies_since(game_ball_lastmove) < (HZ*3))
 			return;
@@ -641,8 +641,8 @@ int hijacked_input (unsigned long data)
 	int rc = 0;
 	unsigned long flags;
 
-	printk("Button: %08lx, status=%d, knob_wait=%d, ir_knob_down=%u, ir_selected=%u, menu_item=%d\n",
-		data, hijack_status, hijack_knob_wait, ir_knob_down, ir_selected, menu_item);
+	//printk("Button: %08lx, status=%d, knob_wait=%d, ir_knob_down=%u, ir_selected=%u, menu_item=%d\n",
+	//	data, hijack_status, hijack_knob_wait, ir_knob_down, ir_selected, menu_item);
 	save_flags_cli(flags);
 	switch (data) {
 		case IR_KW_CD_RELEASED:

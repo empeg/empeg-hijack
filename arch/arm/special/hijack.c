@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v384"
+#define HIJACK_VERSION	"v385"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -533,6 +533,7 @@ static	int hijack_standby_minutes;		// number of minutes after screen blanks bef
 	int hijack_trace_fs;			// trace major filesystem accesses, on serial console
 	int hijack_standbyLED_on, hijack_standbyLED_off;	// on/off duty cycle for standby LED
 static	int hijack_keypress_flash;		// flash display when buttons are pressed
+static	int hijack_option_stalk_enabled;	// 0 == ignore (drop) all stalk input
 
 
 // Bass Treble Adjustment stuff follows  --genixia
@@ -646,6 +647,7 @@ static const hijack_option_t hijack_option_table[] =
 {"stalk_debug",			&hijack_stalk_debug,		0,			1,	0,	1},
 {"stalk_lhs",			lhs_stalk_vals,			(int)lhs_stalk_default,	20,	0,	0xff},
 {"stalk_rhs",			rhs_stalk_vals,			(int)rhs_stalk_default,	20,	0,	0xff},
+{"stalk_enabled",		&hijack_option_stalk_enabled,	1,			1,	0,	1},
 #endif // EMPEG_STALK_SUPPORTED
 {"standbyLED_on",		&hijack_standbyLED_on,		-1,			1,	-1,	HZ*60},
 {"standbyLED_off",		&hijack_standbyLED_off,		10*HZ,			1,	0,	HZ*60},
@@ -3867,8 +3869,10 @@ hijack_intercept_stalk (unsigned int packet)
 {
 	if (hijack_trace_tuner)
 		printk("stalk: in=%08x\n", htonl(packet));
-	if (!handle_stalk_packet((unsigned char *)&packet)) {
-		hijack_serial_rx_insert((unsigned char *)&packet, sizeof(packet), 0);
+	if (hijack_option_stalk_enabled) {
+		if (!handle_stalk_packet((unsigned char *)&packet)) {
+			hijack_serial_rx_insert((unsigned char *)&packet, sizeof(packet), 0);
+		}
 	}
 }
 #endif // EMPEG_STALK_SUPPORTED

@@ -1180,6 +1180,13 @@ encode_url (unsigned char *out, unsigned char *s, int partial_encode)
 					*out++ = 't';
 				}
 				c = ';';
+			} else if (c == '"') {
+				*out++ = '&';
+				*out++ = 'q';
+				*out++ = 'u';
+				*out++ = 'o';
+				*out++ = 't';
+				c = ';';
 			}
 			*out++ = c;
 		}

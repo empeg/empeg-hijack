@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v413"
+#define HIJACK_VERSION	"v414"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -3030,7 +3030,7 @@ showbutton_display (int firsttime)
 #ifdef EMPEG_STALK_SUPPORTED
 		if (most_recent_stalk_code != 0xff) {
 			unsigned char buf[16];
-			sprintf(buf, "Stalk=%02x", most_recent_stalk_code);
+			sprintf(buf, "Stalk=0x%02x", most_recent_stalk_code);
 			(void)draw_string(ROWCOL(2,4), buf, PROMPTCOLOR);
 		} else
 #endif // EMPEG_STALK_SUPPORTED

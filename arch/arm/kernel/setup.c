@@ -518,7 +518,8 @@ static unsigned long check_for_extra_dram (unsigned long mem_end)
 			phy = ((mem_end & 0x03000000) << 3) + 0xc0000000; // 16MB base; 16MB-banks
 		else				// mk2:
 			phy = ((mem_end & 0x00c00000) << 5) + 0xc0000000; // 8MB/12MB base; 4MB-banks
-		t->pgd = phy | mmu_flags;	// map 1MB DRAM section
+		if (mem_end >= mem_end)
+			t->pgd = phy | mmu_flags;	// map 1MB DRAM section
 		if (test_1MB_dram(mem_end)) {
 			t->pgd = 0;		// unmap failed section
 			break;

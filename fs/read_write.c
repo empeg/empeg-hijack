@@ -213,7 +213,7 @@ asmlinkage ssize_t sys_read(unsigned int fd, char * buf, size_t count)
 	// and voluntary suspensions between chunks to give the UI some CPU time.
 	//
 	if (reading_fidfile == current->pid) {
-		size_t offset = 0, per_read = 16384;
+		size_t offset = 0, per_read = 32768;	// was 16384
 		while (offset < count) {
 			if (per_read > (count - offset))
 				per_read = (count - offset);

@@ -280,6 +280,7 @@ static void init_ide_data (void)
  */
 int drive_is_flashcard (ide_drive_t *drive)
 {
+#if 0
 	struct hd_driveid *id = drive->id;
 
 	if (drive->removable && id != NULL) {
@@ -291,6 +292,7 @@ int drive_is_flashcard (ide_drive_t *drive)
 			return 1;	/* yes, it is a flash memory card */
 		}
 	}
+#endif
 	return 0;	/* no, it is not a flash memory card */
 }
 

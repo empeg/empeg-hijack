@@ -15,8 +15,7 @@
 #include <linux/init.h>
 
 /* Read thermometer */
-extern int empeg_inittherm(volatile unsigned int *timerbase, volatile unsigned int *gpiobase);
-extern int empeg_readtherm(volatile unsigned int *timerbase, volatile unsigned int *gpiobase);
+extern int hijack_read_temperature(void);	// arch/arm/special/hijack.c
 
 static int id_read_procmem(char *buf, char **start, off_t offset,
 			   int len, int unused)
@@ -42,21 +41,7 @@ static int id_read_procmem(char *buf, char **start, off_t offset,
 static int therm_read_procmem(char *buf, char **start, off_t offset,
 			      int len, int unused)
 {
-	int temp;
-	unsigned long flags;
-	extern int hijack_temperature_correction;	// arch/arm/special/hijack.c
-
-	/* Need to disable IRQs & FIQs during temperature read */
-	save_flags_clif(flags);
-	temp=empeg_readtherm(&OSMR0,&GPLR);
-	restore_flags(flags);
-
-	/* Correct for negative temperatures (sign extend) */
-	if (temp&0x80) temp=-(128-(temp^0x80));
-
-	len = 0;
-	len += sprintf(buf+len, "%d\n",temp + hijack_temperature_correction);
-	return len;
+	return sprintf(buf, "%d\n", hijack_read_temperature());
 }
 
 static struct proc_dir_entry id_proc_entry = {
@@ -81,13 +66,6 @@ static struct proc_dir_entry therm_proc_entry = {
 
 void __init empeg_proc_init(void)
 {
-	unsigned long flags;
-
-	/* Initialise thermometer */
-	save_flags_cli(flags);
-	empeg_inittherm(&OSMR0,&GPLR);
-	restore_flags(flags);
-
 #ifdef CONFIG_PROC_FS
 	proc_register(&proc_root, &id_proc_entry);
 	proc_register(&proc_root, &therm_proc_entry);

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v230"
+#define HIJACK_VERSION	"v231"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -1164,27 +1164,30 @@ kfont_display (int firsttime)
 	return NEED_REFRESH;
 }
 
-static int
-init_temperature (void)
+static unsigned long inittherm_lasttime = 0;
+static unsigned long hijack_last_readtherm = 0;
+static int           hijack_last_temperature = 0;
+
+static void
+init_temperature (int firsttime)
 {
-	static unsigned long inittherm_lasttime = 0;
 	unsigned long flags;
 
 	// restart the thermometer once every five minutes or so
-	if (inittherm_lasttime && jiffies_since(inittherm_lasttime) < (HZ*5*60))
-		return 0;
-	inittherm_lasttime = jiffies ? jiffies : -1;
 	save_flags_clif(flags);
-	(void)empeg_inittherm(&OSMR0,&GPLR);
-	restore_flags(flags);
-	return 1;
+	if (firsttime || jiffies_since(inittherm_lasttime) >= (HZ*5*60)) {
+		(void)empeg_inittherm(&OSMR0,&GPLR);
+		hijack_last_readtherm = inittherm_lasttime = jiffies;
+		restore_flags(flags);
+		hijack_last_readtherm = inittherm_lasttime = jiffies;
+	} else {
+		restore_flags(flags);
+	}
 }
 
-static int
-read_temperature (void)
+int
+hijack_read_temperature (void)
 {
-	static unsigned long readtherm_lasttime = 0;
-	static int temperature = 0;
 	unsigned long flags;
 
 	// Hugo (altman) writes:
@@ -1206,17 +1209,22 @@ read_temperature (void)
 	// so we may still need the odd call to empeg_inittherm()
 	// just to ensure it is running.  -ml
 
-	if ((readtherm_lasttime && jiffies_since(readtherm_lasttime) < (HZ*5)) || init_temperature())
-		return temperature;
-	readtherm_lasttime = jiffies ? jiffies : -1;
 	save_flags_clif(flags);
-	temperature = empeg_readtherm(&OSMR0,&GPLR);
-	restore_flags(flags);
+	init_temperature(0);
+	if (jiffies_since(hijack_last_readtherm) < (HZ*5))
+	{
+		restore_flags(flags);
+		return hijack_last_temperature;
+	}
+	hijack_last_temperature = empeg_readtherm(&OSMR0,&GPLR);
 	/* Correct for negative temperatures (sign extend) */
-	if (temperature & 0x80)
-		temperature = -(128 - (temperature ^ 0x80));
-	temperature += hijack_temperature_correction;
-	return temperature;
+	if (hijack_last_temperature & 0x80)
+		hijack_last_temperature = -(128 - (hijack_last_temperature ^ 0x80));
+	hijack_last_temperature += hijack_temperature_correction;
+	hijack_last_readtherm = jiffies;
+	restore_flags(flags);
+	hijack_last_readtherm = jiffies;
+	return hijack_last_temperature;
 }
 
 static unsigned int
@@ -1378,7 +1386,7 @@ vitals_display (int firsttime)
 	if (ide_hwifs[model].drives[!model].present)
 		sprintf(buf+count, "+%d", get_drive_size(model,!model));
 	rowcol = draw_string(ROWCOL(0,0), buf, PROMPTCOLOR);
-	temp = read_temperature();
+	temp = hijack_read_temperature();
 	sprintf(buf, "G, %+dC/%+dF", temp, temp * 180 / 100 + 32);
 	rowcol = draw_string(rowcol, buf, PROMPTCOLOR);
 
@@ -1669,7 +1677,7 @@ static int hightemp_check_threshold (void)
 {
 	static unsigned long beeping, elapsed;
 
-	if (!hightemp_threshold || read_temperature() < (hightemp_threshold + HIGHTEMP_OFFSET))
+	if (!hightemp_threshold || hijack_read_temperature() < (hightemp_threshold + HIGHTEMP_OFFSET))
 		return 0;
 	elapsed = jiffies_since(ir_lasttime) / HZ;
 	if (elapsed < 1) {
@@ -1683,7 +1691,7 @@ static int hightemp_check_threshold (void)
 		int color = (elapsed & 1) ? COLOR3 : -COLOR3;
 		clear_hijack_displaybuf(COLOR0);
 		rowcol = draw_string(ROWCOL(2,18), " Too Hot:", -color);
-		(void)draw_temperature(rowcol, read_temperature(), 32, -color);
+		(void)draw_temperature(rowcol, hijack_read_temperature(), 32, -color);
 		return 1;
 	}
 	return 0;
@@ -2334,7 +2342,7 @@ hightemp_display (int firsttime)
 	else
 		rowcol = draw_string_spaced(rowcol, "[Off]", ENTRYCOLOR);
 	rowcol = draw_string(ROWCOL(2,0), "Currently: ", PROMPTCOLOR);
-	(void)draw_temperature(rowcol, read_temperature(), 32, PROMPTCOLOR);
+	(void)draw_temperature(rowcol, hijack_read_temperature(), 32, PROMPTCOLOR);
 	rowcol = draw_string(ROWCOL(3,0), "Corrected by: ", PROMPTCOLOR);
 	(void)draw_temperature(rowcol, hijack_temperature_correction, 0, PROMPTCOLOR);
 	return NEED_REFRESH;
@@ -4614,7 +4622,7 @@ hijack_init (void *animptr)
 	hijack_buttonled_level = 0;	// turn off button LEDs
 	failed = hijack_restore_settings(buf);
 	reset_hijack_options();
-	(void)init_temperature();
+	init_temperature(1);
 	hijack_initq(&hijack_inputq);
 	hijack_initq(&hijack_playerq);
 	hijack_initq(&hijack_userq);

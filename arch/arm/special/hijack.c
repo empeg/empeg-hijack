@@ -15,6 +15,13 @@
 //
 
 #include <asm/arch/hijack.h>
+#include <linux/soundcard.h>  // for SOUND_MASK_*
+
+extern int real_input_append_code(unsigned long data); // empeg_input.c
+
+#ifdef CONFIG_NET_ETHERNET	// Mk2 or later? (Mk1 has no ethernet)
+#define EMPEG_KNOB_SUPPORTED	// Mk2 and later have a front-panel knob
+#endif
 
 #define NEED_REFRESH		0
 #define NO_REFRESH		1
@@ -31,15 +38,16 @@ static unsigned char blanker_lastbuf[EMPEG_SCREEN_BYTES] = {0,}, blanker_is_blan
 static int  (*hijack_dispfunc)(int) = NULL;
 static void (*hijack_movefunc)(int) = NULL;
 static unsigned long ir_lasttime = 0, ir_selected = 0, ir_releasewait = 0, ir_trigger_count = 0;;
-static unsigned long ir_menu_down = 0, ir_knob_down = 0, ir_left_down = 0, ir_right_down = 0;
-static unsigned long ir_delayed_knob_release = 0;
-extern int real_input_append_code(unsigned long data); // empeg_input.c
+static unsigned long ir_menu_down = 0, ir_left_down = 0, ir_right_down = 0;
 static int player_menu_is_active = 0, player_sound_adjust_is_active = 0;
 
 #define KNOBDATA_BITS 2
+#ifdef EMPEG_KNOB_SUPPORTED
+static unsigned long ir_knob_down, ir_delayed_knob_release = 0;
 static const unsigned long knobdata_pressed [] = {IR_KNOB_PRESSED, IR_RIO_SHUFFLE_PRESSED, IR_RIO_INFO_PRESSED, IR_RIO_INFO_PRESSED};
 static const unsigned long knobdata_released[] = {IR_KNOB_RELEASED,IR_RIO_SHUFFLE_RELEASED,IR_RIO_INFO_RELEASED,IR_RIO_INFO_PRESSED};
 static short knobdata_index = 0;
+#endif
 
 #define HIJACK_DATAQ_SIZE	8
 static unsigned long *hijack_buttonlist = NULL, hijack_dataq[HIJACK_DATAQ_SIZE];
@@ -52,9 +60,9 @@ static struct wait_queue *hijack_dataq_waitq = NULL, *hijack_menu_waitq = NULL;
 #define VOLADJ_HISTSIZE		128
 #define VOLADJ_FIXEDPOINT(whole,fraction) ((((whole)<<MULT_POINT)|((unsigned int)((fraction)*(1<<MULT_POINT))&MULT_MASK)))
 #define VOLADJ_BITS 2
-extern void voladj_next_preset(int);
-extern int voladj_enabled;
-extern unsigned int voladj_multiplier;
+
+int  voladj_enabled = 0, voladj_multiplier;
+
 static const char *voladj_names[] = {"[Off]", "Low", "Medium", "High"};
 unsigned int voladj_histx = 0, voladj_history[VOLADJ_HISTSIZE] = {0,};
 
@@ -412,11 +420,21 @@ voladj_plot (unsigned short text_row, unsigned short pixel_col, unsigned int mul
 static void
 voladj_move (int direction)
 {
+	const unsigned int parms[1<<VOLADJ_BITS][5] = { // Values as suggested by Richard Lovejoy
+		{0x1800,   0,     0, 0, 0},  // Low
+		{0x1800, 100,0x1000,30,80},  // Low
+		{0x2000, 409,0x1000,30,80},  // Medium (Normal)
+		{0x2000,3000,0x0c00,30,80}}; // High
+	extern void hijack_voladj_intinit(int, int, int, int, int, int);
+	unsigned const int *p;
+
 	voladj_enabled += direction;
 	if (voladj_enabled < 0)
 		voladj_enabled = 0;
 	else if (voladj_enabled > (sizeof(voladj_names) / sizeof(voladj_names[0]) - 1))
 		voladj_enabled  = sizeof(voladj_names) / sizeof(voladj_names[0]) - 1;
+	p = parms[voladj_enabled];
+	hijack_voladj_intinit(4608,p[0],p[1],p[2],p[3],p[4]);	
 }
 
 static unsigned long last_histx = -1;
@@ -672,6 +690,7 @@ screen_compare (unsigned long *screen1, unsigned long *screen2)
 	return 0;	// the same
 }
 
+#ifdef EMPEG_KNOB_SUPPORTED
 static void
 knobdata_move (int direction)
 {
@@ -699,6 +718,7 @@ knobdata_display (int firsttime)
 	(void)draw_string(rowcol, s, COLOR3);
 	return NEED_REFRESH;
 }
+#endif // EMPEG_KNOB_SUPPORTED
 
 #define GAME_COLS		(EMPEG_SCREEN_COLS/2)
 #define GAME_VBOUNCE		0xff
@@ -724,7 +744,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v48 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v49 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1114,7 +1134,9 @@ static menu_item_t menu_table [] = {
 	{"Calculator",			calculator_display,	NULL,			0},
 	{"Font Display",		kfont_display,		NULL,			0},
 	{"High Temperature Warning",	maxtemp_display,	maxtemp_move,		0},
+#ifdef EMPEG_KNOB_SUPPORTED
 	{"Knob Press Redefinition",	knobdata_display,	knobdata_move,		0},
+#endif // EMPEG_KNOB_SUPPORTED
 	{"Reboot Machine",		reboot_display,		NULL,			0},
 	{"Screen Blanker Time-out",	blanker_display,	blanker_move,		0},
 	{"Screen Blanker Sensitivity",	blankerfuzz_display,	blankerfuzz_move,	0},
@@ -1250,7 +1272,6 @@ check_if_sound_adjust_is_active (void *player_buf)
 	    && test_row(player_buf, 16, 0x11);
 }
 
-#include <linux/soundcard.h>  // for SOUND_MASK_*
 static void
 toggle_input_source (void)
 {
@@ -1293,6 +1314,7 @@ hijack_display (struct display_dev *dev, unsigned char *player_buf)
 		display_blat(dev, player_buf);
 		return;
 	}
+#ifdef EMPEG_KNOB_SUPPORTED
 	if (ir_knob_down && jiffies_since(ir_knob_down) > (HZ*2)) {
 		ir_knob_down = jiffies - HZ;  // allow repeated cycling if knob is held down
 		toggle_input_source();
@@ -1302,10 +1324,13 @@ hijack_display (struct display_dev *dev, unsigned char *player_buf)
 		ir_delayed_knob_release = 0;
 		(void)real_input_append_code(knobdata_released[knobdata_index] | 0x80000000);
 	}
+#endif // EMPEG_KNOB_SUPPORTED
 	switch (hijack_status) {
 		case HIJACK_INACTIVE:
 			if (ir_trigger_count >= 3
+#ifdef EMPEG_KNOB_SUPPORTED
 			 || (ir_knob_down && jiffies_since(ir_knob_down) >= HZ)
+#endif // EMPEG_KNOB_SUPPORTED
 			 || (ir_menu_down && jiffies_since(ir_menu_down) >= HZ)) {
 				activate_dispfunc(menu_display, menu_move);
 			} else if (jiffies_since(ir_lasttime) < (HZ*5) || !maxtemp_threshold || read_temperature() < (maxtemp_threshold + MAXTEMP_OFFSET)) {
@@ -1442,6 +1467,7 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 			goto done;
 	}
 	switch (data) {
+#ifdef EMPEG_KNOB_SUPPORTED
 		case IR_KNOB_PRESSED:
 			hijacked = 1; // hijack it and later send it with the release
 			if (!ir_delayed_knob_release)
@@ -1476,6 +1502,7 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 			}
 			ir_knob_down = 0;
 			break;
+#endif // EMPEG_KNOB_SUPPORTED
 		case IR_RIO_MENU_PRESSED:
 			if (!player_menu_is_active) {
 				hijacked = 1; // hijack it and later send it with the release
@@ -1626,7 +1653,9 @@ hijack_save_settings (unsigned char *buf)
 		hijack_savearea.voladj_ac_power	= voladj_enabled;
 	hijack_savearea.blanker_timeout		= blanker_timeout;
 	hijack_savearea.maxtemp_threshold	= maxtemp_threshold;
+#ifdef EMPEG_KNOB_SUPPORTED
 	hijack_savearea.knobdata_index		= knobdata_index;
+#endif // EMPEG_KNOB_SUPPORTED
 	hijack_savearea.blankerfuzz_5pcts	= blankerfuzz_5pcts;
 	memcpy(buf, &hijack_savearea, sizeof(hijack_savearea));
 }
@@ -1642,7 +1671,9 @@ hijack_restore_settings (const unsigned char *buf)
 		voladj_enabled	= hijack_savearea.voladj_ac_power;
 	blanker_timeout		= hijack_savearea.blanker_timeout;
 	maxtemp_threshold	= hijack_savearea.maxtemp_threshold;
+#ifdef EMPEG_KNOB_SUPPORTED
 	knobdata_index		= hijack_savearea.knobdata_index;
+#endif // EMPEG_KNOB_SUPPORTED
 	blankerfuzz_5pcts	= hijack_savearea.blankerfuzz_5pcts;
 }
 

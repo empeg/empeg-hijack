@@ -13,8 +13,13 @@
 
 #ifdef __KERNEL__
 
+
 #ifndef MAX_HWIFS
+#ifdef CONFIG_SA1100_EMPEG
+#define MAX_HWIFS	1
+#else
 #define MAX_HWIFS	4
+#endif
 #endif
 
 #define ide__sti()	__sti()

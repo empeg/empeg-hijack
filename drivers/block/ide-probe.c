@@ -70,12 +70,14 @@ static inline void do_identify (ide_drive_t *drive, byte cmd)
 	 *  WIN_IDENTIFY returns little-endian info,
 	 *  WIN_PIDENTIFY *usually* returns little-endian info.
 	 */
+#ifndef CONFIG_SA1100_EMPEG
 	if (cmd == WIN_PIDENTIFY) {
 		if ((id->model[0] == 'N' && id->model[1] == 'E') /* NEC */
 		 || (id->model[0] == 'F' && id->model[1] == 'X') /* Mitsumi */
 		 || (id->model[0] == 'P' && id->model[1] == 'i'))/* Pioneer */
 			bswap ^= 1;	/* Vertos drives may still be weird */
 	}
+#endif
 	ide_fixstring (id->model,     sizeof(id->model),     bswap);
 	ide_fixstring (id->fw_rev,    sizeof(id->fw_rev),    bswap);
 	ide_fixstring (id->serial_no, sizeof(id->serial_no), bswap);
@@ -84,6 +86,7 @@ static inline void do_identify (ide_drive_t *drive, byte cmd)
 	printk("%s: %s, ", drive->name, id->model);
 	drive->present = 1;
 
+#ifndef CONFIG_SA1100_EMPEG
 	/*
 	 * Check for an ATAPI device
 	 */
@@ -127,6 +130,7 @@ static inline void do_identify (ide_drive_t *drive, byte cmd)
 		drive->media = type;
 		return;
 	}
+#endif CONFIG_SA1100_EMPEG
 
 	/*
 	 * Not an ATAPI device: looks like a "regular" hard disk
@@ -353,7 +357,9 @@ static inline byte probe_for_drive (ide_drive_t *drive)
 	if (drive->noprobe)			/* skip probing? */
 		return drive->present;
 	if (do_probe(drive, WIN_IDENTIFY) >= 2) { /* if !(success||timed-out) */
+#ifndef CONFIG_SA1100_EMPEG
 		(void) do_probe(drive, WIN_PIDENTIFY); /* look for ATAPI device */
+#endif
 	}
 	if (!drive->present)
 		return 0;			/* drive not found */
@@ -867,7 +873,9 @@ int ideprobe_init (void)
 
 #ifdef CONFIG_SA1100_EMPEG
 	printk("Probing primary interface...\n");
+#ifndef CONFIG_NET_ETHERNET  // ethernet is only on later revs
 	if (empeg_hardwarerevision()>4) {
+#endif
 		/* Single bus: no need to unregister drives after probe */
 		do {
 			/* Check for drives */
@@ -889,6 +897,7 @@ int ideprobe_init (void)
 
 		/* Initialise drives */
 		hwif_init(&ide_hwifs[0]);
+#ifndef CONFIG_NET_ETHERNET
 	} else {
 		/* Dual if/unknown number of drives: wait for all */
 		
@@ -936,6 +945,7 @@ int ideprobe_init (void)
 			if (probe[index])
 				hwif_init(&ide_hwifs[index]);
 	}
+#endif
 #else
 	for (index = 0; index < MAX_HWIFS; ++index)
 	    if (probe[index])

@@ -48,7 +48,11 @@
 #define FAKE_FDISK_FOR_EZDRIVE 	1	/* 0 to reduce kernel size */
 #endif
 #ifndef FANCY_STATUS_DUMPS		/* 1 for human-readable drive errors */
+#ifdef CONFIG_SA1100_EMPEG
+#define FANCY_STATUS_DUMPS	0	/* 0 to reduce kernel size */
+#else
 #define FANCY_STATUS_DUMPS	1	/* 0 to reduce kernel size */
+#endif
 #endif
 
 #ifdef CONFIG_BLK_DEV_CMD640

@@ -399,6 +399,7 @@ void ide_output_data (ide_drive_t *drive, void *buffer, unsigned int wcount)
 	}
 }
 
+#ifndef CONFIG_SA1100_EMPEG
 /*
  * The following routines are mainly used by the ATAPI drivers.
  *
@@ -435,6 +436,7 @@ void atapi_output_bytes (ide_drive_t *drive, void *buffer, unsigned int bytecoun
 	if ((bytecount & 0x03) >= 2)
 		outsw (IDE_DATA_REG, ((byte *)buffer) + (bytecount & ~0x03), 1);
 }
+#endif
 
 /*
  * Needed for PCI irq sharing
@@ -529,6 +531,7 @@ void ide_geninit (struct gendisk *gd)
 
 static ide_startstop_t do_reset1 (ide_drive_t *, int);		/* needed below */
 
+#ifndef CONFIG_SA1100_EMPEG
 /*
  * atapi_reset_pollfunc() gets invoked to poll the interface for completion every 50ms
  * during an atapi drive reset operation. If the drive has not yet responded,
@@ -557,6 +560,7 @@ static ide_startstop_t atapi_reset_pollfunc (ide_drive_t *drive)
 	hwgroup->poll_timeout = 0;	/* done polling */
 	return ide_stopped;
 }
+#endif
 
 /*
  * reset_pollfunc() gets invoked to poll the interface for completion every 50ms
@@ -650,6 +654,7 @@ static ide_startstop_t do_reset1 (ide_drive_t *drive, int  do_not_try_atapi)
 	__save_flags(flags);	/* local CPU only */
 	__cli();		/* local CPU only */
 
+#ifndef CONFIG_SA1100_EMPEG
 	/* For an ATAPI device, first try an ATAPI SRST. */
 	if (drive->media != ide_disk && !do_not_try_atapi) {
 		pre_reset(drive);
@@ -661,6 +666,7 @@ static ide_startstop_t do_reset1 (ide_drive_t *drive, int  do_not_try_atapi)
 		__restore_flags (flags);	/* local CPU only */
 		return ide_started;
 	}
+#endif
 
 	/*
 	 * First, reset any device state data we were maintaining
@@ -2547,6 +2553,7 @@ __initfunc(static int match_parm (char *s, const char *keywords[], int vals[], i
  * "ide0=ali14xx"	: probe/support ali14xx chipsets (ALI M1439, M1443, M1445)
  * "ide0=umc8672"	: probe/support umc8672 chipsets
  */
+#ifndef CONFIG_SA1100_EMPEG
 __initfunc(void ide_setup (char *s))
 {
 	int i, vals[3];
@@ -2801,6 +2808,7 @@ done:
 	printk("\n");
 #endif
 }
+#endif
 
 /*
  * This routine is called from the partition-table code in genhd.c
@@ -3208,8 +3216,10 @@ EXPORT_SYMBOL(ide_register_subdriver);
 EXPORT_SYMBOL(ide_unregister_subdriver);
 EXPORT_SYMBOL(ide_input_data);
 EXPORT_SYMBOL(ide_output_data);
+#ifndef CONFIG_SA1100_EMPEG
 EXPORT_SYMBOL(atapi_input_bytes);
 EXPORT_SYMBOL(atapi_output_bytes);
+#endif
 EXPORT_SYMBOL(ide_set_handler);
 EXPORT_SYMBOL(ide_dump_status);
 EXPORT_SYMBOL(ide_error);
@@ -3255,6 +3265,7 @@ __initfunc(int ide_init (void))
 char *options = NULL;
 MODULE_PARM(options,"s");
 
+#ifndef CONFIG_SA1100_EMPEG
 __initfunc(static void parse_options (char *line))
 {
 	char *next = line;
@@ -3268,10 +3279,13 @@ __initfunc(static void parse_options (char *line))
 			ide_setup(line);
 	}
 }
+#endif
 
 int init_module (void)
 {
+#ifndef CONFIG_SA1100_EMPEG
 	parse_options(options);
+#endif
 	return ide_init();
 }
 

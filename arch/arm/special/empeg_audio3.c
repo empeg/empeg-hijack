@@ -531,117 +531,6 @@ void voladj_scale(
   state->output_multiplier = outmult;
 }
 
-
-#ifndef __KERNEL__
-/*
- * Initialise all our stuff.  One of the main things this does is
- * convert easy to read floats into fixed point.
- */
-
-struct voladj_state voladj_init( 
-
-  int buf_size,         /* (Fixed) size of blocks in bytes to process */
-  double db_per_second, /* Maximum rate of volume change, in dB/sec */
-  double minvol,        /* Minimum volume to attempt to maintain (0 - 1) */
-  double headroom,       /* Headroom multiplier (0 - 1) */
-  double real_silence,   /* Threshold below which we gradually return to normal */
-  double fake_silence   /* Threshold below which we do no further scaling */
-  ) {
-  struct voladj_state initial;
-
-  double factor_per_second;
-  int intfactor_per_second,intminvol,intheadroom,intreal_silence;
-  int intfake_silence;
-
-  factor_per_second = pow( 10.0 , db_per_second / 10.0 );
-  intfactor_per_second = factor_per_second * SHORT_FRAC_VAL;
-  intminvol = (minvol * SHORT_FRAC_VAL);
-  intheadroom = (headroom * SHORT_FRAC_VAL);
-  intreal_silence = real_silence * (double)MAXSAMPLES;
-  intfake_silence = fake_silence * (double)MAXSAMPLES;
-
-  voladj_intinit(
-      &initial,
-      buf_size,
-      intfactor_per_second,
-      intminvol,
-      intheadroom,
-      intreal_silence,
-      intfake_silence
-      );
-
-  fprintf(stderr, 
-      "minvol: %x headroom: %x increase: %x decrease %x\n", 
-      initial.minvol, initial.headroom, initial.increase, initial.decrease);
-  fprintf(stderr, 
-      "MULT_TO_16: %d MULT_POINT: %d MULT_INTBITS: %d SHORT_FRAC_VAL: %f \n", 
-      MULT_TO_16, MULT_POINT, MULT_INTBITS, SHORT_FRAC_VAL);
-  return initial;
-
-};
-
- 
-
-int main(int argc, char *argv[])
-{
-  static char buffer1[BLOCKSIZE];
-  static char buffer2[BLOCKSIZE];
-  char *actualbuff, *lookaheadbuff, *tempbuf;
-  int i,lookahead;
-  unsigned int len,lastlen;
-  struct voladj_state state;
-
-  state = voladj_init( 
-    BLOCKSIZE,      /* (Fixed) size of blocks in bytes to process */
-    2.0,            /* Maximum rate of volume change, in dB/sec */
-    0.5,            /* Minimum volume to attempt to maintain (0 - 1) */
-    1.0,             /* Headroom multiplier */
-    0.001,
-    0.003
-    );
-
-  for (i = 0; i < BLOCKSIZE; i++) {
-    buffer1[ i ] = 0;
-  }
-  for (i = 0; i < BLOCKSIZE; i++) {
-    buffer2[ i ] = 0;
-  }
-
-  lookahead = 1;
-
-  actualbuff = buffer1;
-  lookaheadbuff = buffer2;
-  lastlen = 0;
-
-  while ((len = fread(lookaheadbuff, 4, BLOCKSIZE / 4, stdin))) {
-
-    if (lookahead) {
-      voladj_check( &state, (short *)lookaheadbuff );
-    } else {
-      actualbuff = lookaheadbuff;
-      voladj_check( &state, (short *)actualbuff );
-      state.output_multiplier = state.desired_multiplier;
-      lastlen = len;
-    } 
-    voladj_scale( &state, state.desired_multiplier, (short *)actualbuff );
-
-    fwrite( actualbuff, 4, lastlen, stdout );
-    tempbuf = actualbuff;
-    actualbuff = lookaheadbuff;
-    lookaheadbuff = tempbuf;
-    lastlen = len;
-  }
-
-  if ( lookahead) {
-    voladj_scale( &state, state.desired_multiplier, (short *)actualbuff );
-    fwrite( actualbuff, 4, lastlen, stdout );
-  }
-
-  return 0;
-}
-
-#endif
-
 /* statistics */
 typedef struct
 {
@@ -733,21 +622,9 @@ static struct file_operations audio_fops =
 	open:		empeg_audio_open,
 };
 
-unsigned int  voladj_enabled;	// 2-bits; 0x00=disabled
-unsigned int  voladj_multiplier;
-
-void voladj_next_preset (int incr)
+void hijack_voladj_intinit(int buf_size, int factor_per_second, int minvol, int headroom, int real_silence, int fake_silence)
 {
-	const unsigned int parms[3][6] = { // Values as suggested by Richard Lovejoy
-		{AUDIO_BUFFER_SIZE,0x1800, 100,0x1000,30,80},  // Low
-		{AUDIO_BUFFER_SIZE,0x2000, 409,0x1000,30,80},  // Medium (Normal)
-		{AUDIO_BUFFER_SIZE,0x2000,3000,0x0c00,30,80}}; // High
-
-	voladj_enabled = (voladj_enabled + incr) & 3;
-	if (voladj_enabled) {
-		unsigned int *p = (unsigned int *)parms[voladj_enabled-1];
-		voladj_intinit(&(audio[0].voladj),p[0],p[1],p[2],p[3],p[4],p[5]);	
-	}
+	(void)voladj_intinit(&audio[0].voladj, buf_size, factor_per_second, minvol, headroom, real_silence, fake_silence);
 }
 
 int __init empeg_audio_init(void)
@@ -896,6 +773,7 @@ static int empeg_audio_write(struct file *file,
 	/* Fill as many buffers as we can */
 	while(count > 0 && dev->free > 0) {
 		unsigned long flags;
+		extern int voladj_enabled, voladj_multiplier;
 
 		/* Critical sections kept as short as possible to give good
 		   latency for other tasks */

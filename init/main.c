@@ -1021,11 +1021,13 @@ static int __init checksetup(char *line)
 	int i, ints[11];
 
 #ifdef CONFIG_BLK_DEV_IDE
+#ifndef CONFIG_SA1100_EMPEG
 	/* ide driver needs the basic string, rather than pre-processed values */
 	if (!strncmp(line,"ide",3) || (!strncmp(line,"hd",2) && line[2] != '=')) {
 		ide_setup(line);
 		return 1;
 	}
+#endif
 #endif
 	for (i=0; raw_params[i].str; i++) {
 		int n = strlen(raw_params[i].str);

@@ -1,6 +1,6 @@
 // Empeg display/IR hijacking by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v115"
+#define HIJACK_VERSION "v116"
 //
 // Includes: font, drawing routines
 //           extensible menu system
@@ -214,8 +214,10 @@ static int hijack_old_style			=  0;	// 1 == don't highlite menu items
 static int hijack_quicktimer_minutes		= 30;	// increment size for quicktimer function
 static int hijack_standby_minutes		= 30;	// number of minutes after screen blanks before we go into standby
        int hijack_khttpd_port			= 80;	// khttpd port
+       int hijack_khttpd_verbose		=  0;	// khttpd verbosity
        int hijack_kftpd_control_port		= 21;	// kftpd control port
        int hijack_kftpd_data_port		= 20;	// kftpd data port
+       int hijack_kftpd_verbose			=  0;	// kftpd verbosity
 
 typedef struct hijack_option_s {
 	const char	*name;
@@ -227,18 +229,20 @@ typedef struct hijack_option_s {
 
 static const hijack_option_t hijack_option_table[] = {
 	// config.ini string		address-of-variable		howmany	min	max
-	{"supress_notify",		&hijack_supress_notify,		1,	0,	1},	
 	{"button_pacing",		&hijack_button_pacing,		1,	0,	HZ},
-	{"old_style",			&hijack_old_style,		1,	0,	1},
-	{"temperature_correction",	&hijack_temperature_correction,	1,	-20,	+20},
-	{"voladj_low",			&hijack_voladj_parms[0][0],	5,	0,	0x7ffe},
-	{"voladj_medium",		&hijack_voladj_parms[1][0],	5,	0,	0x7ffe},
-	{"voladj_high",			&hijack_voladj_parms[2][0],	5,	0,	0x7ffe},
- 	{"quicktimer_minutes",		&hijack_quicktimer_minutes,	1,	1,	120},
- 	{"standby_minutes",		&hijack_standby_minutes,	1,	0,	240},
- 	{"khttpd_port",			&hijack_khttpd_port,		1,	0,	65535},
  	{"kftpd_control_port",		&hijack_kftpd_control_port,	1,	0,	65535},
  	{"kftpd_data_port",		&hijack_kftpd_data_port,	1,	0,	65535},
+ 	{"kftpd_verbose",		&hijack_kftpd_verbose,		1,	0,	1},
+ 	{"khttpd_port",			&hijack_khttpd_port,		1,	0,	65535},
+ 	{"khttpd_verbose",		&hijack_khttpd_verbose,		1,	0,	1},
+	{"old_style",			&hijack_old_style,		1,	0,	1},
+ 	{"quicktimer_minutes",		&hijack_quicktimer_minutes,	1,	1,	120},
+ 	{"standby_minutes",		&hijack_standby_minutes,	1,	0,	240},
+	{"supress_notify",		&hijack_supress_notify,		1,	0,	1},	
+	{"temperature_correction",	&hijack_temperature_correction,	1,	-20,	+20},
+	{"voladj_high",			&hijack_voladj_parms[2][0],	5,	0,	0x7ffe},
+	{"voladj_low",			&hijack_voladj_parms[0][0],	5,	0,	0x7ffe},
+	{"voladj_medium",		&hijack_voladj_parms[1][0],	5,	0,	0x7ffe},
 	{NULL,NULL,0,0,0} // end-of-list
 	};
 

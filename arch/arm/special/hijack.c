@@ -90,7 +90,7 @@ static unsigned char blanker_lastbuf[EMPEG_SCREEN_BYTES] = {0,}, blanker_is_blan
 static int  (*hijack_dispfunc)(int) = NULL;
 static void (*hijack_movefunc)(int) = NULL;
 static unsigned long ir_lastevent = 0, ir_lasttime = 0, ir_selected = 0, ir_releasewait = 0, ir_trigger_count = 0;;
-static unsigned long ir_menu_down = 0, ir_left_down = 0, ir_right_down = 0;
+static unsigned long ir_menu_down = 0, ir_left_down = 0, ir_right_down = 0, ir_4_down = 0;
 static unsigned long ir_move_repeat_delay, ir_shifted = 0;
 static int *ir_numeric_input = NULL, player_ui_is_active = 0;
 
@@ -1661,7 +1661,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,18), " Enhancements.v105 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,18), " Enhancements.v106 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -2492,8 +2492,7 @@ hijack_handle_button(unsigned long button, unsigned long delay)
 				hijacked = 1;
 			} else if (ir_menu_down && !player_ui_is_active) {
 				hijack_button_enq(&hijack_playerq, IR_RIO_MENU_PRESSED, 0);
-				if (button == ir_releasewait)
-					ir_releasewait = 0;
+				ir_releasewait = 0;
 			}
 			ir_menu_down = 0;
 			break;
@@ -2550,14 +2549,32 @@ hijack_handle_button(unsigned long button, unsigned long delay)
 			if (hijack_status != HIJACK_INACTIVE)
 				hijacked = 1;
 			break;
-		case IR_KW_4_PRESSED:
 		case IR_RIO_4_PRESSED:
-		case IR_KW_4_RELEASED:
-		case IR_RIO_4_RELEASED:
 			if (hijack_status == HIJACK_INACTIVE && !player_ui_is_active) {
-				if ((button & 0x80000000))
-					activate_dispfunc(quicktimer_display, timer_move);
+				hijacked = 1; // hijack it and later send it with the release
+				ir_4_down = jiffies ? jiffies : -1;
+			}
+			break;
+		case IR_RIO_4_RELEASED:
+			if (hijack_status != HIJACK_INACTIVE) {
 				hijacked = 1;
+			} else if (!player_ui_is_active && ir_4_down) {
+				if (get_current_mixer_source() != 'T') {
+					hijacked = 1;
+					activate_dispfunc(quicktimer_display, timer_move);
+				} else {
+					hijack_button_enq(&hijack_playerq, IR_RIO_4_PRESSED, 0);
+					ir_releasewait = 0;
+				}
+			}
+			ir_4_down = 0;
+			break;
+		case IR_KW_4_PRESSED:
+		case IR_KW_4_RELEASED:
+			if (hijack_status == HIJACK_INACTIVE && !player_ui_is_active && get_current_mixer_source() != 'T') {
+				hijacked = 1;
+				if (button == IR_KW_4_RELEASED)
+					activate_dispfunc(quicktimer_display, timer_move);
 			}
 			break;    	    
 	}
@@ -2645,58 +2662,52 @@ input_append_code2 (unsigned long button)
 {
 	unsigned long released, *table = ir_translate_table;
 
-	//if (button == IR_KNOB_LEFT || button == IR_KNOB_RIGHT) {
-	//	if (ir_downkey != -1)
-	//		return;
-	//} else {
-		released = (button <= 0xf) ? (button & 1) : (button >> 31);
-		if (released) {
-			if (ir_downkey == -1)	// FIXME? just send the code anyway?
-				return;	// already taken care of (we hope)
-			ir_downkey = -1;
-		} else {
-			if (ir_downkey == button)
-				return;	// ignore repeated press with no intervening release
-			ir_downkey = button;
-		}
-		ir_current_longpress = NULL;
-		//printk("%8lu: %08lx\n", jiffies, button);
-		if (table) {
-			unsigned long old = button & ~0xc0000000, common_bits = *table++;
-			if ((old & common_bits) == common_bits) {	// saves time (usually) on large tables
-				int delayed_send = 0;
-				unsigned char flags = empeg_on_dc_power ? IR_FLAGS_CAR : IR_FLAGS_HOME;
-				if (ir_shifted)
-					flags |= IR_FLAGS_SHIFTED;
-				while (*table != -1) {
-					ir_translation_t *t = (ir_translation_t *)table;
-					table += (sizeof(ir_translation_t) / sizeof(unsigned long) - 1) + t->count;
-					if (old == t->old
-					 && (!t->source  || t->source == get_current_mixer_source())
-					 && ((t->flags & (IR_FLAGS_SHIFTED|IR_FLAGS_HOME|IR_FLAGS_CAR)) == (t->flags & flags))) {
-						if (released) {	// button release?
-							if ((t->flags & IR_FLAGS_LONGPRESS) && jiffies_since(ir_lastevent) < HZ) {
-								delayed_send = 1;
-								continue; // look for shortpress instead
-							}
-							if (delayed_send)
-								ir_send_buttons(t);
-							ir_send_release(t->new[t->count - 1]); // final button release
-						} else { // button press?
-							if ((t->flags & IR_FLAGS_LONGPRESS))
-								ir_current_longpress = t;
-							else
-								ir_send_buttons(t);
+	released = (button <= 0xf) ? (button & 1) : (button >> 31);
+	if (released) {
+		if (ir_downkey == -1)	// FIXME? just send the code anyway?
+			return;	// already taken care of (we hope)
+		ir_downkey = -1;
+	} else {
+		if (ir_downkey == button)
+			return;	// ignore repeated press with no intervening release
+		ir_downkey = button;
+	}
+	ir_current_longpress = NULL;
+	if (table) {
+		unsigned long old = button & ~0xc0000000, common_bits = *table++;
+		if ((old & common_bits) == common_bits) {	// saves time (usually) on large tables
+			int delayed_send = 0;
+			unsigned char flags = empeg_on_dc_power ? IR_FLAGS_CAR : IR_FLAGS_HOME;
+			if (ir_shifted)
+				flags |= IR_FLAGS_SHIFTED;
+			while (*table != -1) {
+				ir_translation_t *t = (ir_translation_t *)table;
+				table += (sizeof(ir_translation_t) / sizeof(unsigned long) - 1) + t->count;
+				if (old == t->old
+				 && (!t->source  || t->source == get_current_mixer_source())
+				 && ((t->flags & (IR_FLAGS_SHIFTED|IR_FLAGS_HOME|IR_FLAGS_CAR)) == (t->flags & flags))) {
+					if (released) {	// button release?
+						if ((t->flags & IR_FLAGS_LONGPRESS) && jiffies_since(ir_lastevent) < HZ) {
+							delayed_send = 1;
+							continue; // look for shortpress instead
 						}
-						ir_lasttime = ir_lastevent = jiffies;
-						return;
+						if (delayed_send)
+							ir_send_buttons(t);
+						ir_send_release(t->new[t->count - 1]); // final button release
+					} else { // button press?
+						if ((t->flags & IR_FLAGS_LONGPRESS))
+							ir_current_longpress = t;
+						else
+							ir_send_buttons(t);
 					}
+					ir_lasttime = ir_lastevent = jiffies;
+					return;
 				}
-				if (delayed_send)
-					hijack_button_enq(&hijack_inputq, old, 0);
 			}
+			if (delayed_send)
+				hijack_button_enq(&hijack_inputq, old, 0);
 		}
-	//}
+	}
 	hijack_button_enq(&hijack_inputq, button, 0);
 	ir_lasttime = ir_lastevent = jiffies;
 }
@@ -2823,6 +2834,8 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 #endif // EMPEG_KNOB_SUPPORTED
 			 || (ir_menu_down && jiffies_since(ir_menu_down) >= HZ)) {
 				activate_dispfunc(menu_display, menu_move);
+			} else if (ir_4_down && jiffies_since(ir_4_down) >= (3*HZ/2)) {
+				activate_dispfunc(quicktimer_display, timer_move);
 			}
 			break;
 		case HIJACK_ACTIVE:

@@ -537,9 +537,12 @@ handle_connection (struct socket *sock, struct sockaddr_in *clientaddr)
 		printk("not AF_INET: %d\n", (int)clientaddr->sin_family);
 	} else if (inet_ntop(AF_INET, &clientaddr->sin_addr.s_addr, clientip, sizeof(clientip)) == NULL) {
 		printk("inet_ntop(%08x) failed\n", (uint32_t)clientaddr->sin_addr.s_addr);
-	} else if (!send_response(sock, "220 connected")) {
-		strcpy(cwd, "/");
-		while (handle_command(sock) == 0);
+	} else {
+		printk("kftpd: connection from %s\n", clientip);
+		if (!send_response(sock, "220 connected")) {
+			strcpy(cwd, "/");
+			while (handle_command(sock) == 0);
+		}
 	}
 	sock_release(sock);
 }
@@ -571,12 +574,10 @@ int kftpd (void *unused)
 		struct sockaddr_in	clientaddr;
 		int			clientaddr_len = sizeof(clientaddr);
 
-		printk("waiting for connections\n");
 		clientsock = ksock_accept(servsock, (struct sockaddr *)&clientaddr, &clientaddr_len);
 		if (!clientsock) {
 			printk("accept() failed\n");
 		} else {
-			printk("new connection\n");
 			handle_connection(clientsock, &clientaddr);
 		}
 	}

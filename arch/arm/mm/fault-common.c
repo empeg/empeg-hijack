@@ -173,9 +173,13 @@ bad_area:
 		tsk->tss.trap_no = 14;
 #ifdef CONFIG_DEBUG_USER
 #ifdef CONFIG_SA1100_EMPEG /* HIJACK */
+{
+		extern void hijack_clear_playlist(void);
+		hijack_clear_playlist();
 		show_message("segfault error", HZ*20);
+}
 #endif
-		printk("%s(%d): memory violation at pc=0x%08lx, lr=0x%08lx (bad address=0x%08lx, code %d)\n",
+		printk("%s(%d): user memory violation at pc=0x%08lx, lr=0x%08lx (bad address=0x%08lx, code %d)\n",
 		       tsk->comm, tsk->pid,
 		       regs->ARM_pc, regs->ARM_lr, addr, mode);
 		show_regs(regs);

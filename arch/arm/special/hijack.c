@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v419"
+#define HIJACK_VERSION	"v420"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -1716,6 +1716,24 @@ vitals_display (int firsttime)
 	buf[i] = '\0';
 	(void)draw_string(rowcol, buf, PROMPTCOLOR);
 	return NEED_REFRESH;
+}
+
+/*
+ * We call this when the player crashes, to clear the current playlist
+ * and hopefully thus prevent infinite player crash loops.
+ * See arch/arm/mm/fault-common.c for the call to this routine.
+ */
+void hijack_clear_playlist (void)
+{
+	unsigned char *sa;
+	unsigned long flags;
+
+	save_flags_cli(flags);
+	sa = *empeg_state_writebuf;
+	sa[0x44] = sa[0x45] = 0;
+	sa = hijack_get_state_read_buffer();
+	sa[0x44] = sa[0x45] = 0;
+	restore_flags(flags);
 }
 
 static char *acdc_text[2] = {"AC/Home", "DC/Car"};

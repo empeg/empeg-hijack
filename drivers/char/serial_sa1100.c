@@ -604,7 +604,7 @@ static _INLINE_ void transmit_chars(struct async_struct *info, int *intr_done)
 	}
 }
 
-#ifdef CONFIG_SMC9194_TIFON	// not present on Mk1 models
+#ifdef CONFIG_SMC9194_TIFON	// Mk2 or later? (Mk1 has no ethernet chip)
 extern unsigned long	jiffies_since(unsigned long);
 
 static int
@@ -1222,12 +1222,10 @@ static void change_speed(struct async_struct *info)
 	}
 }
 
-#ifdef CONFIG_HIJACK_TUNER
-#ifdef CONFIG_PROC_FS
+#ifdef CONFIG_SMC9194_TIFON	// Mk2 or later? (Mk1 has no ethernet chip)
 extern int hijack_serial_notify (const unsigned char *, int);
-extern int player_v3alpha;
-#endif // CONFIG_PROC_FS
-#endif // CONFIG_HIJACK_TUNER
+#include <asm/arch/hijack.h>
+#endif
 
 static void rs_put_char(struct tty_struct *tty, unsigned char ch)
 {
@@ -1239,12 +1237,10 @@ static void rs_put_char(struct tty_struct *tty, unsigned char ch)
 
 	if (!tty || !info->xmit_buf)
 		return;
-#ifdef CONFIG_HIJACK_TUNER
-#ifdef CONFIG_PROC_FS
+#ifdef CONFIG_SMC9194_TIFON	// Mk2 or later? (Mk1 has no ethernet chip)
 	if (hijack_serial_notify(&ch, 1))
 		return;
-#endif // CONFIG_PROC_FS
-#endif // CONFIG_HIJACK_TUNER
+#endif
 
 	save_flags(flags); cli();
 	if (info->xmit_cnt >= SERIAL_XMIT_SIZE - 1) {
@@ -1293,14 +1289,14 @@ static int rs_write(struct tty_struct * tty, int from_user,
 
 	save_flags(flags);
 
-#ifdef CONFIG_HIJACK_TUNER
-#ifdef CONFIG_PROC_FS
-	if (from_user == player_v3alpha && hijack_serial_notify(buf, count))
+#ifdef CONFIG_SMC9194_TIFON	// Mk2 or later? (Mk1 has no ethernet chip)
+	//
+	// v3alphas seem to have console/notify streams reversed from v2final.  Weird.
+	//
+	if (from_user == (player_version > MK2_PLAYER_v2final) && hijack_serial_notify(buf, count))
 		ret = count;
 	else
-#endif // CONFIG_PROC_FS
-#endif // CONFIG_HIJACK_TUNER
-
+#endif
 	if (from_user) {
 		down(&tmp_buf_sem);
 		while (1) {

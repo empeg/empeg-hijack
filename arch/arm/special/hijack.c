@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v370"
+#define HIJACK_VERSION	"v371"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -2365,9 +2365,10 @@ knobdata_display (int firsttime)
 	return NEED_REFRESH;
 }
 
-int player_v3alpha = 0;		// also referenced in drivers/char/serial_sa1100.c
+int player_version = 0;		// also referenced in drivers/char/serial_sa1100.c
 
-static void check_for_v3alpha (void)
+static void
+get_player_version (void)
 {
 	extern int sys_newstat(char *, struct stat *);
 	mm_segment_t old_fs = get_fs();
@@ -2375,10 +2376,7 @@ static void check_for_v3alpha (void)
 
 	set_fs(KERNEL_DS);
 	if (0 == sys_newstat("/empeg/bin/player", &st)) {
-		//printk("player_size = %lu\n", st.st_size);
-		if (st.st_size == 1900988 || st.st_size == 1907572 || st.st_size == 1915200) {
-			player_v3alpha = 1;
-		}
+		player_version = st.st_size;
 	}
 	set_fs(old_fs);
 }
@@ -2394,7 +2392,7 @@ knobseek_move_visuals (int direction)
 
 	button = (direction > 0) ? IR_RIO_VISUAL_PRESSED : IR_PREV_VISUAL_PRESSED;
 #ifdef EMPEG_KNOB_SUPPORTED
-	if (button == IR_PREV_VISUAL_PRESSED && player_v3alpha) {
+	if (button == IR_PREV_VISUAL_PRESSED && player_version > MK2_PLAYER_v2final) {
 		if ((empeg_tuner_present || hijack_fake_tuner) && get_current_mixer_source() != IR_FLAGS_TUNER) {
 			button = IR_KSNEXT_PRESSED;
 		}
@@ -5014,6 +5012,10 @@ reset_hijack_options (void)
 		}
 		++h;
 	}
+#ifdef EMPEG_KNOB_SUPPORTED
+	if (player_version > MK2_PLAYER_v2final)
+		hijack_spindown_seconds /= 2;
+#endif
 }
 
 #ifdef CONFIG_EMPEG_I2C_FAN_CONTROL
@@ -5068,7 +5070,7 @@ hijack_process_config_ini (char *buf, off_t f_pos)
 	static const char *acdc_labels[2] = {";@AC", ";@DC"};
 
 #ifdef EMPEG_KNOB_SUPPORTED
-	check_for_v3alpha();
+	get_player_version();
 #endif
 	(void) edit_config_ini(buf, acdc_labels    [empeg_on_dc_power]);
 	(void) edit_config_ini(buf, homework_labels[hijack_homework]);

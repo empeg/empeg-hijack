@@ -38,7 +38,38 @@ static inline unsigned long JIFFIES (void)
 	unsigned long jiff = jiffies;
 	return jiff ? jiff : ~0UL;
 }
+#ifdef CONFIG_SMC9194_TIFON	// not present on Mk1 models
+extern int player_version;	// hijack.c
 #endif
+#endif
+
+// Known player executable sizes are listed below.
+//
+// With the exception of (v2rc3 -> v2final),
+// the player has increased in size for each release.
+// So, for internal version tests, we can currently
+// just use the player's size as a relative version number.
+//
+#define MK2_PLAYER_v102		1091472
+#define MK2_PLAYER_v103		1120144
+#define MK2_PLAYER_v2b3		1637404
+#define MK2_PLAYER_v2b6		1667772
+#define MK2_PLAYER_v2b7		1682484
+#define MK2_PLAYER_v2b8		1312984
+#define MK2_PLAYER_v2b9		1316280
+#define MK2_PLAYER_v2b10	1323248
+#define MK2_PLAYER_v2b11	1323440
+#define MK2_PLAYER_v2b12	1328048
+#define MK2_PLAYER_v2b13	1336792
+#define MK2_PLAYER_v2rc1	1344824
+#define MK2_PLAYER_v2rc2	1346936
+#define MK2_PLAYER_v2rc3	1350780
+#define MK2_PLAYER_v2final	1350748 // anomaly: smaller than v2rc3
+#define MK2_PLAYER_v3a1		1731364
+#define MK2_PLAYER_v3a2		1895536
+#define MK2_PLAYER_v3a3		1900988
+#define MK2_PLAYER_v3a5		1907572
+#define MK2_PLAYER_v3a6		1915200
 
 #define INRANGE(c,min,max)	((c) >= (min) && (c) <= (max))
 #define TOUPPER(c)		(INRANGE((c),'a','z') ? ((c) - ('a' - 'A')) : (c))

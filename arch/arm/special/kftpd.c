@@ -1039,14 +1039,6 @@ prepare_file_xfer (server_parms_t *parms, char *path, file_xfer_t *xfer, int wri
 		flags = start_offset ? O_RDWR : O_RDWR|O_CREAT|O_TRUNC;
 	else
 		flags = O_RDONLY;
-#if 1
-	// Needed for old JEmplode compatibility with FTP:
-	if (!parms->use_http && hijack_glob_match(path, "/drive?/fids/*")) {
-		// convert "/drive?/fids/*" into "/empeg/fids?/*":
-		path[11] = path[6];
-		memcpy(path, "/empeg/fids", 11);
-	}
-#endif
 	if (!writing && parms->use_http && hijack_glob_match(path, "/empeg/fids?/*"))
 		fd = open_fid_file(path);
 	else

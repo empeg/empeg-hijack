@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v265"
+#define HIJACK_VERSION	"v266"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -3529,8 +3529,14 @@ static unsigned int ir_downkey = IR_NULL_BUTTON, ir_delayed_rotate = 0;
 static void
 input_append_code2 (unsigned int rawbutton)
 {
-	unsigned int released = IS_RELEASE(rawbutton);
+	unsigned int released	= IS_RELEASE(rawbutton);
+	unsigned int button	= PRESSCODE(rawbutton);
 
+	if (ir_downkey != IR_NULL_BUTTON && button != ir_downkey) {
+		unsigned int rcode = RELEASECODE(ir_downkey);
+		if (rcode != IR_NULL_BUTTON)
+			input_append_code2(rcode);
+	}
 	if (hijack_ir_debug) {
 		printk("%lu: IA2:%08x.%c,dk=%08x,dr=%d,lk=%d\n", jiffies, rawbutton, released ? 'R' : 'P',
 			ir_downkey, (ir_delayed_rotate != 0), (ir_current_longpress != NULL));
@@ -3555,9 +3561,6 @@ input_append_code2 (unsigned int rawbutton)
 		int		delayed_send	= 0;
 		int		was_waiting	= (ir_current_longpress != NULL);
 		ir_translation_t *t		= NULL;
-		unsigned int	button;
-
-		button = PRESSCODE(rawbutton);
 		ir_current_longpress = NULL;
 		while (NULL != (t = ir_next_match(t, button))) {
 			unsigned short t_flags = t->flags;

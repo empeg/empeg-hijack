@@ -14,9 +14,33 @@
 //           Reboot Machine from menu
 //           ... and tons more
 
+
+#include <linux/sched.h>
+#include <linux/timer.h>
+#include <linux/interrupt.h>
+#include <linux/tty.h>
+#include <linux/tty_flip.h>
+#include <linux/kernel.h>
+#include <linux/errno.h>
+#include <linux/kd.h>
+#include <linux/major.h>
+#include <linux/mm.h>
+#include <linux/malloc.h>
+#include <linux/delay.h>
+#include <linux/init.h>
+#include <linux/poll.h>
+#include <asm/pgtable.h> /* For processor cache handling */
+
+#include <asm/segment.h>
+#include <asm/irq.h>
+#include <asm/io.h>
+#include <asm/arch/empeg.h>
+#include <asm/uaccess.h>
+
 #include <asm/arch/hijack.h>		// for ioctls, IR_ definitions, etc..
 #include <linux/soundcard.h>		// for SOUND_MASK_*
 #include "../../../drivers/block/ide.h"	// for ide_hwifs[]
+#include "empeg_display.h"
 
 extern int get_loadavg(char * buffer);					// fs/proc/array.c
 extern void machine_restart(void *);					// arch/arm/kernel/process.c
@@ -26,6 +50,7 @@ extern void state_cleanse(void);					// arch/arm/special/empeg_state.c
 extern void hijack_voladj_intinit(int, int, int, int, int);		// arch/arm/special/empeg_audio3.c
 extern void hijack_beep (int pitch, int duration_msecs, int vol_percent);// arch/arm/special/empeg_audio3.c
 extern unsigned long jiffies_since(unsigned long past_jiffies);		// arch/arm/special/empeg_input.c
+extern void display_blat(struct display_dev *dev, unsigned char *source_buffer); // empeg_display.c
 
 extern unsigned char get_current_mixer_source(void);			// arch/arm/special/empeg_mixer.c
 extern void empeg_mixer_select_input(int input);			// arch/arm/special/empeg_mixer.c
@@ -67,7 +92,7 @@ static void (*hijack_movefunc)(int) = NULL;
 static unsigned long ir_lastevent = 0, ir_lasttime = 0, ir_selected = 0, ir_releasewait = 0, ir_trigger_count = 0;;
 static unsigned long ir_menu_down = 0, ir_left_down = 0, ir_right_down = 0;
 static unsigned long ir_move_repeat_delay, ir_shifted = 0;
-static int *ir_numeric_input = NULL, player_menu_is_active = 0, player_sound_adjust_is_active = 0;
+static int *ir_numeric_input = NULL, player_ui_is_active = 0;
 
 #define IS_RELEASE(b)	(0 != ((b) & (((b) > 0xf) ? 0x80000000 : 1)))
 
@@ -1052,7 +1077,7 @@ vitals_display (int firsttime)
 	extern int nr_free_pages;
 	unsigned int *permset=(unsigned int*)(EMPEG_FLASHBASE+0x2000);
 	unsigned char *sa, buf[80];
-	int rowcol, i, count, model = 0x2a;
+	int rowcol, temp, i, count, model = 0x2a;
 	unsigned long flags;
 
 	if (!firsttime && jiffies_since(hijack_last_refresh) < HZ)
@@ -1064,13 +1089,14 @@ vitals_display (int firsttime)
 		model = 1;
 	else if (permset[0] < 9)
 		model = 2;
-	count = sprintf(buf, "Mk%x:%dG", model, get_drive_size(0,0));
+	count = sprintf(buf, "Mk%x:%d", model, get_drive_size(0,0));
 	model = (model == 1);	// 0 == Mk2(a); 1 == Mk1
 	if (ide_hwifs[model].drives[!model].present)
-		sprintf(buf+count, "+%dG", get_drive_size(model,!model));
+		sprintf(buf+count, "+%d", get_drive_size(model,!model));
 	rowcol = draw_string(ROWCOL(0,0), buf, PROMPTCOLOR);
-	rowcol = draw_string(rowcol, ", ", PROMPTCOLOR);
-	rowcol = draw_temperature(rowcol, read_temperature(), 32, PROMPTCOLOR);
+	temp = read_temperature();
+	sprintf(buf, "G, %+dC/%+dF", temp, temp * 180 / 100 + 32);
+	rowcol = draw_string(rowcol, buf, PROMPTCOLOR);
 
 	// Current Playlist and Fid:
 	save_flags_cli(flags);
@@ -1622,7 +1648,7 @@ knobmenu_display (int firsttime)
 
 static short game_over, game_row, game_col, game_hdir, game_vdir, game_paddle_col, game_paddle_lastdir, game_speed, game_bricks;
 static unsigned long game_ball_last_moved, game_animtime;
-static unsigned int *game_animptr = NULL;
+       unsigned int *hijack_game_animptr = NULL;	// written by empeg_display.c
 
 static int
 game_finale (void)
@@ -1635,7 +1661,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,18), " Enhancements.v103 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,18), " Enhancements.v104 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1654,11 +1680,11 @@ game_finale (void)
 	} else if (framenr < 0) { // animation finished?
 		ir_selected = 1; // return to menu
 		return NEED_REFRESH;
-	} else if (!game_animptr[framenr]) { // last frame?
+	} else if (!hijack_game_animptr[framenr]) { // last frame?
 		frameadj = -1;  // play it again, backwards
 		framenr += frameadj;
 	}
-	s = (unsigned char *)game_animptr + game_animptr[framenr];
+	s = (unsigned char *)hijack_game_animptr + hijack_game_animptr[framenr];
 	d = (unsigned char *)hijack_displaybuf;
 	for(a=0;a<2048;a+=2) {
 		*d++=((*s&0xc0)>>2)|((*s&0x30)>>4);
@@ -2197,20 +2223,37 @@ check_if_equalizer_is_active (unsigned char *displaybuf)
 }
 
 static int
-check_if_player_menu_is_active (void *player_buf)
-{
-	if (test_row(player_buf, 2, 0x00))
-		if ((test_row(player_buf, 0, 0x00) && test_row(player_buf, 1, 0x11))
-		 || (test_row(player_buf, 3, 0x11) && test_row(player_buf, 4, 0x00)))
-			return 1;
-	return check_if_equalizer_is_active(player_buf);
-}
-
-static int
 check_if_sound_adjust_is_active (void *player_buf)
 {
 	return (test_row(player_buf,  8, 0x00) && test_row(player_buf,  9, 0x11)
 	     && test_row(player_buf, 16, 0x11) && test_row(player_buf, 17, 0x00));
+}
+
+static int
+check_if_search_is_active (void *player_buf)
+{
+	return (test_row(player_buf,  4, 0x00) && test_row(player_buf,  5, 0x11)
+	     && test_row(player_buf, 11, 0x00) && test_row(player_buf, 12, 0x11));
+}
+
+static int
+check_if_playermenu_is_active (void *player_buf)
+{
+	if (test_row(player_buf, 2, 0x00)) {
+		if ((test_row(player_buf, 0, 0x00) && test_row(player_buf, 1, 0x11))
+		 || (test_row(player_buf, 3, 0x11) && test_row(player_buf, 4, 0x00)))
+			return 1;
+	}
+	return 0;
+}
+
+static int
+check_if_player_ui_is_active (void *player_buf)
+{
+	return (check_if_playermenu_is_active(player_buf)
+	 || check_if_sound_adjust_is_active(player_buf)
+	 || check_if_search_is_active(player_buf)
+	 || check_if_equalizer_is_active(player_buf));
 }
 
 #ifdef EMPEG_KNOB_SUPPORTED
@@ -2399,7 +2442,7 @@ hijack_handle_button(unsigned long button, unsigned long delay)
 					}
 				} else if (hijack_status == HIJACK_INACTIVE) {
 					int index = knobdata_index;
-					if (player_menu_is_active || player_sound_adjust_is_active)
+					if (player_ui_is_active)
 						index = 0;
 					hijacked = 1;
 					if (jiffies_since(ir_knob_down) < (HZ/2)) {	// short press?
@@ -2437,7 +2480,7 @@ hijack_handle_button(unsigned long button, unsigned long delay)
 			break;
 #endif // EMPEG_KNOB_SUPPORTED
 		case IR_RIO_MENU_PRESSED:
-			if (!player_menu_is_active) {
+			if (!player_ui_is_active) {
 				hijacked = 1; // hijack it and later send it with the release
 				ir_menu_down = jiffies ? jiffies : -1;
 			}
@@ -2447,7 +2490,7 @@ hijack_handle_button(unsigned long button, unsigned long delay)
 		case IR_RIO_MENU_RELEASED:
 			if (hijack_status != HIJACK_INACTIVE) {
 				hijacked = 1;
-			} else if (ir_menu_down && !player_menu_is_active) {
+			} else if (ir_menu_down && !player_ui_is_active) {
 				hijack_button_enq(&hijack_playerq, IR_RIO_MENU_PRESSED, 0);
 				if (button == ir_releasewait)
 					ir_releasewait = 0;
@@ -2511,7 +2554,7 @@ hijack_handle_button(unsigned long button, unsigned long delay)
 		case IR_RIO_4_PRESSED:
 		case IR_KW_4_RELEASED:
 		case IR_RIO_4_RELEASED:
-			if (hijack_status == HIJACK_INACTIVE && !player_menu_is_active) {
+			if (hijack_status == HIJACK_INACTIVE && !player_ui_is_active) {
 				if ((button & 0x80000000))
 					activate_dispfunc(quicktimer_display, timer_move);
 				hijacked = 1;
@@ -2715,7 +2758,7 @@ test_info_screenrow (unsigned char *buf, int row)
 // This routine covertly intercepts all display updates,
 // giving us a chance to substitute our own display.
 //
-static void	// invoked from empeg_display.c
+void	// invoked from empeg_display.c
 hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 {
 	unsigned char *buf = player_buf;
@@ -2796,6 +2839,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 #ifdef EMPEG_KNOB_SUPPORTED
 				 && hijack_dispfunc != knobmenu_display && hijack_dispfunc != voladj_prefix_display
 #endif // EMPEG_KNOB_SUPPORTED
+				 && hijack_dispfunc != quicktimer_display
 				){
 					if (hijack_dispfunc == forcepower_display)
 						activate_dispfunc(reboot_display, NULL);
@@ -2827,11 +2871,9 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 			break;
 	}
 	// Use screen-scraping to keep track of some of the player states:
-	player_menu_is_active = 0;
-	if (buf == player_buf && !hijack_overlay_geom) {
-		if (!(player_menu_is_active = check_if_player_menu_is_active(buf)))
-			player_sound_adjust_is_active = check_if_sound_adjust_is_active(buf);
-	}
+	player_ui_is_active = 0;
+	if (buf == player_buf && !hijack_overlay_geom)
+		player_ui_is_active = check_if_player_ui_is_active(buf);
 	restore_flags(flags);
 
 	// Prevent screen burn-in on an inactive/unattended player:
@@ -3728,7 +3770,7 @@ hijack_read_config_file (const char *path)
 
 // initial setup of hijack menu system
 void
-hijack_init (void)
+hijack_init (void)	// invoked from empeg_display.c
 {
 	static int initialized = 0;
 

@@ -844,7 +844,6 @@ out_release:
 	goto out_put;
 }
 
-
 /*
  *	Attempt to connect to a socket with the server address.  The address
  *	is in user space so we verify it is OK and move it to kernel space.

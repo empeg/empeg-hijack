@@ -86,7 +86,7 @@ ifdef CONFIG_EMPEG_STATE
 endif
 
 ifdef CONFIG_EMPEG_DISPLAY
-  L_OBJS	+= empeg_display.o
+  L_OBJS	+= empeg_display.o hijack.o kftpd.o
 endif
 
 ifdef CONFIG_EMPEG_DSP

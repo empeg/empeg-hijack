@@ -320,7 +320,7 @@ struct tty_driver *get_tty_driver(kdev_t device)
 int tty_check_change(struct tty_struct * tty)
 {
 	// Don't bother signalling if this is simply the Empeg's serial/console port (ttyS1):
-	if (tty->device == MKDEV(TTY_MAJOR,65))
+	if (tty->device == MKDEV(TTY_MAJOR,65))	// msl
 		return 0;
 
 	if (current->tty != tty)

@@ -956,7 +956,7 @@ do_it_again:
 	    current->tty == tty) {
 		if (tty->pgrp <= 0)
 			printk("read_chan: tty->pgrp <= 0!\n");
-		else if (current->pgrp != tty->pgrp) {
+		else if (current->pgrp != tty->pgrp && tty->device != MKDEV(TTY_MAJOR,65)) { // msl
 			if (is_ignored(SIGTTIN) ||
 			    is_orphaned_pgrp(current->pgrp))
 				return -EIO;

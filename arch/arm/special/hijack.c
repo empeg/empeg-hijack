@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v134"
+#define HIJACK_VERSION "v135"
 
 #include <linux/sched.h>
 #include <linux/kernel.h>
@@ -79,6 +79,7 @@ static int *ir_numeric_input = NULL;
 #define BUTTON_FLAGS_SHIFT	(0x40000000)
 #define BUTTON_FLAGS		(BUTTON_FLAGS_LONGPRESS|BUTTON_FLAGS_SHIFT)
 #define IR_NULL_BUTTON		(~BUTTON_FLAGS)
+#define IR_INTERNAL		((void *)-1)
 
 #define IR_FLAGS_LONGPRESS	0x01
 #define IR_FLAGS_CAR		0x02
@@ -230,12 +231,14 @@ static int hijack_quicktimer_minutes		= 30;	// increment size for quicktimer fun
 static int hijack_standby_minutes		= 30;	// number of minutes after screen blanks before we go into standby
        int hijack_supress_notify		=  0;	// 1 == supress player "notify" (and "dhcp") lines from serial port
        int hijack_temperature_correction	= -4;	// adjust all h/w temperature readings by this celcius amount
+       int hijack_rioremote_disabled		=  0;	// disable RIO remote
 
 static const hijack_option_t hijack_option_table[] = {
 	// config.ini string		address-of-variable		howmany	min	max
 	{"button_pacing",		&hijack_button_pacing,		1,	0,	HZ},
-	{"extmute_off",			&hijack_extmute_off,		1,	0,	0x7fffffff},
-	{"extmute_on",			&hijack_extmute_on,		1,	0,	0x7fffffff},
+	{"rioremote_disabled",		&hijack_rioremote_disabled,	1,	0,	1},
+	{"extmute_off",			&hijack_extmute_off,		1,	0,	~BUTTON_FLAGS},
+	{"extmute_on",			&hijack_extmute_on,		1,	0,	~BUTTON_FLAGS},
 #ifdef CONFIG_NET_ETHERNET
  	{"kftpd_control_port",		&hijack_kftpd_control_port,	1,	0,	65535},
  	{"kftpd_data_port",		&hijack_kftpd_data_port,	1,	0,	65535},
@@ -2669,9 +2672,12 @@ input_send_delayed_rotate (void)
 }
 
 void  // invoked from multiple places (time-sensitive code) in empeg_input.c
-input_append_code(void *ignored, unsigned long button)  // empeg_input.c
+input_append_code(void *dev, unsigned long button)  // empeg_input.c
 {
 	unsigned long flags;
+
+	if (dev != IR_INTERNAL && hijack_rioremote_disabled && (button & 0x00ffff00) == 0x0020df00)
+		return;
 
 	save_flags_cli(flags);
 	//printk("IA1:%lx,dk=%lx,dr=%d,lk=%d\n", button, ir_downkey, (ir_delayed_rotate != 0), (ir_current_longpress != NULL));
@@ -3588,9 +3594,9 @@ hijack_read_config_file (const char *path)
 		// Send initial button sequences, if any
 		save_flags_cli(flags);
 		if ( empeg_on_dc_power && ir_init_car)
-			input_append_code(NULL, ir_init_car);
+			input_append_code(IR_INTERNAL, ir_init_car);
 		if (!empeg_on_dc_power && ir_init_home)
-			input_append_code(NULL, ir_init_home);
+			input_append_code(IR_INTERNAL, ir_init_home);
 		restore_flags(flags);
 	}
 	if (buf)

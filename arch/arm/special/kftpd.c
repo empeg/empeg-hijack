@@ -212,7 +212,7 @@ static response_t response_table[] = {
 static int
 kftpd_send_response (server_parms_t *parms, int rcode)
 {
-	char		buf[64];
+	char		*buf = parms->tmp3;
 	int		len, rc;
 	response_t	*r = response_table;
 

@@ -18,13 +18,15 @@
 #include "fast_crc32.c"					// 10X the CPU usage of non-table-lookup version
 //extern unsigned long crc32 (char *buf, int len);	// drivers/net/smc9194_tifon.c (10X slower, 1KB smaller)
 
+#define IR_INTERNAL		((void *)-1)
+
 extern int hijack_reboot;										// hijack.c
-extern int do_remount(const char *dir,int flags,char *data);
+extern int do_remount(const char *dir,int flags,char *data);						// fs/super.c
 extern int hijack_supress_notify, hijack_reboot;							// hijack.c
 extern int get_number (unsigned char **src, int *target, unsigned int base, const char *nextchars);	// hijack.c
-extern void input_append_code(void *ignored, unsigned long button);					// hijack.c
+extern void input_append_code(void *dev, unsigned long button);						// hijack.c
 extern void show_message (const char *message, unsigned long time);					// hijack.c
-extern long sleep_on_timeout(struct wait_queue **p, long timeout);			// kernel/sched.c
+extern long sleep_on_timeout(struct wait_queue **p, long timeout);					// kernel/sched.c
 extern signed long schedule_timeout(signed long timeout);						// kernel/sched.c
 
 unsigned char notify_labels[] = "#AFGLMNSTV";	// 'F' must match next line
@@ -275,7 +277,7 @@ do_button (unsigned char *s, int raw)
 
 	if (*s && get_number(&s, &button, 16, NULL)) {
 		if (raw) {
-			input_append_code(NULL, button);
+			input_append_code(IR_INTERNAL, button);
 		} else {
 			struct wait_queue *wq = NULL;
 			unsigned int hold_time = 5;
@@ -285,10 +287,10 @@ do_button (unsigned char *s, int raw)
 			if (s[0] == '.' && s[1] == 'L')
 				hold_time = HZ+(HZ/5);
 			sleep_on_timeout(&wq, HZ/25);
-			input_append_code (NULL, button);
+			input_append_code (IR_INTERNAL, button);
 			if (button != IR_KNOB_LEFT && button != IR_KNOB_RIGHT) {
 				sleep_on_timeout(&wq, hold_time);
-				input_append_code (NULL, RELEASECODE(button));
+				input_append_code (IR_INTERNAL, RELEASECODE(button));
 			}
 		}
 	}

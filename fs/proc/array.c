@@ -226,7 +226,7 @@ struct inode_operations proc_profile_inode_operations = {
 };
 
 
-static int get_loadavg(char * buffer)
+int get_loadavg(char * buffer)
 {
 	int a, b, c;
 

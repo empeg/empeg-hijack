@@ -207,6 +207,8 @@ static unsigned long screen_saver = 0;
 int screen_blanker_timeout = 0;
 #define SCREEN_BLANKER_MULTIPLIER 30
 
+unsigned long jiffies_since(unsigned long past_jiffies);
+
 static void clear_hijacked_displaybuf (int color)
 {
 	color &= 3;
@@ -422,6 +424,46 @@ static void kfont_refresh (unsigned long ignored, int firsttime)
 	}
 }
 
+extern int empeg_readtherm(volatile unsigned int *timerbase, volatile unsigned int *gpiobase);
+extern int get_loadavg(char * buffer);
+static unsigned long vitals_lasttime = 0;
+
+static void vitals_refresh (unsigned long ignored, int firsttime)
+{
+	unsigned int *permset=(unsigned int*)(EMPEG_FLASHBASE+0x2000);
+	//unsigned int *modset=(unsigned int*)(EMPEG_FLASHBASE+0x2000);
+	//unsigned long *user_splash=(unsigned long*)(EMPEG_FLASHBASE+0xa000);
+	unsigned long flags;
+	unsigned char buf[80];
+	int temp, col;
+
+	if (firsttime || jiffies_since(vitals_lasttime) > HZ) {
+		clear_hijacked_displaybuf(COLOR0);
+		sprintf(buf, "HwRev:%02d, Build:%x", permset[0], permset[3]);
+		(void)draw_string(0, 0, buf, COLOR2);
+		sprintf(buf, "Flash:%dk, Ram:%dk", permset[9]==0xffffffff?1024:permset[9], permset[8]==0xffffffff?8192:permset[8]);
+		(void)draw_string(1, 0, buf, COLOR2);
+		save_flags_cli(flags);
+		temp = empeg_readtherm(&OSMR0,&GPLR);
+		restore_flags(flags);
+		/* Correct for negative temperatures (sign extend) */
+		if (temp & 0x80)
+			temp = -(128 - (temp ^ 0x80));
+		sprintf(buf, "Temperature: %dC/%dF", temp, temp * 212 / 100 + 32);
+		(void)draw_string(2, 0, buf, COLOR2);
+		(void)get_loadavg(buf);
+		temp = 0;
+		for (col = 0;; ++col) {
+			if (buf[col] == ' ' && ++temp == 3)
+				break;
+		}
+		buf[col] = '\0';
+		col = draw_string(3, 0, "LoadAvg: ", COLOR2);
+		(void)draw_string(3, col, buf, COLOR2);
+		vitals_lasttime = jiffies;
+	}
+}
+
 static void blanker_move (unsigned long ignored, int direction)
 {
 	screen_blanker_timeout = screen_blanker_timeout + direction;
@@ -460,8 +502,6 @@ static void blanker_refresh (unsigned long ignored, int firsttime)
 static short game_over, game_row, game_col, game_hdir, game_vdir, game_paddle_col, game_paddle_lastdir, game_speed, game_bricks;
 static unsigned long game_starttime, game_ball_lastmove, game_paddle_lastmove, game_animbase = 0, game_animtime, game_paused;
 
-unsigned long jiffies_since(unsigned long past_jiffies);
-
 static void game_finale (void)
 {
 	unsigned char *d,*s;
@@ -474,7 +514,7 @@ static void game_finale (void)
 	if (jiffies_since(game_ball_lastmove) < (HZ*2))
 		return;
 	if (game_bricks) {
-		(void)draw_string(1, 20, " Enhancements.V19 ", -COLOR3);
+		(void)draw_string(1, 20, " Enhancements.v20 ", -COLOR3);
 		(void)draw_string(2, 33, "by Mark Lord", COLOR3);
 		if (jiffies_since(game_ball_lastmove) < (HZ*3))
 			return;
@@ -630,6 +670,7 @@ static void game_refresh (unsigned long ignored, int firsttime)
 	game_starttime = jiffies;
 }
 
+
 static void menu_exit (unsigned long ignored, int firsttime)
 {
 	hijack_deactivate();
@@ -645,10 +686,10 @@ static void menu_move (unsigned long ignored, int direction)
 	menu_lastpress = jiffies;
 }
 
-#define MENU_MAX_SIZE 10
-static const char *menu_label  [MENU_MAX_SIZE] = {"Break-Out Game", "Volume Auto Adjust", "Screen Blanker", "Font Display", "[exit]", NULL,};
-static void (*menu_refreshfunc [MENU_MAX_SIZE])(unsigned long, int) = {game_refresh, voladj_refresh, blanker_refresh, kfont_refresh, menu_exit, NULL,};
-static void (*menu_movefunc    [MENU_MAX_SIZE])(unsigned long, int) = {game_move, voladj_move, blanker_move, NULL, NULL, NULL,};
+#define MENU_MAX_SIZE 15
+static const char *menu_label  [MENU_MAX_SIZE] = {"Break-Out Game", "Volume Auto Adjust", "Screen Blanker", "Font Display", "Vital Signs", "[exit]", NULL,};
+static void (*menu_refreshfunc [MENU_MAX_SIZE])(unsigned long, int) = {game_refresh, voladj_refresh, blanker_refresh, kfont_refresh, vitals_refresh, menu_exit, NULL,};
+static void (*menu_movefunc    [MENU_MAX_SIZE])(unsigned long, int) = {game_move, voladj_move, blanker_move, NULL, NULL, NULL, NULL,};
 static unsigned long menu_userdata[MENU_MAX_SIZE] = {0,};
 
 static void menu_refresh (unsigned long ignored, int firsttime)

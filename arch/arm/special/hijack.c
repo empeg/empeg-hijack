@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v306"
+#define HIJACK_VERSION	"v307"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -4795,7 +4795,7 @@ edit_config_ini (char *s, const char *lookfor)
 				if (*optend == '=')
 					++optend;
 				s = findchars(optend, "\r\n");
-				if (*s) {		// search for old copies of same command, and nuke'em
+				if (*s) {
 					// temporarily terminate the optname substring
 					char saved = *optend, *t = s;
 					*optend = '\0';
@@ -4848,7 +4848,7 @@ int i2c_read8  (unsigned char device, unsigned char command, unsigned char *data
 
 #define FAN_CONTROL_START	0x51	// start temperature conversions
 #define FAN_CONTROL_STOP	0x22	// stop temperature conversions
-#define FAN_CONTROL_RESET	0x54	// software power-on reset command
+#define FAN_CONTROL_RESET	0x54	// software power-on reset command (no command ACK!)
 #define FAN_CONTROL_HIGH	0xa1	// read/write thermostat "low" temperature
 #define FAN_CONTROL_LOW		0xa2	// read/write thermostat "low" temperature
 #define FAN_CONTROL_TEMP	0xaa	// read current temperature
@@ -4857,26 +4857,26 @@ int i2c_read8  (unsigned char device, unsigned char command, unsigned char *data
 static void
 set_fan_control (void)
 {
-	unsigned char tmp[2], cfg[1] = {0x02};	// 9-bit continuous mode, T-Out active high
+	unsigned char tmp[2];
 
-	if (i2c_write8(FAN_CONTROL_DEVADDR, FAN_CONTROL_STOP,  NULL, 0)) {		// stop conversions
+	if (i2c_write8(FAN_CONTROL_DEVADDR, FAN_CONTROL_STOP, NULL, 0)) {		// stop conversions
 		fan_control_enabled = 0;
 		printk("Fan control error; disabling\n");
 		show_message("Fan control error", 5*HZ);
 	} else {
-		i2c_write8(FAN_CONTROL_DEVADDR, FAN_CONTROL_CONFIG, cfg, sizeof(cfg));	// configure chip
+		tmp[0] = 0x02;	// 9-bit continuous mode, T-Out active high
+		i2c_write8(FAN_CONTROL_DEVADDR, FAN_CONTROL_CONFIG, tmp, 1);	// configure chip
 		tmp[0] = fan_control_low;
 		tmp[1] = 0;
-		i2c_write8(FAN_CONTROL_DEVADDR, FAN_CONTROL_LOW,    tmp, sizeof(tmp));	// set low temp threshold
+		i2c_write8(FAN_CONTROL_DEVADDR, FAN_CONTROL_LOW,    tmp, 2);	// set low temp threshold
 		tmp[0] = fan_control_high;
-		tmp[1] = 0;
-		i2c_write8(FAN_CONTROL_DEVADDR, FAN_CONTROL_HIGH,   tmp, sizeof(tmp));	// set high temp threshold
-		i2c_write8(FAN_CONTROL_DEVADDR, FAN_CONTROL_START,  NULL, 0);		// start conversions
-	#if 0
-		udelay(150000);
+		//tmp[1] = 0;
+		i2c_write8(FAN_CONTROL_DEVADDR, FAN_CONTROL_HIGH,   tmp, 2);	// set high temp threshold
+		i2c_write8(FAN_CONTROL_DEVADDR, FAN_CONTROL_START, NULL, 0);	// (re-)start conversions
+#if 0
 		i2c_read8(FAN_CONTROL_DEVADDR,  FAN_CONTROL_TEMP,   tmp, sizeof(tmp));	// read current temperature
 		printk("fan control temperature = %d\n", (int)tmp[0]);
-	#endif
+#endif
 	}
 }
 

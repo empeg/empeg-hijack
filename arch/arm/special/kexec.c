@@ -102,7 +102,12 @@ hijack_do_execve (void *arg)
 	fs->pwd = dget(init_task.fs->pwd);
 
 	// Close our copies of user's open files
-	for (i = 0; i < current->files->max_fds; i++ ) {
+#ifdef KEXEC_CAPTURE
+	for (i = parms->capture ? 0 : 3; i < current->files->max_fds; i++ ) {
+#else
+	// retain stdin(0), stdout(1), and stderr(2):
+	for (i = 3; i < current->files->max_fds; i++ ) {
+#endif
 		if (current->files->fd[i])
 			close(i);
 	}

@@ -575,7 +575,7 @@ hijack_check_for_tuner_loopback (void)
 	struct async_struct	info;
 	unsigned long		timestamp;
 	unsigned char		c;
-	const unsigned char	pattern = 0xa5;
+	const unsigned char	pattern = 0x5a;	// must be 7-bits only
 	extern unsigned long	jiffies_since(unsigned long);
 
 	info.port = rs_table[0].port;

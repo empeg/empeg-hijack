@@ -54,12 +54,12 @@ typedef struct hijack_geom_s {
 #define EMPEG_HIJACK_POLLBUTTONS	_IO(EMPEG_DISPLAY_MAGIC, 89)	// Read next IR code; EBUSY if none available
 #define EMPEG_HIJACK_INJECTBUTTONS	_IO(EMPEG_DISPLAY_MAGIC, 90)	// Inject button codes into player's input queue
 
+#define KFONT_HEIGHT			8				// font height is 8 pixels
+#define KFONT_WIDTH			6				// font width 5 pixels or less, plus 1 for spacing
 #define EMPEG_SCREEN_ROWS		32				// pixels
 #define EMPEG_SCREEN_COLS		128				// pixels
 #define EMPEG_SCREEN_BYTES		(EMPEG_SCREEN_ROWS * EMPEG_SCREEN_COLS / 2)
 #define EMPEG_TEXT_ROWS			(EMPEG_SCREEN_ROWS / KFONT_HEIGHT)
-#define KFONT_HEIGHT			8				// font height is 8 pixels
-#define KFONT_WIDTH			6				// font width 5 pixels or less, plus 1 for spacing
 
 // When using these colors from userland, or them with 0x80 first!
 // These can be the first byte of a string for EMPEG_HIJACK_DISPTEXT

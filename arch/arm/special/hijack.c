@@ -37,7 +37,8 @@ extern int empeg_inittherm(volatile unsigned int *timerbase, volatile unsigned i
 #define EMPEG_KNOB_SUPPORTED	// Mk2 and later have a front-panel knob
 #endif
 
-int  hijack_fsck_disabled = 0;			// used in fs/ext2/super.c
+int	hijack_fsck_disabled = 0;	// used in fs/ext2/super.c
+int	hijack_onedrive = 0;		// used in drivers/block/ide-probe.c
 
 static unsigned int PROMPTCOLOR = COLOR3, ENTRYCOLOR = -COLOR3;
 
@@ -239,17 +240,23 @@ static volatile short menu_item = 0, menu_size = 0, menu_top = 0;
 static struct sa_struct {
 	unsigned voladj_ac_power	: VOLADJ_BITS;		// 2 bits
 	unsigned blanker_timeout	: BLANKER_BITS;		// 6 bits
+
 	unsigned voladj_dc_power	: VOLADJ_BITS;		// 2 bits
 	unsigned maxtemp_threshold	: MAXTEMP_BITS;		// 5 bits
-	unsigned restore_visuals	: 1;
-	unsigned fsck_disabled		: 1;
-	unsigned byte3_leftover		: 5;
+	unsigned restore_visuals	: 1;			// 1 bit
+
+	unsigned fsck_disabled		: 1;			// 1 bit
+	unsigned onedrive		: 1;			// 1 bit
+	unsigned byte3_leftover		: 4;			// 5 bits
 	unsigned timer_action		: TIMERACTION_BITS;	// 1 bit
 	unsigned force_dcpower		: DCPOWER_BITS;		// 1 bit
+
 	unsigned knob_ac		: 1+KNOBDATA_BITS;	// 4 bits
 	unsigned knob_dc		: 1+KNOBDATA_BITS;	// 4 bits
-	unsigned byte5_leftover		: 8;
-	unsigned byte6_leftover		: 8;
+
+	unsigned byte5_leftover		: 8;			// 8 bits
+	unsigned byte6_leftover		: 8;			// 8 bits
+
 	unsigned menu_item		: MENU_BITS;		// 5 bits
 	unsigned blankerfuzz_amount	: BLANKERFUZZ_BITS;	// 3 bits
 } hijack_savearea;
@@ -360,6 +367,8 @@ const unsigned char kfont [1 + '~' - ' '][KFONT_WIDTH] = {  // variable width fo
 #define NOTIFY_MAX_LINES	8
 #define NOTIFY_MAX_LENGTH	64
 static char notify_data[NOTIFY_MAX_LINES][NOTIFY_MAX_LENGTH] = {{0,},};
+static const char notify_thread[] = "  serial_notify_thread.cpp";
+static const char dhcp_thread[] = "  dhcp_thread.cpp";
 
 int
 hijack_serial_notify (const unsigned char *s, int size)
@@ -368,7 +377,6 @@ hijack_serial_notify (const unsigned char *s, int size)
 	// "return 1" means "discard without sending"
 	//
 	// Note that printk() will probably not work from within this routine
-	//
 	static enum {want_title, want_data, want_eol} state = want_title;
 
 	switch (state) {
@@ -377,11 +385,8 @@ hijack_serial_notify (const unsigned char *s, int size)
 			// fall thru
 		case want_title:
 		{
-			static const char notify_thread[] = "  serial_notify_thread.cpp";
 			const int notify_len = sizeof(notify_thread) - 1;
-
-			static const char dhcp_thread[] = "  dhcp_thread.cpp";
-			const int dhcp_len = sizeof(dhcp_thread) - 1;
+			const int dhcp_len   = sizeof(dhcp_thread)   - 1;
 
 			if (size >= notify_len && !memcmp(s, notify_thread, notify_len)) {
 				state = want_data;
@@ -394,7 +399,6 @@ hijack_serial_notify (const unsigned char *s, int size)
 		}
 		case want_data:
 		{
-			int		i;
 			char		*line;
 			unsigned long	flags;
 
@@ -405,16 +409,9 @@ hijack_serial_notify (const unsigned char *s, int size)
 				if (size > (NOTIFY_MAX_LENGTH - 1))
 					size = (NOTIFY_MAX_LENGTH - 1);
 				if (size > 0) {
-					switch (*s) {
-						case 'S': i = 0; break; // state: 0=notplaying, 1=playing
-						case 'N': i = 1; break; // iNdex within playlist
-						case 'F': i = 2; break; // 0xFid
-						case 'T': i = 3; break; // Track name
-						case 'A': i = 4; break; // Artist
-						case 'G': i = 5; break; // Gendre
-						case '#': i = 6; break; // fid h:mm:ss
-						default:  i = 7; break; // ??
-					}
+					unsigned char i = 0, c = *s, labels[] = "SNFTAG# ";
+					labels[sizeof(labels)-1] = c;
+					for (i = 0; c != labels[i]; ++i);
 					line = notify_data[i];
 					save_flags_cli(flags);
 					memcpy(line, s, size);
@@ -604,8 +601,8 @@ draw_string (unsigned int rowcol, const unsigned char *s, int color)
 	unsigned short row = (rowcol & 0xffff), col = (rowcol >> 16);
 	unsigned char background, foreground;
 #ifdef ROUND_CORNERS
-	unsigned char firstchar;
 	int firstcol = (EMPEG_SCREEN_COLS*2), firstrow = 0;
+	unsigned char firstchar;
 #endif // ROUND_CORNERS
 
 	if (!s || !*s)
@@ -658,8 +655,7 @@ top:	if (row < EMPEG_SCREEN_ROWS) {
 static unsigned int
 draw_number (unsigned int rowcol, unsigned int number, const char *format, int color)
 {
-	unsigned char buf[32];
-	unsigned char saved;
+	unsigned char buf[31], saved;
 
 	sprintf(buf, format, number);
 	saved = kfont_spacing;
@@ -968,7 +964,7 @@ draw_temperature (unsigned int rowcol, int temp, int offset, int color)
 	return draw_string(rowcol, buf, color);
 }
 
-static int savearea_display_offset = 0;
+static unsigned int savearea_display_offset = 0;
 static unsigned char *last_savearea;
 static unsigned long *last_updated  = NULL;
 unsigned char **empeg_state_writebuf;	// initialized in empeg_state.c
@@ -1001,30 +997,29 @@ savearea_display (int firsttime)
 		rc = NEED_REFRESH;
 	}
 	if (rc == NEED_REFRESH) {
-		unsigned int offset, row = 0, rowcol = ROWCOL(0,0);
-		for (offset = savearea_display_offset & 0x7f; offset != ((savearea_display_offset + 32) & 0x7f);) {
-			int color = COLOR2;
-			unsigned char b = empeg_statebuf[offset];
+		unsigned int i, rowcol = ROWCOL(0,0), offset = savearea_display_offset;
+		for (i = 0; i < 32; ++i) {
 			unsigned long elapsed;
-			if (b != last_savearea[offset])
-				last_updated[offset] = jiffies ? jiffies : -1;
-			last_savearea[offset] = b;
-			if (last_updated[offset]) {
-				elapsed = jiffies_since(last_updated[offset]);
+			unsigned int addr = (offset + i) & 0x7f, color = COLOR2;
+			unsigned char b = empeg_statebuf[addr];
+			if (b != last_savearea[addr])
+				last_updated[addr] = jiffies ? jiffies : -1;
+			last_savearea[addr] = b;
+			if (last_updated[addr]) {
+				elapsed = jiffies_since(last_updated[addr]);
 				if (elapsed < (10*HZ))
 					color = (elapsed < (3*HZ)) ? -COLOR3 : COLOR3;
 				else
-					last_updated[offset] = 0;
+					last_updated[addr] = 0;
 			}
-			if ((offset & 7) == 0)
-				rowcol = draw_number(ROWCOL(row++,0), offset, "%02x:", COLOR1);
-			if ((offset & 1) == 0)
+			if (!(i & 7))
+				rowcol = draw_number(ROWCOL(i>>3,0), addr, "%02x:", COLOR1);
+			if (!(i & 1))
 				rowcol = draw_string(rowcol, " ", COLOR0);
 			rowcol = draw_number(rowcol, b, "%02X", color);
-			offset = (offset + 1) & 0x7f;
 		}
 	}
-	if (ir_selected) {	// not 100% effective, but good enough
+	if (ir_selected) {	// maybe not 100% effective, but not 100% critcal either
 		if (last_savearea) {
 			kfree(last_savearea);
 			last_savearea = NULL;
@@ -1198,6 +1193,28 @@ fsck_display (int firsttime)
 	(void)draw_string(ROWCOL(0,0), "Filesystem Check on Sync:", PROMPTCOLOR);
 	rowcol = draw_string(ROWCOL(2,0), "Periodic checking: ", PROMPTCOLOR);
 	(void)   draw_string(rowcol, hijack_fsck_disabled ? " Disabled " : " Enabled ", ENTRYCOLOR);
+	return NEED_REFRESH;
+}
+
+static void
+onedrive_move (int direction)
+{
+	hijack_onedrive = !hijack_onedrive;
+	empeg_state_dirty = 1;
+}
+
+static int
+onedrive_display (int firsttime)
+{
+	if (!firsttime && !hijack_last_moved)
+		return NO_REFRESH;
+	hijack_last_moved = 0;
+	clear_hijack_displaybuf(COLOR0);
+	(void)draw_string(ROWCOL(0,18), "Hard Disk Detection:", PROMPTCOLOR);
+	if (hijack_onedrive)
+		(void)   draw_string(ROWCOL(2,0), " One Drive only (fast boot) ", ENTRYCOLOR);
+	else
+		(void)   draw_string(ROWCOL(2,0), " One or Two Drives (slower) ", ENTRYCOLOR);
 	return NEED_REFRESH;
 }
 
@@ -1547,7 +1564,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v91 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v92 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1847,14 +1864,14 @@ calculator_display (int firsttime)
 static int
 reboot_display (int firsttime)
 {
-	static unsigned char left_pressed, right_pressed;
+	static unsigned short left_pressed, right_pressed;
 	unsigned long flags;
 	hijack_buttondata_t data;
 	int rc;
 
         if (firsttime) {
 		clear_hijack_displaybuf(COLOR0);
-		(void) draw_string(ROWCOL(0,0), "Press & hold Left/Right\n  buttons to reboot.\n\nAny other button aborts", PROMPTCOLOR);
+		(void) draw_string(ROWCOL(0,0), "Press & hold Left/Right\n  buttons to reboot.\n(or press 2 on the remote)\nAny other button aborts", PROMPTCOLOR);
 		left_pressed = right_pressed = 0;
 		hijack_buttonlist = intercept_all_buttons;
 		hijack_initq(&hijack_userq);
@@ -1870,10 +1887,14 @@ reboot_display (int firsttime)
 	if (hijack_button_deq(&hijack_userq, &data, 0)) {
 		switch (data.button) {
 			case IR_LEFT_BUTTON_PRESSED:
-				left_pressed++;
+				left_pressed = 1;
 				break;
 			case IR_RIGHT_BUTTON_PRESSED:
-				right_pressed++;
+				right_pressed = 1;
+				break;
+			case IR_KW_2_PRESSED:
+			case IR_RIO_2_PRESSED:
+				left_pressed = right_pressed = 1;
 				break;
 			default:
 				if ((data.button & 0x80000001) == 0) {
@@ -1956,6 +1977,7 @@ static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 	{" Filesystem Check on Sync ",	fsck_display,		fsck_move,		0},
 	{" Font Display ",		kfont_display,		NULL,			0},
 	{" Force DC/Car Mode ",		forcedc_display,	forcedc_move,		0},
+	{" Hard Disk Detection ",	onedrive_display,	onedrive_move,		0},
 	{" High Temperature Warning ",	maxtemp_display,	maxtemp_move,		0},
 #ifdef EMPEG_KNOB_SUPPORTED
 	{" Knob Press Redefinition ",	knobdata_display,	knobdata_move,		0},
@@ -3076,6 +3098,7 @@ hijack_save_settings (unsigned char *buf)
 		hijack_savearea.voladj_ac_power	= hijack_voladj_enabled;
 	hijack_savearea.blanker_timeout		= blanker_timeout;
 	hijack_savearea.maxtemp_threshold	= maxtemp_threshold;
+	hijack_savearea.onedrive		= hijack_onedrive;
 #ifdef EMPEG_KNOB_SUPPORTED
 {
 	unsigned int knob;
@@ -3115,6 +3138,7 @@ hijack_restore_settings (unsigned char *buf)
 	}
 	blanker_timeout			= hijack_savearea.blanker_timeout;
 	maxtemp_threshold		= hijack_savearea.maxtemp_threshold;
+	hijack_onedrive			= hijack_savearea.onedrive;
 #ifdef EMPEG_KNOB_SUPPORTED
 {
 	unsigned int knob;

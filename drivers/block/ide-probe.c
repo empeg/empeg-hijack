@@ -860,6 +860,7 @@ static int release_and_probe(int hwif)
 
 int ideprobe_init (void)
 {
+	extern int hijack_onedrive;
 	unsigned int index;
 	int probe[MAX_HWIFS];
 #ifdef CONFIG_SA1100_EMPEG
@@ -893,7 +894,7 @@ int ideprobe_init (void)
 			if (on_if0==1 && retries<15) {
 				retries=15;
 			}
-		} while(on_if0<2 && retries<20);  // change 2 -> 1 for single drive only
+		} while(on_if0 < (2 - hijack_onedrive) && retries < 20);
 
 		/* Initialise drives */
 		hwif_init(&ide_hwifs[0]);

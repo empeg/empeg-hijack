@@ -30,6 +30,7 @@
 #include <asm/arch/SA-1100.h>
 #include <asm/uaccess.h>
 #include <asm/delay.h>
+
 #include <asm/arch/hijack.h>
 #include <linux/empeg.h>
 

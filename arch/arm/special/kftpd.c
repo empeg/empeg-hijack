@@ -93,8 +93,8 @@ typedef struct server_parms_s {
 	char			rename_pending;		// bool
 	char			nocache;		// bool
 	char			show_dotfiles;		// bool
-	char			nodata;		// bool
-	char			spare2;
+	char			nodata;			// bool
+	char			method_head;		// bool
 	char			spare1;
 	char			spare0;
 	unsigned short		data_port;
@@ -759,7 +759,7 @@ khttpd_respond (server_parms_t *parms, int rcode, const char *title, const char 
 	static const char kttpd_response[] =
 		"HTTP/1.1 %d %s\r\n"
 		"Connection: close\r\n"
-		"Allow: GET\r\n"
+		"Allow: GET, HEAD\r\n"
 		"Content-Type: text/html\r\n\r\n"
 		"<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\">\r\n"
 		"<HTML><HEAD>\r\n"
@@ -1428,25 +1428,27 @@ send_file (server_parms_t *parms, char *path)
 				parms->end_offset = filesize - 1;
 		}
 		if (!parms->use_http || !khttp_send_file_header(parms, path, filesize, xfer.buf, xfer.buf_size)) {
-			filepos = parms->start_offset;
-			do {
-				int read_size = xfer.buf_size;
-				if (parms->end_offset != -1) {
-					size = parms->end_offset + 1 - filepos;
-					if (size > 0 && size < read_size)
-						read_size = size;
-				}
-				schedule(); // give the music player a chance to run
-				size = read(xfer.fd, xfer.buf, read_size);
-				filepos += size;
-				if (size < 0) {
-					printk("%s: read() failed; rc=%d\n", parms->servername, size);
-					response = 451;
-				} else if (size && size != ksock_rw(parms->datasock, xfer.buf, size, -1)) {
-					response = 426;
-					break;
-				}
-			} while (size > 0);
+			if (!parms->method_head) {
+				filepos = parms->start_offset;
+				do {
+					int read_size = xfer.buf_size;
+					if (parms->end_offset != -1) {
+						size = parms->end_offset + 1 - filepos;
+						if (size > 0 && size < read_size)
+							read_size = size;
+					}
+					schedule(); // give the music player a chance to run
+					size = read(xfer.fd, xfer.buf, read_size);
+					filepos += size;
+					if (size < 0) {
+						printk("%s: read() failed; rc=%d\n", parms->servername, size);
+						response = 451;
+					} else if (size && size != ksock_rw(parms->datasock, xfer.buf, size, -1)) {
+						response = 426;
+						break;
+					}
+				} while (size > 0);
+			}
 		}
 	}
 	cleanup_file_xfer(parms, &xfer);
@@ -1961,12 +1963,16 @@ khttpd_handle_connection (server_parms_t *parms)
 	buf[size] = '\0';
 	if (parms->verbose > 1)
 		printk(KHTTPD": request_header = \"%s\"\n", buf);
-
-	if (strxcmp(buf, "GET ", 1) || !buf[4]) {
+	if (!strxcmp(buf, "GET ", 1) && buf[4]) {
+		path = buf + 4;
+	} else if (!strxcmp(buf, "HEAD ", 1) && buf[5]) {
+		parms->method_head = 1;
+		path = buf + 5;
+	} else {
 		khttpd_respond(parms, 405, "Method Not Allowed", "Server only supports GET");
 		return;
 	}
-	p = path = &buf[4];
+	p = path;
 	// find path delimiter
 	while ((c = *p) && c != ' ' && c != '\r' && c != '\n')
 		++p;

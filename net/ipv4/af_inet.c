@@ -511,7 +511,7 @@ static int inet_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 	    (addr_len < sizeof(struct sockaddr_in))	||
 	    (sk->num != 0))
 		return -EINVAL;
-	
+		
 	chk_addr_ret = inet_addr_type(addr->sin_addr.s_addr);
 	if (addr->sin_addr.s_addr != 0 && chk_addr_ret != RTN_LOCAL &&
 	    chk_addr_ret != RTN_MULTICAST && chk_addr_ret != RTN_BROADCAST) {

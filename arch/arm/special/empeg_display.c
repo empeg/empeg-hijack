@@ -139,16 +139,7 @@
 #include <asm/uaccess.h>
 #include <asm/arch/empegcar.h>	// for EMPEG_FLASHBASE
 
-#ifdef NO_ANIMATION
-/* The Rio logo for the splash screen */
-#include "rio_logo.h"
-/* The empeg logo for the splash screen: includes tux :) */
-#include "empeg_logo.h"
-#else
-/* Animations for both empeg and rio players. */
-#include "empeg_ani.h"
-#include "rio_ani.h"
-#endif
+#include "hijack_ani.h"
 
 /* No hard disk found image */
 #include "nohd_img.h"
@@ -818,20 +809,7 @@ static void handle_splash(struct display_dev *dev)
 		logo_type = LOGO_EMPEG;
 	}
 	
-#ifdef NO_ANIMATION
-	/* Load splash screen image */
-	if ((logo_type & LOGO_MASK) == LOGO_RIO)
-		display_splash(dev, &rio_logo);
-	else
-		display_splash(dev, &empeg_logo);
-	animation_start = jiffies;
-#else
-	/* Display splash screen animation */
-	if ((logo_type & LOGO_MASK) == LOGO_RIO) {
-		ani_ptr=(unsigned long*)rio_ani;
-	} else {
-		ani_ptr=(unsigned long*)empeg_ani;
-	}
+	ani_ptr=(unsigned long*)hijack_ani;
 {
 	// look for custom animation at tail end of kernel flash partition:
 	unsigned char *p = (unsigned char *)(EMPEG_FLASHBASE + 0x10000 + 0xa0000 - 4);
@@ -849,7 +827,6 @@ static void handle_splash(struct display_dev *dev)
 	animation_start=animation_timer.expires;
 	animation_time=HZ;
 	while(*ani_ptr++) animation_time+=(HZ/ANIMATION_FPS);
-#endif
 
 	/* Setup timer to display user's image (if present) after the animation finishes */
 	if (logo_type & LOGO_CUSTOM) {
@@ -1073,10 +1050,10 @@ int display_ioctl(struct inode *inode, struct file *filp, unsigned int cmd,
 		} else {
 			/* Do this first in case powerfail triggers */
 			dev->power = FALSE;
-
+			
 			/* Turning display off */
 			empeg_displaypower(0);
-
+			
 			/* Set standby LED mode */
 		}
 		break;

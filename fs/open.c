@@ -759,34 +759,17 @@ asmlinkage int sys_open(const char * filename, int flags, int mode)
 {
 	char * tmp;
 	int fd, error;
-	int dancefile = 0;
 
 	tmp = getname(filename);
 	fd = PTR_ERR(tmp);
 	if (!IS_ERR(tmp)) {
-
-		// random selection of dance files by Hijack
-		const char *path = tmp;
-		extern char *hijack_pick_dancefile(const char *);
-		extern int hijack_glob_match (const char *n, const char *p);
-		if (!strcmp(current->comm, "player") && hijack_glob_match(tmp, "/empeg/lib/visuals/*dance.raw"))
-			dancefile = 1;
-try_again:
-		if (dancefile)
-			path = hijack_pick_dancefile(tmp);
-
 		lock_kernel();
 		fd = get_unused_fd();
 		if (fd >= 0) {
-			struct file * f = filp_open(path, flags, mode);
+			struct file * f = filp_open(tmp, flags, mode);
 			error = PTR_ERR(f);
-			if (IS_ERR(f)) {
-				if (dancefile && error == -ENOENT) {
-					printk(" -- dance file not found\n");
-					goto try_again;
-				}
+			if (IS_ERR(f))
 				goto out_error;
-			}
 			fd_install(fd, f);
 		}
 out:

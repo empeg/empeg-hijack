@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v237"
+#define HIJACK_VERSION	"v238"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -2749,7 +2749,7 @@ check_if_equalizer_is_active (const unsigned char *buf)
 	const unsigned char *row = buf + ROWOFFSET(31);
 	int i;
 
-	for (i = 9; i >= 0; --i) {
+	for (i = 4; i >= 0; --i) {
 		if ((*row++ & 0x0f) || (*row++ & 0x11) != 0x11 || (*row++ & 0x11) != 0x11)
 			return 0;	// equalizer settings not displayed
 	}
@@ -4190,34 +4190,6 @@ hijack_glob_match (const char *n, const char *p)
 	return (!(*n | *p));
 }
 
-#define HIJACK_MAX_DANCES 16	// must be <= than 32
-static int   hijack_num_dances = 0, hijack_dancemap = 0;
-static char *hijack_dances[HIJACK_MAX_DANCES] = {NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL};
-
-const char *
-hijack_pick_dancefile (const char *dance)
-{
-	static unsigned int seed = 0;
-	int i, num;
-
-	if (hijack_num_dances > 0) {
-		if (!seed)
-			seed = (jiffies ^ CURRENT_TIME);
-		seed = (seed * 65339) & 0x7fffffff;
-		num = seed % hijack_num_dances;
-		for (i = 0; i < HIJACK_MAX_DANCES; ++i) {
-			if (!(hijack_dancemap & (1<<i)) && !num--) {
-				hijack_dancemap |= (1<<i);	// mark slot as "used"
-				--hijack_num_dances;
-				dance = hijack_dances[i];
-				break;
-			}
-		}
-	}
-	printk("Loading dancefile: \"%s\"\n", dance);
-	return dance;
-}
-
 static int
 get_option_vals (int syntax_only, unsigned char **s, const hijack_option_t *opt)
 {
@@ -4279,7 +4251,6 @@ hijack_get_options (unsigned char *buf)
 	int errors;
 	unsigned char *s;
 
-	hijack_num_dances = hijack_dancemap = 0;
 	// look for [kenwood] disabled=0
 	kenwood_disabled = 0;
 	if ((s = find_header(buf, "[kenwood]"))) {
@@ -4300,30 +4271,6 @@ hijack_get_options (unsigned char *buf)
 		char *line = s;
 		if (*s == ';')
 			goto nextline;
-		if (!strxcmp(s, "dance=", 1)) {
-			unsigned char *name = s += 6;
-			s = findchars(s, " \n;\r");
-			if (s != name && hijack_num_dances < HIJACK_MAX_DANCES) {
-				int size;
-				char *dance, *prefix, saved = *s;
-				*s = '\0';
-				prefix = (name[0] == '/') ? "" : "/empeg/lib/visuals/";
-				size = strlen(name) + strlen(prefix) + 1;
-				dance = hijack_dances[hijack_num_dances];
-				if (dance && (strlen(dance) + 1) != size) {
-					kfree(dance);
-					dance = NULL;
-				}
-				if (!dance)
-					dance = kmalloc(size, GFP_KERNEL);
-				if (dance) {
-					sprintf(dance, "%s%s", prefix, name);
-					hijack_dances[hijack_num_dances++] = dance;
-				}
-				*s = saved;
-				goto nextline;
-			}
-		}
 		if (!strxcmp(s, menu_delete, 1)) {
 			unsigned char *label = s += sizeof(menu_delete)-1;
 			s = findchars(s, "\n;\r");

@@ -239,7 +239,6 @@ static void state_getflashtype(void)
 }
 
 extern int voladj_enabled;
-void enable_disable_voladj (int on_off);
 
 static int state_fetch(unsigned char *buffer)
 {
@@ -327,7 +326,7 @@ static int state_fetch(unsigned char *buffer)
 	   unixtime: set it */
 	// We steal the LS-bit to store the voladj state
 	ttime = *((unsigned int*)buffer);
-	enable_disable_voladj(ttime & 1);
+	voladj_enabled = (ttime & 1);
 	ttime &= ~1;
 	
 	if (empeg_hardwarerevision()<6) {

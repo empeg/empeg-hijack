@@ -510,200 +510,7 @@ static void display_queue_add(struct display_dev *dev)
 
 }
 
-// Empeg-Pong game, by Mark Lord <mlord@pobox.com>
-//
-#define GAME_ROWS (EMPEG_SCREEN_HEIGHT)
-#define GAME_COLS (EMPEG_SCREEN_WIDTH*EMPEG_SCREEN_BPP/8)
-#define GAME_VBOUNCE 0xff
-#define GAME_BRICKS 0xee
-#define GAME_BRICKS_ROW 5
-#define GAME_HBOUNCE 0x77
-#define GAME_BALL 0xff
-#define GAME_OVER 0x11
-#define GAME_PADDLE_SIZE 8
-
-static unsigned char game_buffer[GAME_ROWS][GAME_COLS];
-static short game_over, game_row, game_col, game_hdir, game_vdir, game_paddle_col, game_paddle_lastdir, game_speed, game_bricks;
-static unsigned long game_starttime, game_ball_lastmove, game_paddle_lastmove, game_animbase = 0, game_animtime;
-
-// These are also used by empeg_input.c
-unsigned int game_is_active = 0, game_knob_down, game_left_down, game_right_down, game_select_count = 0, game_paused;
-
-static void game_start (void)
-{
-	int i;
-	game_is_active = 1;
-	memset(game_buffer,0,EMPEG_SCREEN_SIZE);
-	game_paddle_col = GAME_COLS / 2;
-	for (i = 0; i < GAME_COLS; ++i) {
-		game_buffer[0][i] = GAME_VBOUNCE;
-		game_buffer[GAME_ROWS-1][i] = GAME_OVER;
-		game_buffer[GAME_BRICKS_ROW][i] = GAME_BRICKS;
-	}
-	for (i = 0; i < GAME_ROWS; ++i)
-		game_buffer[i][0] = game_buffer[i][GAME_COLS-1] = GAME_HBOUNCE;
-	memset(&game_buffer[GAME_ROWS-3][game_paddle_col],GAME_VBOUNCE,GAME_PADDLE_SIZE);
-	game_hdir = 1;
-	game_vdir = 1;
-	game_row = 6;
-	game_col = jiffies % GAME_COLS;
-	if (game_buffer[game_row][game_col] == GAME_HBOUNCE)
-		game_col = game_col ? GAME_COLS - 1 : 1;
-	game_ball_lastmove = jiffies;
-	game_bricks = GAME_COLS - 2;
-	game_over = 0;
-	game_paused = 0;
-	game_speed = 16;
-	game_animtime = 0;
-	game_starttime = jiffies;
-}
-unsigned long jiffies_since(unsigned long past_jiffies);
-static void game_finale (void)
-{
-	unsigned char *d,*s;
-	int a;
-	unsigned int *frameptr=(unsigned int*)game_animbase;
-	static int framenr, frameadj;
-
-	// freeze the display for two seconds, so user knows game is over
-	if (jiffies_since(game_ball_lastmove) < (HZ*2))
-		return;
-
-	// just exit if the user lost
-	if (game_animbase == 0 || game_bricks > 0) {
-		game_is_active = 0;
-		return;
-	}
-
-	// persistence pays off with a special reward
-	if (jiffies_since(game_animtime) < (HZ/(ANIMATION_FPS - 2)))
-		return;
-
-	if (game_animtime == 0) { // first frame?
-		framenr = 0;
-		frameadj = 1;
-	} else if (framenr < 0) {
-		game_is_active = 0;
-		return;
-	} else if (!frameptr[framenr]) {
-		frameadj = -1;  // play it again, backwards
-		framenr += frameadj;
-	}
-	s=(unsigned char*)(game_animbase+frameptr[framenr]);
-	d = (unsigned char *)game_buffer;
-	for(a=0;a<2048;a+=2) {
-		*d++=((*s&0xc0)>>2)|((*s&0x30)>>4);
-		*d++=((*s&0x0c)<<2)|((*s&0x03));
-		s++;
-	}
-	framenr += frameadj;
-	game_animtime = jiffies ? jiffies : 1;
-}
-
-// Invoked from empeg_input.c
-void game_move_right (void)
-{
-	unsigned char *paddlerow = game_buffer[GAME_ROWS-3];
-	int i = 3;
-	unsigned long flags;
-	save_flags_cli(flags);
-	while (i-- > 0) {
-		if (game_paddle_col < (GAME_COLS - GAME_PADDLE_SIZE - 1)) {
-			paddlerow[game_paddle_col] = 0;
-			if (paddlerow[game_paddle_col + GAME_PADDLE_SIZE] != 0)
-				--game_row; // scoop up the ball
-			paddlerow[game_paddle_col++ + GAME_PADDLE_SIZE] = GAME_VBOUNCE;
-			game_paddle_lastmove = jiffies;
-			game_paddle_lastdir = 1;
-		}
-	}
-	restore_flags(flags);
-}
-
-// Invoked from empeg_input.c
-void game_move_left (void)
-{
-	unsigned char *paddlerow = game_buffer[GAME_ROWS-3];
-	int i = 3;
-	unsigned long flags;
-	save_flags_cli(flags);
-	while (i-- > 0) {
-		if (game_paddle_col > 1) {
-			paddlerow[--game_paddle_col + GAME_PADDLE_SIZE] = 0;
-			if (paddlerow[game_paddle_col] != 0)
-				--game_row; // scoop up the ball
-			paddlerow[game_paddle_col] = GAME_VBOUNCE;
-			game_paddle_lastmove = jiffies;
-			game_paddle_lastdir = -1;
-		}
-	}
-	restore_flags(flags);
-}
-
-static void game_nuke_brick (short row, short col)
-{
-	if (col > 0 && col < GAME_COLS && game_buffer[row][col] == GAME_BRICKS) {
-		game_buffer[row][col] = 0;
-		if (--game_bricks <= 0)
-			game_over = 1;
-	}
-}
-
-static void game_move_ball (void)
-{
-	unsigned long flags;
-
-	if (game_over) {
-		game_finale();
-		return;
-	}
-	save_flags_cli(flags);
-	if (game_left_down && jiffies_since(game_left_down) >= (HZ/15)) {
-		game_left_down = jiffies ? jiffies : 1;
-		game_move_left();
-	}
-	if (game_right_down && jiffies_since(game_right_down) >= (HZ/15)) {
-		game_right_down = jiffies ? jiffies : 1;
-		game_move_right();
-	}
-	// Yeah, I know, this allows minor cheating.. but some folks may crave for it
-	if (game_paused || (jiffies_since(game_ball_lastmove) < (HZ/game_speed))) {
-		restore_flags(flags);
-		return;
-	}
-	game_ball_lastmove = jiffies;
-	game_buffer[game_row][game_col] = 0;
-	game_row += game_vdir;
-	game_col += game_hdir;
-	if (game_buffer[game_row][game_col] == GAME_HBOUNCE) {
-		// need to bounce horizontally
-		game_hdir = 0 - game_hdir;
-		game_col += game_hdir;
-	}
-	if (game_row == GAME_BRICKS_ROW) {
-		game_nuke_brick(game_row,game_col);
-		game_nuke_brick(game_row,game_col-1);
-		game_nuke_brick(game_row,game_col+1);
-	}
-	if (game_buffer[game_row][game_col] == GAME_VBOUNCE) {
-		// need to bounce vertically
-		game_vdir = 0 - game_vdir;
-		game_row += game_vdir;
-		// if we hit a moving paddle, adjust the ball speed
-		if (game_row > 1 && (game_ball_lastmove - game_paddle_lastmove) <= (HZ/10)) {
-			if (game_paddle_lastdir == game_hdir) {
-				if (game_speed < (HZ/2))
-					game_speed += 6;
-			} else {
-				game_speed = (game_speed > 14) ? game_speed - 3 : 11;
-			}
-		}
-	}
-	if (game_buffer[game_row][game_col] == GAME_OVER)
-		game_over = 1;
-	game_buffer[game_row][game_col] = GAME_BALL;
-	restore_flags(flags);
-}
+#include "hijack.c"
 
 /* Display the current top of queue. If there isn't anything in the
    queue then just re-use the last one. */
@@ -711,8 +518,8 @@ static void game_move_ball (void)
 void display_queue_draw(struct display_dev *dev)
 {
 	unsigned long flags;
-	save_flags_cli(flags);
 	if (dev->queue_used) {
+		save_flags_cli(flags);
 		DEBUGK("Spare in queue. Removing one.\n");
 		DEBUGK("Before: rp=%d, wp=%d, free=%d, used=%d.\n",
 		       dev->queue_rp,
@@ -727,22 +534,11 @@ void display_queue_draw(struct display_dev *dev)
 		       dev->queue_wp,
 		       dev->queue_free,
 		       dev->queue_used);
+		restore_flags(flags);
 	}
-	if (!game_is_active) {
-		if (game_select_count >= 3 || (game_knob_down && jiffies_since(game_knob_down) >= HZ)) {
-			game_select_count = 0;
-			game_is_active = 1;
-			game_start();
-		}
-	}
-	restore_flags(flags);
-	if (game_is_active) {
-		game_move_ball();
-		display_blat(dev, (unsigned char *)game_buffer);
-	} else {
-		DEBUGK("Blatting from queue entry %d.\n", dev->queue_rp);
+	DEBUGK("Blatting from queue entry %d.\n", dev->queue_rp);
+	if (!hijacked_display(dev))
 		display_blat(dev, dev->software_queue + dev->queue_rp * EMPEG_SCREEN_SIZE);
-	}
 
 	/* Wake up anyone polling on us */
 	wake_up_interruptible(&dev->wq);

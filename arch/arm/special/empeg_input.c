@@ -215,11 +215,7 @@ unsigned long jiffies_since(unsigned long past_jiffies)
 	}
 }
 
-extern void enable_disable_voladj(int);
-extern void game_move_right(void);
-extern void game_move_left(void);
-extern unsigned int game_is_active, game_knob_down, game_left_down, game_right_down, game_select_count, game_paused;
-unsigned long bottom_button_down = 0;
+extern int hijacked_input(unsigned long);
 
 static void input_append_code(struct input_dev *dev, input_code data)
 {
@@ -227,100 +223,10 @@ static void input_append_code(struct input_dev *dev, input_code data)
 	   sure that noone else is fiddling with stuff while we
 	   do it. */
 	input_code *new_wp;
-	static input_code prev_pressed = 0;
 	unsigned long flags;
 
-	//printk("Button: %08x\n",data);
-	switch (data) {
-		case 0x00b9461e: // IR_KW_CD_PRESSED
-			// ugly Kenwood remote hack: press CD 3 times in a row to start game
-			if (prev_pressed == data)
-				++game_select_count;
-			else
-				game_select_count = 1;
-			break;
-		case 0x0020df0b: // IR_RIO_SELECTMODE_PRESSED
-		case 0x00000008: // IR_KNOB_PRESSED
-			game_knob_down = jiffies ? jiffies : 1;
-			if (game_is_active)
-				return;
-			break;
-		case 0x8020df0b: // IR_RIO_SELECTMODE_RELEASED
-		case 0x00000009: // IR_KNOB_RELEASED
-			game_knob_down = 0;
-			if (game_is_active)
-				return;
-			break;
-		case 0x0000000a: // IR_KNOB_RIGHT
-			if (game_is_active) {
-				game_move_right();
-				return;
-			}
-			break;
-		case 0x0000000b: // IR_KNOB_LEFT
-			if (game_is_active) {
-				game_move_left();
-				return;
-			}
-			break;
-		case 0x00b9460a: // IR_KW_PREVTRACK_PRESSED
-		case 0x0020df10: // IR_RIO_PREVTRACK_PRESSED
-			game_left_down = jiffies ? jiffies : 1;
-			if (game_is_active)
-				return;
-			break;
-		case 0x80b9460a: // IR_KW_PREVTRACK_RELEASED
-		case 0x8020df10: // IR_RIO_PREVTRACK_RELEASED
-			game_left_down = 0;
-			if (game_is_active)
-				return;
-			break;
-		case 0x00b9460b: // IR_KW_NEXTTRACK_PRESSED
-		case 0x0020df11: // IR_RIO_NEXTTRACK_PRESSED
-			game_right_down = jiffies ? jiffies : 1;
-			if (game_is_active)
-				return;
-			break;
-		case 0x80b9460b: // IR_KW_NEXTTRACK_RELEASED
-		case 0x8020df11: // IR_RIO_NEXTTRACK_RELEASED
-			game_right_down = 0;
-			if (game_is_active)
-				return;
-			break;
-		case 0x00b9460e:// IR_KW_PAUSE_PRESSED
-		case 0x0020df16: // IR_RIO_PAUSE_PRESSED
-			if (game_is_active) {
-				game_paused = !game_paused;
-				return;
-			}
-			break;
-		case 0x80b9460e: // IR_KW_PAUSE_RELEASED
-		case 0x8020df16: // IR_RIO_PAUSE_RELEASED
-			if (game_is_active)
-				return;
-			break;
-		case 0x00000006: // IR_BOTTOM_BUTTON_PRESSED
-			bottom_button_down = jiffies ? jiffies : 1;
-			break;
-		case 0x00000007: // IR_BOTTOM_BUTTON_RELEASED
-			bottom_button_down = 0;
-			break;
-		case 0x00000004: // IR_LEFT_BUTTON_PRESSED
-			if (bottom_button_down) {
-				enable_disable_voladj(0);
-				return;
-			}
-			break;
-		case 0x00000002: // IR_RIGHT_BUTTON_PRESSED
-			if (bottom_button_down) {
-				enable_disable_voladj(1);
-				return;
-			}
-			break;
-	}
-	if (!(data & 0x80000000))
-		prev_pressed = data;
-
+	if (hijacked_input(data))
+		return;
 	save_flags_cli(flags);
 	
 	new_wp = dev->buf_wp + 1;

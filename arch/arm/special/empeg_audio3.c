@@ -412,6 +412,7 @@ int voladj_check(
   unsigned short cur_sample;
   unsigned short max_la_sample;
 
+  int quickadjust = 0;
   int num_samples = state->buf_size / 2;
   int i, outputvalue;
 
@@ -733,14 +734,7 @@ static struct file_operations audio_fops =
 	open:		empeg_audio_open,
 };
 
-
-extern int getbitset(void);
 int voladj_enabled;
-void enable_disable_voladj (int on_off)
-{
-	voladj_enabled = on_off ? 1 : 0;
-	printk("voladj hack %s\n", on_off ? "enabled" : "disabled");
-}
 
 int __init empeg_audio_init(void)
 {
@@ -775,7 +769,6 @@ int __init empeg_audio_init(void)
             30,                             /* real_silence */
             80                              /* fake_silence */
             );
-	//enable_disable_voladj(getbitset() & EMPEG_POWER_FLAG_DC);
 
 	/* Set up queue: note that two buffers could be DMA'ed any any time,
 	   and so we use two fewer marked as "free" */
@@ -843,7 +836,6 @@ int empeg_audio_open(struct inode *inode, struct file *file)
 
         return 0;
 }
-
 
 static int empeg_audio_write(struct file *file,
 			     const char *buffer, size_t count, loff_t *ppos)
@@ -913,27 +905,29 @@ static int empeg_audio_write(struct file *file,
 		dev->stats.samples += AUDIO_BUFFER_SIZE;
 		count -= AUDIO_BUFFER_SIZE;
 
-		if (voladj_enabled) {
-                	dev->voladj.desired_multiplier = voladj_check( &(dev->voladj), 
-                        	(short *) (dev->buffers[thisbufind].data) );
-		}
+              if (voladj_enabled) {
+                dev->voladj.desired_multiplier = voladj_check( &(dev->voladj), 
+                        (short *) (dev->buffers[thisbufind].data) );
+              }
 #if AUDIO_DEBUG_VERBOSE
 	printk("mults: des=%x,out=%x\n", dev->voladj.desired_multiplier, dev->voladj.output_multiplier);
 #endif
+
+
 		save_flags_cli(flags);
-		if (voladj_enabled) {
-	                if (dev->used > 1) {
-	                    dev->used--;
-	                    restore_flags(flags);
-	                    voladj_scale( &(dev->voladj), 
-	                        dev->voladj.desired_multiplier,
-	                        (short *) (dev->buffers[ dev->prevhead ].data) );
-	                    save_flags_cli(flags);
-	                    dev->used++;
-	                } else {
-	                    dev->voladj.output_multiplier = 1 << MULT_POINT;
-	                }
+              if (voladj_enabled) {
+                if (dev->used > 1) {
+                    dev->used--;
+                    restore_flags(flags);
+                    voladj_scale( &(dev->voladj), 
+                        dev->voladj.desired_multiplier,
+                        (short *) (dev->buffers[ dev->prevhead ].data) );
+                    save_flags_cli(flags);
+                    dev->used++;
+                } else {
+                    dev->voladj.output_multiplier = 1 << MULT_POINT;
                 }
+              }
 
 		/* Now the buffer is ready, we can tell the IRQ section
 		   there's new data */

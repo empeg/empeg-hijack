@@ -629,31 +629,20 @@ static _INLINE_ void transmit_chars(struct async_struct *info, int *intr_done)
 #ifdef CONFIG_SMC9194_TIFON	// not present on Mk1 models
 extern unsigned long	jiffies_since(unsigned long);
 
-static unsigned char
-hijack_chk_serial (struct async_struct *infop)
-{
-	unsigned char c = 0;
-
-	if ((serial_inp(infop, UTSR1) & UTSR1_RNE)) {
-		c = serial_inp(infop, UART_RX);
-		//printk("Hijack: got 0x%02x from tuner port\n", (unsigned int)c);
-	}
-	return c;
-}
-
 static int
-hijack_read_serial (struct async_struct *infop, unsigned long interval)
+hijack_read_serial (volatile unsigned long *tuner_port, unsigned long interval)
 {
-	unsigned long		timestamp = jiffies;
+	unsigned long	timestamp = jiffies;
 
 	while (jiffies_since(timestamp) < interval) {
-		unsigned char c = hijack_chk_serial(infop);
-		if (c) {
-			//printk("Hijack: read 0x%02x\n", c);
+		if (tuner_port[UTSR1] & UTSR1_RNE) {
+			int c = tuner_port[UART_RX];
+			//printk("hijack_read_serial: 0x%02x\n", c);
 			return c;
 		}
 		schedule();
 	}
+	//printk("hijack_read_serial: timed-out\n");
 	return -1;	// timed out
 }
 
@@ -661,15 +650,14 @@ void
 hijack_read_tuner_id (unsigned int *loopback, unsigned int *tuner_id)
 {
 	int			rc;
-	struct async_struct	info;
 	const unsigned char	pattern = 0x5a;
-
-	info.port = rs_table[0].port;
+	volatile unsigned long	*tuner_port = (unsigned long *)&Ser1UTCR0;
 
 	// This data is from a trace of change_speed() as invoked from the player software:
 	//
 	// port=Ser1UTCR0, cflag=0x4be, CSIZE=1, CSTOPB=0, PARENB=0, PARODD=0
 	// baud=19200, baud_base=230400, quot=12, timeout=2, flags=0xb2000040, cval=0xa, IER=0xb
+	//
 	// UTCR3 <- 0xb
 	// UTCR3 <- 0x0
 	// UTCR0 <- 0xa
@@ -681,46 +669,44 @@ hijack_read_tuner_id (unsigned int *loopback, unsigned int *tuner_id)
 	// We want to do (almost) the same thing here, but inline, so as not to enable
 	// interrupts or anything else.  We just want the basic bare metal to work.
 	//
-	//serial_outp(&info, UTCR3, 0x0b);
-	serial_outp(&info, UTCR3, 0x00);
-	serial_outp(&info, UTCR0, 0x0a);
-	serial_outp(&info, UTCR1, 0x00);
-	serial_outp(&info, UTCR2, 0x0b);
-	serial_outp(&info, UTSR0, 0xff);
-	serial_outp(&info, UTCR3, UTCR3_RXE|UTCR3_TXE);
+	tuner_port[UTCR3] = 0x00;		// turn off rx/tx
+	tuner_port[UTCR0] = 0x0a;		// 8N1
+	tuner_port[UTCR1] = 0x00;		// 19200
+	tuner_port[UTCR2] = 0x0b;		//
+	tuner_port[UTSR0] = 0xff;		// clear errors
+	tuner_port[UTCR3] = UTCR3_RXE|UTCR3_TXE; // turn on rx/tx
 	//
 	// Perform loopback test, looking for a docking station.
-	// This also waits up to 1/4 second for the Tuner (if present)
-	// to send us it's startup indications.  Two birds with one stone.
 	//
-	//printk("Hijack: sending 0x%02x\n", pattern);
-	serial_outp(&info, UART_TX, pattern);
-	rc = hijack_read_serial(&info, HZ/16);
+	tuner_port[UART_TX] = pattern;
+	rc = hijack_read_serial(tuner_port, HZ/4);
 	//
 	// If we got our data echoed back, then we've found a docking station
 	//
 	if (rc == pattern) {
 		*loopback = 1;
-	} else {
+	} else if (rc != -1) {
 		//
-		// Tuner might still be present.  It starts up with a stream of data,
+		// Tuner appears to be present.  It starts up with a stream of data,
 		// but we ignore that and just issue the "read knob/jumpers" command.
 		//
-		serial_outp(&info, UART_TX, 0x01);
-		serial_outp(&info, UART_TX, 0x09);
+		while (-1 != hijack_read_serial(tuner_port, HZ/16));
+
+		tuner_port[UART_TX] = 0x01;
+		tuner_port[UART_TX] = 0x09;
 		//
 		// Now loop, discarding data until we see a new response beginning with 0x01
 		//
 		do {
-			rc = hijack_read_serial(&info, HZ/8);
+			rc = hijack_read_serial(tuner_port, HZ/8);
 		} while (rc != -1 && rc != 0x01);
 		//
 		// Now grab the entire 4-byte response, check validity, and extract the tuner_id
 		//
-		if (rc == 0x01 && hijack_read_serial(&info, HZ/8) == 0x09) {
+		if (rc == 0x01 && hijack_read_serial(tuner_port, HZ/16) == 0x09) {
 			int id, chk;
-			id  = hijack_read_serial(&info, HZ/8);
-			chk = hijack_read_serial(&info, HZ/8);
+			id  = hijack_read_serial(tuner_port, HZ/16);
+			chk = hijack_read_serial(tuner_port, HZ/16);
 			if (id != -1 && chk != -1 && ((id + 9) & 0xff) == chk) {
 				*tuner_id = id;
 			}

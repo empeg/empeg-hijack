@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v153"
+#define HIJACK_VERSION "v154"
 
 #include <linux/sched.h>
 #include <linux/kernel.h>
@@ -77,13 +77,14 @@ static void (*hijack_movefunc)(int) = NULL;
 #define BUTTON_FLAGS_SHIFT	(0x40000000)	// toggle shift state when sending
 #define BUTTON_FLAGS_UI		(0x20000000)	// send only if player menus are idle
 #define BUTTON_FLAGS_NOTUI	(0x10000000)	// send only if player menus are active
+#define BUTTON_FLAGS_ALTNAME	(0x08000000)	// use alternate name when displaying
 #define BUTTON_FLAGS_UISTATE	(BUTTON_FLAGS_UI|BUTTON_FLAGS_NOTUI)
 #define BUTTON_FLAGS		(0xff000000)
 #define IR_NULL_BUTTON		(~BUTTON_FLAGS)
 #define IR_INTERNAL		((void *)-1)
 
 static unsigned long ir_lastevent = 0, ir_lasttime = 0, ir_selected = 0;
-static unsigned long ir_releasewait = IR_NULL_BUTTON, ir_trigger_count = 0;;
+static unsigned int ir_releasewait = IR_NULL_BUTTON, ir_trigger_count = 0;;
 static unsigned long ir_menu_down = 0, ir_left_down = 0, ir_right_down = 0, ir_4_down = 0;
 static unsigned long ir_move_repeat_delay, ir_shifted = 0;
 static int *ir_numeric_input = NULL;
@@ -98,6 +99,7 @@ static int *ir_numeric_input = NULL;
 #define IR_FLAGS_TUNER		0x0020	// Tuner is active
 #define IR_FLAGS_AUX		0x0040	// Aux (line-in) is active
 #define IR_FLAGS_MAIN		0x0080	// Main/mp3/pcm/dsp is active
+#define IR_FLAGS_POPUP		0x0100	// This is a PopUp menu (not a regular translation)
 
 #define IR_FLAGS_CARHOME	(IR_FLAGS_CAR|IR_FLAGS_HOME)
 #define IR_FLAGS_SHIFTSTATE	(IR_FLAGS_SHIFTED|IR_FLAGS_NOTSHIFTED)
@@ -123,60 +125,85 @@ static ir_flags_t ir_flags[] = {
 	{0,0,0 } };
 
 typedef struct ir_translation_s {
-	unsigned long	old;		// original code (bit31 == 0); IR_NULL_BUTTON means "end-of-table"
+	unsigned int	old;		// original button, IR_NULL_BUTTON means "end-of-table"
 	unsigned short	flags;		// boolean flags
 	unsigned char	count;		// how many codes in new[]
-	unsigned char	filler;		// padding for 32-bit alignment
-	unsigned long	new[1];		// start of macro table with replacement buttons to send
+	unsigned char	popup_index;	// for PopUp translations only: most recent menu position
+	unsigned int	new[1];		// start of macro table with replacement buttons to send
 } ir_translation_t;
 
 static ir_translation_t *ir_current_longpress = NULL;
-static unsigned long *ir_translate_table = NULL;
-static unsigned long ir_initial_car = 0, ir_initial_home = 0;
+static unsigned int *ir_translate_table = NULL;
 
 typedef struct button_name_s {
 	unsigned long	code;
-	unsigned char	name[12];
+	char		name[12];
 } button_name_t;
 
-static button_name_t button_names[] = {
-	{IR_NULL_BUTTON-8,		"Initial"},	// very special; must be first
+#define IR_FAKE_INITCAR		IR_NULL_BUTTON-1
+#define IR_FAKE_INITHOME	IR_NULL_BUTTON-2
+#define IR_FAKE_POPUP3		IR_NULL_BUTTON-3
+#define IR_FAKE_POPUP2		IR_NULL_BUTTON-4
+#define IR_FAKE_POPUP1		IR_NULL_BUTTON-5
+#define IR_FAKE_POPUP0		IR_NULL_BUTTON-6
+#define IR_FAKE_NEXTSRC		IR_NULL_BUTTON-7	// This MUST be just after POPUP0 on this list!!
 
+#define ALT BUTTON_FLAGS_ALTNAME
+static button_name_t button_names[] = {
+	{IR_FAKE_POPUP0,		"PopUp0"},	// index 0 assumed later in hijack_option_table[]
+	{IR_FAKE_POPUP1,		"PopUp1"},	// index 1 assumed later in hijack_option_table[]
+	{IR_FAKE_POPUP2,		"PopUp2"},	// index 2 assumed later in hijack_option_table[]
+	{IR_FAKE_POPUP3,		"PopUp3"},	// index 3 assumed later in hijack_option_table[]
+	{IR_FAKE_NEXTSRC,		"NextSrc"},
+
+	{IR_FAKE_INITCAR,		"Initial.C"},
+	{IR_FAKE_INITHOME,		"Initial.H"},
 	{IR_NULL_BUTTON,		"null"},
+
+	{IR_RIO_1_PRESSED|ALT,		"Time"},
 	{IR_RIO_1_PRESSED,		"One"},
+	{IR_RIO_2_PRESSED|ALT,		"Artist"},
 	{IR_RIO_2_PRESSED,		"Two"},
+	{IR_RIO_3_PRESSED|ALT,		"Album"},	// "Source"
 	{IR_RIO_3_PRESSED,		"Three"},
-	{IR_RIO_SOURCE_PRESSED,		"Source"},
 	{IR_RIO_4_PRESSED,		"Four"},
+	{IR_RIO_5_PRESSED|ALT,		"Genre"},
 	{IR_RIO_5_PRESSED,		"Five"},
+	{IR_RIO_6_PRESSED|ALT,		"Year"},
 	{IR_RIO_6_PRESSED,		"Six"},
-	{IR_RIO_TUNER_PRESSED,		"Tuner"},
+	{IR_RIO_7_PRESSED|ALT,		"Repeat"},
 	{IR_RIO_7_PRESSED,		"Seven"},
+	{IR_RIO_8_PRESSED|ALT,		"Swap"},
 	{IR_RIO_8_PRESSED,		"Eight"},
+	{IR_RIO_9_PRESSED|ALT,		"Title"},
 	{IR_RIO_9_PRESSED,		"Nine"},
+	{IR_RIO_0_PRESSED|ALT,		"Shuffle"},
+	{IR_RIO_0_PRESSED,		"Zero"},
+	{IR_RIO_TUNER_PRESSED,		"Tuner"},
+	{IR_RIO_SELECTMODE_PRESSED,	"SelMode"},	// no "ALT" on this one!!
 	{IR_RIO_SELECTMODE_PRESSED,	"SelectMode"},
 	{IR_RIO_CANCEL_PRESSED,		"Cancel"},
-	{IR_RIO_0_PRESSED,		"Zero"},
+	{IR_RIO_MARK_PRESSED|ALT,	"Mark"},
 	{IR_RIO_SEARCH_PRESSED,		"Search"},
 	{IR_RIO_SOUND_PRESSED,		"Sound"},
 	{IR_RIO_PREVTRACK_PRESSED,	"PrevTrack"},
-	{IR_RIO_PREVTRACK_PRESSED,	"Prev"},
+	{IR_RIO_PREVTRACK_PRESSED|ALT,	"Prev"},
 	{IR_RIO_PREVTRACK_PRESSED,	"Track-"},
 	{IR_RIO_NEXTTRACK_PRESSED,	"NextTrack"},
-	{IR_RIO_NEXTTRACK_PRESSED,	"Next"},
+	{IR_RIO_NEXTTRACK_PRESSED|ALT,	"Next"},
 	{IR_RIO_NEXTTRACK_PRESSED,	"Track+"},
+	{IR_RIO_MENU_PRESSED|ALT,	"Ok"},
 	{IR_RIO_MENU_PRESSED,		"Menu"},
-	{IR_RIO_MENU_PRESSED,		"Ok"},
-	{IR_RIO_VOLMINUS_PRESSED,	"VolUp"},
+	{IR_RIO_VOLMINUS_PRESSED|ALT,	"VolUp"},
 	{IR_RIO_VOLMINUS_PRESSED,	"Vol-"},
-	{IR_RIO_VOLPLUS_PRESSED,	"VolDown"},
+	{IR_RIO_VOLPLUS_PRESSED|ALT,	"VolDown"},
 	{IR_RIO_VOLPLUS_PRESSED,	"Vol+"},
+	{IR_RIO_INFO_PRESSED|ALT,	"Detail"},
 	{IR_RIO_INFO_PRESSED,		"Info"},
-	{IR_RIO_INFO_PRESSED,		"Detail"},
-	{IR_RIO_VISUAL_PRESSED,		"Visual+"},
+	{IR_RIO_VISUAL_PRESSED|ALT,	"Visual+"},
 	{IR_RIO_VISUAL_PRESSED,		"Visual"},
+	{IR_RIO_PLAY_PRESSED|ALT,	"Pause"},
 	{IR_RIO_PLAY_PRESSED,		"Play"},
-	{IR_RIO_PLAY_PRESSED,		"Pause"},
 
 	{IR_TOP_BUTTON_PRESSED,		"Top"},
 	{IR_BOTTOM_BUTTON_PRESSED,	"Bottom"},
@@ -189,51 +216,58 @@ static button_name_t button_names[] = {
 	{IR_KW_AM_PRESSED,		"AM"},
 	{IR_KW_FM_PRESSED,		"FM"},
 	{IR_KW_DIRECT_PRESSED,		"Direct"},
+	{IR_KW_STAR_PRESSED|ALT,	"*"},		// alternate
 	{IR_KW_STAR_PRESSED,		"Star"},
-	{IR_KW_STAR_PRESSED,		"*"},		// alternate
 	{IR_KW_TUNER_PRESSED,		"Radio"},
-	{IR_KW_TAPE_PRESSED,		"Auxiliary"},
+	{IR_KW_TAPE_PRESSED|ALT,	"Auxiliary"},
 	{IR_KW_TAPE_PRESSED,		"Tape"},	// alternate
-	{IR_KW_CD_PRESSED,		"Player"},
-	{IR_KW_CDMDCH_PRESSED,		"CDMDCH"},
+	{IR_KW_CD_PRESSED|ALT,		"Player"},
 	{IR_KW_CD_PRESSED,		"CD"},		// alternate
+	{IR_KW_CDMDCH_PRESSED,		"CDMDCH"},
 	{IR_KW_DNPP_PRESSED,		"DNPP"},
 
 	{IR_NULL_BUTTON,		"\0"}		// end-of-table-marker
 	};
+#undef ALT
+
+static char *get_button_name (unsigned int button, char *buf)
+{
+	button_name_t *bn = button_names;
+
+	button &= ~(BUTTON_FLAGS^BUTTON_FLAGS_ALTNAME);
+	if (button <= 0xf && button != IR_KNOB_LEFT)
+		button &= ~1;
+	for (bn = button_names; bn->name[0]; ++bn) {
+		if (button == bn->code) {
+			return bn->name;
+		}
+	}
+	sprintf(buf, "0%x", button);
+	return buf;
+}
 
 #define KNOBDATA_BITS 3
+#define KNOBDATA_SIZE (1 << KNOBDATA_BITS)
+static int knobdata_index = 0, hijack_knobjog = 0;
+static int popup0_index = 0;		// (PopUp0) saved/restored index
 
 #ifdef EMPEG_KNOB_SUPPORTED
 
 static unsigned long ir_knob_busy = 0, ir_knob_down = 0;
 
-#define KNOBDATA_SIZE (1 << KNOBDATA_BITS)
-static int knobdata_index = 0, hijack_knobjog = 0;
-static const char *knobdata_labels[] = {" [default] ", " PopUp ", " VolAdj+ ", " Details ", " Info ", " Mark ", " Shuffle ", " Source "};
-static const unsigned long knobdata_buttons[1<<KNOBDATA_BITS] = {
+// Mmm.. this *could* be eliminated entirely, in favour of IR-translations and PopUp's..
+// But for now, we leave it in because it is (1) a Major convenience, and (2) can be modified "on the fly".
+static const char *knobdata_labels[] = {"[default]", button_names[0].name, "VolAdj+", "Details", "Info", "Mark", "Shuffle", "NextSrc"};
+static const unsigned int knobdata_buttons[1<<KNOBDATA_BITS] = {
 	IR_KNOB_PRESSED,
-	IR_KNOB_PRESSED,
+	IR_FAKE_POPUP0,
 	IR_KNOB_PRESSED,
 	IR_RIO_INFO_PRESSED|BUTTON_FLAGS_LONGPRESS,
 	IR_RIO_INFO_PRESSED,
 	IR_RIO_MARK_PRESSED,
 	IR_RIO_SHUFFLE_PRESSED,
-	IR_RIO_SOURCE_PRESSED,	
+	IR_FAKE_NEXTSRC,
 	};
-
-#define KNOBMENU_SIZE KNOBDATA_SIZE	// indexes share the same bits in flash..
-static int knobmenu_index = 0;
-static const char *knobmenu_labels[] = {" Info+ ", " Mark ", " Repeat ", " SelMode ", " Shuffle ", " Source ", " Tuner+ ", " Visuals+ "};
-static const unsigned long knobmenu_buttons[KNOBMENU_SIZE] = {
-	IR_RIO_INFO_PRESSED,
-	IR_RIO_MARK_PRESSED,
-	IR_RIO_REPEAT_PRESSED,
-	IR_RIO_SELECTMODE_PRESSED,
-	IR_RIO_SHUFFLE_PRESSED,
-	IR_RIO_SOURCE_PRESSED,
-	IR_RIO_TUNER_PRESSED,
-	IR_RIO_VISUAL_PRESSED};
 
 #endif // EMPEG_KNOB_SUPPORTED
 
@@ -262,7 +296,7 @@ static const unsigned long knobmenu_buttons[KNOBMENU_SIZE] = {
 #define HIJACK_BUTTONQ_SIZE	48
 typedef struct hijack_buttondata_s {
 	unsigned long delay;	// inter-button delay interval
-	unsigned long button;	// button press/release code
+	unsigned int button;	// button press/release code
 } hijack_buttondata_t;
 
 typedef struct hijack_buttonq_s {
@@ -295,14 +329,6 @@ struct semaphore hijack_khttpd_startup_sem	= MUTEX_LOCKED;	// sema for waking up
 
 static hijack_buttonq_t hijack_inputq, hijack_playerq, hijack_userq;
 
-typedef struct hijack_option_s {
-	const char	*name;
-	int		*target;
-	int		num_items;
-	int		min;
-	int		max;
-} hijack_option_t; 
-
 // Externally tuneable parameters for config.ini; the voladj_parms are also tuneable
 //
 static int hijack_button_pacing			= 20;	// minimum spacing between press/release pairs within playerq
@@ -324,6 +350,14 @@ static int hijack_standby_minutes		= 30;	// number of minutes after screen blank
        int hijack_temperature_correction	= -4;	// adjust all h/w temperature readings by this celcius amount
        int hijack_rioremote_disabled		=  0;	// disable RIO remote
 
+typedef struct hijack_option_s {
+	char	*name;
+	void	*target;
+	int	num_items;
+	int	min;
+	int	max;
+} hijack_option_t; 
+
 static const hijack_option_t hijack_option_table[] = {
 	// config.ini string		address-of-variable		howmany	min	max
 	{"button_pacing",		&hijack_button_pacing,		1,	0,	HZ},
@@ -340,6 +374,10 @@ static const hijack_option_t hijack_option_table[] = {
  	{"max_connections",		&hijack_max_connections,	1,	0,	20},
 #endif // CONFIG_NET_ETHERNET
 	{"old_style",			&hijack_old_style,		1,	0,	1},
+	{button_names[0].name,		button_names[0].name,		0,	0,	8},	// PopUp0
+	{button_names[1].name,		button_names[1].name,		0,	0,	8},	// PopUp1
+	{button_names[2].name,		button_names[2].name,		0,	0,	8},	// PopUp2
+	{button_names[3].name,		button_names[3].name,		0,	0,	8},	// PopUp3
  	{"quicktimer_minutes",		&hijack_quicktimer_minutes,	1,	1,	120},
  	{"standby_minutes",		&hijack_standby_minutes,	1,	0,	240},
 	{"supress_notify",		&hijack_supress_notify,		1,	0,	1},	
@@ -351,8 +389,8 @@ static const hijack_option_t hijack_option_table[] = {
 	};
 
 #define HIJACK_USERQ_SIZE	8
-static const unsigned long intercept_all_buttons[] = {1};
-static const unsigned long *hijack_buttonlist = NULL;
+static const unsigned int intercept_all_buttons[] = {1};
+static const unsigned int *hijack_buttonlist = NULL;
 //static unsigned long hijack_userq[HIJACK_USERQ_SIZE];
 //static unsigned short hijack_userq_head = 0, hijack_userq_tail = 0;
 static struct wait_queue *hijack_userq_waitq = NULL, *hijack_menu_waitq = NULL;
@@ -727,6 +765,14 @@ top:	if (row < EMPEG_SCREEN_ROWS) {
 }
 
 static unsigned int
+draw_string_spaced (unsigned int rowcol, const unsigned char *s, int color)
+{
+	char buf[64];
+	sprintf(buf, " %s ", s);
+	return draw_string(rowcol, buf, color);
+}
+
+static unsigned int
 draw_number (unsigned int rowcol, unsigned int number, const char *format, int color)
 {
 	unsigned char buf[31], saved;
@@ -747,18 +793,19 @@ hijack_initq (hijack_buttonq_t *q)
 }
 
 static unsigned long
-RELEASECODE (unsigned long button)
+RELEASECODE (unsigned int button)
 {
 	button &= ~BUTTON_FLAGS;
-	if (button == IR_NULL_BUTTON || button == IR_KNOB_LEFT || button == IR_KNOB_RIGHT)
+	if ((button >= IR_FAKE_NEXTSRC && button <= IR_FAKE_POPUP3)
+	 || button == IR_NULL_BUTTON || button == IR_KNOB_LEFT || button == IR_KNOB_RIGHT)
 		return IR_NULL_BUTTON;
 	return (button > 0xf) ? button | 0x80000000 : button | 1;
 }
 
 static int
-IS_RELEASE (unsigned long rawbutton)
+IS_RELEASE (unsigned int rawbutton)
 {
-	unsigned long button = rawbutton & ~BUTTON_FLAGS;
+	unsigned int button = rawbutton & ~BUTTON_FLAGS;
 	if (button != IR_NULL_BUTTON) {
 		if (button > 0xf)
 			return (rawbutton >> 31);
@@ -769,19 +816,25 @@ IS_RELEASE (unsigned long rawbutton)
 }
 
 static void
-hijack_enq_button (hijack_buttonq_t *q, unsigned long button, unsigned long hold_time)
+hijack_enq_button (hijack_buttonq_t *q, unsigned int button, unsigned long hold_time)
 {
 	unsigned short head;
 	unsigned long flags;
 
+#if 1 //fixme someday
+	// special case to allow embedding PopUp's
+	if ((button & ~BUTTON_FLAGS) >= IR_FAKE_NEXTSRC && (button & ~BUTTON_FLAGS) <= IR_FAKE_POPUP3)
+		q = &hijack_inputq;
+#endif
 	if (q != &hijack_inputq)
-		button &= ~(BUTTON_FLAGS & ~BUTTON_FLAGS_LONGPRESS);
+		button &= ~(BUTTON_FLAGS^BUTTON_FLAGS_LONGPRESS);
 
 	save_flags_cli(flags);
 	head = q->head;
-	if (head != q->tail && hold_time < hijack_button_pacing && q == &hijack_playerq && !IS_RELEASE(button))
+	//if (head != q->tail && hold_time < hijack_button_pacing && q == &hijack_playerq && !IS_RELEASE(button))
+	if (head != q->tail && hold_time < hijack_button_pacing && q == &hijack_playerq)
 		hold_time = hijack_button_pacing;	// ensure we have sufficient delay between press/release pairs
-	//printk("ENQ.%c: %08lx.%ld\n", (q == &hijack_playerq) ? 'P' : ((q == &hijack_inputq) ? 'I' : 'U'), button, hold_time);
+	//printk("ENQ.%c: %08x.%ld\n", (q == &hijack_playerq) ? 'P' : ((q == &hijack_inputq) ? 'I' : 'U'), button, hold_time);
 	if (++head >= HIJACK_BUTTONQ_SIZE)
 		head = 0;
 	if (head != q->tail) {
@@ -794,9 +847,9 @@ hijack_enq_button (hijack_buttonq_t *q, unsigned long button, unsigned long hold
 
 // Send a release code
 static void
-hijack_enq_release (hijack_buttonq_t *q, unsigned long rawbutton, unsigned long hold_time)
+hijack_enq_release (hijack_buttonq_t *q, unsigned int rawbutton, unsigned long hold_time)
 {
-	unsigned long button = RELEASECODE(rawbutton);
+	unsigned int button = RELEASECODE(rawbutton);
 	if (button != IR_NULL_BUTTON) {
 		button |= (rawbutton & BUTTON_FLAGS_UISTATE);
 		if (rawbutton & BUTTON_FLAGS_LONGPRESS)
@@ -806,7 +859,7 @@ hijack_enq_release (hijack_buttonq_t *q, unsigned long rawbutton, unsigned long 
 }
 
 static inline void
-hijack_enq_button_pair (unsigned long button)
+hijack_enq_button_pair (unsigned int button)
 {
 	hijack_enq_button (&hijack_playerq, button & ~BUTTON_FLAGS, 0);
 	hijack_enq_release(&hijack_playerq, button, 0);
@@ -816,14 +869,14 @@ hijack_enq_button_pair (unsigned long button)
 static void
 hijack_enq_translations (ir_translation_t *t)
 {
-	unsigned long *newp = &t->new[0];
+	unsigned int *newp = &t->new[0];
 	int count = t->count;
 
 	while (count--) {
 		unsigned long code = *newp++;
 		hijack_enq_button(&hijack_inputq, code & ~BUTTON_FLAGS_LONGPRESS, 0);
 		if (count) {
-			unsigned long button = code & ~(BUTTON_FLAGS^BUTTON_FLAGS_UISTATE);
+			unsigned int button = code & ~(BUTTON_FLAGS^BUTTON_FLAGS_UISTATE);
 			hijack_enq_release(&hijack_inputq, button|(code & BUTTON_FLAGS_LONGPRESS), 0);
 		}
 	}
@@ -1156,7 +1209,7 @@ savearea_display (int firsttime)
 			rowcol = draw_number(rowcol, b, "%02X", color);
 		}
 	}
-	if (ir_selected) {	// maybe not 100% effective, but not 100% critcal either
+	if (ir_selected) {
 		if (last_savearea) {
 			kfree(last_savearea);
 			last_savearea = NULL;
@@ -1590,7 +1643,7 @@ knobdata_display (int firsttime)
 	clear_hijack_displaybuf(COLOR0);
 	(void)draw_string(ROWCOL(0,0), "Knob Press Redefinition", PROMPTCOLOR);
 	rowcol = draw_string(ROWCOL(2,0), "Quick press = ", PROMPTCOLOR);
-	(void)draw_string(rowcol, knobdata_labels[knobdata_index], ENTRYCOLOR);
+	(void)draw_string_spaced(rowcol, knobdata_labels[knobdata_index], ENTRYCOLOR);
 	return NEED_REFRESH;
 }
 
@@ -1618,66 +1671,115 @@ knobjog_display (int firsttime)
 	return NEED_REFRESH;
 }
 
-static       unsigned long knobmenu_pressed;
-static const unsigned long knobmenu_buttonlist[] = {3, IR_KNOB_PRESSED, IR_KNOB_RELEASED};
+#endif // EMPEG_KNOB_SUPPORTED
+
+static ir_translation_t *
+ir_next_match (ir_translation_t *table, unsigned int button)
+{
+	button &= ~BUTTON_FLAGS;
+	while (1) {
+		if (table == NULL)
+			table = (ir_translation_t *)ir_translate_table;
+		else
+			((unsigned int *)table) += (sizeof(ir_translation_t) / sizeof(unsigned int) - 1) + table->count;
+		if (!table || table->old == -1)
+			return NULL;
+		if ((table->old & ~BUTTON_FLAGS) == button)
+			return table;
+	}
+}
+
+static int		popup_index;
+static unsigned long	popup_got_press;
+static ir_translation_t	*current_popup = NULL;
+static unsigned int	popup_buttonlist[] = {5, IR_KNOB_PRESSED, IR_KNOB_RELEASED, IR_RIO_MENU_PRESSED, IR_RIO_MENU_RELEASED};
 
 static void
-knobmenu_move (int direction)
+popup_move (int direction)
 {
 	if (direction == 0) {
 		hijack_deactivate(HIJACK_IDLE);
-	} else if (!knobmenu_pressed) {
-		knobmenu_index += direction;
-		if (knobmenu_index < 0)
-			knobmenu_index = KNOBMENU_SIZE-1;
-		else if (knobmenu_index >= KNOBMENU_SIZE)
-			knobmenu_index = 0;
-		empeg_state_dirty = 1;
+	} else if (!popup_got_press) {
+		popup_index += direction;
+		if (popup_index < 0)
+			popup_index = current_popup->count - 1;
+		else if (popup_index >= current_popup->count)
+			popup_index = 0;
+		current_popup->popup_index = popup_index;
+		if (current_popup->old == IR_FAKE_POPUP0) {
+		 	popup0_index = current_popup->popup_index & 7;
+			empeg_state_dirty = 1;
+		}
 	}
 }
 
 static int
-knobmenu_display (int firsttime)
+popup_display (int firsttime)
 {
 	unsigned long flags;
 	hijack_buttondata_t data;
-	static const hijack_geom_t geom = {8, 8+6+KFONT_HEIGHT, 6, EMPEG_SCREEN_COLS-6};
+	static const hijack_geom_t geom = {8, 8+6+KFONT_HEIGHT, 4, EMPEG_SCREEN_COLS-4};
 	int rc = NO_REFRESH;
+	unsigned int button;
 
 	if (firsttime) {
-		knobmenu_pressed = 0;
+		popup_got_press = 0;
+		popup_index = current_popup->popup_index;
+		if (popup_index >= current_popup->count)
+			popup_index = 0;
 		hijack_last_moved = jiffies ? jiffies : -1;
-		ir_numeric_input = &knobmenu_index;	// allows cancel/top to reset it to 0
-		hijack_buttonlist = knobmenu_buttonlist;
+		ir_numeric_input = &popup_index;	// allows cancel/top to reset it to 0
+		hijack_buttonlist = popup_buttonlist;
 		hijack_initq(&hijack_userq);
 		create_overlay(&geom);
 	}
-	if (knobmenu_pressed) {
+
+	button = current_popup->new[popup_index];
+	if (popup_got_press) {
 		rc = SHOW_PLAYER;
 	} else if (jiffies_since(hijack_last_moved) >= (HZ*4)) {
 		hijack_deactivate(HIJACK_IDLE);
 	} else {
+		char buf[16];
 		unsigned int rowcol = (geom.first_row+4)|((geom.first_col+6)<<16);
 		rowcol = draw_string(rowcol, "Select Action: ", COLOR3);
 		clear_text_row(rowcol, geom.last_col-4, 1);
-		(void)draw_string(rowcol, knobmenu_labels[knobmenu_index], ENTRYCOLOR);
+		(void)draw_string_spaced(rowcol, get_button_name(button, buf), ENTRYCOLOR);
 		rc = NEED_REFRESH;
 	}
 	save_flags_cli(flags);
 	while (hijack_status == HIJACK_ACTIVE && hijack_button_deq(&hijack_userq, &data, 0)) {
-		if (!knobmenu_pressed && data.button == IR_KNOB_PRESSED) {
-			knobmenu_pressed = jiffies ? jiffies : -1;
-			hijack_enq_button(&hijack_playerq, knobmenu_buttons[knobmenu_index], 0);
-		} else if (knobmenu_pressed && data.button == IR_KNOB_RELEASED) {
-			hijack_enq_release(&hijack_playerq, knobmenu_buttons[knobmenu_index], jiffies_since(knobmenu_pressed));
-			hijack_deactivate(HIJACK_IDLE);
+		if (!IS_RELEASE(data.button)) {
+			if (!popup_got_press) {
+				unsigned int b = button & ~BUTTON_FLAGS;
+				popup_got_press = jiffies ? jiffies : -1;
+				hijack_enq_button(&hijack_playerq, b, 0);
+				if (button & BUTTON_FLAGS_LONGPRESS)
+					hijack_enq_release(&hijack_playerq, b, HZ);
+			}
+		} else {
+			if (popup_got_press) {
+				if (!(button & BUTTON_FLAGS_LONGPRESS))
+					hijack_enq_release(&hijack_playerq, button & ~BUTTON_FLAGS, jiffies_since(popup_got_press));
+				hijack_deactivate(HIJACK_IDLE);
+			}
 		}
 	}
 	restore_flags(flags);
 	return rc;
 }
 
-#endif // EMPEG_KNOB_SUPPORTED
+static void
+popup_activate (unsigned int button)
+{
+	button &= ~BUTTON_FLAGS;
+	current_popup = ir_next_match(NULL, button);
+	if (current_popup != NULL) {
+		if (current_popup->old == IR_FAKE_POPUP0)
+		 	current_popup->popup_index = (current_popup->popup_index & ~7) | popup0_index;
+		activate_dispfunc(popup_display, popup_move);
+	}
+}
 
 #define GAME_COLS		(EMPEG_SCREEN_COLS/2)
 #define GAME_VBOUNCE		0xff
@@ -1743,8 +1845,6 @@ game_move (int direction)
 {
 	unsigned char *paddlerow = hijack_displaybuf[EMPEG_SCREEN_ROWS-3];
 	int i = 3;
-	unsigned long flags;
-	save_flags_cli(flags);
 	while (i-- > 0) {
 		if (direction < 0) {
 			if (game_paddle_col > 1) {
@@ -1763,7 +1863,6 @@ game_move (int direction)
 		}
 	}
 	game_paddle_lastdir = direction;
-	restore_flags(flags);
 }
 
 static void
@@ -1779,9 +1878,6 @@ game_nuke_brick (short row, short col)
 static int
 game_move_ball (void)
 {
-	unsigned long flags;
-
-	save_flags_cli(flags);
 	ir_selected = 0; // prevent accidental exit from game
 	if (ir_left_down && jiffies_since(ir_left_down) >= (HZ/15)) {
 		ir_left_down = jiffies ? jiffies : -1;
@@ -1790,10 +1886,8 @@ game_move_ball (void)
 		ir_right_down = jiffies ? jiffies : -1;
 		game_move(1);
 	}
-	if (jiffies_since(game_ball_last_moved) < (HZ/game_speed)) {
-		restore_flags(flags);
+	if (jiffies_since(game_ball_last_moved) < (HZ/game_speed))
 		return (jiffies_since(hijack_last_moved) > jiffies_since(game_ball_last_moved)) ? NO_REFRESH : NEED_REFRESH;
-	}
 	game_ball_last_moved = jiffies;
 	hijack_displaybuf[game_row][game_col] = 0;
 	game_row += game_vdir;
@@ -1828,7 +1922,6 @@ game_move_ball (void)
 		game_over = 1;
 	}
 	hijack_displaybuf[game_row][game_col] = GAME_BALL;
-	restore_flags(flags);
 	return NEED_REFRESH;
 }
 
@@ -1903,7 +1996,7 @@ maxtemp_display (int firsttime)
 }
 
 #define CALCULATOR_BUTTONS_SIZE	(1 + (13 * 4))
-static const unsigned long calculator_buttons[CALCULATOR_BUTTONS_SIZE] = {CALCULATOR_BUTTONS_SIZE,
+static const unsigned int calculator_buttons[CALCULATOR_BUTTONS_SIZE] = {CALCULATOR_BUTTONS_SIZE,
 	IR_KW_0_PRESSED,	IR_KW_0_RELEASED,	IR_RIO_0_PRESSED,	IR_RIO_0_RELEASED,
 	IR_KW_1_PRESSED,	IR_KW_1_RELEASED,	IR_RIO_1_PRESSED,	IR_RIO_1_RELEASED,
 	IR_KW_2_PRESSED,	IR_KW_2_RELEASED,	IR_RIO_2_PRESSED,	IR_RIO_2_RELEASED,
@@ -1941,11 +2034,9 @@ calculator_display (int firsttime)
 	static unsigned char operator, prev;
 	long new;
 	unsigned int i;
-	unsigned long flags;
 	unsigned char opstring[3] = {' ','\0'};
 	hijack_buttondata_t data;
 
-	save_flags_cli(flags);
 	if (firsttime) {
 		total = value = operator = prev = 0;
 		hijack_buttonlist = calculator_buttons;;
@@ -1988,7 +2079,6 @@ calculator_display (int firsttime)
 			prev = i;
 		}
 	}
-	restore_flags(flags);
 	clear_hijack_displaybuf(COLOR0);
 	(void) draw_string(ROWCOL(0,0), "Menu/CD: +-*/%=", PROMPTCOLOR);
 	(void) draw_string(ROWCOL(1,0), "Cancel/*: CE,CA,Quit", PROMPTCOLOR);
@@ -2003,7 +2093,6 @@ static int
 reboot_display (int firsttime)
 {
 	static unsigned short left_pressed, right_pressed;
-	unsigned long flags;
 	hijack_buttondata_t data;
 	int rc;
 
@@ -2016,7 +2105,6 @@ reboot_display (int firsttime)
 		return NEED_REFRESH;
 	}
 	rc = NO_REFRESH;
-	save_flags_cli(flags);
 	if (hijack_button_deq(&hijack_userq, &data, 0)) {
 		switch (data.button) {
 			case IR_LEFT_BUTTON_PRESSED:
@@ -2041,19 +2129,18 @@ reboot_display (int firsttime)
 			rc = NEED_REFRESH;
 		}
 	}
-	restore_flags(flags);
 	return rc;
 }
 
 static int
 showbutton_display (int firsttime)
 {
-	static unsigned long *saved_table, prev[4], counter;
-	unsigned long flags;
+	static unsigned int *saved_table, prev[4], counter;
 	hijack_buttondata_t data;
+	unsigned long flags;
 	int i;
 
-	save_flags_cli(flags);
+	save_flags_cli(flags);	// needed while we muck with the ir_translate_table[]
 	if (firsttime) {
 		counter = 0;
 		prev[0] = prev[1] = prev[2] = prev[3] = IR_NULL_BUTTON;
@@ -2155,7 +2242,6 @@ menu_move (int direction)
 static int
 menu_display (int firsttime)
 {
-	unsigned long flags;
 	static int prev_menu_item;
 
 	if (firsttime) {
@@ -2165,25 +2251,19 @@ menu_display (int firsttime)
 	if (menu_item != prev_menu_item) {
 		unsigned int text_row;
 		clear_hijack_displaybuf(COLOR0);
-		save_flags_cli(flags);
 		prev_menu_item = menu_item;
 		for (text_row = 0; text_row < EMPEG_TEXT_ROWS; ++text_row) {
 			unsigned int index = (menu_top + text_row) % menu_size;
 			unsigned int color = (index == menu_item) ? ENTRYCOLOR : COLOR2;  // COLOR2 <> PROMPTCOLOR
-			unsigned char label[64];
-			sprintf(label, " %s ", menu_table[index].label);
-			(void)draw_string(ROWCOL(text_row,0), label, color);
+			(void)draw_string_spaced(ROWCOL(text_row,0), menu_table[index].label, color);
 		}
-		restore_flags(flags);
 		return NEED_REFRESH;
 	}
 	if (ir_selected) {
 		menu_item_t *item = &menu_table[menu_item];
 		activate_dispfunc(item->dispfunc, item->movefunc);
 	} else if (jiffies_since(hijack_last_moved) > (HZ*5)) {
-		save_flags_cli(flags);
 		hijack_deactivate(HIJACK_IDLE_PENDING); // menu timed-out
-		restore_flags(flags);
 	}
 	return NO_REFRESH;
 }
@@ -2317,12 +2397,13 @@ get_current_mixer_source (void)
 	return source;
 }
 
-#ifdef EMPEG_KNOB_SUPPORTED
 static void
 toggle_input_source (void)
 {
-	unsigned long button;
+	unsigned int button;
+	unsigned long flags;
 
+	save_flags_cli(flags);
 	switch (get_current_mixer_source()) {
 		case IR_FLAGS_TUNER:
 			button = IR_KW_TAPE_PRESSED; // aux
@@ -2334,12 +2415,17 @@ toggle_input_source (void)
 		default:
 			// by hitting "aux" before "tuner", we handle "tuner not present"
 			hijack_enq_button_pair(IR_KW_TAPE_PRESSED);
-			button = IR_KW_TUNER_PRESSED;  // tuner
+			button = IR_RIO_TUNER_PRESSED;  // tuner
 			break;
 	}
+#if 0 // fixme: workaround for player bug
 	hijack_enq_button_pair(button);
+#else
+	hijack_enq_button (&hijack_playerq, button, HZ/3);
+	hijack_enq_release(&hijack_playerq, button, 0);
+#endif
+	restore_flags(flags);
 }
-#endif // EMPEG_KNOB_SUPPORTED
 
 static int
 timer_check_expiry (struct display_dev *dev)
@@ -2439,11 +2525,11 @@ message_display (int firsttime)
 void
 show_message (const char *message, unsigned long time)
 {
-	unsigned long flags;
 	strncpy(message_text, message, sizeof(message_text)-1);
 	message_text[sizeof(message_text)-1] = '\0';
 	message_time = time;
 	if (message && *message) {
+		unsigned long flags;
 		save_flags_cli(flags);
 		activate_dispfunc(message_display, NULL);
 		restore_flags(flags);
@@ -2453,7 +2539,7 @@ show_message (const char *message, unsigned long time)
 static int
 quicktimer_display (int firsttime)
 {
-	static const unsigned long quicktimer_buttonlist[] = {5, IR_KW_4_PRESSED, IR_KW_4_RELEASED, IR_RIO_4_PRESSED, IR_RIO_4_RELEASED};
+	static const unsigned int quicktimer_buttonlist[] = {5, IR_KW_4_PRESSED, IR_KW_4_RELEASED, IR_RIO_4_PRESSED, IR_RIO_4_RELEASED};
 	static const hijack_geom_t geom = {8, 8+6+KFONT_HEIGHT, 12, EMPEG_SCREEN_COLS-12};
 	hijack_buttondata_t data;
 	unsigned int rowcol;
@@ -2495,9 +2581,9 @@ quicktimer_display (int firsttime)
 // Note that ALL front-panel buttons send codes ONCE on press, but twice on RELEASE.
 //
 static void
-hijack_handle_button (unsigned long button, unsigned long delay, int any_ui_is_active)
+hijack_handle_button (unsigned int button, unsigned long delay, int any_ui_is_active)
 {
-	static unsigned long ir_lastpressed = IR_NULL_BUTTON;
+	static unsigned int ir_lastpressed = IR_NULL_BUTTON;
 	unsigned long old_releasewait;
 	int hijacked = 0;
 
@@ -2513,14 +2599,32 @@ hijack_handle_button (unsigned long button, unsigned long delay, int any_ui_is_a
 
 	blanker_triggered = 0;
 	if (hijack_status == HIJACK_ACTIVE) {
-		if (hijack_buttonlist && hijack_check_buttonlist(button, delay)) {
-			hijacked = 1;
-			goto done;
+#if 1 //fixme someday
+		// special case to allow embedding PopUp's
+		if ((button & ~BUTTON_FLAGS) < IR_FAKE_NEXTSRC || (button & ~BUTTON_FLAGS) > IR_FAKE_POPUP3)
+#endif
+		{
+			if (hijack_buttonlist && hijack_check_buttonlist(button, delay)) {
+				hijacked = 1;
+				goto done;
+			}
 		}
 		if (hijack_dispfunc == userland_display)
 			goto done;	// just pass all buttons straight through to userland
 	}
 	switch (button) {
+		case IR_FAKE_NEXTSRC:
+			toggle_input_source();
+			hijacked = 1;
+			break;
+
+		case IR_FAKE_POPUP0:
+		case IR_FAKE_POPUP1:
+		case IR_FAKE_POPUP2:
+		case IR_FAKE_POPUP3:
+			popup_activate(button);
+			hijacked = 1;
+			break;
 #ifdef EMPEG_KNOB_SUPPORTED
 		case IR_KNOB_PRESSED:
 			hijacked = 1; // hijack it and later send it with the release
@@ -2539,15 +2643,14 @@ hijack_handle_button (unsigned long button, unsigned long delay, int any_ui_is_a
 						index = 0;
 					hijacked = 1;
 					if (jiffies_since(ir_knob_down) < (HZ/2)) {	// short press?
-						if (index == 1) { // ButtonMenu
-							activate_dispfunc(knobmenu_display, knobmenu_move);
-						} else if (index == 2) { // VolAdj+SoundStuff
+						if (index == 1)
+							popup_activate(knobdata_buttons[1]);
+						else if (index == 2)
 							activate_dispfunc(voladj_prefix_display, voladj_move);
-						} else {
+						else
 							hijack_enq_button_pair(knobdata_buttons[index]);
-						}
 					}
-				} else {
+				} else { //fixme someday: get rid of "special case" logic here
 					hijacked = 1;
 					if (hijack_dispfunc == voladj_prefix_display) {
 						hijack_deactivate(HIJACK_IDLE);
@@ -2707,12 +2810,12 @@ hijack_handle_buttons (const char *player_buf)
 		(void)real_input_append_code(data.button);
 }
 
-static unsigned long ir_downkey = IR_NULL_BUTTON, ir_delayed_rotate = 0;
+static unsigned int ir_downkey = IR_NULL_BUTTON, ir_delayed_rotate = 0;
 
 static void
-input_append_code2 (unsigned long rawbutton)
+input_append_code2 (unsigned int rawbutton)
 {
-	unsigned long released = IS_RELEASE(rawbutton), *table;
+	unsigned int released = IS_RELEASE(rawbutton);
 
 	//printk("IA2:%lx.%c,dk=%lx,dr=%d,lk=%d\n", rawbutton, released ? 'R' : 'P',
 	//	ir_downkey, (ir_delayed_rotate != 0), (ir_current_longpress != NULL));
@@ -2725,52 +2828,51 @@ input_append_code2 (unsigned long rawbutton)
 			return;	// ignore repeated press with no intervening release
 		ir_downkey = rawbutton;
 	}
-	if ((table = ir_translate_table) != NULL) {
+	if (ir_translate_table != NULL) {
 		unsigned short	mixer		= get_current_mixer_source();
 		unsigned short	carhome		= empeg_on_dc_power ? IR_FLAGS_CAR : IR_FLAGS_HOME;
 		unsigned short	shifted		= ir_shifted ? IR_FLAGS_SHIFTED : IR_FLAGS_NOTSHIFTED;
 		unsigned short	flags		= mixer | carhome | shifted;
 		int		delayed_send	= 0;
 		int		was_waiting	= (ir_current_longpress != NULL);
-		unsigned long	button		= rawbutton & ~BUTTON_FLAGS;
+		unsigned int	button		= rawbutton & ~BUTTON_FLAGS;
+		ir_translation_t *t		= NULL;
 
 		if (released && button <= 0xf)
 			button &= ~1;
 		ir_current_longpress = NULL;
-		while (*table != -1) {
-			ir_translation_t *t = (ir_translation_t *)table;
-			table += (sizeof(ir_translation_t) / sizeof(unsigned long) - 1) + t->count;
-			if (t->old == button) {
-				unsigned short t_flags = t->flags;
-				if ((t_flags & flags) == flags) {
-					if (released) {	// button release?
-						if ((t_flags & IR_FLAGS_LONGPRESS) && was_waiting) {
-							// We were timing for a possible longpress,
-							//  but now know that it wasn't held down long enough.
-							// Instead, we just let go of a shortpress for which
-							//   the original "press" code has been sent yet
-							// So we must now look for a shortpress translation
-							delayed_send = 1;
-							continue; // look for shortpress translation instead
-						  //else we need to send the "release" sequence for a longpress
-						}
-						// We just matched the "release" for either a longpress or shortpress.
-						// Send the "press" sequence (if shortpress), then the final "release" (either)
-						if (delayed_send)
-							hijack_enq_translations(t);
-						hijack_enq_release(&hijack_inputq, t->new[t->count - 1], 0); // final button release
-					} else { // button press?
-						if ((t_flags & IR_FLAGS_LONGPRESS)) {
-							// This *might* turn out to be a longpress, so we cannot translate it yet.
-							// So set a flag and let the display_handler() time it for sending.
-							ir_current_longpress = t;
-						} else {
-							hijack_enq_translations(t);
-						}
+		while (NULL != (t = ir_next_match(t, button))) {
+			unsigned short t_flags = t->flags;
+			if (t_flags & IR_FLAGS_POPUP)
+				break;	// no translations here for PopUp's
+			if ((t_flags & flags) == flags) {
+				if (released) {	// button release?
+					if ((t_flags & IR_FLAGS_LONGPRESS) && was_waiting) {
+						// We were timing for a possible longpress,
+						//  but now know that it wasn't held down long enough.
+						// Instead, we just let go of a shortpress for which
+						//   the original "press" code has been sent yet
+						// So we must now look for a shortpress translation
+						delayed_send = 1;
+						continue; // look for shortpress translation instead
+					  //else we need to send the "release" sequence for a longpress
 					}
-					ir_lasttime = ir_lastevent = jiffies;
-					return;
+					// We just matched the "release" for either a longpress or shortpress.
+					// Send the "press" sequence (if shortpress), then the final "release" (either)
+					if (delayed_send)
+						hijack_enq_translations(t);
+					hijack_enq_release(&hijack_inputq, t->new[t->count - 1], 0); // final button release
+				} else { // button press?
+					if ((t_flags & IR_FLAGS_LONGPRESS)) {
+						// This *might* turn out to be a longpress, so we cannot translate it yet.
+						// So set a flag and let the display_handler() time it for sending.
+						ir_current_longpress = t;
+					} else {
+						hijack_enq_translations(t);
+					}
 				}
+				ir_lasttime = ir_lastevent = jiffies;
+				return;
 			}
 		}
 		if (delayed_send) {
@@ -2791,7 +2893,7 @@ input_send_delayed_rotate (void)
 }
 
 void  // invoked from multiple places (time-sensitive code) in empeg_input.c
-input_append_code(void *dev, unsigned long button)  // empeg_input.c
+input_append_code(void *dev, unsigned int button)  // empeg_input.c
 {
 	unsigned long flags;
 
@@ -2907,9 +3009,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 		if (look_for_trackinfo_or_tuner(player_buf, info_screenrow)) {
 			while (restore_carvisuals) {
 				--restore_carvisuals;
-				save_flags_cli(flags);
 				hijack_enq_button_pair(IR_RIO_INFO_PRESSED);
-				restore_flags(flags);
 			}
 		}
 	}
@@ -3095,65 +3195,50 @@ get_option_vals (int syntax_only, unsigned char **s, const hijack_option_t *opt)
 	int i, rc = 0;
 	if (syntax_only)
 		printk("hijack: %s =", opt->name);
-	for (i = 0; i < opt->num_items; ++i) {
-		int val;
-		if (!get_number(s, &val, 10, " ,;\t\r\n") || val < opt->min || val > opt->max)
-			break;	// failure
+	if (opt->num_items == 0) {
+		unsigned char *t = *s, c;
+		while ((c = *t) && c != '\n')
+			++t;
+		if ((t - *s) > opt->max)
+			t = *s + opt->max;
+		*t = '\0';
 		if (syntax_only)
-			printk(" %d", val);
+			printk(" '%s'\n", *s);
 		else
-			opt->target[i] = val;
-		if ((i + 1) == opt->num_items)
-			rc = 1;	// success
-		else if (!match_char(s, ','))
-			break;	// failure
+			strcpy(opt->target, *s);
+		*t = c;
+		rc = 1;	// success
+	} else {
+		for (i = 0; i < opt->num_items; ++i) {
+			int val;
+			if (!get_number(s, &val, 10, " ,;\t\n") || val < opt->min || val > opt->max)
+				break;	// failure
+			if (syntax_only)
+				printk(" %d", val);
+			else if (opt->num_items)
+				((int *)(opt->target))[i] = val;
+			if ((i + 1) == opt->num_items)
+				rc = 1;	// success
+			else if (!match_char(s, ','))
+				break;	// failure
+		}
+		if (syntax_only)
+			printk("\n");
 	}
-	if (syntax_only)
-		printk("\n");
 	return rc; // success
 }
 
-static char *get_button_name (unsigned int button, char *buf)
-{
-	button_name_t *bn = button_names;
-	unsigned char *name = NULL;
-
-	button &= ~BUTTON_FLAGS;
-	if (button <= 0xf && button != IR_KNOB_LEFT)
-		button &= ~1;
-	if (button > IR_NULL_BUTTON) {
-		name = "initial";
-	} else {
-		for (bn = button_names; bn->name[0]; ++bn) {
-			if (button == bn->code) {
-				name = bn->name;
-				goto done;
-			}
-		}
-		sprintf(buf, "0%x", button);
-		return buf;
-	}
-done:
-	return strcpy(buf, name);
-}
-
-static int get_button_code (unsigned char **s_p, int *initial, unsigned int *button, int eol_okay, const char *nextchars)
+static int get_button_code (unsigned char **s_p, unsigned int *button, int eol_okay, const char *nextchars)
 {
 	button_name_t *bn = button_names;
 	unsigned char *s = *s_p;
 
-	if (!initial)
-		++bn;
 	for (bn = button_names; bn->name[0]; ++bn) {
 		if (!strxcmp(s, bn->name, 1)) {
 			unsigned char *t = s + strlen(bn->name), c = *t;
 			if ((!c && eol_okay) || strchr(nextchars, c)) {
 				*s_p = t;
 				*button = bn->code;
-				if (bn == button_names) {	// special case for "initial"
-					++bn->code;
-					*initial = 1;
-				}
 				return 1;	// success
 			}
 		}
@@ -3162,58 +3247,55 @@ static int get_button_code (unsigned char **s_p, int *initial, unsigned int *but
 }
 
 static int
-ir_setup_translations2 (unsigned char *buf, unsigned long *table)
+ir_setup_translations2 (unsigned char *buf, unsigned int *table)
 {
 	const char header[] = "[ir_translate]";
 	unsigned char *s;
 	int index = 0;
-	button_names[0].code = IR_NULL_BUTTON - 8;	// reset the special codes for "initial"
 
 	// find start of translations
 	if (!buf || !*buf || !(s = strstr(buf, header)) || !*s)
 		return 0;
 	s += sizeof(header) - 1;
-	while (skip_over(&s, " \t\r\n")) {
-		unsigned int old = 0, new, initial = 0;
+	while (skip_over(&s, " \t\n")) {
+		unsigned int old = 0, new;
 		ir_translation_t *t = NULL;
-		if (get_button_code(&s, &initial, &old, 0, ".=")) {
+		if (get_button_code(&s, &old, 0, ".=")) {
 			unsigned short irflags = 0, flagmask, *defaults;
-			old &= ~BUTTON_FLAGS;
+			old &= ~(BUTTON_FLAGS^BUTTON_FLAGS_ALTNAME);
 			if (old <= 0xf)
 				old &= ~1;
-			if (*s == '.') {
-				ir_flags_t *f;
-				do {
-					unsigned char c = *++s;
-					for (f = ir_flags; (f->symbol && f->symbol != c); ++f);
-					irflags |= f->flag;
-				} while (f->symbol);
-			}
-			for (defaults = ir_flag_defaults; (flagmask = *defaults++);) {
-				if (!(irflags & flagmask))
-					irflags |= flagmask;
+			if (old >= IR_FAKE_POPUP0 && old <= IR_FAKE_POPUP3) {
+				old |= IR_FLAGS_POPUP;
+			} else if (old != IR_FAKE_INITCAR && old != IR_FAKE_INITHOME && old != IR_FAKE_NEXTSRC) {
+				if (*s == '.') {
+					ir_flags_t *f;
+					do {
+						unsigned char c = *++s;
+						for (f = ir_flags; (f->symbol && f->symbol != c); ++f);
+						irflags |= f->flag;
+					} while (f->symbol);
+				}
+				for (defaults = ir_flag_defaults; (flagmask = *defaults++);) {
+					if (!(irflags & flagmask))
+						irflags |= flagmask;
+				}
 			}
 			if (match_char(&s, '=')) {
 				int saved = index;
 				if (table) {
 					t = (ir_translation_t *)&(table[index]);
-					if (initial) {
-						if (!ir_initial_car && (irflags & IR_FLAGS_CAR))
-							ir_initial_car  = old;
-						if (!ir_initial_home && (irflags & IR_FLAGS_HOME))
-							ir_initial_home = old;
-					}
 					t->old   = old;
 					t->flags = irflags;
 					t->count = 0;
 				}
 				index += (sizeof(ir_translation_t) - sizeof(unsigned long)) / sizeof(unsigned long);
 				do {
-					if (!get_button_code(&s, NULL, &new, 1, ".,; \t\r\n")) {
+					if (!get_button_code(&s, &new, 1, ".,; \t\n")) {
 						index = saved; // error: completely ignore this line
 						break;
 					}
-					new &= ~BUTTON_FLAGS;
+					new &= ~(BUTTON_FLAGS^BUTTON_FLAGS_ALTNAME);
 					if (new <= 0xf && new != IR_KNOB_LEFT)
 						new &= ~1;
 					if (*s == '.') {
@@ -3232,7 +3314,7 @@ ir_setup_translations2 (unsigned char *buf, unsigned long *table)
 						t->new[t->count++] = new;
 					++index;
 				} while (match_char(&s, ','));
-				if (*s && !strchr(" ;\t\r\n", *s))
+				if (*s && !strchr(" ;\t\n", *s))
 					index = saved; // error: completely ignore this line
 			}
 		}
@@ -3250,7 +3332,8 @@ ir_setup_translations2 (unsigned char *buf, unsigned long *table)
 static void
 ir_setup_translations (unsigned char *buf)
 {
-	unsigned long flags, *table = NULL;
+	unsigned int *table = NULL;
+	unsigned long flags;
 	int size;
 
 	save_flags_cli(flags);
@@ -3266,6 +3349,7 @@ ir_setup_translations (unsigned char *buf)
 	if (!table) {
 		printk("ir_setup_translations failed: no memory\n");
 	} else {
+		memset(table, 0, size);
 		(void)ir_setup_translations2(buf, table);// second pass actually saves the data
 		save_flags_cli(flags);
 		ir_translate_table = table;
@@ -3280,7 +3364,7 @@ extend_menu (menu_item_t *new)
 	int i;
 	for (i = 0; i < MENU_MAX_ITEMS; ++i) {
 		menu_item_t *item = &menu_table[i];
-		if (item->label == NULL || !strcmp(item->label, new->label)) {
+		if (item->label == NULL || !strxcmp(item->label, new->label, 0)) {
 			if (item->label == NULL) // extending table?
 				menu_size = i + 1;
 			*item = *new;	// copy data regardless
@@ -3300,7 +3384,7 @@ remove_menu_entry (char *label)
 			menu_table[i-1] = *item;
 			if (!item->label)
 				break;
-		} else if (!strcmp(item->label, label)) {
+		} else if (!strxcmp(item->label, label, 0)) {
 			printk("hijack: removed menu entry: '%s'\n", label);
 			found = 1;
 		}
@@ -3409,11 +3493,11 @@ hijack_wait_on_menu (char *argv[])
 }
 
 static int
-copy_buttonlist_from_user (unsigned long arg, unsigned long **buttonlist, unsigned long max_size)
+copy_buttonlist_from_user (unsigned long arg, unsigned int **buttonlist, unsigned long max_size)
 {
 	// data[0] specifies TOTAL number of table entries data[0..?]
 	// data[0] cannot be zero; data[0]==1 means "capture everything"
-	unsigned long *list = NULL, size;
+	unsigned int *list = NULL, size;
 	long nbuttons;
 	if (copy_from_user(&nbuttons, (void *)arg, sizeof(nbuttons)))
 		return -EFAULT;
@@ -3475,14 +3559,14 @@ get_file (const char *path, unsigned char **buffer)
 static void
 print_ir_translates (void)
 {
-	unsigned long *table = ir_translate_table;
+	unsigned int *table = ir_translate_table;
 
 	if (table) {
 		while (*table != -1) {
 			char nambuf[16];
 			ir_translation_t *t = (ir_translation_t *)table;
-			unsigned long	*newp = &t->new[0];
-			unsigned short	t_flags = t->flags, *defaults, flagmask;
+			unsigned int	*newp = &t->new[0];
+			unsigned short	t_flags = t->flags & ~IR_FLAGS_POPUP, *defaults, flagmask;
 			int		count = t->count;
 
 			printk("ir_translate: %s",  get_button_name(t->old, nambuf));
@@ -3503,10 +3587,10 @@ print_ir_translates (void)
 			printk("=");
 			while (count--) {
 				unsigned long new = *newp++;
-				printk(get_button_name(new & ~BUTTON_FLAGS, nambuf));
+				printk(get_button_name(new & ~(BUTTON_FLAGS^BUTTON_FLAGS_ALTNAME), nambuf));
 				if ((new & BUTTON_FLAGS_UISTATE) == BUTTON_FLAGS_UISTATE)
 					new ^= BUTTON_FLAGS_UISTATE;
-				if (new & BUTTON_FLAGS) {
+				if (new & (BUTTON_FLAGS^BUTTON_FLAGS_ALTNAME)) {
 					printk(".");
 					if (new & BUTTON_FLAGS_LONGPRESS)
 						printk("L");
@@ -3551,7 +3635,7 @@ int hijack_ioctl  (struct inode *inode, struct file *filp, unsigned int cmd, uns
 			// Invocation:  rc = ioctl(fd, EMPEG_HIJACK_DISPWRITE, (unsigned long *)data[]);
 			// data[0] specifies TOTAL number of table entries data[0..?]
 			// data[0] cannot be zero; data[0]==1 means "capture everything"
-			unsigned long *buttonlist = NULL;
+			unsigned int *buttonlist = NULL;
 			if ((rc = copy_buttonlist_from_user(arg, &buttonlist, 256)))
 				return rc;
 			save_flags_cli(flags);
@@ -3624,7 +3708,7 @@ int hijack_ioctl  (struct inode *inode, struct file *filp, unsigned int cmd, uns
 		}
 		case EMPEG_HIJACK_INJECTBUTTONS:	// Insert button codes into player's input queue (bypasses hijack)
 		{					// same args/usage as EMPEG_HIJACK_BINDBUTTONS
-			unsigned long *buttonlist = NULL;
+			unsigned int *buttonlist = NULL;
 			int i;
 			if ((rc = copy_buttonlist_from_user(arg, &buttonlist, 256)))
 				return rc;
@@ -3701,11 +3785,10 @@ get_hijack_options (unsigned char *s)
 	// find start of options
 	if (s && *s && (s = strstr(s, header)) && *s) {
 		s += sizeof(header) - 1;
-		while (skip_over(&s, " \t\r\n") && *s != '[') {
+		while (skip_over(&s, " \t\n") && *s != '[') {
 			for (opt = &hijack_option_table[0]; (opt->name); ++opt) {
-				int optlen = strlen(opt->name);
-				if (!strncmp(s, opt->name, optlen)) {
-					s += optlen;
+				if (!strxcmp(s, opt->name, 1)) {
+					s += strlen(opt->name);
 					if (match_char(&s, '=')) {
 						unsigned char *test = s;
 						if (get_option_vals(1, &test, opt))		// first pass validates
@@ -3714,7 +3797,7 @@ get_hijack_options (unsigned char *s)
 					}
 				}
 			}
-			if (!strncmp(s, menu_delete, sizeof(menu_delete)-1)) {
+			if (!strxcmp(s, menu_delete, 1)) {
 				unsigned char *label = s += sizeof(menu_delete)-1;
 				while (*s && *s != '\n')
 					++s;
@@ -3744,7 +3827,12 @@ hijack_read_config_file (const char *path)
 	if (rc < 0) {
 		printk("hijack.c: open(%s) failed (errno=%d)\n", path, rc);
 	} else if (rc > 0 && buf && *buf) {
+
+		// sequence "matters" here, since get_hijack_options() might rename the "PopUpx" buttons
+		ir_setup_translations(buf);
+		print_ir_translates();
 		get_hijack_options(buf);
+
 		if (ide_hwifs[0].drives[1].present || (MAX_HWIFS > 1 && ide_hwifs[1].drives[0].present)) {
 			remove_menu_entry(onedrive_menu_label);
 			hijack_onedrive = 0;
@@ -3757,18 +3845,15 @@ hijack_read_config_file (const char *path)
 			PROMPTCOLOR		=  COLOR3;
 			ENTRYCOLOR		= -COLOR3;
 		}
-		ir_setup_translations(buf);
-		print_ir_translates();
 
 		// Send initial button sequences, if any
 		save_flags_cli(flags);
-		if ( empeg_on_dc_power && ir_initial_car) {
-			input_append_code(IR_INTERNAL, ir_initial_car);
-			input_append_code(IR_INTERNAL, RELEASECODE(ir_initial_car));
-		}
-		if (!empeg_on_dc_power && ir_initial_home) {
-			input_append_code(IR_INTERNAL, ir_initial_home);
-			input_append_code(IR_INTERNAL, RELEASECODE(ir_initial_home));
+		if (empeg_on_dc_power) {
+			input_append_code(IR_INTERNAL, IR_FAKE_INITCAR);
+			input_append_code(IR_INTERNAL, RELEASECODE(IR_FAKE_INITCAR));
+		} else {
+			input_append_code(IR_INTERNAL, IR_FAKE_INITHOME);
+			input_append_code(IR_INTERNAL, RELEASECODE(IR_FAKE_INITHOME));
 		}
 		restore_flags(flags);
 	}
@@ -3827,6 +3912,9 @@ fix_visuals (unsigned char *buf)
 				}
 				break;
 		}
+		if (restore_carvisuals)
+			empeg_state_dirty = 1;
+		printk("fix_visuals(): restore=%d, row=%d\n", restore_carvisuals, info_screenrow); //fixme: temporary
 	}
 }
 #endif // RESTORE_CARVISUALS
@@ -3836,6 +3924,8 @@ fix_visuals (unsigned char *buf)
 void	// invoked from empeg_state.c
 hijack_save_settings (unsigned char *buf)
 {
+	unsigned int knob;
+
 	// save state
 	if (empeg_on_dc_power)
 		hijack_savearea.voladj_dc_power	= hijack_voladj_enabled;
@@ -3844,20 +3934,16 @@ hijack_save_settings (unsigned char *buf)
 	hijack_savearea.blanker_timeout		= blanker_timeout;
 	hijack_savearea.maxtemp_threshold	= maxtemp_threshold;
 	hijack_savearea.onedrive		= hijack_onedrive;
-#ifdef EMPEG_KNOB_SUPPORTED
-{
-	unsigned int knob;
 	hijack_savearea.knobjog			= hijack_knobjog;
-	if (knobdata_index == 1)
-		knob = (1 << KNOBDATA_BITS) | knobmenu_index;
-	else
+	if (knobdata_index == 0) {
+		knob = (1 << KNOBDATA_BITS) | popup0_index;
+	} else {
 		knob = knobdata_index;
+	}
 	if (empeg_on_dc_power)
 		hijack_savearea.knob_dc = knob;
 	else
 		hijack_savearea.knob_ac = knob;
-}
-#endif // EMPEG_KNOB_SUPPORTED
 	hijack_savearea.blanker_sensitivity	= blanker_sensitivity;
 	hijack_savearea.timer_action		= timer_action;
 	hijack_savearea.menu_item		= menu_item;
@@ -3893,6 +3979,7 @@ hijack_restore_settings (unsigned char *buf, int failed)
 {
 	extern int empeg_state_restore(unsigned char *);	// arch/arm/special/empeg_state.c
 	static int second_pass = 0;
+	unsigned int knob;
 
 	// restore state
 	memcpy(&hijack_savearea, buf+HIJACK_SAVEAREA_OFFSET, sizeof(hijack_savearea));
@@ -3914,20 +4001,15 @@ hijack_restore_settings (unsigned char *buf, int failed)
 	blanker_timeout			= hijack_savearea.blanker_timeout;
 	maxtemp_threshold		= hijack_savearea.maxtemp_threshold;
 	hijack_onedrive			= hijack_savearea.onedrive;
-#ifdef EMPEG_KNOB_SUPPORTED
-{
-	unsigned int knob;
 	hijack_knobjog			= hijack_savearea.knobjog;
 	knob = empeg_on_dc_power ? hijack_savearea.knob_dc : hijack_savearea.knob_ac;
 	if ((knob & (1 << KNOBDATA_BITS)) == 0) {
-		knobmenu_index		= 0;
+		popup0_index		= 0;
 		knobdata_index		= knob;
 	} else {
-		knobmenu_index		= knob & ((1 << KNOBDATA_BITS) - 1);
+		popup0_index		= knob & ((1 << KNOBDATA_BITS) - 1);
 		knobdata_index		= 1;
 	}
-}
-#endif // EMPEG_KNOB_SUPPORTED
 	blanker_sensitivity		= hijack_savearea.blanker_sensitivity;
 	timer_action			= hijack_savearea.timer_action;
 	menu_item			= hijack_savearea.menu_item;

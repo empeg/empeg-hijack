@@ -43,8 +43,9 @@
 static unsigned int hijack_status = HIJACK_INACTIVE;
 static unsigned long hijack_last_moved = 0, hijack_userdata = 0, hijack_last_refresh = 0, blanker_activated = 0;
 
-static int  (*hijack_dispfunc)(int), menu_item = 0, menu_size = 0, menu_top = 0;
+static int  (*hijack_dispfunc)(int) = NULL;
 static void (*hijack_movefunc)(int) = NULL;
+static int menu_item = 0, menu_size = 0, menu_top = 0;
 static unsigned int ir_selected = 0, ir_releasewait = 0, ir_knob_down = 0, ir_left_down = 0, ir_right_down = 0, ir_trigger_count = 0;
 static unsigned long ir_prev_pressed = 0;
 
@@ -52,11 +53,10 @@ static unsigned long ir_prev_pressed = 0;
 static unsigned long *hijack_buttonlist = NULL, hijack_dataq[HIJACK_DATAQ_SIZE];
 static unsigned int hijack_dataq_head = 0, hijack_dataq_tail = 0;
 
-
 #define SCREEN_BLANKER_MULTIPLIER 30
 int blanker_timeout = 0;	// saved/restored in empeg_state.c
 
-static int maxtemp_threshold, hijack_on_dc_power;
+static int maxtemp_threshold = 0, hijack_on_dc_power = 0;
 #define MAXTEMP_OFFSET	29
 #define MAXTEMP_BITS	6
 
@@ -190,11 +190,15 @@ draw_pixel (int pixel_row, unsigned int pixel_col, int color)
 }
 
 static int
-draw_char (unsigned char *displayrow, int pixel_col, unsigned char c, unsigned char color, unsigned char inverse)
+draw_char (unsigned int pixel_row, int pixel_col, unsigned char c, unsigned char color, unsigned char inverse)
 {
-	unsigned int pixel_row, num_cols;
+	unsigned int num_cols;
 	const unsigned char *font_entry;
+	unsigned char *displayrow;
 
+	if (pixel_row > EMPEG_SCREEN_ROWS)
+		return 0;
+	displayrow = &hijack_displaybuf[pixel_row][0];
 	if (c > '~' || c < ' ')
 		c = ' ';
 	font_entry = &kfont[c - ' '][0];
@@ -202,10 +206,8 @@ draw_char (unsigned char *displayrow, int pixel_col, unsigned char c, unsigned c
 		num_cols = 3;
 	else
 		for (num_cols = KFONT_WIDTH; !font_entry[num_cols-2]; --num_cols);
-	if (pixel_col + num_cols + 1 >= EMPEG_SCREEN_COLS) {
-		//num_cols = EMPEG_SCREEN_COLS - pixel_col - 1;
+	if (pixel_col + num_cols + 1 >= EMPEG_SCREEN_COLS)
 		return -1;
-	}
 	for (pixel_row = 0; pixel_row < KFONT_HEIGHT; ++pixel_row) {
 		unsigned char pixel_mask = (pixel_col & 1) ? 0xf0 : 0x0f;
 		unsigned int offset = 0;
@@ -220,9 +222,12 @@ draw_char (unsigned char *displayrow, int pixel_col, unsigned char c, unsigned c
 	return num_cols;
 }
 
+#define ROWCOL(text_row,pixel_col)  ((unsigned int)(((pixel_col)<<16)|(text_row)))
+
 static unsigned int
-draw_string (int text_row, unsigned int pixel_col, const unsigned char *s, int color)
+draw_string (unsigned int rowcol, const unsigned char *s, int color)
 {
+	unsigned int row = (rowcol & 0xffff), col = (rowcol >> 16);
 	unsigned char inverse = 0;
 	if (color < 0)
 		color = inverse = -color;
@@ -230,32 +235,26 @@ draw_string (int text_row, unsigned int pixel_col, const unsigned char *s, int c
 	color |= color << 4;
 	if (inverse)
 		inverse = color;
-top:
-	if (text_row < EMPEG_TEXT_ROWS) {
-		unsigned char *displayrow = &hijack_displaybuf[text_row * KFONT_HEIGHT][0];
+top:	if (row < EMPEG_TEXT_ROWS) {
 		while (*s) {
-			int rc;
-			if (*s == '\n') {
-				++s;
-				++text_row;
-				goto top;
-			} else if (-1 == (rc = draw_char(displayrow, pixel_col, *s, color, inverse))) {
-				++text_row;
+			int col_adj;
+			if (*s++ == '\n' || -1 == (col_adj = draw_char(row * KFONT_HEIGHT, col, *(s-1), color, inverse))) {
+				col  = 0;
+				row += 1;
 				goto top;
 			}
-			pixel_col += rc;
-			++s;
+			col += col_adj;
 		}
 	}
-	return pixel_col;
+	return ROWCOL(row,col);
 }
 
 static unsigned int
-draw_number (int text_row, unsigned int pixel_col, unsigned int number, const char *format, int color)
+draw_number (unsigned int rowcol, unsigned int number, const char *format, int color)
 {
 	unsigned char buf[16];
 	sprintf(buf, format, number);
-	return draw_string(text_row, pixel_col, buf, color);
+	return draw_string(rowcol, buf, color);
 }
 
 static void
@@ -355,7 +354,7 @@ voladj_move (int direction)
 static int
 voladj_display (int firsttime)
 {
-	unsigned int i, col, mult, prev = -1;
+	unsigned int i, rowcol, mult, prev = -1;
 	unsigned char buf[32];
 	unsigned long flags;
 
@@ -371,12 +370,12 @@ voladj_display (int firsttime)
 	save_flags_cli(flags);
 	voladj_history[voladj_histx = (voladj_histx + 1) % VOLADJ_HISTSIZE] = voladj_multiplier;
 	restore_flags(flags);
-	col = draw_string(0,   0, hijack_on_dc_power ? "(DC)" : "(AC)", COLOR2);
-	col = draw_string(0, col, " Volume Adjust:  ", COLOR2);
-	(void)draw_string(0, col, voladj_names[voladj_enabled], COLOR3);
+	rowcol = draw_string(ROWCOL(0,0), hijack_on_dc_power ? "(DC)" : "(AC)", COLOR2);
+	rowcol = draw_string(rowcol, " Volume Adjust:  ", COLOR2);
+	(void)draw_string(rowcol, voladj_names[voladj_enabled], COLOR3);
 	mult = voladj_multiplier;
 	sprintf(buf, "Current Multiplier: %2u.%02u", mult >> MULT_POINT, (mult & MULT_MASK) * 100 / (1 << MULT_POINT));
-	(void)draw_string(3, 12, buf, COLOR2);
+	(void)draw_string(ROWCOL(3,12), buf, COLOR2);
 	save_flags_cli(flags);
 	for (i = 1; i <= VOLADJ_HISTSIZE; ++i)
 		(void)voladj_plot(1, i - 1, voladj_history[(voladj_histx + i) % VOLADJ_HISTSIZE], &prev);
@@ -387,24 +386,19 @@ voladj_display (int firsttime)
 static int
 kfont_display (int firsttime)
 {
-	unsigned int col = 0, row = 0;
+	unsigned int rowcol;
 	unsigned char c;
 
 	if (!firsttime)
 		return NO_REFRESH;
 	clear_hijack_displaybuf(COLOR0);
-	col = draw_string(row, col, " ", -COLOR3);
-	col = draw_string(row, col, " ", -COLOR2);
-	col = draw_string(row, col, " ", -COLOR1);
+	rowcol = draw_string(ROWCOL(0,0), " ", -COLOR3);
+	rowcol = draw_string(rowcol, " ", -COLOR2);
+	rowcol = draw_string(rowcol, " ", -COLOR1);
 	for (c = (unsigned char)' '; c <= (unsigned char)'~'; ++c) {
 		unsigned char s[2] = {0,0};
 		s[0] = c;
-		col = draw_string(row, col, &s[0], COLOR2);
-		if (col > (EMPEG_SCREEN_COLS - (KFONT_WIDTH - 1))) {
-			col = 0;
-			if (++row >= EMPEG_TEXT_ROWS)
-				break;
-		}
+		rowcol = draw_string(rowcol, &s[0], COLOR2);
 	}
 	return NEED_REFRESH;
 }
@@ -416,9 +410,13 @@ extern int get_loadavg(char * buffer);
 static int
 read_temperature (void)
 {
-	int temp;
+	static unsigned long lastread = 0;
+	static int temp = 0;
 	unsigned long flags;
 
+	if (lastread && jiffies_since(lastread) < (HZ/2))
+		return temp;
+	lastread = jiffies ? jiffies : 1;
 	save_flags_clif(flags);
 	temp = empeg_readtherm(&OSMR0,&GPLR);
 	restore_flags(flags);
@@ -426,7 +424,14 @@ read_temperature (void)
 	if (temp & 0x80)
 		temp = -(128 - (temp ^ 0x80));
 	return temp;
+}
 
+static unsigned int
+draw_temperature (unsigned int rowcol, int temp, int color)
+{
+	unsigned char buf[32];
+	sprintf(buf, "%dC/%dF", temp, temp * 180 / 100 + 32);
+	return draw_string(rowcol, buf, color);
 }
 
 static int
@@ -434,30 +439,26 @@ vitals_display (int firsttime)
 {
 	unsigned int *permset=(unsigned int*)(EMPEG_FLASHBASE+0x2000);
 	unsigned char buf[80];
-	int temp, col;
-	struct sysinfo i;
+	int rowcol, i, count;
+	struct sysinfo si;
 
 	if (!firsttime && jiffies_since(hijack_last_refresh) < (HZ*2))
 		return NO_REFRESH;
 	clear_hijack_displaybuf(COLOR0);
-	sprintf(buf, "HwRev:%02d, Build:%x", permset[0], permset[3]);
-	(void)draw_string(0, 0, buf, COLOR2);
-	col = draw_string(1, 0, "Temperature: ", COLOR2);
-	temp = read_temperature();
-	sprintf(buf, "%dC/%dF", temp, temp * 180 / 100 + 32);
-	(void)draw_string(1, col, buf, COLOR2);
-	si_meminfo(&i);
-	sprintf(buf, "Free: %lu/%lu", i.freeram, i.totalram);
-	(void)draw_string(2, 0, buf, COLOR2);
+	sprintf(buf, "HwRev:%02d, Build:%x\nTemperature: ", permset[0], permset[3]);
+	rowcol = draw_string(ROWCOL(0,0), buf, COLOR2);
+	(void)draw_temperature(rowcol, read_temperature(), COLOR2);
+	si_meminfo(&si);
+	sprintf(buf, "Free: %lu/%lu\nLoadAvg: ", si.freeram, si.totalram);
+	rowcol = draw_string(ROWCOL(2,0), buf, COLOR2);
 	(void)get_loadavg(buf);
-	temp = 0;
-	for (col = 0;; ++col) {
-		if (buf[col] == ' ' && ++temp == 3)
+	count = 0;
+	for (i = 0;; ++i) {
+		if (buf[i] == ' ' && ++count == 3)
 			break;
 	}
-	buf[col] = '\0';
-	col = draw_string(3, 0, "LoadAvg: ", COLOR2);
-	(void)draw_string(3, col, buf, COLOR2);
+	buf[i] = '\0';
+	(void)draw_string(rowcol, buf, COLOR2);
 	return NEED_REFRESH;
 }
 
@@ -474,20 +475,20 @@ blanker_move (int direction)
 static int
 blanker_display (int firsttime)
 {
-	unsigned int col;
+	unsigned int rowcol;
 
 	if (!firsttime && !hijack_last_moved)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
-	col = draw_string(0,   0, "Screen inactivity timeout:", COLOR2);
-	col = draw_string(1,   0, "Blank: ", COLOR2);
+	(void)draw_string(ROWCOL(0,0), "Screen inactivity timeout:", COLOR2);
+	rowcol = draw_string(ROWCOL(1,0), "Blank: ", COLOR2);
 	if (blanker_timeout) {
-		col = draw_string(1, col, "after ", COLOR2);
-		col = draw_number(1, col, blanker_timeout * SCREEN_BLANKER_MULTIPLIER, "%u", COLOR3);
-		col = draw_string(1, col, " secs", COLOR2);
+		rowcol = draw_string(rowcol, "after ", COLOR2);
+		rowcol = draw_number(rowcol, blanker_timeout * SCREEN_BLANKER_MULTIPLIER, "%u", COLOR3);
+		(void)   draw_string(rowcol, " secs", COLOR2);
 	} else {
-		col = draw_string(1, col, "Off", COLOR3);
+		(void)draw_string(rowcol, "Off", COLOR3);
 	}
 	return NEED_REFRESH;
 }
@@ -516,8 +517,8 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(1, 20, " Enhancements.v25 ", -COLOR3);
-			(void)draw_string(2, 33, "by Mark Lord", COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v26 ", -COLOR3);
+			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
 		if (jiffies_since(game_ball_last_moved) < (HZ*3))
@@ -526,7 +527,7 @@ game_finale (void)
 		return NEED_REFRESH;
 	}
 	if (jiffies_since(game_animtime) < (HZ/(ANIMATION_FPS-2))) {
-		(void)draw_string(2, 44, "You Win", COLOR3);
+		(void)draw_string(ROWCOL(2,44), "You Win", COLOR3);
 		return NEED_REFRESH;
 	}
 	if (game_animtime == 0) { // first frame?
@@ -637,7 +638,7 @@ game_move_ball (void)
 		}
 	}
 	if (hijack_displaybuf[game_row][game_col] == GAME_OVER) {
-		(void)draw_string(2, 44, "Game Over", COLOR3);
+		(void)draw_string(ROWCOL(2,44), "Game Over", COLOR3);
 		game_over = 1;
 	}
 	hijack_displaybuf[game_row][game_col] = GAME_BALL;
@@ -716,7 +717,7 @@ menu_display (int firsttime)
 			++menu_top;
 		for (menu_size = 0; menu_label[menu_size] != NULL; ++menu_size) {
 			if (menu_size >= menu_top && menu_size < (menu_top + EMPEG_TEXT_ROWS))
-				(void)draw_string(menu_size - menu_top, 0, menu_label[menu_size], (menu_size == item) ? COLOR3 : COLOR2);
+				(void)draw_string(ROWCOL(menu_size-menu_top,0), menu_label[menu_size], (menu_size == item) ? COLOR3 : COLOR2);
 		}
 		return NEED_REFRESH;
 	}
@@ -740,9 +741,6 @@ void hijack_display(struct display_dev *dev, unsigned char *player_buf)
 	unsigned char *buf = (unsigned char *)hijack_displaybuf;
 	unsigned long flags;
 	int refresh = NEED_REFRESH, color;
-	unsigned int secs_since_lastpoll;
-	static int temp = 0;
-	static unsigned long temp_lastpoll = 0;
 
 	save_flags_cli(flags);
 	switch (hijack_status) {
@@ -751,27 +749,22 @@ void hijack_display(struct display_dev *dev, unsigned char *player_buf)
 				ir_trigger_count = 0;
 				menu_item = menu_top = 0;
 				activate_dispfunc(0, menu_display, menu_move);
-			} else if (!maxtemp_threshold || (secs_since_lastpoll = jiffies_since(temp_lastpoll) / HZ) < 3) {
-				buf = player_buf;
-			} else if ((secs_since_lastpoll & 1) && (temp = read_temperature()) < (maxtemp_threshold + MAXTEMP_OFFSET)) {
-				temp_lastpoll = jiffies;
-				buf = player_buf;
-			} else if (temp < (maxtemp_threshold + MAXTEMP_OFFSET)) {
+			} else if (!maxtemp_threshold || read_temperature() < (maxtemp_threshold + MAXTEMP_OFFSET)) {
 				buf = player_buf;
 			} else {
-				unsigned char msg[16];
-				color = (secs_since_lastpoll & 1) ? COLOR3 : -COLOR3;
+				unsigned int rowcol;
+				color = ((jiffies / HZ) & 1) ? COLOR3 : -COLOR3;
 				clear_hijack_displaybuf(color);
-				sprintf(msg, " Too Hot: %dC ", temp);
-				(void)draw_string(2, 35, msg, -color);
+				rowcol = draw_string(ROWCOL(2,18), " Too Hot: ", -color);
+				(void)draw_temperature(rowcol, read_temperature(), -color);
 				buf = (unsigned char *)hijack_displaybuf;
-				refresh = NEED_REFRESH;
 			}
 			break;
 		case HIJACK_ACTIVE:
 			if (hijack_dispfunc == NULL) {  // userland app finished?
 				ir_trigger_count = 0;
 				activate_dispfunc(0, menu_display, menu_move);
+				//hijack_deactivate();
 			} else {
 				restore_flags(flags);
 				refresh = hijack_dispfunc(0);
@@ -967,9 +960,10 @@ done:
 	// save button PRESSED codes in ir_prev_pressed
 	if ((data & 0x80000001) == 0 || ((int)data) > 16)
 		ir_prev_pressed = data;
-	if (hijack_dataq_tail != hijack_dataq_head) {
-		if (*((struct wait_queue **)hijack_userdata) != NULL) {
-			wake_up((struct wait_queue **)hijack_userdata);
+	if (hijack_buttonlist && hijack_status == HIJACK_ACTIVE && hijack_dispfunc == userland_display) {
+		if (hijack_dataq_tail != hijack_dataq_head) {
+			if (*((struct wait_queue **)hijack_userdata) != NULL)
+				wake_up((struct wait_queue **)hijack_userdata);
 		}
 	}
 	restore_flags(flags);
@@ -1041,20 +1035,20 @@ maxtemp_move (int direction)
 static int
 maxtemp_display (int firsttime)
 {
-	unsigned int col;
+	unsigned int rowcol;
 
 	if (!firsttime && !hijack_last_moved)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
-	col = draw_string(0,   0, "Max Temperature Warning", COLOR2);
-	col = draw_string(1,   0, "Threshold: ", COLOR2);
-	if (maxtemp_threshold) {
-		col = draw_number(1, col, maxtemp_threshold + MAXTEMP_OFFSET, "%2u", COLOR3);
-		col = draw_string(1, col, "C", COLOR3);
-	} else {
-		col = draw_string(1, col, "Off", COLOR3);
-	}
+	rowcol = draw_string(ROWCOL(0,0), "Max Temperature Warning", COLOR2);
+	rowcol = draw_string(ROWCOL(1,0), "Threshold: ", COLOR2);
+	if (maxtemp_threshold)
+		(void)draw_temperature(rowcol, maxtemp_threshold + MAXTEMP_OFFSET, COLOR3);
+	else
+		rowcol = draw_string(rowcol, "Off", COLOR3);
+	rowcol = draw_string(ROWCOL(3,0), "Currently: ", COLOR2);
+	(void)draw_temperature(rowcol, read_temperature(), COLOR2);
 	return NEED_REFRESH;
 }
 
@@ -1200,7 +1194,7 @@ hijack_ioctl (struct inode *inode, struct file *filp, unsigned int cmd, unsigned
 			} while (buf[size++] && size < sizeof(buf));
 			buf[size-1] = '\0';
 			save_flags_cli(flags);
-			(void)draw_string(0,0,buf,COLOR3);
+			(void)draw_string(ROWCOL(0,0),buf,COLOR3);
 			restore_flags(flags);
 			userland_display_updated = 1;
 			return 0;

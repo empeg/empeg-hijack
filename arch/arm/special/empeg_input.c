@@ -182,7 +182,7 @@ struct input_dev
 #endif
 };
 
-struct input_dev input_devices[1];
+static struct input_dev input_devices[1];
 
 /* Used to disallow multiple opens. */
 static int users = 0;
@@ -223,9 +223,9 @@ int real_input_append_code(input_code data)  // invoked from hijack.c
 	   sure that noone else is fiddling with stuff while we
 	   do it. */
 	struct input_dev *dev = input_devices;
+	int rc = 0;
 	input_code *new_wp;
 	unsigned long flags;
-	int rc = 0;
 
 	save_flags_cli(flags);
 	
@@ -835,7 +835,7 @@ static int input_open(struct inode *inode, struct file *filp)
 	hijack_got_config_file = 0;
 	users++;
 	MOD_INC_USE_COUNT;
-
+	
 	/* This shouldn't be necessary, but there's something (IDE, audio?)
 	 * that's setting rather than or'ing these and breaking it after
 	 * initialisation.

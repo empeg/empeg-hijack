@@ -25,7 +25,6 @@ extern void state_cleanse(void);					// arch/arm/special/empeg_state.c
 extern void hijack_voladj_intinit(int, int, int, int, int);		// arch/arm/special/empeg_audio3.c
 extern void hijack_beep (int pitch, int duration_msecs, int vol_percent);// arch/arm/special/empeg_audio3.c
 extern unsigned long jiffies_since(unsigned long past_jiffies);		// arch/arm/special/empeg_input.c
-extern unsigned long input_devices[1];					// arch/arm/special/empeg_input.c
 
 extern int empeg_on_dc_power(void);					// arch/arm/special/empeg_power.c
 extern unsigned char get_current_mixer_source(void);			// arch/arm/special/empeg_mixer.c
@@ -78,16 +77,17 @@ static int knobdata_index = 0;
 
 // How button press/release events are handled:
 //
-// button -> interrupt -> input_append_code() -> hijack_handle_button() -> playerq[] -> real_input_append_code()
+// button -> interrupt -> input_append_code() -> inputq -> hijack_handle_button() -> playerq -> real_input_append_code()
 //
 // hijack.c::input_append_code() performs raw IR translations
+// hijack.c::inputq[] holds translated buttons with timing information queued for hijack to examine
 // hijack.c::hijack_handle_button() interprets buttons for hijack/menu functions
 // hijack.c::playerq[] holds translated buttons with timing information queued for the Empeg player software
 // empeg_input.c::real_input_append_code() feeds buttons to userland
 //
 // The flow is slightly different for userland apps which hijack buttons:
 //
-// button -> interrupt -> input_append_code() -> hijack_handle_button() -> userq[] -> ioctl()
+// button -> interrupt -> input_append_code() -> inputq -> hijack_handle_button() -> userq -> ioctl()
 //
 // Currently, userq[] does not hold useful timing information
 
@@ -104,7 +104,8 @@ typedef struct hijack_buttonq_s {
 	hijack_buttondata_t	data[HIJACK_BUTTONQ_SIZE];
 } hijack_buttonq_t;
 
-static hijack_buttonq_t hijack_playerq, hijack_userq;
+static hijack_buttonq_t hijack_inputq, hijack_playerq, hijack_userq;
+static int hijack_button_pacing = 4;	// minimum spacing between press/release pairs within playerq
 
 #define HIJACK_USERQ_SIZE	8
 static const unsigned long intercept_all_buttons[] = {1};
@@ -449,24 +450,15 @@ hijack_button_enq (hijack_buttonq_t *q, unsigned long button, unsigned long dela
 	unsigned short head;
 
 	head = q->head;
-	if (!delay && head != q->tail && (button & 0x80000001) == 0)
-		delay = 2;	// ensure we have a delay between press/release pairs
+	if (head != q->tail && delay < hijack_button_pacing && (button & 0x80000001) == 0 && q == &hijack_playerq)
+		delay = hijack_button_pacing;	// ensure we have sufficient delay between press/release pairs
 	if (++head >= HIJACK_BUTTONQ_SIZE)
 		head = 0;
 	if (head != q->tail) {
 		hijack_buttondata_t *data = &q->data[q->head = head];
 		data->button = button;
 		data->delay  = delay;
-		//printk("%8lu: ENQ(%08lx,%ld)\n", jiffies, data->button, data->delay);
 	}
-}
-
-static void
-hijack_button_reenq (hijack_buttonq_t *q)
-{
-	// restore the last removed item back onto the queue
-	q->tail = q->tail ? (q->tail - 1) : (HIJACK_BUTTONQ_SIZE - 1);
-	//printk("%8lu: REQ\n", jiffies);
 }
 
 static int
@@ -474,34 +466,24 @@ hijack_button_deq (hijack_buttonq_t *q, hijack_buttondata_t *rdata, int nowait)
 {
 	hijack_buttondata_t *data;
 	unsigned short tail;
+	unsigned long flags;
 
+	save_flags_cli(flags);
 	if ((tail = q->tail) != q->head) {	// anything in the queue?
 		if (++tail >= HIJACK_BUTTONQ_SIZE)
 			tail = 0;
 		data = &q->data[tail];
 		if (nowait || !data->delay || jiffies_since(q->last_deq) >= data->delay) {
-			//printk("%8lu: DEQ(%08lx,%ld)\n", jiffies, data->button, data->delay);
 			rdata->button = data->button;
 			rdata->delay  = data->delay;
 			q->tail = tail;
 			q->last_deq = jiffies;
+			restore_flags(flags);
 			return 1;	// button was available
 		}
-		//else printk("%8lu: DEQ(%08lx,%ld) - waiting\n", jiffies, data->button, data->delay);
 	}
+	restore_flags(flags);
 	return 0;	// no buttons available
-}
-
-static void
-hijack_send_buttons_to_player (void)
-{
-	hijack_buttondata_t data;
-	while (hijack_button_deq(&hijack_playerq, &data, 0)) {
-		if (real_input_append_code(data.button)) {
-			hijack_button_reenq(&hijack_playerq);
-			break;
-		}
-	}
 }
 
 static void
@@ -1086,7 +1068,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v67 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v68 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1862,6 +1844,29 @@ done:
 	return 0;
 }
 
+static void
+hijack_send_buttons_to_player (void)
+{
+	hijack_buttondata_t data;
+
+	while (hijack_button_deq(&hijack_playerq, &data, 0)) {
+		(void)real_input_append_code(data.button);
+	}
+}
+
+static void
+hijack_handle_buttons (void)
+{
+	hijack_buttondata_t data;
+	unsigned long flags;
+
+	while (hijack_button_deq(&hijack_inputq, &data, 1)) {
+		save_flags_cli(flags);
+		hijack_handle_button(data.button, data.delay);
+		restore_flags(flags);
+	}
+}
+
 // This routine covertly intercepts all display updates,
 // giving us a chance to substitute our own display.
 //
@@ -1876,17 +1881,20 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 
 	save_flags_cli(flags);
 	if (ir_current_longpress) {
-		unsigned long elapsed = jiffies_since(ir_lasttime);
-		if (elapsed >= HZ) {
+		if (jiffies_since(ir_lasttime) >= HZ) {
 			unsigned long release = ir_current_longpress->old;
 			release |= (release > 0xf) ? 0x80000000 : 1;	// front panel is weird
+			//printk("%8lu: longpress triggered, sending %08lx\n", jiffies, release);
 			input_append_code(NULL, release);
 		}
 	}
+	restore_flags(flags);
 
-	// See if we have any buttons ready for the player software
+	// Handle any buttons that may be queued up
+	hijack_handle_buttons();
 	hijack_send_buttons_to_player();
 
+	save_flags_cli(flags);
 	if (!dev->power) {  // do (almost) nothing if unit is in standby mode
 		hijack_deactivate(HIJACK_INACTIVE);
 		(void)timer_check_expiry(dev);
@@ -2025,6 +2033,7 @@ typedef struct hijack_option_s {
 
 static const hijack_option_t hijack_option_table[] = {
 	{"temperature_correction",	&hijack_temperature_correction,	1,	-20,	+20},
+	{"button_pacing",		&hijack_button_pacing,		1,	0,	HZ},
 	{"voladj_low",			&hijack_voladj_parms[0][0],	5,	0,	0x7ffe},
 	{"voladj_medium",		&hijack_voladj_parms[1][0],	5,	0,	0x7ffe},
 	{"voladj_high",			&hijack_voladj_parms[2][0],	5,	0,	0x7ffe},
@@ -2137,8 +2146,6 @@ ir_setup_translations2 (unsigned char *buf, unsigned long *table)
 	unsigned long *common_bits = NULL;
 
 	if (table) {
-		// Fixme: [someday] break up codes into separate tables/sections by vendor-id.
-		// Fixme: This could help a lot in the case where multiple foreign remotes are translated.
 		common_bits = &table[index++];
 		*common_bits = 0x3fffffff;	// The set of bits common to all translated codes
 	}
@@ -2150,8 +2157,8 @@ ir_setup_translations2 (unsigned char *buf, unsigned long *table)
 		int old, new;
 		ir_translation_t *t = NULL;
 		if (get_number(&s, &old, 16, " \t.=")) {
-			int count = 0, longpress = 0, shifted = 0;
-			unsigned char source = 0;
+			unsigned char longpress = 0, shifted = 0, source = 0;
+			old &= ~0xc0000000;
 			if (*s == '.') {
 				if (*++s == 'L') {
 					longpress = 1;
@@ -2164,32 +2171,23 @@ ir_setup_translations2 (unsigned char *buf, unsigned long *table)
 				if (*s && strchr("TAM", *s))	// Tuner,Aux,Main
 					source = *s++;
 			}
-			if (match_char(&s, '=')) {
+			if (old > 0xf && match_char(&s, '=')) {	// We currently disallow front-panel buttons
+				int saved = index;
 				if (table) {
-					*common_bits &= old;	// build up common_bits mask
 					t = (ir_translation_t *)&(table[index]);
 					t->longpress = longpress;
 					t->shifted = shifted;
 					t->source = source;
-					t->old = old & 0x3fffffff;
+					t->old = old;
+					*common_bits = old & *common_bits;	// build up common_bits mask
 					t->count = 0;
-				} else {
-					printk("ir_translate: %08X", old);
-					if (source || longpress || shifted) {
-						printk(".");
-						if (longpress)
-							printk("L");
-						if (shifted)
-							printk("S");
-						if (source)
-							printk("%c",source);
-					}
-					printk("=");
 				}
 				index += (sizeof(ir_translation_t) - sizeof(unsigned long)) / sizeof(unsigned long);
 				do {
-					if (!get_number(&s, &new, 16, " .,;\t\r\n"))
-						goto done;
+					if (!get_number(&s, &new, 16, " .,;\t\r\n")) {
+						index = saved; // error: completely ignore this line
+						break;
+					}
 					new &= ~0xc0000000;
 					if (new <= 0xf && new != IR_KNOB_LEFT)
 						new &= ~1;
@@ -2204,32 +2202,17 @@ ir_setup_translations2 (unsigned char *buf, unsigned long *table)
 							new |= 0x40000000;	// mark as a "shift" button
 						}
 					}
-					if (t) {
+					if (t)
 						t->new[t->count++] = new;
-					} else {
-						if (count++)
-							printk(",");
-						printk("%08X", new & ~0xc0000000);
-						if (new & 0xc0000000) {
-							printk(".");
-							if (new & 0x80000000)
-								printk("L");
-							if (new & 0x40000000)
-								printk("S");
-						}
-					}
 					++index;
 				} while (match_char(&s, ','));
-				if (!t)
-					printk("\n");
+				if (*s && !strchr(" ;\t\r\n", *s))
+					index = saved; // error: completely ignore this line
 			}
 		}
 		while (*s && *s != '\n')	// skip to end-of-line
 			++s;
 	}
-done:
-	if (!table)
-		printk("\n");
 	if (index) {
 		if (table)
 			table[index] = -1;	// end of table marker
@@ -2275,12 +2258,12 @@ ir_send_release (unsigned long button)
 	delay = (button & 0x80000000) ? HZ : 0;
 	new = button & ~0xc0000000; // mask off the special flags bits
 	new |= (new > 0xf) ? 0x80000000 : 1;	// front panel is weird
-	hijack_handle_button(new, delay);
+	hijack_button_enq(&hijack_inputq, new, delay);
 }
 
 // Send a translated replacement sequence, except for the final release code
 static void
-ir_enq_buttons (ir_translation_t *t)
+ir_send_buttons (ir_translation_t *t)
 {
 	unsigned long *newp = &t->new[0];
 	int count = t->count;
@@ -2290,73 +2273,67 @@ ir_enq_buttons (ir_translation_t *t)
 		unsigned long new = button & ~0xc0000000; // mask off the special flag bits
 		if ((button & 0x40000000))
 			ir_shifted = !ir_shifted;
-		hijack_handle_button(new, 0);
+		hijack_button_enq(&hijack_inputq, new, 0);
 		if (count)
 			ir_send_release(button);
 	}
 }
 
-void  // invoked from multiple places in empeg_input.c
+void  // invoked from multiple places (time-sensitive code) in empeg_input.c
 input_append_code(void *ignored, unsigned long button)  // empeg_input.c
 {
-	static unsigned long ir_downkey = -1;
-	unsigned long flags, old, released = 0, *table = ir_translation_table;
+	static unsigned long ir_downkey = 0;
+	unsigned long flags, common_bits, old, released = 0, *table = ir_translation_table;
 
-	//printk("\n%8ld:\n", jiffies);
 	save_flags_cli(flags);
-	ir_current_longpress = NULL;
-	if (button == IR_KNOB_LEFT || button == IR_KNOB_RIGHT) {
-		ir_downkey = -1;	// there are no release codes for these two
-	} else {
-		released = button & ((button > 0xf) ? 0x80000000 : 1);	// front panel is weird
+	//printk("\n%8ld: IAC(%08lx)\n", jiffies, button);
+	if (table && button > 0xf) {	// we cannot correctly handle front-panel here
+		ir_current_longpress = NULL;
+		released = button >> 31;
 		if (released) {
-			if (ir_downkey == -1)
+			if (!ir_downkey)
 				goto done;	// already taken care of (we hope)
-			ir_downkey = -1;
+			ir_downkey = 0;
 		} else {
 			if (ir_downkey == button)
 				goto done;	// ignore repeated press with no intervening release
 			ir_downkey = button;
 		}
-	}
-	if (table) {
-		unsigned long common_bits = *table++;
 		old = button & ~0xc0000000;
+		common_bits = *table++;
 		if ((old & common_bits) == common_bits) {	// saves time (usually) on large tables
-			int delayed_press = 0;
+			int delayed_send = 0;
 			while (*table != -1) {
 				ir_translation_t *t = (ir_translation_t *)table;
+				table += (sizeof(ir_translation_t) / sizeof(unsigned long) - 1) + t->count;
 				if (old == t->old
 				 && (!t->source  || t->source == get_current_mixer_source())
-				 && (!t->shifted || ir_shifted != 0)) {
+				 && (!t->shifted || ir_shifted)) {
 					if (released) {	// button release?
 						if (t->longpress) {
-							delayed_press = 1;
+							delayed_send = 1;
 							if (jiffies_since(ir_lasttime) < HZ)
-								goto next;	// look for shortpress match instead
+								continue; // look for shortpress instead
 						}
-						if (delayed_press)
-							ir_enq_buttons(t);
+						if (delayed_send)
+							ir_send_buttons(t);
 						ir_send_release(t->new[t->count - 1]);
-					} else {		// button press?
+					} else { // button press?
 						if (t->longpress)
 							ir_current_longpress = t;
 						else
-							ir_enq_buttons(t);
+							ir_send_buttons(t);
 					}
 					goto done;
 				}
-			next:	//table = &t->new[t->count];
-				table += (sizeof(ir_translation_t) / sizeof(unsigned long) - 1) + t->count; // faster
 			}
-			if (delayed_press)
-				hijack_handle_button(old, 0);
+			if (delayed_send)
+				hijack_button_enq(&hijack_inputq, old, 0);
 		}
 	}
-	hijack_handle_button(button, 0);
+	hijack_button_enq(&hijack_inputq, button, 0);
 done:
 	ir_lasttime = jiffies;
-	hijack_send_buttons_to_player();
 	restore_flags(flags);
 }
 
@@ -2574,6 +2551,45 @@ get_file (const char *path, unsigned char **buffer)
   	return rc;
 }
 
+static void
+print_ir_translates (void)
+{
+	unsigned long *table = ir_translation_table;
+
+	if (table) {
+		++table;	// skip over "common_bits" word
+		while (*table != -1) {
+			ir_translation_t *t = (ir_translation_t *)table;
+			unsigned long *newp = &t->new[0];
+			int count = t->count;
+			printk("ir_translate: %08lx", t->old);
+			if (t->longpress || t->source || t->shifted) {
+				printk(".");
+				if (t->longpress)
+					printk("L");
+				if (t->shifted)
+					printk("S");
+				if (t->source)
+					printk("%c", t->source);
+			}
+			printk("=");
+			while (count--) {
+				unsigned long new = *newp++;
+				printk("%08lx", new & ~0xc0000000);
+				if (new & 0xc0000000) {
+					printk(".");
+					if (new & 0x80000000)
+						printk("L");
+					if (new & 0x40000000)
+						printk("S");
+				}
+				printk(count ? "," : "\n");
+			}
+			table = &t->new[t->count];
+		}
+	}
+}
+
 void
 hijack_read_config_file (const char *path)
 {
@@ -2586,6 +2602,7 @@ hijack_read_config_file (const char *path)
 	} else if (rc > 0 && buf && *buf) {
 		get_hijack_options(buf);
 		ir_setup_translations(buf);
+		print_ir_translates();
 	}
 	if (buf)
 		kfree(buf);
@@ -2766,6 +2783,7 @@ hijack_init (void)
 
 	if (!initialized) {
 		initialized = 1;
+		hijack_initq(&hijack_inputq);
 		hijack_initq(&hijack_playerq);
 		hijack_initq(&hijack_userq);
 		menu_init();

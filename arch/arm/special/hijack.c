@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v304"
+#define HIJACK_VERSION	"v305"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -4724,8 +4724,6 @@ hijack_get_options (unsigned char *buf)
 	errors = 0;
 	while (*(s = skipchars(s, " \n\t\r")) && *s != '[') {
 		char *line = s;
-		if (*s == ';')
-			goto nextline;
 		if (!strxcmp(s, ";@EXEC_ONCE ", 1)) {
 			if (!already_ran_once)
 				s = hijack_exec_line(s+12);
@@ -4735,6 +4733,8 @@ hijack_get_options (unsigned char *buf)
 			s = hijack_exec_line(s+7);
 			goto nextline;
 		}
+		if (*s == ';')
+			goto nextline;
 		if (!strxcmp(s, menu_delete, 1)) {
 			unsigned char *label = s += sizeof(menu_delete)-1;
 			s = findchars(s, "\n;\r");

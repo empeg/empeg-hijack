@@ -188,7 +188,7 @@ hijack_execve (hijack_execve_parms_t *parms)
 	if (rc != pid) {
 		printk ("hijack_execve: waitpid(%d,0x%p,0x%x) failed, returning %d.\n", pid, &status, __WCLONE, rc);
 	} else if (WIFEXITED(status)) {
-		rc = WEXITSTATUS(status);
+		rc = (signed char)(WEXITSTATUS(status));
 	} else {
 		rc = 0;
 	}

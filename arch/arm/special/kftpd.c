@@ -882,25 +882,56 @@ static const mime_type_t mime_types[] = {
 	{"*bin/*",		 application_octet	},
 	{NULL,			NULL			}};
 
-static char
-get_tag (char *s, char *tag, char *buf, int buflen)
+static void
+find_tags (char *buf, char *labels[], char *values[])
 {
-	*buf = '\0';
-	while (*s) {
-		if (!strxcmp(s, tag, 1)) {
-			char *val = buf;
-			s += strlen(tag);
-			while (*s && *s != '\n' && --buflen > 0)
-				*buf++ = *s++;
-			*buf = '\0';
-			return *val;
+	int		n;
+	static char	*null_label = "";
+
+	for (n = 0; labels[n] != NULL; ++n)
+		values[n] = null_label;
+	
+	while (*buf) {
+		int	i;
+		char	c;
+		for (i = 0; i < n; ++i) {
+			if (!*values[i] && !strxcmp(buf, labels[i], 1)) {
+				buf += strlen(labels[i]);
+				if ((c = *buf) && c != '\r' && c != '\n')
+					values[i] = buf;
+				break;
+			}
 		}
-		while (*s && *s != '\n')
-			++s;
-		while (*s == '\n')
-			++s;
+		while ((c = *buf) && c != '\r' && c != '\n')
+			++buf;
+		if (c)
+			*buf++ = '\0';
 	}
-	return '\0';
+}
+
+static void
+combine_artist_title (char *artist, char *title, char *combined, int maxlen)
+{
+	int	len;
+
+	--maxlen;	// reserve room for '\0' at end
+	if (*artist) {
+		int amax = (maxlen / 2) - 3;
+		len = strlen(artist);
+		if (len > amax)
+			len = amax;
+		memcpy(combined, artist, len);
+		memcpy(combined + len, " - ", 3);
+		combined += len + 3;
+		maxlen   -= len + 3;
+	}
+	len = strlen(title);
+	if (len) {
+		if (len > maxlen)
+			len = maxlen;
+		memcpy(combined, title, len);
+	}
+	combined[len] = '\0';
 }
 
 static int
@@ -917,37 +948,28 @@ open_fid_file (char *path)
 }
 
 static const char *
-get_fid_mime_title (char *path, char *buf, int bufsize, char *title, int titlelen, char *ext)
+get_fid_info (char *path, char *buf, int bufsize, char *atitle, int atitlelen, char *ext)
 {
+	static char	*labels[] = {"type=", "artist=", "title=", "codec=", NULL};
+	struct 		{char *type, *artist, *title, *codec;} tags;
 	const char	*mimetype = application_octet;
-	char		type[12], codec[12];
 	int		fd, size;
 
 	if (0 <= (fd = open_fid_file(path))) {	// open tagfile
 		size = read(fd, buf, bufsize-1);
 		buf[size] = '\0';
 		close(fd);
-		get_tag(buf, "type=", type, sizeof(type));
-		if (*type == 't' && get_tag(buf, "codec=", codec, sizeof(codec)) && *codec) {
-			switch (codec[1]) {
+		find_tags(buf, labels, (char **)&tags);
+		if (*tags.type == 't' && *tags.codec) {
+			switch (tags.codec[1]) {
 				case 'p': mimetype = audio_mpeg; break;
 				case 'm': mimetype = audio_wma;	 break;
 				case 'a': mimetype = audio_wav;	 break;
 			}
-			get_tag(buf, "artist=", title, 48);
-			size = strlen(title);
-			if (size) {
-				title += size;
-				*title++ = ' ';
-				*title++ = '-';
-				*title++ = ' ';
-				titlelen -= size + 3;
-			}
-			get_tag(buf, "title=", title, titlelen);
 			*ext++ = '.';
-			strcpy(ext, codec);
+			strcpy(ext, tags.codec);
+			combine_artist_title(tags.artist, tags.title, atitle, atitlelen);
 		}
-
 	}
 	return mimetype;
 }
@@ -958,13 +980,13 @@ khttp_send_file_header (server_parms_t *parms, char *path, off_t length, char *b
 	int		len;
 	const char	*mimetype, *rcode = "200 OK";
 	off_t		clength = length;
-	char		title[128], ext[8];
+	char		artist_title[128], ext[8];
 
-	title[0] = '\0';
+	artist_title[0] = '\0';
 	if (glob_match(path, "/drive?/fids/*0")) {
 		char *lastc = path + strlen(path) - 1;
 		*lastc = '1';
-		mimetype = get_fid_mime_title(path, buf, bufsize, title, sizeof(title), ext);
+		mimetype = get_fid_info(path, buf, bufsize, artist_title, sizeof(artist_title), ext);
 		*lastc = '0';
 	} else {
 		const char		*pattern;
@@ -987,11 +1009,11 @@ khttp_send_file_header (server_parms_t *parms, char *path, off_t length, char *b
 		len += sprintf(buf+len, "Cache-control: no-cache\r\nPragma: no-cache\r\nExpires: Tue, 01 Jan 1999 01:00:00 GMT\r\n");
 	if (mimetype)
 		len += sprintf(buf+len, "Content-Type: %s\r\n", mimetype);
-	if (title[0]) {	// tune title for WinAmp, XMMS, Save-To-Disk, etc..
+	if (artist_title[0]) {	// tune title for WinAmp, XMMS, Save-To-Disk, etc..
 		if (parms->icy_metadata)
-			len += sprintf(buf+len, "icy-name:%s\r\n", title);
+			len += sprintf(buf+len, "icy-name:%s\r\n", artist_title);
 		else
-			len += sprintf(buf+len, "Content-Disposition: attachment; filename=\"%s%s\"\r\n", title, ext);
+			len += sprintf(buf+len, "Content-Disposition: attachment; filename=\"%s%s\"\r\n", artist_title, ext);
 	}
 	buf[len++] = '\r';
 	buf[len++] = '\n';
@@ -1080,16 +1102,11 @@ cleanup_file_xfer (server_parms_t *parms, file_xfer_t *xfer)
 }
 
 static unsigned int
-get_duration (char *buf)
+str_val (char *str)
 {
-	char		duration[16], *d = duration;
-	unsigned int	secs = 0;
-
-	if (get_tag(buf, "duration=", duration, sizeof(duration))) {
-		if (get_number(&d, &secs, 10, NULL))
-			secs /= 1000;	// convert msecs to secs
-	}
-	return secs;
+	unsigned int val = 0;
+	(void)get_number(&str, &val, 10, NULL);
+	return val;
 }
 
 typedef struct http_response_s {
@@ -1119,161 +1136,148 @@ send_playlist (server_parms_t *parms, char *path)
 {
 	http_response_t	*response = NULL;
 	unsigned int	secs;
-	//fixme: just insert '\0' into tagfile buffer, and point directly at the strings!!
-	char		subpath[] = "/drive0/fids/XXXXXXXXXX", type[12], length[12], codec[4], title[64], artist[48], source[64];
-	int		rootfid, fid, done_header = 0, size, used = 0;
+	char		*p, subpath[] = "/drive0/fids/XXXXXXXXXX", artist_title[128];
+	int		pfid, fid, size, used = 0, fidfiles[16], fidx = -1;	// up to 16 levels of nesting
+	static char	*labels[] = {"type=", "artist=", "title=", "codec=", "duration=", "source=", "length=", NULL};
+	struct 		{char *type, *artist, *title, *codec, *duration, *source, *length;} tags;
 	file_xfer_t	xfer;
-	int		fd[16], fdx = -1;	// up to 16 levels of playlist recursion
-	char		*p = &path[13];	// point just after "/drive?/fids/" portion
 
-	if (!get_number(&p, &rootfid, 16, ""))
+	// extract fid from path[]:
+	p = &path[13];
+	if (!get_number(&p, &pfid, 16, ""))
 		return &invalid_playlist_path;
-	rootfid |= 1;
+	fid = pfid;	// we know the fid ends in "1", or we wouldn't be in this routine to begin with
+
+	// read the tagfile:
 	if ((response = convert_rcode(prepare_file_xfer(parms, path, &xfer, 0))))
 		return response;
-	size = read(xfer.fd, xfer.buf, xfer.buf_size);
+	size = read(xfer.fd, parms->tmp3, sizeof(parms->tmp3));
 	close(xfer.fd); xfer.fd = -1;
 	if (size < 0)
 		size = 0;
-	xfer.buf[size] = '\0';	// Ensure zero-termination of the data
-	if (!get_tag(xfer.buf, "type=", type, sizeof(type))) {
+	parms->tmp3[size] = '\0';	// Ensure zero-termination of the data
+
+	// parse the tagfile for the tags we are interested in:
+	find_tags(parms->tmp3, labels, (char **)&tags);
+	if (tags.type[0] != 't' && tags.type[0] != 'p') {
 		response = &(http_response_t){408, "Invalid tag file"};
 		goto cleanup;
 	}
-	(void) get_tag(xfer.buf, "artist=", artist, sizeof(artist) - 3);
-	(void) get_tag(xfer.buf, "title=",  title,  sizeof(title));
-	if (!*title)
-		strcpy(title, path);
-	if (!strxcmp("tune", type, 0)) {
+	if (!tags.title[0])
+		tags.title = path;
+	combine_artist_title(tags.artist, tags.title, artist_title, sizeof(artist_title));
+
+	// If tagfile is for a "tune", then send a .m3u playlist for it, and quit
+	if (tags.type[0] == 't') {
 		path[strlen(path)-1] = '0';
-		(void) get_tag(xfer.buf, "codec=", codec, sizeof(codec));
-		if (!strxcmp(codec, "mp3", 0)) {
-			secs = get_duration(xfer.buf);
+		if (!strxcmp(tags.codec, "mp3", 0)) {
+			secs = str_val(tags.duration) / 1000;
 			size  = sprintf(xfer.buf, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s\r\n\r\n#EXTM3U\r\n"
-				"#EXTINF:%u,%s - %s\r\nhttp://%s%s\r\n", audio_m3u, secs, artist, title, parms->serverip, path);
+				"#EXTINF:%u,%s\r\nhttp://%s%s\r\n", audio_m3u, secs, artist_title, parms->serverip, path);
 			(void)ksock_rw(parms->datasock, xfer.buf, size, -1);
 		} else { // wma, wav
 			khttpd_redirect(parms, path);
 		}
 		goto cleanup;
 	}
-	if (strxcmp("playlist", type, 0)) {
-		response = &(http_response_t){408, "Missing playlist tag"};
-		goto cleanup;
-	}
-	fid = rootfid;
 
-open_playlist_fid:
-	if (++fdx >= (sizeof(fd) / sizeof(fd[0]))) {
-		--fdx;
-		printk("%s: send_playlist(): nested too deep\n", parms->servername);
+	// Send the playlist header, in either html or m3u format:
+	used += sprintf(xfer.buf+used, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s\r\n\r\n",
+		(parms->generate_playlist == 2) ? audio_m3u : text_html);
+	if (parms->generate_playlist == 1) {
+		used += sprintf(xfer.buf+used, "<HTML><HEAD><TITLE>Playlists: %s</TITLE></HEAD>\r\n<BODY>"
+			"<TABLE BGCOLOR=\"WHITE\" BORDER=\"2\"><THEAD><TR>\r\n"
+			"<TD> <A HREF=\"%x?.m3u\"><B>Play</B></A> <TD> <A HREF=\"%x\"><B>Tags</B></A> "
+			"<TD ALIGN=CENTER> <FONT SIZE=+2><B><EM>%s</EM></B></FONT> <TD> <B>Length</B> <TD> <B>Type</B> <TD> <B>Artist</B> "
+			"<TD> <B>Source</B><TBODY>\r\n", artist_title, pfid, pfid, tags.title);
+	} else {
+		used += sprintf(xfer.buf+used, "#EXTM3U\r\n");
+	}
+
+open_fidfile:
+	// Read the playlist's fidfile, and process each fid in turn:
+	if (++fidx >= (sizeof(fidfiles) / sizeof(fidfiles[0]))) {
+		--fidx;
+		used += sprintf(xfer.buf+used, "<FONT COLOR=RED>playlists nested too deep</FONT>\n");
 		goto aborted;
 	}
 	sprintf(subpath+13, "%x", fid^1);
-	fd[fdx] = open_fid_file(subpath);
-	if (fd[fdx] < 0) {
-		int rc = fd[fdx--];
+	fidfiles[fidx] = open_fid_file(subpath);
+	if (fidfiles[fidx] < 0) {
+		int rc = fidfiles[fidx--];
 		if (rc != -ENOENT) {
-			printk("%s: send_playlist(): open('%s') failed, rc=%d\n", parms->servername, subpath, rc);
+			used += sprintf(xfer.buf+used, "<FONT COLOR=RED>open(\"%s\") failed, rc=%d</FONT>\n", subpath, rc);
 			goto aborted;
-		} // else: playlist must have been empty; just continue..
+		} // else: empty playlist; just continue..
 	}
-	while (fdx >= 0) {
-		while (sizeof(fid) == read(fd[fdx], (char *)&fid, sizeof(fid))) {
-			int	tags_fd;
-			char	*tags_buf = parms->tmp3;
+	while (fidx >= 0) {
+		while (sizeof(fid) == read(fidfiles[fidx], (char *)&fid, sizeof(fid))) {
+			int	fd;
 
+			// read in the tagfile for this fid
 			fid |= 1;
 			sprintf(subpath+13, "%x", fid);
-			tags_fd = open_fid_file(subpath);
-			if (tags_fd < 0) {
-				printk("%s: send_playlist(): open('%s') failed, rc=%d\n", parms->servername, subpath, tags_fd);
+			fd = open_fid_file(subpath);
+			if (fd < 0) {
+				used += sprintf(xfer.buf+used, "<FONT COLOR=RED>open(\"%s\") failed, rc=%d</FONT>\n", subpath, fd);
 				goto aborted;
 			}
-			size = read(tags_fd, tags_buf, sizeof(parms->tmp3)-1);
-			close(tags_fd);
+			size = read(fd, parms->tmp3, sizeof(parms->tmp3)-1);
+			close(fd);
 			if (size <= 0) {
-				printk("%s: send_playlist(): read('%s') failed, rc=%d\n", parms->servername, subpath, size);
+				used += sprintf(xfer.buf+used, "<FONT COLOR=RED>read(\"%s\") failed, rc=%d</FONT>\n", subpath, size);
 				goto aborted;
 			}
-			tags_buf[size] = '\0';
-			(void) get_tag(tags_buf, "type=", type, sizeof(type));
-			if (parms->generate_playlist == 2 && *type != 't')
-				goto open_playlist_fid;
-			if (!done_header) {
-				done_header = 1;
-				used += sprintf(xfer.buf+used, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s\r\n\r\n",
-					(parms->generate_playlist == 2) ? audio_m3u : text_html);
-				if (parms->generate_playlist == 1) {
-					if (*artist)
-						strcat(artist, " - ");
-					used += sprintf(xfer.buf+used, "<HTML><HEAD><TITLE>Playlists: %s%s</TITLE></HEAD>\r\n<BODY>"
-						"<TABLE BGCOLOR=\"WHITE\" BORDER=\"2\"><THEAD><TR>\r\n"
-						"<TD> <A HREF=\"%x?.m3u\"><B>Play</B></A> <TD> <A HREF=\"%x\"><B>Tags</B></A> "
-						"<TD ALIGN=CENTER> <FONT SIZE=+2><B><EM>%s%s</EM></B></FONT> <TD> <B>Length</B> <TD> <B>Type</B> <TD> <B>Artist</B> "
-						"<TD> <B>Source</B><TBODY>\r\n", artist, title, rootfid, rootfid, artist, title);
-				} else {
-					used += sprintf(xfer.buf+used, "#EXTM3U\r\n");
-				}
+			parms->tmp3[size] = '\0';
+
+			// parse the tagfile for the tags we are interested in:
+			find_tags(parms->tmp3, labels, (char **)&tags);
+			if (tags.type[0] != 't' && tags.type[0] != 'p') {
+				used += sprintf(xfer.buf+used, "<FONT COLOR=RED>invalid fid type in \"%s\": \"%s\"</FONT>\n", subpath, tags.type);
+				goto aborted;
 			}
-			(void) get_tag(tags_buf, "artist=", artist, sizeof(artist));
-			(void) get_tag(tags_buf, "source=", source, sizeof(source));
-			(void) get_tag(tags_buf, "title=",  title,  sizeof(title));
-			if (!*title)
-				strcpy(title, subpath);
-			secs = get_duration(tags_buf);
+			if (parms->generate_playlist == 2 && tags.type[0] == 'p')
+				goto open_fidfile;	// nest one level deeper for this playlist
+			if (!tags.title[0])
+				tags.title = subpath;
+			secs = str_val(tags.duration) / 1000;
 			if (parms->generate_playlist == 1) {
 				used += sprintf(xfer.buf+used, "<TR><TD> <A HREF=\"%x?.m3u\"><em>Play</em></A> ", fid);
-				if (*type == 't') {
+				if (tags.type[0] == 't') {
 					if (hijack_khttpd_files) {
 						used += sprintf(xfer.buf+used, "<TD> <A HREF=\"%x\"><EM>Tags</EM></A> <TD> <A HREF=\"%x\">%s</A> "
 							"<TD ALIGN=CENTER> %u:%02u <TD> %s <TD> %s&nbsp <TD> %s&nbsp \r\n",
-							fid, fid^1, title, secs/60, secs%60, type, artist, source);
+							fid, fid^1, tags.title, secs/60, secs%60, tags.type, tags.artist, tags.source);
 					} else {
 						used += sprintf(xfer.buf+used, "<TD> <A HREF=\"%x\"><EM>Tags</EM></A> <TD> %s "
 							"<TD ALIGN=CENTER> %u:%02u <TD> %s <TD> %s&nbsp <TD> %s&nbsp \r\n",
-							fid, title, secs/60, secs%60, type, artist, source);
+							fid, tags.title, secs/60, secs%60, tags.type, tags.artist, tags.source);
 					}
 				} else {
-					unsigned int bytes = 0;
-					if (get_tag(tags_buf, "length=", length, sizeof(length))) {
-						p = length;
-						(void) get_number(&p, &bytes, 10, NULL);
-						sprintf(length, "%d", bytes / 4);
-					}
+					unsigned int entries = str_val(tags.length) / 4;
 					used += sprintf(xfer.buf+used, "<TD> <A HREF=\"%x\"><EM>Tags</EM></A> <TD> <A HREF=\"%x?.html\">%s</A> "
-						"<TD ALIGN=CENTER> %s <TD> %s <TD> %s&nbsp <TD> %s&nbsp \r\n",
-						fid, fid, title, length, type, artist, source);
+						"<TD ALIGN=CENTER> %u <TD> %s <TD> %s&nbsp <TD> %s&nbsp \r\n",
+						fid, fid, tags.title, entries, tags.type, tags.artist, tags.source);
 				}
-			} else if (*type == 't') {
-				used += sprintf(xfer.buf+used, "#EXTINF:%u,%s - %s\r\nhttp://%s%s\r\n",
-					secs, artist, title, parms->serverip, subpath);
+			} else if (tags.type[0] == 't') {
+				combine_artist_title(tags.artist, tags.title, artist_title, sizeof(artist_title));
+				used += sprintf(xfer.buf+used, "#EXTINF:%u,%s\r\nhttp://%s%s\r\n",
+					secs, artist_title, parms->serverip, subpath);
 				xfer.buf[used-3] = '0';	// convert subpath into tune path
 			}
 			if (used >= (xfer.buf_size - 512) && (used -= ksock_rw(parms->datasock, xfer.buf, used, -1)))
 				goto cleanup;
 		}
-		close(fd[fdx--]);
+		close(fidfiles[fidx--]);
 	}
 aborted:
-	if (used && (used -= ksock_rw(parms->datasock, xfer.buf, used, -1)))
-		goto cleanup;
-	if (done_header) {
-		if (parms->generate_playlist == 1) {
-			used = sprintf(xfer.buf, "</TABLE><FONT SIZE=-2>Hijack %s by Mark Lord</FONT></BODY></HTML>\r\n", hijack_version);
-			(void) ksock_rw(parms->datasock, xfer.buf, used, -1);
-		}
-	} else if (parms->generate_playlist == 1) {
-		khttpd_respond(parms, 200, "Empty Playlist", "Empty playlist");
-	} else {
-		// Somebody tried to "play" a playlist that contains no tunes; redirect them:
-		path[strlen(path)-1] = '1';
-		strcat(path,"?.html");
-		khttpd_redirect(parms, path);
-	}
+	if (parms->generate_playlist == 1)
+		used += sprintf(xfer.buf+used, "</TABLE><FONT SIZE=-2>Hijack %s by Mark Lord</FONT></BODY></HTML>\r\n", hijack_version);
+	if (used)
+		(void) ksock_rw(parms->datasock, xfer.buf, used, -1);
 cleanup:
-	while (fdx >= 0)
-		close(fd[fdx--]);
+	while (fidx >= 0)
+		close(fidfiles[fidx--]);
 	cleanup_file_xfer(parms, &xfer);
 	return response;
 }

@@ -217,7 +217,11 @@ int __init empeg_mixer_init(void)
 	
 	/* mixer_select_input(INPUT_AUX); */
 	dsp_write(Y_SrcScal, 0x400);
+#if 0
 	
+#else
+      dsp_write(Y_OutSwi, 0xa49);
+#endif
 	dev->input = SOUND_MASK_PCM;
 	dev->flags = 0;
 	empeg_mixer_setloudness(dev, 0);
@@ -562,9 +566,9 @@ static int empeg_mixer_ioctl(struct inode *inode, struct file *file,
 		eq_reg_last &= ~0x1000;
 		eq_reg_last |= ((four_chan ^ 1) & 1) << 12;
 		if(four_chan)
-			dsp_write(Y_OutSwi, 0xa85);
+			dsp_write(Y_OutSwi, 0xa50);
 		else
-			dsp_write(Y_OutSwi, 0xa7c);
+			dsp_write(Y_OutSwi, 0xa49);
 		dsp_write(0xffd, eq_reg_last);
 		return 0;
 	}

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v283"
+#define HIJACK_VERSION	"v284"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -2926,6 +2926,28 @@ hijack_move_repeat (void)
 #define TESTOFFSET(row)	(ROWOFFSET(row)+TESTCOL)
 
 static int
+check_for_seek_pattern (const unsigned char *buf, const unsigned long *pattern)
+{
+	int row;
+
+	for (row = 24; row <= 31; row++) {
+		const unsigned long s = *(unsigned long *)(buf + ROWOFFSET(row) + 4);
+		if (s != *pattern++)
+			return 0;	// Seek-Tool not active
+	}
+	return 1;	// Seek-Tool is active
+}
+
+static int
+check_if_seek_tool_is_active (const unsigned char *buf)
+{
+	static const unsigned long playsym [8] = { 0x000002f0, 0x0002fff0, 0x02fffff0, 0xfffffff0, 0x02fffff0, 0x0002fff0, 0x000002f0, 0x00000000 };
+	static const unsigned long pausesym[8] = { 0x00000000, 0x00000000, 0xfff0fff0, 0xfff0fff0, 0xfff0fff0, 0xfff0fff0, 0x00000000, 0x00000000 };
+
+	return check_for_seek_pattern(buf, playsym) || check_for_seek_pattern(buf, pausesym);
+}
+
+static int
 test_row (const void *rowaddr, unsigned long color)
 {
 	const unsigned long *first = rowaddr;
@@ -3190,7 +3212,7 @@ quicktimer_display (int firsttime)
 // Note that ALL front-panel buttons send codes ONCE on press, but twice on RELEASE.
 //
 static void
-hijack_handle_button (unsigned int button, unsigned long delay, int any_ui_is_active)
+hijack_handle_button (unsigned int button, unsigned long delay, int any_ui_is_active, const unsigned char *player_buf)
 {
 	static unsigned int ir_lastpressed = IR_NULL_BUTTON;
 	unsigned long old_releasewait;
@@ -3275,6 +3297,8 @@ hijack_handle_button (unsigned int button, unsigned long delay, int any_ui_is_ac
 						index = 0;
 					hijacked = 1;
 					if (jiffies_since(ir_knob_down) < (HZ/2)) {	// short press?
+						if (check_if_seek_tool_is_active(player_buf))
+							index = 0;	// pass short press on to player
 						if (index == 1)
 							popup_activate(knobdata_buttons[1]);
 						else if (index == 2)
@@ -3477,7 +3501,7 @@ hijack_handle_buttons (const char *player_buf)
 		any_ui_is_active = player_ui_is_active(player_buf);
 	while (hijack_button_deq(&hijack_inputq, &data, 1)) {
 		save_flags_cli(flags);
-		hijack_handle_button(data.button, data.delay, any_ui_is_active);
+		hijack_handle_button(data.button, data.delay, any_ui_is_active, player_buf);
 		restore_flags(flags);
 	}
 	while (hijack_button_deq(&hijack_playerq, &data, 0)) {
@@ -3674,7 +3698,7 @@ hijack_intercept_tuner (unsigned int packet)
 }
 
 static int
-look_for_trackinfo_or_tuner (unsigned char *buf, int row)
+check_for_trackinfo_or_tuner (unsigned char *buf, int row)
 {
 	if (row) {
 		// look for a solid line, any color(s)
@@ -3777,7 +3801,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 		return;
 	}
 	if (restore_visuals && hijack_got_config_ini) {
-		if (look_for_trackinfo_or_tuner(player_buf, info_screenrow)) {
+		if (check_for_trackinfo_or_tuner(player_buf, info_screenrow)) {
 			while (restore_visuals) {
 				--restore_visuals;
 				hijack_enq_button_pair(IR_RIO_INFO_PRESSED);

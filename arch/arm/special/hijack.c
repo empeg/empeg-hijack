@@ -366,7 +366,7 @@ const unsigned char kfont [1 + '~' - ' '][KFONT_WIDTH] = {  // variable width fo
 #include <linux/proc_fs.h>
 
 
-unsigned char notify_labels[] = "#AFGLMNSTV";
+unsigned char notify_labels[] = "#AFGLMNSTV";	// # must be first, for vitals_display()
 #define NOTIFY_MAX_LINES	(sizeof(notify_labels))
 #define NOTIFY_MAX_LENGTH	64
 static char notify_data[NOTIFY_MAX_LINES][NOTIFY_MAX_LENGTH] = {{0,},};
@@ -468,7 +468,7 @@ struct proc_dir_entry notify_proc_entry = {
 #endif // CONFIG_PROC_FS
 
 static void
-clear_hijack_displaybuf (int color)
+clear_hijack_displaybuf (unsigned char color)
 {
 	color &= 3;
 	color |= color << 4;
@@ -1043,7 +1043,7 @@ vitals_display (int firsttime)
 	unsigned char *model, buf[80];
 	int rowcol, i, count;
 
-	if (!firsttime && jiffies_since(hijack_last_refresh) < (HZ*2))
+	if (!firsttime && jiffies_since(hijack_last_refresh) < HZ)
 		return NO_REFRESH;
 	clear_hijack_displaybuf(COLOR0);
 	rowcol = ROWCOL(0,0);
@@ -1053,7 +1053,7 @@ vitals_display (int firsttime)
 		model = "Mk1";
 	else if (permset[0] < 9)
 		model = "Mk2";
-	sprintf(buf, "%s, FID:%s\n", model, notify_data[6]);
+	sprintf(buf, "%s, FID:%s\n", model, notify_data[0]);
 	rowcol = draw_string(rowcol, buf, PROMPTCOLOR);
 	// Temperature:
 	rowcol = draw_temperature(rowcol, read_temperature(), 32, PROMPTCOLOR);
@@ -1357,7 +1357,7 @@ static int maxtemp_check_threshold (void)
 	if (hijack_status == HIJACK_INACTIVE && elapsed > 4) {
 		unsigned int rowcol;
 		int color = (elapsed & 1) ? COLOR3 : -COLOR3;
-		clear_hijack_displaybuf(color);
+		clear_hijack_displaybuf(COLOR0);
 		rowcol = draw_string(ROWCOL(2,18), " Too Hot:", -color);
 		(void)draw_temperature(rowcol, read_temperature(), 32, -color);
 		return 1;
@@ -1614,7 +1614,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v98 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v99 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1624,7 +1624,8 @@ game_finale (void)
 		return NEED_REFRESH;
 	}
 	if (jiffies_since(game_animtime) < (HZ/(ANIMATION_FPS-2))) {
-		(void)draw_string(ROWCOL(2,44), "You Win!", COLOR3);
+		//(void)draw_string(ROWCOL(2,44), "You Win!", COLOR3); // fixme!
+		(void)draw_string(ROWCOL(2,0), "Gretzky Shoots, He Scores!", COLOR3);
 		return NEED_REFRESH;
 	}
 	if (game_animtime == 0) { // first frame?
@@ -2783,7 +2784,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 		} else if (jiffies_since(blanker_triggered) > (blanker_timeout * (SCREEN_BLANKER_MULTIPLIER * HZ))) {
 			if (!blanker_is_blanked) {
 				buf = player_buf;
-				memset(buf,0x00,EMPEG_SCREEN_BYTES);
+				memset(buf, 0, EMPEG_SCREEN_BYTES);
 				refresh = NEED_REFRESH;
 			}
 		}

@@ -27,6 +27,7 @@
 #include <net/scm.h>
 
 extern void sys_exit(int);
+extern const char hijack_version[];			// from arch/arm/special/hijack.c
 extern int strxcmp (const char *str, const char *pattern, int partial);	// hijack.c
 extern int hijack_do_command(const char *command, unsigned int size);	// notify.c 
 extern void show_message (const char *message, unsigned long time);	// hijack.c
@@ -1118,7 +1119,8 @@ send_playlist (server_parms_t *parms, char *path)
 {
 	http_response_t	*response = NULL;
 	unsigned int	secs;
-	char		subpath[] = "/drive0/fids/XXXXXXXXXX", type[12], length[12], codec[4], title[64], artist[48], source[48];
+	//fixme: just insert '\0' into tagfile buffer, and point directly at the strings!!
+	char		subpath[] = "/drive0/fids/XXXXXXXXXX", type[12], length[12], codec[4], title[64], artist[48], source[64];
 	int		rootfid, fid, done_header = 0, size, used = 0;
 	file_xfer_t	xfer;
 	int		fd[16], fdx = -1;	// up to 16 levels of playlist recursion
@@ -1126,6 +1128,7 @@ send_playlist (server_parms_t *parms, char *path)
 
 	if (!get_number(&p, &rootfid, 16, ""))
 		return &invalid_playlist_path;
+	rootfid |= 1;
 	if ((response = convert_rcode(prepare_file_xfer(parms, path, &xfer, 0))))
 		return response;
 	size = read(xfer.fd, xfer.buf, xfer.buf_size);
@@ -1137,7 +1140,7 @@ send_playlist (server_parms_t *parms, char *path)
 		response = &(http_response_t){408, "Invalid tag file"};
 		goto cleanup;
 	}
-	(void) get_tag(xfer.buf, "artist=", artist, sizeof(artist));
+	(void) get_tag(xfer.buf, "artist=", artist, sizeof(artist) - 3);
 	(void) get_tag(xfer.buf, "title=",  title,  sizeof(title));
 	if (!*title)
 		strcpy(title, path);
@@ -1158,7 +1161,6 @@ send_playlist (server_parms_t *parms, char *path)
 		response = &(http_response_t){408, "Missing playlist tag"};
 		goto cleanup;
 	}
-	//fixme set_sockopt(parms, parms->datasock, SOL_TCP, TCP_NODELAY, 0);
 	fid = rootfid;
 
 open_playlist_fid:
@@ -1167,7 +1169,7 @@ open_playlist_fid:
 		printk("%s: send_playlist(): nested too deep\n", parms->servername);
 		goto aborted;
 	}
-	sprintf(subpath+13, "%x", fid & ~1);
+	sprintf(subpath+13, "%x", fid^1);
 	fd[fdx] = open_fid_file(subpath);
 	if (fd[fdx] < 0) {
 		int rc = fd[fdx--];
@@ -1183,7 +1185,7 @@ open_playlist_fid:
 
 			fid |= 1;
 			sprintf(subpath+13, "%x", fid);
-			tags_fd = open_fid_file(subpath);	// get tagfile
+			tags_fd = open_fid_file(subpath);
 			if (tags_fd < 0) {
 				printk("%s: send_playlist(): open('%s') failed, rc=%d\n", parms->servername, subpath, tags_fd);
 				goto aborted;
@@ -1203,13 +1205,13 @@ open_playlist_fid:
 				used += sprintf(xfer.buf+used, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s\r\n\r\n",
 					(parms->generate_playlist == 2) ? audio_m3u : text_html);
 				if (parms->generate_playlist == 1) {
-					const char *hyphen = *artist ? " - " : "";
-					used += sprintf(xfer.buf+used, "<HTML><HEAD><TITLE>%s%s%s</TITLE></HEAD>\r\n<BODY>\r\n"
-						"<H2>%s%s%s</H2><TABLE BORDER=\"2\"><THEAD>\r\n"
-						"<HTML><BODY><TABLE BORDER=\"2\"><THEAD>\r\n"
-						"<TR><TD> <A HREF=\"%x?.m3u\"><FONT SIZE=-1><EM>Play All</EM></FONT></A> <TD> <B>Title</B> <TD> <B>Length</B> <TD> <B>Type</B> "
-						"<TD> <B>Artist</B> <TD> <B>Source</B> <TBODY>\r\n",
-						artist, hyphen, title, artist, hyphen, title, rootfid|1);
+					if (*artist)
+						strcat(artist, " - ");
+					used += sprintf(xfer.buf+used, "<HTML><HEAD><TITLE>Playlists: %s%s</TITLE></HEAD>\r\n<BODY>"
+						"<TABLE BGCOLOR=\"WHITE\" BORDER=\"2\"><THEAD><TR>\r\n"
+						"<TD> <A HREF=\"%x?.m3u\"><B>Play</B></A> <TD> <A HREF=\"%x\"><B>Tags</B></A> "
+						"<TD ALIGN=CENTER> <FONT SIZE=+2><B><EM>%s%s</EM></B></FONT> <TD> <B>Length</B> <TD> <B>Type</B> <TD> <B>Artist</B> "
+						"<TD> <B>Source</B><TBODY>\r\n", artist, title, rootfid, rootfid, artist, title);
 				} else {
 					used += sprintf(xfer.buf+used, "#EXTM3U\r\n");
 				}
@@ -1224,11 +1226,13 @@ open_playlist_fid:
 				used += sprintf(xfer.buf+used, "<TR><TD> <A HREF=\"%x?.m3u\"><em>Play</em></A> ", fid);
 				if (*type == 't') {
 					if (hijack_khttpd_files) {
-						used += sprintf(xfer.buf+used, "<TD> <A HREF=\"%x\">%s</A> <TD> %u:%02u <TD> %s "
-							"<TD> %s <TD> %s \r\n", fid&~1, title, secs/60, secs%60, type, artist, source);
+						used += sprintf(xfer.buf+used, "<TD> <A HREF=\"%x\"><EM>Tags</EM></A> <TD> <A HREF=\"%x\">%s</A> "
+							"<TD ALIGN=CENTER> %u:%02u <TD> %s <TD> %s&nbsp <TD> %s&nbsp \r\n",
+							fid, fid^1, title, secs/60, secs%60, type, artist, source);
 					} else {
-						used += sprintf(xfer.buf+used, "<TD> %s <TD ALIGN=CENTER> %u:%02u <TD> %s "
-							"<TD> %s <TD> %s \r\n", title, secs/60, secs%60, type, artist, source);
+						used += sprintf(xfer.buf+used, "<TD> <A HREF=\"%x\"><EM>Tags</EM></A> <TD> %s "
+							"<TD ALIGN=CENTER> %u:%02u <TD> %s <TD> %s&nbsp <TD> %s&nbsp \r\n",
+							fid, title, secs/60, secs%60, type, artist, source);
 					}
 				} else {
 					unsigned int bytes = 0;
@@ -1237,8 +1241,9 @@ open_playlist_fid:
 						(void) get_number(&p, &bytes, 10, NULL);
 						sprintf(length, "%d", bytes / 4);
 					}
-					used += sprintf(xfer.buf+used, "<TD> <A HREF=\"%x?.html\">%s</A> <TD ALIGN=CENTER> %s <TD> %s "
-						"<TD> %s <TD> %s \r\n", fid|1, title, length, type, artist, source);
+					used += sprintf(xfer.buf+used, "<TD> <A HREF=\"%x\"><EM>Tags</EM></A> <TD> <A HREF=\"%x?.html\">%s</A> "
+						"<TD ALIGN=CENTER> %s <TD> %s <TD> %s&nbsp <TD> %s&nbsp \r\n",
+						fid, fid, title, length, type, artist, source);
 				}
 			} else if (*type == 't') {
 				used += sprintf(xfer.buf+used, "#EXTINF:%u,%s - %s\r\nhttp://%s%s\r\n",
@@ -1255,8 +1260,8 @@ aborted:
 		goto cleanup;
 	if (done_header) {
 		if (parms->generate_playlist == 1) {
-			static char trailer[] = "</TABLE></BODY></HTML>\r\n";
-			(void) ksock_rw(parms->datasock, trailer, sizeof(trailer)-1, -1);
+			used = sprintf(xfer.buf, "</TABLE><FONT SIZE=-2>Hijack %s by Mark Lord</FONT></BODY></HTML>\r\n", hijack_version);
+			(void) ksock_rw(parms->datasock, xfer.buf, used, -1);
 		}
 	} else if (parms->generate_playlist == 1) {
 		khttpd_respond(parms, 200, "Empty Playlist", "Empty playlist");

@@ -1,6 +1,7 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v172"
+#define HIJACK_VERSION	"v173"
+const char hijack_version[] = HIJACK_VERSION;
 
 #include <linux/sched.h>
 #include <linux/kernel.h>

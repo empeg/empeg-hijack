@@ -1,6 +1,6 @@
 // Empeg display/IR hijacking by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v119"
+#define HIJACK_VERSION "v120"
 //
 // Includes: font, drawing routines
 //           extensible menu system
@@ -2507,7 +2507,7 @@ static unsigned long message_time = 0;
 static int
 message_display (int firsttime)
 {
-	static const hijack_geom_t geom = {8, 8+6+KFONT_HEIGHT, 4, EMPEG_SCREEN_COLS-4};
+	static const hijack_geom_t geom = {8, 8+6+KFONT_HEIGHT, 2, EMPEG_SCREEN_COLS-2};
 	unsigned int rowcol;
 
 	timer_started = jiffies;
@@ -3991,8 +3991,9 @@ hijack_restore_settings (unsigned char *buf, int failed)
 	if (empeg_on_dc_power)
 		fix_visuals(buf);
 #endif // RESTORE_CARVISUALS
-	if (failed) {
+	if (failed)
 		show_message("Settings have been lost", 7*HZ);
-	}
+	else
+		show_message("Hijack "HIJACK_VERSION" by Mark Lord", HZ);
 }
 

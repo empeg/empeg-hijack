@@ -1378,6 +1378,7 @@ run_server (int use_http, struct semaphore *sem_p)
 							strcpy(parms->cwd, "/");
 							parms->umask = 0022;
 							while (!kftpd_handle_command(parms));
+							sys_sync();	// useful for flash upgrades
 						}
 					}
 					sock_release(parms->clientsock);

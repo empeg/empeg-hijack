@@ -154,10 +154,10 @@ static inline int full_status_check( unsigned short status_reg )
 		printk("Flash driver: programming voltage error!\n");
 		return FALSE;
 	}
-	if( status_reg & ERROR_DEVICE_PROTECT ) {
-		printk("Flash driver: device is write protect!\n");
-		return FALSE;
-	}
+	//if( status_reg & ERROR_DEVICE_PROTECT ) {
+	//	printk("Flash driver: device is write protect!\n");
+	//	return FALSE;
+	//}
 	if( status_reg & ERROR_PROGRAMMING ) {
 		printk("Flash driver: programming error!\n");
 		return FALSE;

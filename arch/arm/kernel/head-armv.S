@@ -154,9 +154,8 @@ __create_page_tables:
 		bne	1b
 
 		/*
-		 * We need early access to the 16th and 17th MBs of DRAM so that the kernel
+		 * We need early access to the second and fourth DRAM banks, so that the kernel
 		 * proper can test for extended memory on the Empegs at startup time.
-		 * Create non-cached non-buffered mappings for the 16th and 17th MBs of DRAM.
 		 */
 		add	r0, r4, #(TEXTADDR - 0x8000) >> 18	@ c000_0000
 

@@ -271,6 +271,7 @@ kftpd_send_response2 (server_parms_t *parms, int rcode, const char *text, const 
 	}
 	return 0;
 }
+
 static int
 kftpd_send_response (server_parms_t *parms, int rcode)
 {
@@ -1520,9 +1521,11 @@ send_file (server_parms_t *parms, char *path)
 					filepos += size;
 					if (size < 0) {
 						printk("%s: read() failed; rc=%d\n", parms->servername, size);
-						response = 451;
+						if (!parms->use_http)
+							response = 451;
 					} else if (size && size != ksock_rw(parms->datasock, xfer.buf, size, -1)) {
-						response = 426;
+						if (!parms->use_http)
+							response = 426;
 						break;
 					}
 				} while (size > 0);
@@ -1531,8 +1534,6 @@ send_file (server_parms_t *parms, char *path)
 	}
 	cleanup_file_xfer(parms, &xfer);
 	return response;
-
-
 }
 
 static int

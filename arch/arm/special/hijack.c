@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v366"
+#define HIJACK_VERSION	"v367"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -2364,7 +2364,7 @@ knobdata_display (int firsttime)
 	return NEED_REFRESH;
 }
 
-static int player_v3alpha = 0;
+int player_v3alpha = 0;		// also referenced in drivers/char/serial_sa1100.c
 
 static void check_for_v3alpha (void)
 {

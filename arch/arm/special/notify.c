@@ -45,6 +45,12 @@ notify_fid (void)
 	return &notify_data[NOTIFY_FIDLINE][2];
 }
 
+#undef DEBUG_NOTIFY
+#ifdef DEBUG_NOTIFY
+static char logbuf[2048 + 128];
+static unsigned int logx = 0;
+#endif
+
 int
 hijack_serial_notify (const unsigned char *s, int size)
 {
@@ -58,6 +64,16 @@ hijack_serial_notify (const unsigned char *s, int size)
 	static enum	{want_title, want_data, want_eol} state = want_title;
 	char		*line;
 	unsigned long	flags;
+
+#ifdef DEBUG_NOTIFY
+	if (logx >= 2048) logx = 0;
+	logx += sprintf(logbuf+logx, "len=%2u, data='", size);
+	memcpy(logbuf+logx, s, size);
+	logx += size;
+	logbuf[logx++] = '\'';
+	logbuf[logx++] = '\n';
+	logbuf[logx] = '\0';
+#endif
 	switch (state) {
 		default:
 			state = want_title;
@@ -444,6 +460,9 @@ proc_notify_read (char *buf, char **start, off_t offset, int len, int unused)
 		len += sprintf(buf+len, "notify_%s = \"%s\";\n", name, data);
 		restore_flags(flags);
 	}
+#ifdef DEBUG_NOTIFY
+	len += sprintf(buf+len, "\n%s", logbuf);
+#endif
 	return len;
 }
 

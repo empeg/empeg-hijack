@@ -1225,6 +1225,7 @@ static void change_speed(struct async_struct *info)
 #ifdef CONFIG_HIJACK_TUNER
 #ifdef CONFIG_PROC_FS
 extern int hijack_serial_notify (const unsigned char *, int);
+extern int player_v3alpha;
 #endif // CONFIG_PROC_FS
 #endif // CONFIG_HIJACK_TUNER
 
@@ -1292,6 +1293,14 @@ static int rs_write(struct tty_struct * tty, int from_user,
 
 	save_flags(flags);
 
+#ifdef CONFIG_HIJACK_TUNER
+#ifdef CONFIG_PROC_FS
+	if (from_user == player_v3alpha && hijack_serial_notify(buf, count))
+		ret = count;
+	else
+#endif // CONFIG_PROC_FS
+#endif // CONFIG_HIJACK_TUNER
+
 	if (from_user) {
 		down(&tmp_buf_sem);
 		while (1) {
@@ -1321,13 +1330,6 @@ static int rs_write(struct tty_struct * tty, int from_user,
 		}
 		up(&tmp_buf_sem);
 	} else {
-#ifdef CONFIG_HIJACK_TUNER
-#ifdef CONFIG_PROC_FS
-		if (hijack_serial_notify(buf, count))
-			ret = count;
-		else
-#endif // CONFIG_PROC_FS
-#endif // CONFIG_HIJACK_TUNER
 		while (1) {
 			cli();		
 			c = MIN(count,

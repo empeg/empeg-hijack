@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v279"
+#define HIJACK_VERSION	"v280"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -23,8 +23,8 @@ const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 #include "empeg_display.h"
 #include "empeg_mixer.h"
 
-extern void display_sendcontrol_part1(void);				// arch/arm/special/empeg_display.c
-extern void display_sendcontrol_part2(int);				// arch/arm/special/empeg_display.c
+extern int display_sendcontrol_part1(void);				// arch/arm/special/empeg_display.c
+extern int display_sendcontrol_part2(int);				// arch/arm/special/empeg_display.c
 extern int remount_drives (int writeable);				// arch/arm/special/notify.c
 extern int sys_newfstat(int, struct stat *);
 extern int sys_sync(void);						// fs/buffer.c
@@ -2051,45 +2051,34 @@ static const char buttonled_menu_label	[] = "Button Illumination Level";
 static int
 headlight_sense_is_active (void)
 {
-	static unsigned long lasttime = 0;
-	static int dimmer = 0;
-	int sense;
+	static unsigned long debouncing  = 0;
+	static int sense = 0, prev = 0;
+	int new;
 
-	sense = !(GPLR & EMPEG_SERIALCTS);   // EMPEG_SERIALCTS is active low.
-
-	if (!sense) {
-		if (jiffies_since(lasttime) > (HZ/3))
-			dimmer = sense;
-		else
-			dimmer = !sense;
+	new = !(GPLR & EMPEG_SERIALCTS);   // EMPEG_SERIALCTS is active low.
+	if (new == prev) {
+		if (debouncing && jiffies_since(debouncing) > (HZ+(HZ/2))) {
+			debouncing = 0;
+			sense = new;
+		}
 	} else {
-		lasttime = jiffies;
-		dimmer = sense;
-	}	
-	return dimmer;
+		prev = new;
+		debouncing = JIFFIES();
+	}
+	return sense;
 }
 
 static void	// invoked from empeg_display.c
 hijack_adjust_buttonled (int power)
 {
-	extern unsigned int display_sendcontrol_serial;
-	static unsigned long lasttime = 0, command = 0, saved_serial = 0;
+	static unsigned long command = 0;
 	const unsigned char bright_levels[1<<BUTTONLED_BITS] = {0, 1, 2, 4, 7, 14, 24, 255};
 	int brightness;
-	unsigned long flags;
-
-	save_flags_clif(flags);
 
 	// illumination command already in progress?
 	if (command) {
-		if (jiffies_since(lasttime) <= (HZ/8)) {
-			restore_flags(flags);
-			return;
-		}
-		if (display_sendcontrol_serial == saved_serial)	// display untouched since last time?
-			display_sendcontrol_part2(command);
-		else
-			hijack_buttonled_level = 256;		// force illumination to be reset
+		if (display_sendcontrol_part2(command))
+			return;	// still busy with command
 		command = 0;
 	}
 
@@ -2104,24 +2093,27 @@ hijack_adjust_buttonled (int power)
 		brightness = (brightness + 1) / 2;
 	brightness = bright_levels[brightness];
 	if (hijack_buttonled_level != brightness) {
-		if (brightness == 255)
-			command = 244;
-		else if (hijack_buttonled_level > brightness)
-			command = 242;	// turn off LEDs and ramp up again
-		else if (hijack_buttonled_level < brightness)
-			command = 243;	// brighten LEDs by 5/255 (2%)
-		if (command) {
-			display_sendcontrol_part1();
-			saved_serial = display_sendcontrol_serial;
-			lasttime = JIFFIES();
-			switch (command) {
-				case 242: hijack_buttonled_level = 0;	break;
-				case 243: hijack_buttonled_level++;	break;
-				case 244: hijack_buttonled_level = 255;	break;
+		// don't do adjustments until buttons have been idle for half a second or more
+		if (jiffies_since(ir_lastevent) >= (HZ/2)) {
+			if (brightness == 255)
+				command = 244;	// select full brightness
+			else if (hijack_buttonled_level > brightness)
+				command = 242;	// turn off LEDs and ramp up again
+			else if (hijack_buttonled_level < brightness)
+				command = 243;	// brighten LEDs by 5/255 (2%)
+			if (command) {
+				if (display_sendcontrol_part1()) {
+					command = 0;	// busy, try again later
+				} else {
+					switch (command) {
+						case 242: hijack_buttonled_level = 0;	break;
+						case 243: hijack_buttonled_level++;	break;
+						case 244: hijack_buttonled_level = 255;	break;
+					}
+				}
 			}
 		}
 	}
-	restore_flags(flags);
 }
 
 static void
@@ -3652,7 +3644,7 @@ input_append_code2 (unsigned int rawbutton)
 						hijack_enq_translations(t);
 					}
 				}
-				ir_lasttime = ir_lastevent = jiffies;
+				ir_lasttime = jiffies;
 				return;
 			}
 		}
@@ -3662,14 +3654,14 @@ input_append_code2 (unsigned int rawbutton)
 		}
 	}
 	hijack_enq_button(&hijack_inputq, rawbutton, 0);
-	ir_lasttime = ir_lastevent = jiffies;
+	ir_lasttime = jiffies;
 }
 
 static void
 input_send_delayed_rotate (void)
 {
 	input_append_code2(ir_delayed_rotate);
-	ir_lasttime = ir_lastevent = jiffies;
+	ir_lasttime = jiffies;
 	ir_delayed_rotate = 0;
 }
 
@@ -3678,6 +3670,7 @@ input_append_code(void *dev, unsigned int button)  // empeg_input.c
 {
 	unsigned long flags;
 
+	ir_lastevent = jiffies;
 	save_flags_cli(flags);
 	if (hijack_ir_debug)
 		printk("%lu: IA1:%08x,dk=%08x,dr=%d,lk=%d\n", jiffies, button, ir_downkey, (ir_delayed_rotate != 0), (ir_current_longpress != NULL));
@@ -3691,7 +3684,7 @@ input_append_code(void *dev, unsigned int button)  // empeg_input.c
 		input_append_code2(button);
 	} else if (ir_downkey == IR_NULL_BUTTON) {
 		ir_delayed_rotate = button;
-		ir_lasttime = ir_lastevent = jiffies;
+		ir_lasttime = jiffies;
 	}
 	restore_flags(flags);
 }
@@ -3864,8 +3857,10 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	}
 
 	// Manage buttonLED illumination level
-	if (!hijack_standby_time || jiffies_since(hijack_standby_time) > (HZ/4)) {
-		hijack_adjust_buttonled(dev->power);
+	if (jiffies > (2 * HZ)) {
+		if (!hijack_standby_time || jiffies_since(hijack_standby_time) > (HZ/4)) {
+			hijack_adjust_buttonled(dev->power);
+		}
 	}
 
 	save_flags_cli(flags);

@@ -123,7 +123,7 @@ static void powercontrol(int b)
 	if (empeg_hardwarerevision()<7) return;
 
 	/* Need to do this with IRQs disabled to preserve timings */
-	save_flags_cli(flags);
+	save_flags_clif(flags);
 
 	/* Starts with line high, plus a delay to ensure the PIC has noticed */
 	GPSR=EMPEG_POWERCONTROL;

@@ -883,12 +883,19 @@ static struct vm_operations_struct empegfb_vm_ops = {
 	display_vma_nopage, /* nopage */
 };
 
-void display_sendcontrol_part2(int b)
+static int           sendcontrol_busy = 0;
+static unsigned long sendcontrol_timestamp = 0;
+extern unsigned long jiffies_since(unsigned long);
+
+int display_sendcontrol_part2(int b)
 {
 	int bit;
 	unsigned long flags;
 	/* Send a byte to the display serially via control line (mk2 only) */
-	if (empeg_hardwarerevision()<6) return;
+	if (empeg_hardwarerevision()<6) return 0;
+
+	if (jiffies_since(sendcontrol_timestamp) < (HZ/10))
+		return 1;	// too early
 
 	/* Need to do this with IRQs disabled to preserve timings */
 	/* Disable FIQs too - might make the 2us delay too long */
@@ -920,20 +927,33 @@ void display_sendcontrol_part2(int b)
 	GPCR=EMPEG_DISPLAYCONTROL;
 
 	/* Reenable IRQs */
+	sendcontrol_busy = 0;
+	sendcontrol_timestamp = jiffies;
 	restore_flags(flags);
+	return 0;
 }
 
-unsigned int display_sendcontrol_serial = 0;
-
-void display_sendcontrol_part1(void)
+int display_sendcontrol_part1(void)
 {
+	unsigned long flags;
+
 	/* Send a byte to the display serially via control line (mk2 only) */
-	if (empeg_hardwarerevision()<6) return;
+	if (empeg_hardwarerevision()<6) return 1;
+
+	save_flags_clif(flags);
+	//if (sendcontrol_busy || jiffies_since(sendcontrol_timestamp) < 1) {
+	if (sendcontrol_busy) {
+		restore_flags(flags);
+		return 1;
+	}
+	sendcontrol_busy = 1;
+	sendcontrol_timestamp = jiffies;
 
 	/* Starts with line high, plus a little delay to make sure that
 	   the PIC is listening */
 	GPSR=EMPEG_DISPLAYCONTROL;
-	++display_sendcontrol_serial;	// signify that someone is tweaking the display
+	restore_flags(flags);
+	return 0;
 }
 
 /* Send a command to the empeg via the display control line. This is only
@@ -943,17 +963,16 @@ void display_sendcontrol_part1(void)
    dimmer level */
 static void display_sendcontrol(int b)
 {
-	/* Send a byte to the display serially via control line (mk2 only) */
-	if (empeg_hardwarerevision()<6) return;
-
-	display_sendcontrol_part1();
-
-	/* Wait 100ms */
+	// claim (almost) exclusive access to the control lines and prime the PIC
+	while (display_sendcontrol_part1()) {
+		current->state=TASK_INTERRUPTIBLE;
+		schedule_timeout(1);
+	}
+	// send the command byte, after a suitable pause
 	current->state=TASK_INTERRUPTIBLE;
 	schedule_timeout(HZ/10);
-
-	/* send the byte */
-	display_sendcontrol_part2(b);
+	while (display_sendcontrol_part2(b))
+		schedule();
 }
 
 static int display_open(struct inode *inode, struct file *filp)
@@ -1001,7 +1020,6 @@ void hijack_set_standbyLED (int off_on)
 
 	save_flags_clif(flags);
 	LCCR0 = LCCR0 & ~LCCR0_LEN;		// disable LCD controller
-	while((LCSR&LCSR_LDD)==0);		// wait for controller off
 	PPDR  = PPDR | 0x201;			// configure LCDdataLine0 and LCLK as outputs
 	PPSR  = off_on ? (PPSR | 0x201) : ((PPSR | 0x200) & ~1);	// set LED on/off
 	restore_flags(flags);
@@ -1034,6 +1052,8 @@ int display_ioctl(struct inode *inode, struct file *filp, unsigned int cmd,
 	case EMPEG_DISPLAY_POWER:
 	case 1: /* Screen power control */
 		if (arg) {
+			unsigned long flags;
+			save_flags_clif(flags);
 			hijack_standbyLED_automatic = 0;
 			if (LCCR0&LCCR0_LEN) {
 				/* Lcd control register 0; everything off */
@@ -1070,6 +1090,7 @@ int display_ioctl(struct inode *inode, struct file *filp, unsigned int cmd,
 
 			/* Keep palette 0 until display has warmed up (500ms?) and then
 			   turn palette on. */
+			restore_flags(flags);
 		} else {
 			extern int hijack_standbyLED_on;
 			/* Do this first in case powerfail triggers */
@@ -1326,7 +1347,10 @@ void __init empeg_display_init(void)
 
 void display_powerreturn_action(void)
 {
+	unsigned long flags;
+
 #if 0
+	save_flags_clif(flags);
 	/* LCD control register 0; flags & enable */
 	LCCR0 = 
 		LCCR0_LEN+            /* Enable LCD controller */
@@ -1345,6 +1369,7 @@ void display_powerreturn_action(void)
 #else
 	struct display_dev *dev = devices;
 
+	save_flags_clif(flags);
 	/* Set up SA1100 LCD controller: first ensure that it's turned off */
 	LCCR0 = 0;
 	
@@ -1398,4 +1423,5 @@ void display_powerreturn_action(void)
 		udelay(POWERFAIL_DISABLED_DELAY);
 	}
 #endif
+	restore_flags(flags);
 }

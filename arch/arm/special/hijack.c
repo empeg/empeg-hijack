@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v393"
+#define HIJACK_VERSION	"v394"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -1684,7 +1684,7 @@ vitals_display (int firsttime)
 		model = 1;
 	else if (permset[0] < 9)
 		model = 2;
-	count = sprintf(buf, "Mk%x: %luMB %d", model, (memory_end - PAGE_OFFSET) >> 20, get_drive_size(0,0));
+	count = sprintf(buf, "Mk%x: %luMB, %d", model, (memory_end - PAGE_OFFSET) >> 20, get_drive_size(0,0));
 	model = (model == 1);	// 0 == Mk2(a); 1 == Mk1
 	if (ide_hwifs[model].drives[!model].present)
 		sprintf(buf+count, "+%d", get_drive_size(model,!model));

@@ -23,7 +23,7 @@
 
 #ifdef CONFIG_SA1100_EMPEG
 /* default mapping is 4 banks of 4MB */
-unsigned long empeg_virt_to_phys_mapping[8] = {
+unsigned long empeg_virt_to_phys_mapping[16] = {
 	0xc0000000,
 	0xc8000000,
 	0xd0000000,
@@ -31,9 +31,17 @@ unsigned long empeg_virt_to_phys_mapping[8] = {
 	0xc0000000,	// phantom
 	0xc8000000,	// phantom
 	0xd0000000,	// phantom
+	0xd8000000,	// phantom
+	0xc0000000,	// phantom
+	0xc8000000,	// phantom
+	0xd0000000,	// phantom
+	0xd8000000,	// phantom
+	0xc0000000,	// phantom
+	0xc8000000,	// phantom
+	0xd0000000,	// phantom
 	0xd8000000	// phantom
 };
-unsigned long empeg_virt_to_phys_mapping_mk2a[8] = {
+unsigned long empeg_virt_to_phys_mapping_mk2a[16] = {
 	0xc0000000,
 	0xc0400000,
 	0xc0800000,
@@ -41,7 +49,15 @@ unsigned long empeg_virt_to_phys_mapping_mk2a[8] = {
 	0xc8000000,
 	0xc8400000,
 	0xc8800000,
-	0xc8c00000
+	0xc8c00000,
+	0xd0000000,
+	0xd0400000,
+	0xd0800000,
+	0xd0c00000,
+	0xd8000000,
+	0xd8400000,
+	0xd8800000,
+	0xd8c00000
 };
 unsigned long empeg_phys_to_virt_mapping[4] = {
 	0xc0000000,

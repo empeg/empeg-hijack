@@ -2013,7 +2013,7 @@ khttpd_handle_connection (server_parms_t *parms)
 		if (*x == '\n') {
 			if (!strxcmp(x, "\nUser-Agent: iTunes", 1) || !strxcmp(x, "\nUA-OS: MacOS", 1)) {
 				parms->apple_iTunes = 1;
-			} else if (!strxcmp(x, "\nUser-Agent: NSPlayer", 1)) {	// WinMediaPlayer (?)
+			} else if (!strxcmp(x, "\nUser-Agent: NSPlayer", 1) || !strxcmp(x, "\nUser-Agent: Windows-Media-Player", 1)) {
 				parms->streaming = 1;
 			} else if (!strxcmp(x, "\nIcy-MetaData:1", 1)) {
 				parms->streaming = 1;

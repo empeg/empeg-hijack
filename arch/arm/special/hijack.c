@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v262"
+#define HIJACK_VERSION	"v263"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -2007,20 +2007,21 @@ static int
 headlight_sense_is_active (void)
 {
 	static unsigned long lasttime = 0;
-	static int dimmer = 0, last = 0;
+	static int dimmer = 0;
 	int sense;
 
-	sense = GPLR & EMPEG_SERIALCTS;
+	sense = !(GPLR & EMPEG_SERIALCTS);   // EMPEG_SERIALCTS is active low.
 
-	if (sense != dimmer) {
-		if (sense != last) {
-			last = sense;
-			lasttime = jiffies;
-		} else if (jiffies_since(lasttime) > (HZ/3)) {
+	if (!sense) {
+		if (jiffies_since(lasttime) > (HZ/3))
 			dimmer = sense;
-		}
-	}
-	return !dimmer;
+		else
+			dimmer = !sense;
+	} else {
+		lasttime = jiffies;
+		dimmer = sense;
+	}	
+	return dimmer;
 }
 
 static void	// invoked from empeg_display.c
@@ -2036,7 +2037,7 @@ hijack_adjust_buttonled (int power)
 
 	// illumination command already in progress?
 	if (command) {
-		if (jiffies_since(lasttime) >= (HZ/10)) {	// FIXME: is this correct?  Seems to work..
+		if (jiffies_since(lasttime) <= (HZ/8)) {
 			restore_flags(flags);
 			return;
 		}

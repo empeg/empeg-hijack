@@ -178,6 +178,7 @@ static void powerfail_reenabled_timeout(unsigned long);
 
 /* save hijack savearea for user-defined-menu settings */
 void hijack_save_settings (unsigned char *buf);
+void hijack_restore_settings (unsigned char *, int);
 
 void enable_powerfail(int enable)
 {
@@ -296,7 +297,7 @@ static int state_fetch(unsigned char *buffer)
 	   the one we use */
 	int a;
 
-	(void)empeg_state_restore(buffer);
+	hijack_restore_settings(buffer, empeg_state_restore(buffer));
 
 	/* Nowhere to save, yet */
 	savebase=NULL;

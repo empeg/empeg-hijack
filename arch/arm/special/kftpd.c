@@ -387,7 +387,7 @@ filldir (void *parms, const char *name, int namelen, off_t offset, ino_t ino)
 		return p->rc;	// non-zero rc causes readdir() to stop, but with no indication of an error!
 	}
 
-	// Get target of symbolic link: UGLY HACK, COPIED FROM ext2_readlink(); FIXME: broken for /proc/
+	// Get target of symbolic link: UGLY HACK, COPIED FROM ext2_readlink(); fixme?: broken for /proc/
 	mode = i->i_mode;
 	if ((mode & S_IFMT) == S_IFLNK && i->i_sb) {
 		llen = i->i_sb->s_blocksize - 1;
@@ -794,7 +794,8 @@ kftpd_handle_command (server_parms_t *parms)
 			response = "200 stru-f okay";
 		} else if (!strncmp(buf, "TYPE ", 5)) {
 			if (buf[5] != 'I') {
-				response = "502 unsupported xfer TYPE";
+				//response = "502 unsupported xfer TYPE";
+				response = "200 type-A okay"; // fixme?
 			} else {
 				response = "200 type-I okay";
 			}
@@ -827,12 +828,15 @@ kftpd_handle_command (server_parms_t *parms)
 		} else if (!strncmp(buf, "STOR ", 5)) {
 			response = "502 upload not supported yet";
 		} else if (!strncmp(buf, "LIST", 4)) {
+			int j = 4;
+			if (buf[j] == ' ' && buf[j+1] == '-')
+				while (buf[++j] && buf[j] != ' ');
 			strcpy(path, parms->cwd);
-			if (buf[4] == ' ') {
-				buf[4] = '\0';
-				append_path(path, &buf[5]);
+			if (buf[j] == ' ') {
+				buf[j] = '\0';
+				append_path(path, &buf[j+1]);
 			}
-			if (buf[4]) {
+			if (buf[j]) {
 				response = "500 bad command";
 			} else {
 				response = send_dirlist(parms, path);

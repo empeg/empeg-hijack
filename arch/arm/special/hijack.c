@@ -1,6 +1,6 @@
 // Empeg display/IR hijacking by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v113"
+#define HIJACK_VERSION "v114"
 //
 // Includes: font, drawing routines
 //           extensible menu system
@@ -2231,16 +2231,14 @@ test_row (const unsigned char *displaybuf, unsigned short row, unsigned long col
 static int
 check_if_equalizer_is_active (const unsigned char *displaybuf)
 {
-	const unsigned char *row = displaybuf + (13 * (EMPEG_SCREEN_COLS/2));
-	const unsigned char eqrow[] = {	0xf0,0xff,0xff,0xf2,0xff,0xff,
-					0xf2,0xff,0xff,0xf2,0xff,0xff,
-					0xf2,0xff,0xff,0xf2,0xff,0xff,
-					0xf2,0xff,0xff,0xf2,0xff,0xff };
-					//0xf2,0xff,0xff,0xf2,0xff,0xff,
-					//0x00,0x00,0x00,0x00,0xff,0xff};
-	if (0 == memcmp(row, eqrow, sizeof(eqrow)))
-		return 1;	// equalizer settings active
-	return 0;	// equalizer settings not active
+	const unsigned char *row = displaybuf + (31 * (EMPEG_SCREEN_COLS/2));
+	int i;
+
+	for (i = 9; i >= 0; --i) {
+		if ((*row++ & 0x0f) || (*row++ & 0x11) != 0x11 || (*row++ & 0x11) != 0x11)
+			return 0;	// equalizer settings not displayed
+	}
+	return 1;	// equalizer settings ARE displayed
 }
 
 static int
@@ -2796,7 +2794,7 @@ input_append_code(void *ignored, unsigned long button)  // empeg_input.c
 
 #ifdef RESTORE_CARVISUALS
 static int
-test_info_screenrow (unsigned char *buf, int row)
+look_for_trackinfo_or_tuner (unsigned char *buf, int row)
 {
 	if (row) {
 		// look for a solid line, any color(s)
@@ -2852,7 +2850,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	}
 #ifdef RESTORE_CARVISUALS
 	if (restore_carvisuals) {
-		if (test_info_screenrow(player_buf, info_screenrow)) {
+		if (look_for_trackinfo_or_tuner(player_buf, info_screenrow)) {
 			while (restore_carvisuals) {
 				--restore_carvisuals;
 				save_flags_cli(flags);
@@ -3728,7 +3726,7 @@ fix_visuals (unsigned char *buf)
 				if ((buf[0x4c] & 0x04) == 0) {	// MP3 visuals visible ?
 					info_screenrow = 15;
 					restore_carvisuals = (buf[0x40] & 3) + 2 + (buf[0x4d] & 1);
-					// switch to "track" mode on startup (because it's easy to detect later one),
+					// switch to "track" mode on startup (because it's easy to detect later on),
 					// and then restore the original mode when the track info appears in the screen buffer.
 					buf[0x40] = (buf[0x40] & ~0x03) | 0x02;
 					buf[0x4c] =  buf[0x4c]          | 0x04;
@@ -3814,15 +3812,11 @@ hijack_init (void)	// invoked from empeg_display.c
 	}
 }
 
-void	// invoked from empeg_display.c
-hijack_restore_settings (void)
+void	// invoked first from empeg_display.c, and later again from empeg_state.c
+hijack_restore_settings (unsigned char *buf, int failed)
 {
 	extern int empeg_state_restore(unsigned char *);	// arch/arm/special/empeg_state.c
-	unsigned char buf[128];
-	int failed;
-
-	hijack_init();
-	failed = empeg_state_restore(buf);
+	static int second_pass = 0;
 
 	// restore state
 	memcpy(&hijack_savearea, buf+HIJACK_SAVEAREA_OFFSET, sizeof(hijack_savearea));
@@ -3832,6 +3826,11 @@ hijack_restore_settings (void)
 		empeg_on_dc_power	= hijack_force_power & 1;
 	else
 		empeg_on_dc_power	= ((GPLR & EMPEG_EXTPOWER) != 0);
+	if (!second_pass++)
+		return;		// first time through, just get/set empeg_on_dc_power
+
+	hijack_init();
+
 	if (empeg_on_dc_power)
 		hijack_voladj_enabled	= hijack_savearea.voladj_dc_power;
 	else

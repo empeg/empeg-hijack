@@ -1277,7 +1277,13 @@ void __init empeg_display_init(void)
 	*lcd_command1=0xaf;
 	udelay(1);
 #endif
-	hijack_restore_settings();
+{
+	extern int empeg_state_restore (unsigned char *);
+	extern void hijack_restore_settings(unsigned char *, int);
+	// we need hijack to set-up AC/DC power mode for us
+	unsigned char buf[128];
+	hijack_restore_settings (buf, empeg_state_restore(buf));
+}
 	handle_splash(dev);
 	printk("empeg display initialised.\n");
 }

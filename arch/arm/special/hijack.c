@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v244"
+#define HIJACK_VERSION	"v245"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -96,6 +96,71 @@ static void (*hijack_movefunc)(int) = NULL;
 #define BUTTON_FLAGS		(0xff000000)
 #define IR_NULL_BUTTON		(~BUTTON_FLAGS)
 #define IR_INTERNAL		((void *)-1)
+
+// Sony Stalk packets look like this:
+//
+//	0x02 0x0S 0xBB 0xCC
+//
+// First byte is always 0x02.
+// Second byte is either 0x00 (unshifted) or 0x01 (shifted).
+// Third byte is actual button A/D measurement; 0xff == no button pressed.
+// Fourth byte is packet checksum; sum of second + third bytes.
+//
+// Example:
+//
+// 02 01 ff 00 == shift button being pressed
+// 02 01 2b 2c == ATT button pressed while shifted
+// 02 01 ff 00 == no button pressed, shift still active (ATT got released)
+// 02 00 ff ff == all buttons released
+//
+// The button order in the stalk tables below is FIXED; do not modify it!!
+// Also, the hijack_option_table[] depends upon this order.
+
+static const unsigned int stalk_buttons[] = {
+	IR_KOFF_PRESSED,
+	IR_KSOURCE_PRESSED,
+	IR_KATT_PRESSED,
+	IR_KFRONT_PRESSED,
+	IR_KNEXT_PRESSED,
+	IR_KPREV_PRESSED,
+	IR_KVOLUP_PRESSED,
+	IR_KVOLDOWN_PRESSED,
+	IR_KREAR_PRESSED,
+	IR_KBOTTOM_PRESSED,
+	IR_NULL_BUTTON};
+
+typedef struct min_max_s {
+	int	min;
+	int	max;
+} min_max_t;
+
+static int stalk_on_left = 0;
+static min_max_t rhs_stalk_vals[11];	// 10 sets of values, followed by {-1,-1} terminator.
+static min_max_t lhs_stalk_vals[11];	// 10 sets of values, followed by {-1,-1} terminator.
+
+static const min_max_t rhs_stalk_default[] = {
+	{0x00, 0x07},	// IR_KOFF_PRESSED
+	{0x10, 0x1c},	// IR_KSOURCE_PRESSED
+	{0x24, 0x30},	// IR_KATT_PRESSED
+	{0x34, 0x40},	// IR_KFRONT_PRESSED
+	{0x42, 0x4e},	// IR_KNEXT_PRESSED
+	{0x54, 0x60},	// IR_KPREV_PRESSED
+	{0x68, 0x74},	// IR_KVOLUP_PRESSED
+	{0x7e, 0x8a},	// IR_KVOLDOWN_PRESSED
+	{0x94, 0xa0},	// IR_KREAR_PRESSED
+	{0xa0, 0xb5}};	// IR_KBOTTOM_PRESSED
+
+static const min_max_t lhs_stalk_default[] = {
+	{0x00, 0x07},	// IR_KOFF_PRESSED
+	{0x10, 0x1c},	// IR_KSOURCE_PRESSED
+	{0x24, 0x30},	// IR_KATT_PRESSED
+	{0x34, 0x40},	// IR_KREAR_PRESSED
+	{0x42, 0x4e},	// IR_KPREV_PRESSED
+	{0x54, 0x60},	// IR_KNEXT_PRESSED
+	{0x68, 0x74},	// IR_KVOLDOWN_PRESSED
+	{0x7e, 0x8a},	// IR_KVOLUP_PRESSED
+	{0x94, 0xa0},	// IR_KFRONT_PRESSED
+	{0xa0, 0xb5}};	// IR_KBOTTOM_PRESSED
 
 static unsigned long ir_lastevent = 0, ir_lasttime = 0, ir_selected = 0;
 static unsigned int ir_releasewait = IR_NULL_BUTTON, ir_trigger_count = 0;;
@@ -273,6 +338,28 @@ static button_name_t button_names[] = {
 	{IR_KW_CDMDCH_PRESSED,		"CDMDCH"},
 	{IR_KW_DNPP_PRESSED,		"DNPP"},
 
+	{IR_KOFF_PRESSED,		"KOff"},	// Stalk
+	{IR_KSOURCE_PRESSED,		"KSource"},	// Stalk
+	{IR_KATT_PRESSED,		"KAtt"},	// Stalk
+	{IR_KFRONT_PRESSED,		"KFront"},	// Stalk
+	{IR_KNEXT_PRESSED,		"KNext"},	// Stalk
+	{IR_KPREV_PRESSED,		"KPrev"},	// Stalk
+	{IR_KVOLUP_PRESSED,		"KVolUp"},	// Stalk
+	{IR_KVOLDOWN_PRESSED,		"KVolDown"},	// Stalk
+	{IR_KREAR_PRESSED,		"KRear"},	// Stalk
+	{IR_KBOTTOM_PRESSED,		"KBottom"},	// Stalk
+
+	{IR_KSOFF_PRESSED,		"KSOff"},	// Stalk
+	{IR_KSSOURCE_PRESSED,		"KSSource"},	// Stalk
+	{IR_KSATT_PRESSED,		"KSAtt"},	// Stalk
+	{IR_KSFRONT_PRESSED,		"KSFront"},	// Stalk
+	{IR_KSNEXT_PRESSED,		"KSNext"},	// Stalk
+	{IR_KSPREV_PRESSED,		"KSPrev"},	// Stalk
+	{IR_KSVOLUP_PRESSED,		"KSVolUp"},	// Stalk
+	{IR_KSVOLDOWN_PRESSED,		"KSVolDown"},	// Stalk
+	{IR_KSREAR_PRESSED,		"KSRear"},	// Stalk
+	{IR_KSBOTTOM_PRESSED,		"KSBottom"},	// Stalk
+
 	{IR_NULL_BUTTON,		"\0"}		// end-of-table-marker
 	};
 #undef ALT
@@ -395,6 +482,7 @@ static int hijack_spindown_seconds;		// drive spindown timeout in seconds
 #endif // CONFIG_NET_ETHERNET
 static int hijack_old_style;			// 1 == don't highlite menu items
 static int hijack_quicktimer_minutes;		// increment size for quicktimer function
+static int hijack_stalk_debug;			// trace button in/out actions to/from Stalk?
 static int hijack_standby_minutes;		// number of minutes after screen blanks before we go into standby
        int hijack_supress_notify;		// 1 == supress player "notify" and "dhcp" text on serial port
        int hijack_time_offset;			// adjust system time-of-day clock by this many minutes
@@ -409,7 +497,6 @@ static int hijack_bass_adj;			// Sets gain for Bass Adjustment
 static int hijack_treble_freq;          	// Sets center frequency for Bass Adjustment
 static int hijack_treble_adj;			// Sets gain for Treble Adjustment
 static int hijack_treble_q;			// Sets Q factor for Treble Adjustment
-extern int eq_hijacked;				// flag to save current eq values before overwriting. 0 saves.
 
 // dB LUT used by Bass/Treble Adjustments
 typedef struct hijack_db_table_s {
@@ -465,6 +552,7 @@ static const hijack_option_t hijack_option_table[] =
 {"spindown_seconds",		&hijack_spindown_seconds,	30,			1,	0,	(239 * 5)},
 {"extmute_off",			&hijack_extmute_off,		0,			1,	0,	IR_NULL_BUTTON},
 {"extmute_on",			&hijack_extmute_on,		0,			1,	0,	IR_NULL_BUTTON},
+{"fake_tuner",			&hijack_fake_tuner,		0,			1,	0,	1},
 {"ir_debug",			&hijack_ir_debug,		0,			1,	0,	1},
 #ifdef CONFIG_NET_ETHERNET
 {"kftpd_control_port",		&hijack_kftpd_control_port,	21,			1,	0,	65535},
@@ -489,12 +577,14 @@ static const hijack_option_t hijack_option_table[] =
 {button_names[2].name,		button_names[2].name,		(int)"PopUp2",		0,	0,	8},
 {button_names[3].name,		button_names[3].name,		(int)"PopUp3",		0,	0,	8},
 {"quicktimer_minutes",		&hijack_quicktimer_minutes,	30,			1,	1,	120},
+{"stalk_debug",			&hijack_stalk_debug,		0,			1,	0,	1},
+{"stalk_lhs",			lhs_stalk_vals,			(int)lhs_stalk_default,	20,	0,	0xff},
+{"stalk_rhs",			rhs_stalk_vals,			(int)rhs_stalk_default,	20,	0,	0xff},
 {"standby_minutes",		&hijack_standby_minutes,	30,			1,	0,	240},
-{"fake_tuner",			&hijack_fake_tuner,		0,			1,	0,	1},
-{"time_offset",			&hijack_time_offset,		0,			1,	-24*60,	24*60},
-{"trace_tuner",			&hijack_trace_tuner,		0,			1,	0,	1},
 {"supress_notify",		&hijack_supress_notify,		0,			1,	0,	1},
 {"temperature_correction",	&hijack_temperature_correction,	-4,			1,	-20,	+20},
+{"time_offset",			&hijack_time_offset,		0,			1,	-24*60,	24*60},
+{"trace_tuner",			&hijack_trace_tuner,		0,			1,	0,	1},
 {button_names[4].name,		&hijack_voladj_parms[0][0],	(int)voladj_ldefault,	5,	0,	0x7ffe},
 {button_names[5].name,		&hijack_voladj_parms[1][0],	(int)voladj_mdefault,	5,	0,	0x7ffe},
 {button_names[6].name,		&hijack_voladj_parms[2][0],	(int)voladj_hdefault,	5,	0,	0x7ffe},
@@ -1926,7 +2016,7 @@ hijack_adjust_buttonled (int power)
 
 	// illumination command already in progress?
 	if (command) {
-		if (jiffies_since(lasttime) >= (HZ/10)) {	// fixme?  speed this up?
+		if (jiffies_since(lasttime) >= (HZ/10)) {
 			restore_flags(flags);
 			return;
 		}
@@ -2397,10 +2487,9 @@ delaytime_display (int firsttime)
 }
 
 // wrapper function used to set treble and bass on boot.
-static void
+void
 hijack_tone_init (void)
 {
-	eq_hijacked = 0;	// tell hijack_tone_set to save current eq sections.
 	(void) hijack_tone_set(hijack_db_table[hijack_bass_adj].value, hijack_bass_freq, hijack_bass_q,
 		hijack_db_table[hijack_treble_adj].value, hijack_treble_freq, hijack_treble_q);
 	printk("hijack_tone_init completed.\n");
@@ -3358,6 +3447,37 @@ done:
 }
 
 static void
+inject_stalk_button (unsigned int button)
+{
+	unsigned char pkt[4] = {0x02, 0x00, 0xff, 0xff};
+	min_max_t *vals, *v;
+	int i;
+	unsigned int rawbutton = button;	//fixme
+
+	pkt[0] = 0x02;
+	pkt[1] = 0x00;
+	if (button & IR_STALK_SHIFTED) {
+		button ^= IR_STALK_SHIFTED;
+		pkt[1] = 0x01;
+	}
+	if (button & 0x80000000) {
+		pkt[2] = 0xff;
+	} else {
+		for (i = 0; stalk_buttons[i] != button; ++i) {
+			if (stalk_buttons[i] == IR_NULL_BUTTON)
+				return;
+		}
+		vals = stalk_on_left ? lhs_stalk_vals : rhs_stalk_vals;
+		v = &vals[i];
+		pkt[2] = (v->min + v->max) / 2;
+	}
+	pkt[3] = pkt[1] + pkt[2];
+	if (hijack_stalk_debug)
+		printk("Stalk: out=%02x %02x %02x %02x == %08x\n", pkt[0], pkt[1], pkt[2], pkt[3], rawbutton); //fixme
+	hijack_serial_insert(pkt, sizeof(pkt), 0);
+}
+
+static void
 hijack_handle_buttons (const char *player_buf)
 {
 	hijack_buttondata_t	data;
@@ -3371,8 +3491,13 @@ hijack_handle_buttons (const char *player_buf)
 		hijack_handle_button(data.button, data.delay, any_ui_is_active);
 		restore_flags(flags);
 	}
-	while (hijack_button_deq(&hijack_playerq, &data, 0))
-		(void)real_input_append_code(data.button);
+	while (hijack_button_deq(&hijack_playerq, &data, 0)) {
+		unsigned int button = data.button;
+		if ((button & IR_STALK_MASK) == IR_STALK_MATCH)
+			inject_stalk_button(button);
+		else
+			(void)real_input_append_code(data.button);
+	}
 }
 
 static unsigned int ir_downkey = IR_NULL_BUTTON, ir_delayed_rotate = 0;
@@ -3488,18 +3613,65 @@ input_append_code(void *dev, unsigned int button)  // empeg_input.c
 	restore_flags(flags);
 }
 
+static int
+handle_stalk_packet (unsigned char *pkt)
+{
+	static unsigned int current_button = -1;
+	unsigned char val;
+	unsigned int button;
+
+
+	// Check for valid stalk packet, and convert into a button press/release code:
+	if (pkt[0] != 0x02 || (pkt[1] | 1) != 0x01 || (pkt[1] + pkt[2]) != pkt[3])
+		return 0;	// not a valid Stalk packet
+
+	if (current_button != -1) {
+		button = current_button | 0x80000000;
+		current_button = -1;
+		input_append_code(NULL, button);
+		if (hijack_stalk_debug)
+			printk("Stalk: in=%02x %02x %02x %02x == %08x\n", pkt[0], pkt[1], pkt[2], pkt[3], button); //fixme
+	}
+	val = pkt[2];
+	if (val == 0xff) {	// button pressed?
+		if (hijack_stalk_debug)
+			printk("Stalk: in=%02x %02x %02x %02x == no button\n", pkt[0], pkt[1], pkt[2], pkt[3]); //fixme
+	} else {
+		min_max_t *v, *vals;
+		int i;
+		vals = stalk_on_left ? lhs_stalk_vals : rhs_stalk_vals;
+		for (i = 0; (v = &vals[i])->min != -1; ++i) {
+			if (val >= v->min && val <= v->max) {
+				button = stalk_buttons[i];
+				if (pkt[1]) // shifted?
+					button |= IR_STALK_SHIFTED;
+				current_button = button;
+				input_append_code(NULL, button);
+				if (hijack_stalk_debug)
+					printk("Stalk: in=%02x %02x %02x %02x == %08x\n", pkt[0], pkt[1], pkt[2], pkt[3], button); //fixme
+				goto done;
+			}
+		}
+		if (hijack_stalk_debug)
+			printk("Stalk: in=%02x %02x %02x %02x == no match\n", pkt[0], pkt[1], pkt[2], pkt[3]); //fixme
+		else
+			printk("Stalk: no match for value=0x%02x\n", val);
+	}
+done:
+	return 1;	// Stalk packet
+}
+
 void
-hijack_intercept_tuner (unsigned int button)
+hijack_intercept_tuner (unsigned int packet)
 {
 	empeg_tuner_present = 1;
 	if (hijack_trace_tuner)
-		printk("tuner: in=%08x\n", button);
-	button = htonl(button);
+		printk("tuner: in=%08x\n", htonl(packet));
 	if (hijack_fake_tuner) {
 		hijack_fake_tuner = 0;
 		printk("tuner: \"fake_tuner=0\"\n");
-	} else {
-		hijack_serial_insert ((char *)&button, 4, 0);
+	} else if (!handle_stalk_packet((unsigned char *)&packet)) {
+		hijack_serial_insert((unsigned char *)&packet, sizeof(packet), 0);
 	}
 }
 
@@ -3588,7 +3760,6 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	// Send initial button sequences, if any
 	if (!sent_initial_buttons && hijack_player_started) {
 		sent_initial_buttons = 1;
-		hijack_tone_init();
 		input_append_code(IR_INTERNAL, IR_FAKE_INITIAL);
 		input_append_code(IR_INTERNAL, RELEASECODE(IR_FAKE_INITIAL));
 	}
@@ -4378,11 +4549,21 @@ hijack_get_options (unsigned char *buf)
 	unsigned char *s;
 
 	// look for [kenwood] disabled=0
-	kenwood_disabled = 0;
 	if ((s = find_header(buf, "[kenwood]"))) {
 		while (*(s = skipchars(s, " \n\t\r")) && *s != '[') {
 			if (!strxcmp(s, "disabled=1", 1)) {
 				kenwood_disabled = 1;
+				break;
+			}
+			s = findchars(s, "\n");
+		}
+	}
+
+	// look for [controls] stalk_side=left
+	if ((s = find_header(buf, "[controls]"))) {
+		while (*(s = skipchars(s, " \n\t\r")) && *s != '[') {
+			if (!strxcmp(s, "stalk_side=left", 1)) {
+				stalk_on_left = 1;
 				break;
 			}
 			s = findchars(s, "\n");
@@ -4438,7 +4619,7 @@ set_drive_spindown_times (void)
 
 // edit the player's view of config.ini
 static int
-edit_config_ini (char *s, const char *lookfor, int just_looking)
+edit_config_ini (char *s, const char *lookfor)
 {
 	char *optname, *optend;
 	int count = 0;
@@ -4449,8 +4630,6 @@ edit_config_ini (char *s, const char *lookfor, int just_looking)
 			s += strlen(lookfor);
 			optname = skipchars(s, " \t");
 			if (optname != s) {		// verify whitespace after "lookfor"
-				if (just_looking)
-					return 1;
 				s = optname;
 				*(s - 1) = '\n';	// "uncomment" the portion after "lookfor"
 				++count;		// keep track of how many substitutions we do
@@ -4483,6 +4662,10 @@ static void
 reset_hijack_options (void)
 {
 	const hijack_option_t *h = hijack_option_table;
+	kenwood_disabled = 0;
+	stalk_on_left = 0;
+	lhs_stalk_vals[10] = (min_max_t){-1,-1};	// mark end of table (not part of "options").
+	rhs_stalk_vals[10] = (min_max_t){-1,-1};	// mark end of table (not part of "options").
 	while (h->name) {
 		int n = h->num_items, *val = h->target;
 		if (n == 1) {
@@ -4507,14 +4690,8 @@ hijack_process_config_ini (char *buf, int invocation_count)
 	static const char *acdc_labels[2] = {";@AC", ";@DC"};
 
 	hijack_got_config_ini = 1;
-	(void) edit_config_ini(buf, acdc_labels[empeg_on_dc_power], 0);
-	if (!edit_config_ini(buf, homework_labels[ hijack_homework], 0)
-	 && !edit_config_ini(buf, homework_labels[!hijack_homework], 1)
-	 && invocation_count == 1)
-	{
-		// no HOME/WORK labels in config.ini, so we don't need it on the menu:
-		remove_menu_entry(homework_menu_label);
-	}
+	(void) edit_config_ini(buf, acdc_labels[empeg_on_dc_power]);
+	(void) edit_config_ini(buf, homework_labels[ hijack_homework]);
 	if (invocation_count != 1)		// exit if not first read of this cycle
 		return;
 

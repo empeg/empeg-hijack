@@ -125,7 +125,7 @@ static unsigned int radio_sensitivity;
 static int radio_fm_level_p1 = 512, radio_fm_level_q1 = 0;
 static int radio_fm_deemphasis = 50;
 static struct empeg_eq_section_t hijack_eq_real[20];
-	   int eq_hijacked = 0;                  // hijack.c will reset this flag in hijack_tone_init();
+static int eq_hijacked = 0;   
 /* stereo detect */
 static unsigned stereo_level = 0;
 static unsigned sampling_rate = 44100;
@@ -152,6 +152,7 @@ static void empeg_mixer_set_fm_level(unsigned int p1, unsigned int q1);
 static int empeg_mixer_get_fm_noise(void);
 static int empeg_mixer_set_fm_deemphasis(int which);
 static void empeg_mixer_set_sampling_rate(mixer_dev *dev, unsigned rate);
+extern void hijack_tone_init(void); // hijack.c
 
 static struct file_operations mixer_fops =
 {
@@ -532,6 +533,8 @@ static int empeg_mixer_ioctl(struct inode *inode, struct file *file,
 
 		empeg_mixer_eq_set(sections);
 		empeg_mixer_eq_apply();
+		eq_hijacked = 0;
+		hijack_tone_init();
 		return 0;
 	}
 	case EMPEG_MIXER_GET_EQ:
@@ -1158,7 +1161,7 @@ hijack_tone_set (int bass_value, int bass_freq, int bass_q, int treble_value, in
 	struct empeg_eq_section_t sections[20];
 
 	if (eq_hijacked == 0) {
-		// Save the real eq at boot.
+		// Save the real eq whenever the player has changed it.
 		memcpy(hijack_eq_real, eq_current, sizeof(eq_current));
 		eq_hijacked = 1;
 	}
@@ -1208,10 +1211,10 @@ static void empeg_mixer_inflict_flags(mixer_dev *dev)
 static void empeg_mixer_eq_set(struct empeg_eq_section_t *sections)
 {
 	int i, order;
-
 #if EQ_DEBUG 
-	printk ("Bass words: %04x %04x - %04x %04x\n", sections[8].word1, sections[8].word2, sections[18].word1, sections[18].word2 );
-	printk ("Treble words: %04x %04x - %04x %04x\n", sections[9].word1, sections[9].word2, sections[19].word1, sections[19].word2 );
+	printk ("\n****** Mixer EQ apply ******\n" );
+	printk ("****** Bass words: %04x %04x - %04x %04x ******\n", sections[8].word1, sections[8].word2, sections[18].word1, sections[18].word2 );
+	printk ("****** Treble words: %04x %04x - %04x %04x ******\n", sections[9].word1, sections[9].word2, sections[19].word1, sections[19].word2 );
 #endif
 	
 	for(i=0; i<20; i++) {

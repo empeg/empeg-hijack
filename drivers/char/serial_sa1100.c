@@ -361,7 +361,7 @@ static _INLINE_ void receive_chars(struct async_struct *info,
 				char ptype = button >> 24;
 				if (ptype == 0x02 || ptype == 0x01) {
 					extern void hijack_intercept_tuner(unsigned int);
-					hijack_intercept_tuner(button);
+					hijack_intercept_tuner(htonl(button));
 					button = 0;
 				}
 			}

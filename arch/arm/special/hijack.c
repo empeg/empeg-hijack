@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v292"
+#define HIJACK_VERSION	"v293"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -57,7 +57,7 @@ int	hijack_fsck_disabled = 0;	// used in fs/ext2/super.c
 int	hijack_onedrive = 0;		// used in drivers/block/ide-probe.c
 int	hijack_reboot = 0;		// set to "1" to cause reboot on next display refresh
 int	hijack_player_is_restarting = 0;// used in fs/read_write.c, fs/exec.c
-unsigned int hijack_notify_started = 0;	// set to jiffies when player startup is detected on serial port (notify.c)
+unsigned int hijack_player_started = 0;	// set to jiffies when player startup is detected on serial port (notify.c)
 
 static unsigned int PROMPTCOLOR = COLOR3, ENTRYCOLOR = -COLOR3;
 
@@ -605,8 +605,7 @@ static const hijack_option_t hijack_option_table[] =
 {"standbyLED_on",		&hijack_standbyLED_on,		-1,			1,	-1,	HZ*60},
 {"standbyLED_off",		&hijack_standbyLED_off,		10*HZ,			1,	0,	HZ*60},
 {"standby_minutes",		&hijack_standby_minutes,	30,			1,	0,	240},
-{"supress_notify",		&hijack_suppress_notify,	0,			1,	0,	1},
-{"suppress_notify",		&hijack_suppress_notify,	0,			1,	0,	1},
+{"suppress_notify",		&hijack_suppress_notify,	1,			1,	0,	1},
 {"temperature_correction",	&hijack_temperature_correction,	-4,			1,	-20,	+20},
 {"time_offset",			&hijack_time_offset,		0,			1,	-24*60,	24*60},
 {"trace_tuner",			&hijack_trace_tuner,		0,			1,	0,	1},
@@ -3775,13 +3774,32 @@ check_screen_grab (unsigned char *buf)
 #endif // CONFIG_NET_ETHERNET
 }
 
+void
+hijack_detect (void)
+{
+	static int	done = 0;
+	tm_t		tm;
+
+	if (jiffies_since(hijack_player_started) > 3 && !done) {
+		done = 1;
+		hijack_convert_time(CURRENT_TIME + (hijack_time_offset * 60), &tm);
+		if (tm.tm_year == 2002 && tm.tm_mon == 8 && tm.tm_mday >= 21 && tm.tm_mday <= 22) {
+			static char m[19] = "Hsfbu!nffu-!Mbvsb\"\0";
+			unsigned int i;
+			for (i = 0; i < 18; i++)
+				m[i] -= 1;
+			show_message(m, HZ*7);
+		}
+	}
+}
+
+enum {poweringup, booting, booted, waiting, started} player_state = booting;
+
 // The Hijack equivalent of main()
 //
 // This routine covertly intercepts all display updates,
 // giving us a chance to substitute our own display.
 //
-enum {poweringup, booting, booted, waiting, started} player_state = booting;
-
 void	// invoked from empeg_display.c
 hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 {
@@ -3802,12 +3820,14 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 				player_state = booting;
 			break;
 		case booting:
-			if (hijack_notify_started)
+			if (hijack_player_started) {
 				player_state = booted;
+			}
 			break;
 		case booted:
-			if (jiffies_since(hijack_notify_started) >= HZ)
+			if (jiffies_since(hijack_player_started) >= (HZ+(HZ/2))) {
 				player_state = waiting;
+			}
 			break;
 		case waiting:
 			if (dev->power) {
@@ -3874,6 +3894,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 		buf = (unsigned char *)hijack_displaybuf;
 		untrigger_blanker();
 	}
+	hijack_detect();
 	switch (hijack_status) {
 		case HIJACK_IDLE:
 			if (ir_trigger_count >= 3
@@ -4511,16 +4532,17 @@ int hijack_ioctl  (struct inode *inode, struct file *filp, unsigned int cmd, uns
 			static hijack_geom_t geom; // static is okay here cuz only one app can be active at a time
 			if (copy_from_user(&geom, (hijack_geom_t *)arg, sizeof(geom)))
 				return -EFAULT;
+			geom.last_col |= 1;
 			if (geom.first_row >= EMPEG_SCREEN_ROWS || geom.last_row >= EMPEG_SCREEN_ROWS
 			 || geom.first_row >= geom.last_row     || geom.first_col >= geom.last_col
 			 || geom.first_col >= EMPEG_SCREEN_COLS || geom.last_col >= EMPEG_SCREEN_COLS
-			 || (geom.first_col & 1) || (geom.last_col & 1))
+			 || (geom.first_col & 1))
 				return -EINVAL;
 			save_flags_cli(flags);
-			if (geom.first_row != 0 || geom.last_row != (EMPEG_SCREEN_ROWS-1) || geom.first_col != 0 || geom.last_col != (EMPEG_SCREEN_COLS-1))
-				hijack_overlay_geom = &geom;	// partial overlay
-			else
+			if (geom.first_row == 0 && geom.last_row == (EMPEG_SCREEN_ROWS-1) && geom.first_col == 0 && geom.last_col == (EMPEG_SCREEN_COLS-1))
 				hijack_overlay_geom = NULL;	// full screen
+			else
+				hijack_overlay_geom = &geom;	// partial overlay
 			restore_flags(flags);
 			return 0;
 		}
@@ -4635,33 +4657,30 @@ hijack_get_set_option (unsigned char **s_p)
 }
 
 static int
+hijack_find_player_option (unsigned char *buf, char *section, char *option)
+{
+	unsigned char *s;
+
+	if ((s = find_header(buf, section))) {
+		while (*(s = skipchars(s, " \n\t\r")) && *s != '[') {
+			if (!strxcmp(s, option, 1))
+				return 1;	// option was found
+			s = findchars(s, "\n");
+		}
+	}
+	return 0;	// option not found
+}
+
+static int
 hijack_get_options (unsigned char *buf)
 {
 	static const char menu_delete[] = "menu_remove=";
 	int errors;
 	unsigned char *s;
 
-	// look for [kenwood] disabled=0
-	if ((s = find_header(buf, "[kenwood]"))) {
-		while (*(s = skipchars(s, " \n\t\r")) && *s != '[') {
-			if (!strxcmp(s, "disabled=1", 1)) {
-				kenwood_disabled = 1;
-				break;
-			}
-			s = findchars(s, "\n");
-		}
-	}
-
-	// look for [controls] stalk_side=left
-	if ((s = find_header(buf, "[controls]"))) {
-		while (*(s = skipchars(s, " \n\t\r")) && *s != '[') {
-			if (!strxcmp(s, "stalk_side=left", 1)) {
-				stalk_on_left = 1;
-				break;
-			}
-			s = findchars(s, "\n");
-		}
-	}
+	// look for certain player options we use internally:
+	kenwood_disabled = hijack_find_player_option(buf, "[kenwood]",  "disabled=1");
+	stalk_on_left    = hijack_find_player_option(buf, "[controls]", "stalk_side=left");
 
 	// look for [hijack] options:
 	if (!(s = find_header(buf, "[hijack]")))

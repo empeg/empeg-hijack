@@ -21,9 +21,9 @@
 
 extern int hijack_current_mixer_input;
 extern int hijack_current_mixer_volume;
-extern int hijack_notify_started;
+extern int hijack_player_started;
 extern int hijack_do_command (void *sparms, char *buf);
-extern int strxcmp (const char *str, const char *pattern, int partial);					// hijack.c
+extern int strxcmp (const char *str, const char *pattern, int partial);					// khttpd.c
 extern int do_remount(const char *dir,int flags,char *data);						// fs/super.c
 extern int get_filesystem_info(char *);									// fs/super.c
 extern int hijack_suppress_notify, hijack_reboot;							// hijack.c
@@ -67,6 +67,8 @@ hijack_serial_notify (const unsigned char *s, int size)
 			} else if (!strxcmp(s, "  dhcp_thread.cpp", 1)) {
 				state = want_eol;
 				return hijack_suppress_notify;
+			} else if (!hijack_player_started && !strxcmp(s, "Vcb: 0x", 1)) {
+				hijack_player_started = jiffies;
 			}
 			break;
 		case want_data:
@@ -88,8 +90,8 @@ hijack_serial_notify (const unsigned char *s, int size)
 					restore_flags(flags);
 				}
 				state = want_eol;
-				if (!hijack_notify_started)
-					hijack_notify_started = JIFFIES();
+				//if (!hijack_notify_started)
+				//	hijack_notify_started = JIFFIES();
 				return hijack_suppress_notify;
 			}
 			break;

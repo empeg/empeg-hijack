@@ -134,7 +134,6 @@ asmlinkage ssize_t sys_read(unsigned int fd, char * buf, size_t count)
 	ret = -EINVAL;
 	if (!file->f_op || !(read = file->f_op->read))
 		goto out;
-
 {
 	// Hijack needs to intercept & modify "config.ini" when the player software
 	// reads it at startup (and only at startup, not afterwards).

@@ -156,6 +156,8 @@ typedef struct hijack_geom_s {
 #define IR_RIO_5_RELEASED		0x8020df05
 #define IR_RIO_6_PRESSED		0x0020df06
 #define IR_RIO_6_RELEASED		0x8020df06
+#define IR_RIO_TUNER_PRESSED		0x8020df07
+#define IR_RIO_TUNER_RELEASED		0x8020df07
 #define IR_RIO_7_PRESSED		0x0020df08
 #define IR_RIO_7_RELEASED		0x8020df08
 #define IR_RIO_8_PRESSED		0x0020df09

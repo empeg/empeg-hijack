@@ -42,6 +42,7 @@ static unsigned int PROMPTCOLOR = COLOR3, ENTRYCOLOR = -COLOR3;
 
 #define NEED_REFRESH		0
 #define NO_REFRESH		1
+#define SHOW_PLAYER		2
 
 #define HIJACK_INACTIVE		0
 #define HIJACK_INACTIVE_PENDING	1
@@ -95,28 +96,29 @@ typedef struct knob_pair_s {
 
 #define KNOBDATA_SIZE (1 << KNOBDATA_BITS)
 static int knobdata_index = 0;
-static const char *knobdata_labels[] = {" [default] ", " PopUp ", " VolAdj+ ", " Source ", " Hush ", " Info ", " Mark ", " Shuffle "};
+static const char *knobdata_labels[] = {" [default] ", " PopUp ", " VolAdj+ ", " Details ", " Info ", " Mark ", " Shuffle ", " Source "};
 static const knob_pair_t knobdata_pairs[1<<KNOBDATA_BITS] = {
 	{IR_KNOB_PRESSED,		IR_KNOB_RELEASED},
 	{IR_KNOB_PRESSED,		IR_KNOB_RELEASED},
 	{IR_KNOB_PRESSED,		IR_KNOB_RELEASED},
-	{IR_RIO_SOURCE_PRESSED,		IR_RIO_SOURCE_RELEASED},
-	{IR_RIO_HUSH_PRESSED,		IR_RIO_HUSH_PRESSED},
-	{IR_RIO_INFO_PRESSED,		IR_RIO_INFO_RELEASED},
-	{IR_RIO_MARK_PRESSED,		IR_RIO_MARK_RELEASED},
-	{IR_RIO_SHUFFLE_PRESSED,	IR_RIO_SHUFFLE_RELEASED} };
-
-#define KNOBMENU_SIZE KNOBDATA_SIZE	// indexes share the same bits in flash..
-static int knobmenu_index = 0;
-static const char *knobmenu_labels[] = {" [default] ", " Details ", " Info ", " Mark ", " Repeat ", " SelectMode ", " Shuffle ", " Visual "};
-static const knob_pair_t knobmenu_pairs[KNOBMENU_SIZE] = {
-	{IR_KNOB_PRESSED,		IR_KNOB_RELEASED},
 	{IR_RIO_INFO_PRESSED,		IR_RIO_INFO_PRESSED},
 	{IR_RIO_INFO_PRESSED,		IR_RIO_INFO_RELEASED},
 	{IR_RIO_MARK_PRESSED,		IR_RIO_MARK_RELEASED},
-	{IR_RIO_REPEAT_PRESSED,		IR_RIO_REPEAT_RELEASED},
-	{IR_RIO_SELECTMODE_PRESSED,	IR_RIO_SELECTMODE_PRESSED},
 	{IR_RIO_SHUFFLE_PRESSED,	IR_RIO_SHUFFLE_RELEASED},
+	{IR_RIO_SOURCE_PRESSED,		IR_RIO_SOURCE_RELEASED},
+	};
+
+#define KNOBMENU_SIZE KNOBDATA_SIZE	// indexes share the same bits in flash..
+static int knobmenu_index = 0;
+static const char *knobmenu_labels[] = {" Info+ ", " Mark ", " Repeat ", " SelMode ", " Shuffle ", " Source ", " Tuner ", " Visuals+ "};
+static const knob_pair_t knobmenu_pairs[KNOBMENU_SIZE] = {
+	{IR_RIO_INFO_PRESSED,		IR_RIO_INFO_RELEASED},
+	{IR_RIO_MARK_PRESSED,		IR_RIO_MARK_RELEASED},
+	{IR_RIO_REPEAT_PRESSED,		IR_RIO_REPEAT_RELEASED},
+	{IR_RIO_SELECTMODE_PRESSED,	IR_RIO_SELECTMODE_RELEASED},
+	{IR_RIO_SHUFFLE_PRESSED,	IR_RIO_SHUFFLE_RELEASED},
+	{IR_RIO_SOURCE_PRESSED,		IR_RIO_SOURCE_RELEASED},
+	{IR_RIO_TUNER_PRESSED,		IR_RIO_TUNER_RELEASED},
 	{IR_RIO_VISUAL_PRESSED,		IR_RIO_VISUAL_RELEASED} };
 #endif
 
@@ -1452,7 +1454,7 @@ knobdata_display (int firsttime)
 }
 
 static unsigned long knobmenu_pressed;
-static const unsigned long knobmenu_buttons[3] = {3, IR_KNOB_PRESSED, IR_KNOB_RELEASED}; 
+static const unsigned long knobmenu_buttons[3] = {3, IR_KNOB_PRESSED, IR_KNOB_RELEASED};
 
 static void
 knobmenu_move (int direction)
@@ -1462,9 +1464,9 @@ knobmenu_move (int direction)
 	} else if (!knobmenu_pressed) {
 		knobmenu_index += direction;
 		if (knobmenu_index < 0)
-			knobmenu_index = 0;
-		else if (knobmenu_index >= KNOBMENU_SIZE)
 			knobmenu_index = KNOBMENU_SIZE-1;
+		else if (knobmenu_index >= KNOBMENU_SIZE)
+			knobmenu_index = 0;
 		empeg_state_dirty = 1;
 	}
 }
@@ -1474,7 +1476,8 @@ knobmenu_display (int firsttime)
 {
 	unsigned long flags;
 	hijack_buttondata_t data;
-	static const hijack_geom_t knobmenu_geom = {8, 8+6+KFONT_HEIGHT, 4, EMPEG_SCREEN_COLS-4};
+	static const hijack_geom_t knobmenu_geom = {8, 8+6+KFONT_HEIGHT, 6, EMPEG_SCREEN_COLS-6};
+	int rc = NO_REFRESH;
 
 	ir_selected = 0; // paranoia?
 	if (firsttime) {
@@ -1487,29 +1490,30 @@ knobmenu_display (int firsttime)
 		draw_frame((unsigned char *)hijack_displaybuf, &knobmenu_geom);
 		hijack_overlay_geom = (hijack_geom_t *)&knobmenu_geom;
 	}
-	if (!knobmenu_pressed) {
-		if (jiffies_since(hijack_last_moved) >= (HZ*4)) {
-			hijack_deactivate(HIJACK_INACTIVE);
-		} else {
-			unsigned int rowcol = (knobmenu_geom.first_row+4)|((knobmenu_geom.first_col+6)<<16);
-			rowcol = draw_string(rowcol, "Select Action: ", COLOR3);
-			clear_text_row(rowcol, knobmenu_geom.last_col-4, 1);
-			(void)draw_string(rowcol, knobmenu_labels[knobmenu_index], ENTRYCOLOR);
-		}
+	if (knobmenu_pressed) {
+		rc = SHOW_PLAYER;
+	} else if (jiffies_since(hijack_last_moved) >= (HZ*4)) {
+		hijack_deactivate(HIJACK_INACTIVE);
+	} else {
+		unsigned int rowcol = (knobmenu_geom.first_row+4)|((knobmenu_geom.first_col+6)<<16);
+		rowcol = draw_string(rowcol, "Select Action: ", COLOR3);
+		clear_text_row(rowcol, knobmenu_geom.last_col-4, 1);
+		(void)draw_string(rowcol, knobmenu_labels[knobmenu_index], ENTRYCOLOR);
+		rc = NEED_REFRESH;
 	}
 	save_flags_cli(flags);
 	while (hijack_status == HIJACK_ACTIVE && hijack_button_deq(&hijack_userq, &data, 0)) {
 		if (!knobmenu_pressed && data.button == IR_KNOB_PRESSED) {
 			knobmenu_pressed = jiffies ? jiffies : -1;
-			//hijack_button_enq(&hijack_playerq, knobmenu_pairs[knobmenu_index].pressed, 0);
-			send_knob_pair(&knobmenu_pairs[knobmenu_index]);
+			hijack_button_enq(&hijack_playerq, knobmenu_pairs[knobmenu_index].pressed, 0);
+			//send_knob_pair(&knobmenu_pairs[knobmenu_index]);
 		} else if (knobmenu_pressed && data.button == IR_KNOB_RELEASED) {
-			//hijack_button_enq(&hijack_playerq, knobmenu_pairs[knobmenu_index].pressed|0x80000000, jiffies_since(knobmenu_pressed));
+			hijack_button_enq(&hijack_playerq, knobmenu_pairs[knobmenu_index].pressed|0x80000000, jiffies_since(knobmenu_pressed));
 			hijack_deactivate(HIJACK_INACTIVE);
 		}
 	}
 	restore_flags(flags);
-	return NEED_REFRESH;
+	return rc;
 }
 
 #endif // EMPEG_KNOB_SUPPORTED
@@ -1538,7 +1542,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v86 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v87 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -2513,7 +2517,10 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 						activate_dispfunc(menu_display, menu_move);
 				}
 			}
-			if (hijack_overlay_geom) {
+			if (refresh == SHOW_PLAYER) {
+				refresh = NEED_REFRESH;
+				buf = player_buf;
+			} else if (hijack_overlay_geom) {
 				hijack_do_overlay (player_buf, (unsigned char *)hijack_displaybuf, hijack_overlay_geom);
 				buf = player_buf;
 			}

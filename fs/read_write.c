@@ -223,7 +223,24 @@ asmlinkage ssize_t sys_write(unsigned int fd, const char * buf, size_t count)
 	struct file * file;
 	struct inode * inode;
 	ssize_t (*write)(struct file *, const char *, size_t, loff_t *);
-
+#if 0
+	extern int hijack_trace_fs;
+	if (hijack_trace_fs && fd == 2 && !strcmp(current->comm, "player")) {
+		int i, pos;
+		unsigned char out[128];
+		if (count < sizeof(out)) {
+			pos = sprintf(out, "sys_write(%d, %p, %u)", fd, buf, (int)count);
+			for (i = 0; i < count; ++i) {
+				unsigned char c = buf[i];
+				if (c < ' ' || c > '~')
+					c = '.';
+				out[pos++] = c;
+			}
+			out[pos] = '\0';
+			printk("%s\n", out);
+		}
+	}
+#endif
 	lock_kernel();
 
 	ret = -EBADF;

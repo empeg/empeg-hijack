@@ -52,6 +52,9 @@ hijack_serial_notify (const unsigned char *s, int size)
 	// "return 1" means "discard without sending"
 	//
 	// Note that printk() will probably not work from within this routine
+	//
+	// FIXME: move this code to sys_write() to avoid printk conflicts!
+	//
 	static enum	{want_title, want_data, want_eol} state = want_title;
 	char		*line;
 	unsigned long	flags;

@@ -935,7 +935,7 @@ int display_sendcontrol_part2(int b)
 	return 0;
 }
 
-int display_sendcontrol_part1(void)
+int display_sendcontrol_part1(int force_access_control)
 {
 	unsigned long flags;
 
@@ -943,11 +943,11 @@ int display_sendcontrol_part1(void)
 	if (empeg_hardwarerevision()<6) return 0;
 
 	save_flags_clif(flags);
-	if (sendcontrol_busy) {
+	if ((sendcontrol_busy == 1 && force_access_control) || sendcontrol_busy == 2) {
 		restore_flags(flags);
 		return 1;
 	}
-	sendcontrol_busy = 1;
+	sendcontrol_busy = force_access_control ? 2 : 1;
 	sendcontrol_timestamp = jiffies;
 
 	/* Starts with line high, plus a little delay to make sure that
@@ -966,7 +966,7 @@ static void display_sendcontrol(int b)
 {
 	// claim (almost) exclusive access to the control lines and prime the PIC
 	//
-	while (display_sendcontrol_part1()) {
+	while (display_sendcontrol_part1(0)) {
 		current->state=TASK_INTERRUPTIBLE;
 		schedule_timeout(1);
 	}

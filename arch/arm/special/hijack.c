@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v332"
+#define HIJACK_VERSION	"v333"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -25,7 +25,7 @@ const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 extern void save_current_volume(void);					// arch/arm/special/empeg_state.c
 extern void input_wakeup_waiters(void);					// arch/arm/special/empeg_input.c
-extern int display_sendcontrol_part1(void);				// arch/arm/special/empeg_display.c
+extern int display_sendcontrol_part1(int);				// arch/arm/special/empeg_display.c
 extern int display_sendcontrol_part2(int);				// arch/arm/special/empeg_display.c
 extern int remount_drives (int writeable);				// arch/arm/special/notify.c
 extern int sys_newfstat(int, struct stat *);
@@ -2207,7 +2207,7 @@ hijack_adjust_buttonled (int power)
 			else if (hijack_buttonled_level < brightness)
 				buttonled_command = 243;	// brighten LEDs by 5/255 (2%)
 			if (buttonled_command) {
-				if (display_sendcontrol_part1()) {
+				if (display_sendcontrol_part1(1)) {
 					buttonled_command = 0;	// busy, try again later
 				} else {
 					switch (buttonled_command) {
@@ -3826,7 +3826,6 @@ handle_stalk_packet (unsigned char *pkt)
 	unsigned char val;
 	unsigned int button;
 
-
 	// Check for valid stalk packet, and convert into a button press/release code:
 	if (pkt[0] != 0x02 || (pkt[1] | 1) != 0x01 || (pkt[1] + pkt[2]) != pkt[3])
 		return 0;	// not a valid Stalk packet
@@ -3870,13 +3869,8 @@ done:
 void
 hijack_intercept_stalk (unsigned int packet)
 {
-	empeg_tuner_present = 1;
 	if (hijack_trace_tuner)
 		printk("stalk: in=%08x\n", htonl(packet));
-	if (hijack_fake_tuner) {
-		hijack_fake_tuner = 0;
-		printk("tuner: \"fake_tuner=0\"\n");
-	} // used to be an "else" here (?)
 	if (!handle_stalk_packet((unsigned char *)&packet)) {
 		hijack_serial_rx_insert((unsigned char *)&packet, sizeof(packet), 0);
 	}

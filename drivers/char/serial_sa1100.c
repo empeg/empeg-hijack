@@ -342,7 +342,8 @@ void hijack_serial_rx_insert (const char *buf, int size, int port)
 #endif // CONFIG_HIJACK_TUNER
 }
 
-extern int hijack_fake_tuner, hijack_trace_tuner;
+extern int hijack_fake_tuner, hijack_trace_tuner, empeg_tuner_present;
+static int tuner_loopback = 0;
 
 static _INLINE_ void receive_chars(struct async_struct *info,
 				 int *status0, int *status1)
@@ -365,6 +366,8 @@ static _INLINE_ void receive_chars(struct async_struct *info,
 		if (info == IRQ_ports[15]) {	// Tuner interface (ttyS0)
 			static int pktlen = 0;
 			static unsigned int stalk = 0;
+			if (tuner_loopback)
+				goto ignore_char;
 			if (hijack_trace_tuner)
 				printk("tuner: in=%02x\n", ch);
 			if (pktlen) {
@@ -384,6 +387,20 @@ static _INLINE_ void receive_chars(struct async_struct *info,
 				goto ignore_char;
 			} else if (ch == 0x01 || ch == 0x03) {	// FIXME: what do RDS packets use?
 				pktlen = 3;
+			}
+			//
+			// Since we're getting REAL tuner responses,
+			// we want to turn off the "fake_tuner" (if enabled).
+			// But we can only safely do so after the END of
+			// the first full tuner packet (which we discard here,
+			// to avoid duplication from the fake_tuner repsonses.
+			//
+			if (hijack_fake_tuner) {
+				if (pktlen == 0) {
+					hijack_fake_tuner = 0;
+					printk("Hijack: setting fake_tuner=0\n");
+				}
+				goto ignore_char;
 			}
 		}
 #endif // CONFIG_HIJACK_TUNER
@@ -468,23 +485,19 @@ fake_tuner (unsigned char c)
 	static unsigned char state = 0, ctype = 0, eat = 0;
 	unsigned int response, i;
 
-	if (hijack_trace_tuner) {
-		if (state != 0)
-			printk("%02x", c);
-		else if (c == 0x01)
-			printk("fake_tuner: out=%02x", c);
-	}
 	switch (state) {
 		case 0:
 			if (c == 0x01)
 				state = 1;
+			else
+				printk("fake_tuner: ignored=%02x\n", c);
 			return;
 		case 1:
 			state = 2;
 			ctype = c;
 			switch (ctype) {
 				default:
-					printk(" unknown msg type\n");
+					printk("fake_tuner: unknown msg type, ignored=%02x\n", c);
 					state = 0;
 					return;
 				case 0x04: eat = 2; break;
@@ -513,11 +526,14 @@ fake_tuner (unsigned char c)
 				case 0x00: response = 0x00030001; break; // read module id, and set LED on/off: tuner == 0x03
 				case 0xff: response = 0x0027ff01; break;
 				case 0x09: response = 0x00080901; break; // read tuner dial: pretend it's set to '8'
+				default:
+					printk("fake_tuner: unknown ctype=%02x\n", ctype);
+					return;
 			}
 			response |= ((response >> 16) + (response >> 8)) << 24;
-			hijack_serial_rx_insert ((char *)&response, 4, 0);
 			if (hijack_trace_tuner)
-				printk("\nfake_tuner: in=%08x\n", ntohl(response));
+				printk("fake_tuner: insert=%08x\n", ntohl(response));
+			hijack_serial_rx_insert ((char *)&response, 4, 0);
 	}
 }
 #endif CONFIG_HIJACK_TUNER
@@ -633,6 +649,7 @@ hijack_read_tuner_id (int *loopback, int *tuner_id)
 	//
 	if (rc == pattern) {
 		*loopback = 1;
+		tuner_loopback = 1;
 	} else if (rc != -1) {
 		//
 		// Tuner appears to be present.  It starts up with a stream of data,

@@ -58,6 +58,7 @@ static unsigned long ir_prev_pressed = 0;
 #define HIJACK_DATAQ_SIZE	8
 static unsigned long *hijack_buttonlist = NULL, hijack_dataq[HIJACK_DATAQ_SIZE];
 static unsigned int hijack_dataq_head = 0, hijack_dataq_tail = 0;
+static struct wait_queue *hijack_dataq_waitq = NULL, *hijack_menu_waitq = NULL;
 
 #define SCREEN_BLANKER_MULTIPLIER 30
 int blanker_timeout = 0;	// saved/restored in empeg_state.c
@@ -537,7 +538,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v29 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v30 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -764,17 +765,11 @@ userland_display (int firsttime)
 
 	if (firsttime) {
 		clear_hijack_displaybuf(COLOR0);
-		userland_display_updated = 0;
+		userland_display_updated = 1;
+		wake_up(&hijack_menu_waitq);
 	}
 	save_flags_cli(flags);
-	if (firsttime) {
-		struct wait_queue **wq = (struct wait_queue **)hijack_userdata;
-		if (wq && *wq)
-			wake_up(wq);
-		else
-			printk("userland_display(): wq=%p, *wq=%p", wq, wq ? *wq : 0);
-		rc = NEED_REFRESH;
-	} else if (userland_display_updated) {
+	if (userland_display_updated) {
 		userland_display_updated = 0;
 		rc = NEED_REFRESH;
 	}
@@ -910,10 +905,8 @@ hijacked_input (unsigned long data)
 					break;
 				}
 			}
-			if (hijack_dataq_tail != hijack_dataq_head) {
-				if (*((struct wait_queue **)hijack_userdata) != NULL)
-					wake_up((struct wait_queue **)hijack_userdata);
-			}
+			if (hijack_dataq_tail != hijack_dataq_head)
+				wake_up(&hijack_dataq_waitq);
 		}
 		if (rc == 0) { // input not already hijacked above?
 			rc = 1;  // input WAS hijacked
@@ -1001,6 +994,7 @@ hijacked_input (unsigned long data)
 	return rc;
 }
 
+// returns menu index >= 0,  or -ERROR
 static int
 extend_menu (const char *label, unsigned long userdata, int (*displayfunc)(int), void (*movefunc)(int))
 {
@@ -1017,12 +1011,13 @@ extend_menu (const char *label, unsigned long userdata, int (*displayfunc)(int),
 			menu_displayfunc [i] = displayfunc;
 			menu_movefunc    [i] = movefunc;
 			menu_userdata    [i] = userdata;
-			return 0; // success
+			return i; // success
 		}
 	}
-	return 1; // no room; menu is full
+	return -ENOMEM; // no room; menu is full
 }
 
+// returns menu index >= 0,  or -ERROR
 static int
 userland_extend_menu (const char *label, unsigned long userdata)
 {
@@ -1045,7 +1040,7 @@ userland_extend_menu (const char *label, unsigned long userdata)
 			menu_userdata[i] = userdata; // already there, so just update userdata
 			if (menu_item == i && hijack_dispfunc == userland_display)
 				hijack_dispfunc = NULL; // return to menu
-			rc = 0;
+			rc = i;
 			break;
 		}
 	}
@@ -1248,8 +1243,7 @@ static int  // invoked from empeg_display.c::ioctl()
 hijack_ioctl (struct inode *inode, struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	unsigned long flags;
-	struct wait_queue *wq = NULL;
-	int rc;
+	int index, rc;
 
 	//struct display_dev *dev = (struct display_dev *)filp->private_data;
 	switch (cmd) {
@@ -1258,14 +1252,29 @@ hijack_ioctl (struct inode *inode, struct file *filp, unsigned int cmd, unsigned
 			// Invocation:  rc = ioctl(fd, EMPEG_HIJACK_WAITMENU, (char *)"Menu Label");
 			int size = 0;
 			unsigned char buf[32] = {0,}, *label = (unsigned char *)arg;
+			struct wait_queue wait = {current, NULL};
 			do {
 				if (copy_from_user(&buf[size], label+size, 1)) return -EFAULT;
 			} while (buf[size++] && size < sizeof(buf));
 			buf[size-1] = '\0';
-			rc = userland_extend_menu(buf, (unsigned long)&wq);
-			if (!rc)
-				return -ENOMEM;
-			sleep_on(&wq);	// wait indefinitely for this item to be selected
+			save_flags_cli(flags);
+			index = userland_extend_menu(buf,0);
+			if (index < 0) {
+				restore_flags(flags);
+				return index;
+			}
+			add_wait_queue(&hijack_menu_waitq, &wait);
+			while (1) {
+				current->state = TASK_INTERRUPTIBLE;
+				if (menu_item == index && hijack_dispfunc == userland_display)
+					break;
+				restore_flags(flags);
+				schedule();
+				save_flags_cli(flags);
+			}
+			current->state = TASK_RUNNING;
+			remove_wait_queue(&hijack_menu_waitq, &wait);
+			restore_flags(flags);
 			return 0;
 		}
 		case EMPEG_HIJACK_DISPWRITE:	// copy buffer to screen
@@ -1316,15 +1325,22 @@ hijack_ioctl (struct inode *inode, struct file *filp, unsigned int cmd, unsigned
 		}
 		case EMPEG_HIJACK_WAITBUTTONS:	// Wait for next hijacked IR code
 		{
+			// Invocation:  rc = ioctl(fd, EMPEG_HIJACK_DISPWRITE, (unsigned long *)&data);
+			// IR code is written to "data" on return
 			unsigned long button;
-			// Invocation:  rc = ioctl(fd, EMPEG_HIJACK_DISPWRITE, (unsigned long *)&data); // IR code is written to "data" on return
+			struct wait_queue wait = {current, NULL};
 			save_flags_cli(flags);
-			while (hijack_dataq_tail == hijack_dataq_head) {
-				hijack_userdata = (unsigned long)&wq;
+			add_wait_queue(&hijack_dataq_waitq, &wait);
+			while (1) {
+				current->state = TASK_INTERRUPTIBLE;
+				if (hijack_dataq_tail != hijack_dataq_head)
+					break;
 				restore_flags(flags);
-				sleep_on(&wq);
+				schedule();
 				save_flags_cli(flags);
 			}
+			current->state = TASK_RUNNING;
+			remove_wait_queue(&hijack_dataq_waitq, &wait);
 			hijack_dataq_tail = (hijack_dataq_tail + 1) % HIJACK_DATAQ_SIZE;
 			button = hijack_dataq[hijack_dataq_tail];
 			restore_flags(flags);
@@ -1366,8 +1382,8 @@ void
 hijack_init (void)
 {
 	extern int getbitset(void);
-	extend_menu("MaxTemp Warning", 0, maxtemp_display, maxtemp_move);
-	extend_menu("Calculator", 0, calculator_display, NULL);
-	extend_menu("Show Button Codes", 0, showbutton_display, NULL);
+	(void)extend_menu("MaxTemp Warning", 0, maxtemp_display, maxtemp_move);
+	(void)extend_menu("Calculator", 0, calculator_display, NULL);
+	(void)extend_menu("Show Button Codes", 0, showbutton_display, NULL);
 	hijack_on_dc_power = getbitset() & EMPEG_POWER_FLAG_DC;
 }

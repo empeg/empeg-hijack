@@ -158,15 +158,23 @@ __create_page_tables:
 		 * proper can test for extended memory on the Empegs at startup time.
 		 * Create non-cached non-buffered mappings for the 16th and 17th MBs of DRAM.
 		 */
-		add	r0, r4, #(TEXTADDR - 0x8000) >> 18
+		add	r0, r4, #(TEXTADDR - 0x8000) >> 18	@ c000_0000
 		add	r0, r0, #15 << 2	@ virtual  = c0f0_0000
 		add	r3, r5, #15 << 20	@ physical = c0f0_0000 (first bank of 128MB)
-		orr	r3, r3, r8		@ MMU flags: C=0, B=0
-		str	r3, [r0], #4
-						@ virtual  = c100_0000
+		orr	r3, r3, r8		@ MMU flags
+		str	r3, [r0], #4		@ save page table entry; increment virtual = c100_0000
 		add	r3, r5, #128 << 20	@ physical = c800_0000 (second bank of 128MB)
-		orr	r3, r3, r8		@ MMU flags: C=0, B=0
-		str	r3, [r0]
+		orr	r3, r3, r8		@ MMU flags
+		str	r3, [r0]		@ save page table entry
+
+		/*
+		 * We also need early access to the memory controller registers,
+		 * so that the kernel can enable the bank selects for extra DRAM.
+		 */
+		add	r0, r4, #0xfc000000 >> 18	@ virtual  = fc00_0000 (same as what main kernel uses later)
+		mov	r3, #0xa0000000			@ physical = a000_0000
+		orr	r3, r3, r8			@ MMU flags
+		str	r3, [r0]			@ save page table entry
 
 		/*
 		 * Create identity mapping for first MB of kernel.

@@ -576,16 +576,25 @@ setup_arch(char **cmdline_p, unsigned long * memory_start_p, unsigned long * mem
 	// memory is not present, so we walk over the full 1MB twice to eliminate cache effects.
 {
 	unsigned int i;
-	volatile unsigned long *test;
+	volatile unsigned long *memctl_p, memctl, *test;
 
 	#define ONE_MB		(1024 * 1024)
 	#define LONG_1MB	(ONE_MB / sizeof(unsigned long))
 	#define _16MB		(PAGE_OFFSET + (16 * ONE_MB))
 
+	// Access the memory controller and turn on all 4 DRAM banks:
+	memctl_p = (void *)0xfc000000;
+	memctl = *memctl_p;
+	memctl |= 15;
+	*memctl_p = memctl;
+
+	// Figure out where any "extra" memory will be, based on player type:
 	if (mem_end < _16MB)
 		test = (void *)(_16MB - ONE_MB);	// Mk1/Mk2
 	else
 		test = (void *)(_16MB);			// Mk2a
+
+	// Walk over 1MB of theoretical extra memory, first writing, then reading:
 	for (i = 0; i < LONG_1MB; ++i) {
 		test[i] = ~i;
 	}
@@ -593,6 +602,8 @@ setup_arch(char **cmdline_p, unsigned long * memory_start_p, unsigned long * mem
 		if (test[i] != ~i)
 			break;
 	}
+
+	// If the test passed, then modify mem_end appropriately:
 	if (i == LONG_1MB) {
 		if (mem_end < _16MB)
 			mem_end = _16MB;

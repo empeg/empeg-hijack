@@ -72,73 +72,7 @@ typedef struct server_parms_s {
 #define INRANGE(c,min,max)	((c) >= (min) && (c) <= (max))
 #define TOUPPER(c)		(INRANGE((c),'a','z') ? ((c) - ('a' - 'A')) : (c))
 
-static int	// returns -1 on failure
-getnum (unsigned char **str, unsigned char base)
-{
-	int		val = 0;
-	unsigned char	c, *s = *str;
-
-	while ((c = *s) && INRANGE(c, '0', base+'0')) {
-		val *= base;
-		val += c - '0';
-		++s;
-	}
-	if (s == *str)
-		val = -1;	// failure
-	*str = s;
-	return val;
-}
-
-// This  function  converts  the  character string src
-// into a network address structure in the af address family,
-// then copies the network address structure to dst.
-//
-static int
-inet_pton (int af, unsigned char *src, void *dst)
-{
-	unsigned char	*d = dst;
-	int		i;
-
-	if (af != AF_INET)
-		return -EAFNOSUPPORT;
-	for (i = 3; i >= 0; --i) {
-		unsigned int val = getnum(&src, 10);
-		if (val > 255 || (i && *src++ != '.'))
-			return 0;	// failure
-		*d++ = val;
-	}
-	return 1;	// success
-}
-
-#if 0
-static int
-site_exec2 (void *command)
-{
-	char *envp[] = {"HOME=/", "PATH=/sbin:/bin", "TERM=linux", NULL};
-	char *argv[] = {"/bin/sh", "-c", command, NULL};
-
-        close(0);close(1);close(2);
-        setsid();
-        (void) open("/dev/console",O_RDWR,0);
-        (void) dup(0);
-        (void) dup(0);
-	return execve(argv[0], argv, envp);	// never returns
-}
-
-static int
-site_exec (char *command)
-{
-	int	status;
-	pid_t	pid = kernel_thread(site_exec2, command, SIGCHLD);
-
-	if (pid < 0) {
-		printk("site_exec(%s) failed, rc=%d\n", command, pid);
-		return 502;
-	}
-	while (pid != sys_wait4(-1, &status, 0, NULL));
-	return 200;
-}
-#endif
+extern int get_number (char **src, int *val, int base, const char *nextchars);	// hijack.c
 
 // This  function  converts  the  network  address structure src
 // in the af address family into a character string, which is copied
@@ -155,27 +89,40 @@ inet_ntop (int af, void *src, char *dst, size_t cnt)
 	return dst;
 }
 
+// This  function  converts  the  character string src
+// into a network address structure in the af address family,
+// then copies the network address structure to dst.
+//
 static int
-extract_portaddr (struct sockaddr_in *addr, unsigned char *s)
+inet_pton (int af, char **src, void *dst)
 {
-	unsigned char	*ipstring = s;
-	int		dots = 0;
+	unsigned char	*d = dst;
+	int		i;
 
+	if (af != AF_INET)
+		return -EAFNOSUPPORT;
+	for (i = 3; i >= 0; --i) {
+		unsigned int val;
+		if (!get_number(src, &val, 10, ".,"))
+			return 0;
+		++*src;	// skip over '.'
+		*d++ = val;
+	}
+	return 1;	// success
+}
+
+static int
+extract_portaddr (struct sockaddr_in *addr, char *s)
+{
 	memset(addr, 0, sizeof(struct sockaddr_in));
 	addr->sin_family = AF_INET;
-	while (*s && dots < 4) {
-		if (*s == ',') {
-			*s = '.';
-			++dots;
-		}
-		++s;
-	}
-	*(s - 1) = '\0';
-	if (inet_pton(AF_INET, ipstring, &addr->sin_addr) > 0) {
+	if (inet_pton(AF_INET, &s, &addr->sin_addr) > 0) {
 		unsigned int port1, port2;
-		if (((unsigned)(port1 = getnum(&s,10))) <= 255 && *s++ == ',' && ((unsigned)(port2 = getnum(&s,10))) <= 255) {
-			addr->sin_port = htons((port1 << 8) | port2);
-			return 0;	// success
+		if (get_number(&s, &port1, 10, ",") && *s++ && get_number(&s, &port2, 10, NULL)) {
+			if (port1 <= 255 && port2 <= 255) {
+				addr->sin_port = htons((port1 << 8) | port2);
+				return 0;	// success
+			}
 		}
 	}
 	return -1;	// failure
@@ -227,27 +174,34 @@ typedef struct response_s {
 } response_t;
 
 static response_t response_table[] = {
-	{150, "Opening data connection"},
-	{200, "Okay"},
-	{202, "Okay"},
-	{214, "Okay"},
-	{215, "UNIX Type: L8"},
-	{220, "Connected"},
-	{221, "Happy Fishing"},
-	{226, "Okay"},
-	{230, "Okay"},
-	{250, "Okay"},
-	{257, "Okay"},
-	{425, "Connection error"},
-	{426, "Connection failed"},
-	{451, "Internal error"},
-	{500, "Bad command"},
-	{501, "Bad syntax"},
-	{502, "Not implemented"},
-	{541, "Remote command failed"},
-	{550, "Failed"},
-	{553, "Invalid action"},
-	{0, NULL} // End-Of-Table Marker
+	{150,	" Opening data connection"},
+	{200,	" Okay"},
+	{202,	" Okay"},
+	{214,	"-The following commands are recognized (* =>'s unimplemented)\r\n"
+		"   USER    PORT    STOR    NLST    MKD     CDUP    PASS    ABOR*\r\n"
+		"   SITE    TYPE*   DELE    SYST*   RMD     STRU*   CWD     MODE*\r\n"
+		"   HELP    PWD     QUIT    RETR    LIST    NOOP\r\n"
+		"214 Okay"},
+	{216,	"-The following SITE commands are recognized\r\n"
+		"   BUTTON  CHMOD   HELP    POPUP   REBOOT  RO      RW\r\n"
+		"216 Okay"},
+	{215,	" UNIX Type: L8"},
+	{220,	" Connected"},
+	{221,	" Happy Fishing"},
+	{226,	" Okay"},
+	{230,	" Okay"},
+	{250,	" Okay"},
+	{257,	" Okay"},
+	{425,	" Connection error"},
+	{426,	" Connection failed"},
+	{451,	" Internal error"},
+	{500,	" Bad command"},
+	{501,	" Bad syntax"},
+	{502,	" Not implemented"},
+	{541,	" Remote command failed"},
+	{550,	" Failed"},
+	{553,	" Invalid action"},
+	{0,	NULL} // End-Of-Table Marker
 	};
 
 static int
@@ -260,8 +214,8 @@ kftpd_send_response (server_parms_t *parms, int rcode)
 	while (r->rcode && r->rcode != rcode)
 		++r;
 	if (parms->verbose)
-		printk("%s: %d %s.\n", parms->servername, rcode, r->text);
-	len = sprintf(buf, "%d %s.\r\n", rcode, r->text);
+		printk("%s: %d%s.\n", parms->servername, rcode, r->text);
+	len = sprintf(buf, "%d%s.\r\n", rcode, r->text);
 	if ((rc = ksock_rw(parms->clientsock, buf, len, -1)) != len) {
 		printk("%s: ksock_rw(response) failed, rc=%d\n", parms->servername, rc);
 		return -1;
@@ -283,24 +237,6 @@ send_dir_response (server_parms_t *parms, int rcode, char *dir, char *suffix)
 		printk("%s: %s", parms->servername, buf);
 	if ((rc = ksock_rw(parms->clientsock, buf, len, -1)) != len) {
 		printk("%s: ksock_rw(dir_response) failed, rc=%d\n", parms->servername, rc);
-		return 1;
-	}
-	return 0;
-}
-
-static int
-send_help_response (server_parms_t *parms, char *type, char *commands)
-{
-	char	buf[128];
-	int	rc, len;
-
-	len = sprintf(buf, "214-The following %scommands are recognized%s\r\n", type, type ? "" : "(* =>'s unimplemented)");
-	if (parms->verbose)
-		printk("%s: %s%s", parms->servername, buf, commands);
-	if (len != (rc = ksock_rw(parms->clientsock, buf, len, -1))
-	 || len != (rc = ksock_rw(parms->clientsock, commands, len = strlen(commands), -1)))
-	{
-		printk("%s: ksock_rw(help_response) failed, rc=%d\n", parms->servername, rc);
 		return 1;
 	}
 	return 0;
@@ -897,6 +833,7 @@ static const mime_type_t mime_types[] = {
 	{"*.tiff",		"image/tiff"			},
 	{"*.jpg",		"image/jpeg"			},
 	{"*.png",		"image/x-png"			},
+	{"*.htm",		"text/html"			},
 	{"*.html",		"text/html"			},
 	{"*.txt",		 text_plain			},
 	{"*.text",		 text_plain			},
@@ -1024,7 +961,7 @@ do_chmod (server_parms_t *parms, unsigned int mode, const char *path)
 	int	rc, response = 200;
 
 	if ((rc = sys_chmod(path, mode))) {
-		if (parms->verbose)
+		if (rc != -ENOENT && parms->verbose)
 			printk("%s: chmod('%s',%d) failed, rc=%d\n", parms->servername, path, mode, rc);
 		response = 550;
 	}
@@ -1165,12 +1102,31 @@ append_path (char *path, char *new)
 //
 /////////////////////////////////////////////////////////////////////////////////
 
+static response_t simple_response_table[] = {
+	{230,	"\1USER "},
+	{202,	"\1PASS "},
+	{200,	"\1TYPE "},
+	{502,	"\0PASV"},
+	{215,	"\0SYST"},
+	{200,	"\0MODE S"},
+	{200,	"\0STRU F"},
+	{200,	"\0NOOP"},
+	{0,	"\0\xff\xf4"},
+	{226,	"\0\xf2" "ABOR"},
+	{226,	"\0ABOR"},
+	{221,	"\0QUIT"},
+	{214,	"\0HELP"},
+	{216,	"\0SITE HELP"},
+	{200,	"\0"},
+	{0,	NULL}};
+
 static int
 kftpd_handle_command (server_parms_t *parms)
 {
 	char		path[512], *buf = parms->tmp;
 	unsigned int	response = 0;
 	int		n, quit = 0, bufsize = sizeof(parms->tmp) - 1;
+	response_t	*r;
 
 	n = ksock_rw(parms->clientsock, buf, bufsize, 0);
 	if (n < 0) {
@@ -1190,61 +1146,38 @@ kftpd_handle_command (server_parms_t *parms)
 		buf[--n] = '\0';
 	if (parms->verbose)
 		printk("%s: '%s'\n", parms->servername, buf);
-	if (!strxcmp(buf, "QUIT", 0)) {
-		quit = 1;
-		response = 221;
-	} else if (!strxcmp(buf, "USER ", 1)) {
-		response = 230;
-	} else if (!strxcmp(buf, "PASS ", 1)) {
-		response = 202;
-	} else if (!strxcmp(buf, "PASV", 0)) {
-		response = 502;
-	} else if (!strxcmp(buf, "SYST", 0)) {
-		response = 215;
-	} else if (!strxcmp(buf, "MODE S", 0)) {
-		response = 200;
-	} else if (!strxcmp(buf, "STRU F", 0)) {
-		response = 200;
-	} else if (!strxcmp(buf, "TYPE ", 1)) {
-		response = 200;	// type ignored
-	} else if (!strxcmp(buf, "CWD ", 1)) {
+
+	// first look for commands that have hardcoded reponses:
+	for (r = simple_response_table; r->text; ++r) {
+		if (!strxcmp(buf, &(r->text[1]), r->text[0])) {
+			response = r->rcode;
+			if (response == 221)
+				quit = 1;
+			goto got_response;
+		}
+	}
+
+	// now look for commands involving more complex handling:
+	if (!strxcmp(buf, "CWD ", 1)) {
 		append_path(parms->cwd, &buf[4]);
 		quit = send_dir_response(parms, 250, parms->cwd, "directory changed");
 	} else if (!strxcmp(buf, "CDUP", 0)) {
 		append_path(parms->cwd, "..");
 		quit = send_dir_response(parms, 200, parms->cwd, NULL);
-	} else if (!strxcmp(buf, "NOOP", 0)) {
-		response = 200;
-	} else if (!strxcmp(buf, "HELP", 0)) {
-		quit = send_help_response(parms, "", "   USER    PORT    STOR    NLST    MKD     CDUP    PASS    ABOR*\r\n   SITE    TYPE*   DELE    SYST*   RMD     STRU*   CWD     MODE*\r\n   HELP    PWD     QUIT    RETR    LIST    NOOP\r\n");
-		response = 214;
 	} else if (!strxcmp(buf, "PWD", 0)) {
 		quit = send_dir_response(parms, 257, parms->cwd, NULL);
-	} else if (!strxcmp(buf, "SITE HELP", 0)) {
-		quit = send_help_response(parms, "SITE ", "   BUTTON CHMOD HELP POPUP REBOOT RO RW\r\n");
-		response = 214;
 	} else if (!strxcmp(buf, "SITE CHMOD ", 1)) {
-		unsigned char *p = &buf[11];
-		int mode = getnum(&p, 8);
-		if (mode == -1 || *p++ != ' ' || !*p) {
+		char *p = &buf[11];
+		int mode;
+		if (!get_number(&p, &mode, 8, " ") || !*p++ || !*p) {
 			response = 501;
 		} else {
 			strcpy(path, parms->cwd);
 			append_path(path, p);
 			response = do_chmod(parms, mode, path);
 		}
-#if 0
-	} else if (!strxcmp(buf, "SITE EXEC ", 1)) {
-		response = site_exec(&buf[10]);
-#endif
 	} else if (!strxcmp(buf, "SITE ", 1)) {
 		response = hijack_do_command(&buf[5], n - 5) ? 541 : 200;
-	} else if (n == 2 && buf[0] == 0xff && buf[1] == 0xf4) {
-		response = 0;	// Ignore the telnet escape sequence
-	} else if (n == 5 && buf[0] == 0xf2 && !strxcmp(buf+1, "ABOR", 0)) {
-		response = 226;
-	} else if (!strxcmp(buf, "ABOR", 0)) {
-		response = 226;
 	} else if (!strxcmp(buf, "PORT ", 1)) {
 		parms->have_portaddr = 0;
 		if (extract_portaddr(&parms->portaddr, &buf[5])) {
@@ -1309,6 +1242,7 @@ kftpd_handle_command (server_parms_t *parms)
 	} else {
 		response = 500;
 	}
+got_response:
 	if (response)
 		kftpd_send_response(parms, response);
 	return quit;
@@ -1390,14 +1324,16 @@ khttpd_handle_connection (server_parms_t *parms)
 					}
 					(void) hijack_do_command(cmds, p - cmds); // ignore errors
 				}
+				if (path[0] == '/' && path[1] == '\0')
+					return 0;	// send "nothing" in response to "GET /?xxxx"
 				break;
 			}
 		}
-		n = strlen(path);
-		if (n == 0) {
+		if (!*path) {
 			khttpd_respond(parms, 404, "Bad/missing pathname", NULL);
 			return 0;
 		}
+		n = strlen(path);
 		if (path[n-1] == '/') {
 			int rc;
 			struct stat statbuf;

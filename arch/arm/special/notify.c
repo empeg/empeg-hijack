@@ -15,7 +15,9 @@
 
 #include <linux/proc_fs.h>
  
-extern int crc32 (char *buf, int len);	// drivers/net/smc9194_tifon.c
+#include "fast_crc32.c"					// 10X the CPU usage of non-table-lookup version
+//extern unsigned long crc32 (char *buf, int len);	// drivers/net/smc9194_tifon.c (10X slower, 1KB smaller)
+
 extern int hijack_reboot;										// hijack.c
 extern int do_remount(const char *dir,int flags,char *data);
 extern int hijack_supress_notify, hijack_reboot;							// hijack.c

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION "v128"
+#define HIJACK_VERSION "v129"
 
 #include <linux/sched.h>
 #include <linux/kernel.h>
@@ -184,6 +184,8 @@ struct semaphore hijack_kftpd_startup_sem	= MUTEX_LOCKED;	// sema for waking up 
 struct semaphore hijack_khttpd_startup_sem	= MUTEX_LOCKED;	// sema for waking up khttpd after we read config.ini
 #endif // CONFIG_NET_ETHERNET
 
+static hijack_buttonq_t hijack_inputq, hijack_playerq, hijack_userq;
+
 typedef struct hijack_option_s {
 	const char	*name;
 	int		*target;
@@ -193,29 +195,29 @@ typedef struct hijack_option_s {
 } hijack_option_t; 
 
 // Externally tuneable parameters for config.ini; the voladj_parms are also tuneable
-static hijack_buttonq_t hijack_inputq, hijack_playerq, hijack_userq;
+//
 static int hijack_button_pacing			=  8;	// minimum spacing between press/release pairs within playerq
-       int hijack_temperature_correction	= -4;	// adjust all h/w temperature readings by this celcius amount
-       int hijack_supress_notify		=  0;	// 1 == supress player "notify" (and "dhcp") lines from serial port
-       int hijack_extmute_on			=  0;	// buttoncode to inject when EXT-MUTE goes active
        int hijack_extmute_off			=  0;	// buttoncode to inject when EXT-MUTE goes inactive
-static int hijack_old_style			=  0;	// 1 == don't highlite menu items
-static int hijack_quicktimer_minutes		= 30;	// increment size for quicktimer function
-static int hijack_standby_minutes		= 30;	// number of minutes after screen blanks before we go into standby
+       int hijack_extmute_on			=  0;	// buttoncode to inject when EXT-MUTE goes active
 #ifdef CONFIG_NET_ETHERNET
-       int hijack_khttpd_port			= 80;	// khttpd port
-       int hijack_khttpd_verbose		=  0;	// khttpd verbosity
        int hijack_kftpd_control_port		= 21;	// kftpd control port
        int hijack_kftpd_data_port		= 20;	// kftpd data port
        int hijack_kftpd_verbose			=  0;	// kftpd verbosity
        int hijack_kftpd_show_dotdir		=  0;	// 0 == hide '.' directory in listings; 1 == show '.' in listings
+       int hijack_khttpd_port			= 80;	// khttpd port
+       int hijack_khttpd_verbose		=  0;	// khttpd verbosity
 #endif // CONFIG_NET_ETHERNET
+static int hijack_old_style			=  0;	// 1 == don't highlite menu items
+static int hijack_quicktimer_minutes		= 30;	// increment size for quicktimer function
+static int hijack_standby_minutes		= 30;	// number of minutes after screen blanks before we go into standby
+       int hijack_supress_notify		=  0;	// 1 == supress player "notify" (and "dhcp") lines from serial port
+       int hijack_temperature_correction	= -4;	// adjust all h/w temperature readings by this celcius amount
 
 static const hijack_option_t hijack_option_table[] = {
 	// config.ini string		address-of-variable		howmany	min	max
 	{"button_pacing",		&hijack_button_pacing,		1,	0,	HZ},
-	{"extmute_on",			&hijack_extmute_on,		1,	0,	0x7fffffff},
 	{"extmute_off",			&hijack_extmute_off,		1,	0,	0x7fffffff},
+	{"extmute_on",			&hijack_extmute_on,		1,	0,	0x7fffffff},
 #ifdef CONFIG_NET_ETHERNET
  	{"kftpd_control_port",		&hijack_kftpd_control_port,	1,	0,	65535},
  	{"kftpd_data_port",		&hijack_kftpd_data_port,	1,	0,	65535},
@@ -2807,7 +2809,9 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	restore_flags(flags);
 
 	// Prevent screen burn-in on an inactive/unattended player:
-	if (blanker_timeout) {
+	if (hijack_dispfunc == message_display) {
+		blanker_triggered = 0;
+	} else if (blanker_timeout) {
 		if (jiffies_since(blanker_lastpoll) >= (4*HZ/3)) {  // use an oddball interval to avoid patterns
 			int is_paused = 0;
 			if (get_current_mixer_source() == 'M' && ((*empeg_state_writebuf)[0x0c] & 0x02) == 0)
@@ -2844,8 +2848,6 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	}
 }
 
-static const unsigned char hexchars[] = "0123456789abcdefABCDEF";
-
 static int
 skip_over (unsigned char **s, const unsigned char *skipchars)
 {
@@ -2867,6 +2869,8 @@ match_char (unsigned char **s, unsigned char c)
 	}
 	return 0; // match failed
 }
+
+static const unsigned char hexchars[] = "0123456789abcdefABCDEF";
 
 int
 get_number (unsigned char **src, int *target, unsigned int base, const char *nextchars)

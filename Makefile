@@ -1,7 +1,7 @@
 VERSION = 2
 PATCHLEVEL = 2
 SUBLEVEL = 17
-EXTRAVERSION = -rmk5-np17-empeg52-hijack-v392
+EXTRAVERSION = -rmk5-np17-empeg52-hijack-v393
 
 ARCH := arm
 
@@ -322,14 +322,18 @@ include/linux/compile.h: $(CONFIGURATION) include/linux/version.h newversion
 	@if [ -f .name ]; then  echo -n \-`cat .name` >> .ver; fi
 	@echo ' '`LANG=C date`'"' >> .ver
 	@echo \#define LINUX_COMPILE_TIME \"`LANG=C date +%T`\" >> .ver
-	@echo \#define LINUX_COMPILE_BY \"`whoami`\" >> .ver
-	@echo \#define LINUX_COMPILE_HOST \"`hostname`\" >> .ver
-	@if [ -x /bin/dnsdomainname ]; then \
-	   echo \#define LINUX_COMPILE_DOMAIN \"`dnsdomainname`\"; \
-	 elif [ -x /bin/domainname ]; then \
-	   echo \#define LINUX_COMPILE_DOMAIN \"`domainname`\"; \
+	@if [ -e ../hijack_compiled_by.txt ]; then \
+	   cat ../hijack_compiled_by.txt ; \
 	 else \
-	   echo \#define LINUX_COMPILE_DOMAIN ; \
+	  echo \#define LINUX_COMPILE_HOST \"`hostname`\" ; \
+	  echo \#define LINUX_COMPILE_BY \"`whoami`\"; \
+	  if [ -x /bin/dnsdomainname ]; then \
+	     echo \#define LINUX_COMPILE_DOMAIN \"`dnsdomainname`\"; \
+	  elif [ -x /bin/domainname ]; then \
+	     echo \#define LINUX_COMPILE_DOMAIN \"`domainname`\"; \
+	  else \
+	     echo \#define LINUX_COMPILE_DOMAIN ; \
+	  fi ;\
 	 fi >> .ver
 	@echo \#define LINUX_COMPILER \"`$(CC) $(CFLAGS) -v 2>&1 | tail -1`\" >> .ver
 	@mv -f .ver $@

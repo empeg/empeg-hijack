@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v392"
+#define HIJACK_VERSION	"v393"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -1666,11 +1666,12 @@ get_drive_size (int hwif, int unit)
 static int
 vitals_display (int firsttime)
 {
+	extern unsigned long memory_end;
 	extern int nr_free_pages;
 	extern const char *notify_fid(void);
 	unsigned int *permset=(unsigned int*)(EMPEG_FLASHBASE+0x2000);
 	unsigned char buf[80];
-	int rowcol, temp, i, count, model = 0x2a;
+	int rowcol, i, count, model = 0x2a;
 	unsigned char *sa;
 	unsigned long flags;
 
@@ -1678,24 +1679,21 @@ vitals_display (int firsttime)
 		return NO_REFRESH;
 	clear_hijack_displaybuf(COLOR0);
 
-	// Model, Drives, Temperature:
+	// Model, DRAM, Drives
 	if (permset[0] < 7)
 		model = 1;
 	else if (permset[0] < 9)
 		model = 2;
-	count = sprintf(buf, "Mk%x:%d", model, get_drive_size(0,0));
+	count = sprintf(buf, "Mk%x: %luMB %d", model, (memory_end - PAGE_OFFSET) >> 20, get_drive_size(0,0));
 	model = (model == 1);	// 0 == Mk2(a); 1 == Mk1
 	if (ide_hwifs[model].drives[!model].present)
 		sprintf(buf+count, "+%d", get_drive_size(model,!model));
 	rowcol = draw_string(ROWCOL(0,0), buf, PROMPTCOLOR);
-	temp = hijack_read_temperature();
-	sprintf(buf, "G, %+dC/%+dF", temp, temp * 180 / 100 + 32);
-	rowcol = draw_string(rowcol, buf, PROMPTCOLOR);
 
 	// Current Playlist and Fid:
 	save_flags_cli(flags);
 	sa = *empeg_state_writebuf;
-	sprintf(buf, "\nPlaylist:%02x%02x, Fid:%s", sa[0x45], sa[0x44], notify_fid());
+	sprintf(buf, "GB\nPlaylist:%02x%02x, Fid:%s", sa[0x45], sa[0x44], notify_fid());
 	restore_flags(flags);
 	rowcol = draw_string(rowcol, buf, PROMPTCOLOR);
 
@@ -5071,13 +5069,17 @@ hijack_process_config_ini (char *buf, off_t f_pos)
 {
 	static const char *acdc_labels[2] = {";@AC", ";@DC"};
 	static const char *loopback_labels[2] = {";@NOLOOPBACK", ";@LOOPBACK"};
+	unsigned int count;
 
 #ifdef EMPEG_KNOB_SUPPORTED
 	get_player_version();
 #endif
-	(void) edit_config_ini(buf, loopback_labels [hijack_loopback]);
-	(void) edit_config_ini(buf, acdc_labels     [empeg_on_dc_power]);
-	(void) edit_config_ini(buf, homework_labels [hijack_homework]);
+	do {
+		count  = edit_config_ini(buf, loopback_labels [hijack_loopback]);
+		count += edit_config_ini(buf, acdc_labels     [empeg_on_dc_power]);
+		count += edit_config_ini(buf, homework_labels [hijack_homework]);
+	} while (count);
+
 	if (f_pos)		// exit if not first read of this cycle
 		return;
 

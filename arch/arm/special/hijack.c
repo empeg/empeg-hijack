@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v278"
+#define HIJACK_VERSION	"v279"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -33,7 +33,7 @@ extern void machine_restart(void *);					// arch/arm/kernel/process.c
 extern int real_input_append_code(unsigned long data);			// arch/arm/special/empeg_input.c
 extern int empeg_state_dirty;						// arch/arm/special/empeg_state.c
 extern void state_cleanse(void);					// arch/arm/special/empeg_state.c
-extern void hijack_serial_insert (const char *buf, int size, int port);	// drivers/char/serial_sa1100.c
+extern void hijack_serial_rx_insert (const char *buf, int size, int port); // drivers/char/serial_sa1100.c
 extern void hijack_voladj_intinit(int, int, int, int, int);		// arch/arm/special/empeg_audio3.c
 extern void hijack_beep (int pitch, int duration_msecs, int vol_percent);// arch/arm/special/empeg_audio3.c
 extern unsigned long jiffies_since(unsigned long past_jiffies);		// arch/arm/special/empeg_input.c
@@ -2757,20 +2757,23 @@ calculator_display (int firsttime)
 static void
 do_reboot (struct display_dev *dev)
 {
-	unsigned long wait = HZ;
-
-	if (hijack_reboot++ == 1) {
+	if (hijack_reboot == 0) {
+		hijack_reboot = 2;
+	} else if (hijack_reboot == 1) {
+		hijack_reboot = 2;
 		clear_hijack_displaybuf(COLOR0);
 		(void) draw_string(ROWCOL(2,32), "Rebooting..", PROMPTCOLOR);
 		display_blat(dev, (char *)hijack_displaybuf);
 		hijack_last_moved = JIFFIES();
 		state_cleanse();	// Ensure flash savearea is updated
-		if (remount_drives(0))
-			wait = 0;	// no need for a delay if remount did nothing
+		remount_drives(0);
 	}
-	if (jiffies_since(hijack_last_moved) >= HZ) {
-		unsigned long flags;
+	if (jiffies_since(hijack_last_moved) >= HZ && hijack_reboot == 2) {
+		hijack_reboot = 3;
 		state_cleanse();	// Ensure flash savearea is updated
+	}
+	if (jiffies_since(hijack_last_moved) >= (HZ+(HZ/2))) {
+		unsigned long flags;
 		save_flags_clif(flags);	// clif is necessary for machine_restart
 		machine_restart(NULL);	// never returns
 	}
@@ -3546,7 +3549,7 @@ inject_stalk_button (unsigned int button)
 	pkt[3] = pkt[1] + pkt[2];
 	if (hijack_stalk_debug)
 		printk("Stalk: out=%02x %02x %02x %02x == %08x\n", pkt[0], pkt[1], pkt[2], pkt[3], rawbutton); //fixme
-	hijack_serial_insert(pkt, sizeof(pkt), 0);
+	hijack_serial_rx_insert(pkt, sizeof(pkt), 0);
 }
 
 static void
@@ -3751,7 +3754,7 @@ hijack_intercept_tuner (unsigned int packet)
 		hijack_fake_tuner = 0;
 		printk("tuner: \"fake_tuner=0\"\n");
 	} else if (!handle_stalk_packet((unsigned char *)&packet)) {
-		hijack_serial_insert((unsigned char *)&packet, sizeof(packet), 0);
+		hijack_serial_rx_insert((unsigned char *)&packet, sizeof(packet), 0);
 	}
 }
 
@@ -3797,7 +3800,7 @@ check_screen_grab (unsigned char *buf)
 void	// invoked from empeg_display.c
 hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 {
-	static int sent_initial_buttons = 0;
+	static int sent_initial_buttons = 0, done_temp = 0;
 	unsigned char *buf = player_buf;
 	unsigned long flags;
 	int refresh = NEED_REFRESH;
@@ -3805,6 +3808,10 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	if (hijack_reboot) {
 		do_reboot(dev);
 		return;
+	}
+	if (!done_temp && jiffies > 10*HZ) {
+		done_temp = 1;
+		init_temperature(1);
 	}
 #ifdef DEBUG_JIFFIES
 	// fixme: lockup detection logic
@@ -5088,7 +5095,6 @@ hijack_init (void *animptr)
 	failed = hijack_restore_settings(buf);
 	menu_init();
 	reset_hijack_options();
-	init_temperature(1);
 	hijack_initq(&hijack_inputq);
 	hijack_initq(&hijack_playerq);
 	hijack_initq(&hijack_userq);

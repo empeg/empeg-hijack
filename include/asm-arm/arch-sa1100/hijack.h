@@ -32,6 +32,7 @@
 //    rc = ioctl(fd,EMPEG_HIJACK_WAITMENU, NULL);	// release the menu system on program exit
 //
 
+#ifdef __KERNEL__
 static inline unsigned long JIFFIES (void)
 {
 	unsigned long j = jiffies;
@@ -39,6 +40,7 @@ static inline unsigned long JIFFIES (void)
 		j = -1;
 	return j;
 }
+#endif
 
 #define INRANGE(c,min,max)	((c) >= (min) && (c) <= (max))
 #define TOUPPER(c)		(INRANGE((c),'a','z') ? ((c) - ('a' - 'A')) : (c))
@@ -64,6 +66,7 @@ typedef struct hijack_geom_s {
 #define EMPEG_HIJACK_SETGEOM		_IO(EMPEG_DISPLAY_MAGIC, 88)	// Set screen overlay geometry
 #define EMPEG_HIJACK_POLLBUTTONS	_IO(EMPEG_DISPLAY_MAGIC, 89)	// Read next IR code; EBUSY if none available
 #define EMPEG_HIJACK_INJECTBUTTONS	_IO(EMPEG_DISPLAY_MAGIC, 90)	// Inject button codes into player's input queue
+#define EMPEG_HIJACK_TUNER_SEND		_IO(EMPEG_DISPLAY_MAGIC, 0xee)	// Send bytestring to Tuner.  First byte is bytecount.
 
 #define KFONT_HEIGHT			8				// font height is 8 pixels
 #define KFONT_WIDTH			6				// font width 5 pixels or less, plus 1 for spacing

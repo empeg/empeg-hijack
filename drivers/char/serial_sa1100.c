@@ -313,25 +313,31 @@ static _INLINE_ void rs_sched_event(struct async_struct *info,
 	mark_bh(SERIAL_BH);
 }
 
-void hijack_serial_insert (const char *buf, int size, int port)
+void hijack_serial_rx_insert (const char *buf, int size, int port)
 {
 	struct async_struct *info = port ? IRQ_ports[17] : IRQ_ports[15];
-	struct tty_struct *tty = info->tty;
-	unsigned long flags;
-	struct	async_icount *icount = &info->state->icount;
-	save_flags_clif(flags);
-	while (size-- > 0) {
-		while (tty->flip.count >= TTY_FLIPBUF_SIZE)
-			schedule();	// wait for some room in buffer
-		*tty->flip.char_buf_ptr = *buf++;
-		icount->rx++;
-		*tty->flip.flag_buf_ptr = 0;
-		tty->flip.flag_buf_ptr++;
-		tty->flip.char_buf_ptr++;
-		tty->flip.count++;
+
+	if (!info) {
+		printk("hijack_serial_rx_insert: serial port(%d) not currently open\n", port);
+	} else {
+		struct tty_struct *tty = info->tty;
+		struct	async_icount *icount = &info->state->icount;
+		unsigned long flags;
+
+		save_flags_clif(flags);
+		while (size-- > 0) {
+			while (tty->flip.count >= TTY_FLIPBUF_SIZE)
+				schedule();	// wait for some room in buffer
+			*tty->flip.char_buf_ptr = *buf++;
+			icount->rx++;
+			*tty->flip.flag_buf_ptr = 0;
+			tty->flip.flag_buf_ptr++;
+			tty->flip.char_buf_ptr++;
+			tty->flip.count++;
+		}
+		tty_flip_buffer_push(tty);
+		restore_flags(flags);
 	}
-	tty_flip_buffer_push(tty);
-	restore_flags(flags);
 }
 
 extern int hijack_fake_tuner, hijack_trace_tuner;
@@ -493,7 +499,7 @@ fake_tuner (unsigned char c)
 				case 0x09: response = 0x00080901; break; // read tuner dial: pretend it's set to '8'
 			}
 			response |= ((response >> 16) + (response >> 8)) << 24;
-			hijack_serial_insert ((char *)&response, 4, 0);
+			hijack_serial_rx_insert ((char *)&response, 4, 0);
 			if (hijack_trace_tuner)
 				printk("\nfake_tuner: in=%08x\n", ntohl(response));
 	}
@@ -529,7 +535,7 @@ static _INLINE_ void transmit_chars(struct async_struct *info, int *intr_done)
 	count = info->xmit_fifo_size;
 	while(serial_inp(info, UTSR1) & UTSR1_TNF) {
 		char ch = info->xmit_buf[info->xmit_tail++];
-		if (info == IRQ_ports[15]) {
+		if (info == IRQ_ports[15]) {	// Tuner interface (ttyS0)
 			if (hijack_trace_tuner)
 				printk("tuner:out=%02x\n", ch);
 			if (hijack_fake_tuner)

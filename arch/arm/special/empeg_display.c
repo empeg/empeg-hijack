@@ -1001,6 +1001,7 @@ void hijack_set_standbyLED (int off_on)
 
 	save_flags_clif(flags);
 	LCCR0 = LCCR0 & ~LCCR0_LEN;		// disable LCD controller
+	while((LCSR&LCSR_LDD)==0);		// wait for controller off
 	PPDR  = PPDR | 0x201;			// configure LCDdataLine0 and LCLK as outputs
 	PPSR  = off_on ? (PPSR | 0x201) : ((PPSR | 0x200) & ~1);	// set LED on/off
 	restore_flags(flags);

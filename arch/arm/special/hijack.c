@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v400"
+#define HIJACK_VERSION	"v401"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -2296,6 +2296,7 @@ static int
 buttonled_display (int firsttime)
 {
 	unsigned int rowcol, level;
+	char buf[4];
 
 	if (firsttime)
 		ir_numeric_input = &hijack_buttonled_on_level;
@@ -2310,8 +2311,10 @@ buttonled_display (int firsttime)
 		(void) draw_string_spaced(rowcol, "[off]", ENTRYCOLOR);
 	else if (level == ((1<<BUTTONLED_BITS)-1))
 		(void) draw_string_spaced(rowcol,"[max]", ENTRYCOLOR);
-	else
-		(void) draw_number(rowcol, level, "%2u", ENTRYCOLOR);
+	else {
+		sprintf(buf, " %u ", level);
+		(void) draw_string(rowcol, buf, ENTRYCOLOR);
+	}
 	return NEED_REFRESH;
 }
 
@@ -2882,7 +2885,7 @@ hightemp_display (int firsttime)
 
 	if (firsttime)
 		ir_numeric_input = &hightemp_threshold;
-	else if (!hijack_last_moved)
+	else if (jiffies_since(hijack_last_refresh) < (HZ*2) && !hijack_last_moved)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);

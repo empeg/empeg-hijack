@@ -29,7 +29,8 @@ static unsigned long hijack_last_moved = 0, hijack_last_refresh = 0, blanker_act
 static int  (*hijack_dispfunc)(int) = NULL;
 static void (*hijack_movefunc)(int) = NULL;
 static unsigned int ir_lasttime = 0, ir_selected = 0, ir_releasewait = 0, ir_knob_down = 0, ir_left_down = 0, ir_right_down = 0, ir_trigger_count = 0;
-static unsigned long ir_delayed_knob_release = 0;
+static unsigned long ir_delayed_knob_release = 0, ir_long_knob_pending = 0;
+extern void *input_devices;
 extern int real_input_append_code(void *dev, unsigned long data); // empeg_input.c
 static int hijack_player_menu_is_active = 0, hijack_sound_adjust_is_active = 0;
 static unsigned char *hijack_player_buf = NULL;
@@ -574,7 +575,7 @@ vitals_display (int firsttime)
 	rowcol = draw_string(ROWCOL(0,0), buf, COLOR2);
 	(void)draw_temperature(rowcol, read_temperature(), COLOR2);
 	si_meminfo(&si);
-	sprintf(buf, "Free: %lu/%lu\nLoadAvg: ", si.freeram, si.totalram);
+	sprintf(buf, "Free: %lu/%lu kB\nLoadAvg: ", si.freeram/1024, si.totalram/1024);
 	rowcol = draw_string(ROWCOL(2,0), buf, COLOR2);
 	(void)get_loadavg(buf);
 	count = 0;
@@ -720,7 +721,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v42 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v44 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1203,6 +1204,32 @@ check_if_sound_adjust_is_active (void *player_buf)
 	    && test_row(player_buf, 16, 0x11);
 }
 
+#include <linux/soundcard.h>  // for SOUND_MASK_*
+static void
+toggle_input_source (void)
+{
+	extern int get_current_mixer_source(void);
+	unsigned long button;
+
+	switch (get_current_mixer_source()) {
+		case SOUND_MASK_RADIO:  // FM radio
+		case SOUND_MASK_LINE1:  // AM radio
+			button = IR_KW_TAPE_PRESSED; // aux
+			break;
+		case SOUND_MASK_LINE:   // AUX
+			button = IR_KW_CD_PRESSED;   // player
+			break;
+		default:	// player (SOUND_MASK_PCM)
+			// by hitting "aux" before "tuner", we handle "tuner not present"
+			(void)real_input_append_code(&input_devices, IR_KW_TAPE_PRESSED);  // aux
+			(void)real_input_append_code(&input_devices, IR_KW_TAPE_RELEASED);
+			button = IR_KW_TUNER_PRESSED;  // tuner
+			break;
+	}
+	(void)real_input_append_code(&input_devices, button);
+	(void)real_input_append_code(&input_devices, button|0x80000000);
+}
+
 // This routine covertly intercepts all display updates,
 // giving us a chance to substitute our own display.
 //
@@ -1214,11 +1241,25 @@ hijack_display (struct display_dev *dev, unsigned char *player_buf)
 	int refresh = NEED_REFRESH, color;
 
 	save_flags_cli(flags);
+	if (!dev->power) {  // do nothing if unit is in standby mode
+		ir_trigger_count = 0;
+		hijack_status = HIJACK_INACTIVE;
+		restore_flags(flags);
+		display_blat(dev, player_buf);
+		return;
+	}
+	if (ir_long_knob_pending && jiffies_since(ir_long_knob_pending) > (HZ*2)) {
+		ir_long_knob_pending = 0;
+		toggle_input_source();
+		hijack_deactivate();
+	}
+	if (ir_delayed_knob_release && jiffies_since(ir_delayed_knob_release) > (HZ+(HZ/4))) {
+		ir_delayed_knob_release = 0;
+		real_input_append_code(dev, knobdata_released[knobdata_index] | 0x80000000);
+	}
 	switch (hijack_status) {
 		case HIJACK_INACTIVE:
-			if (!dev->power) {  // do not activate menu if unit is in standby mode!
-				buf = player_buf;
-			} else if (ir_trigger_count >= 6 || (ir_knob_down && jiffies_since(ir_knob_down) >= HZ)) {
+			if (ir_trigger_count >= 6 || (ir_knob_down && jiffies_since(ir_knob_down) >= HZ)) {
 				activate_dispfunc(menu_display, menu_move);
 			} else if (jiffies_since(ir_lasttime) < (HZ*5) || !maxtemp_threshold || read_temperature() < (maxtemp_threshold + MAXTEMP_OFFSET)) {
 				buf = player_buf;
@@ -1257,6 +1298,7 @@ hijack_display (struct display_dev *dev, unsigned char *player_buf)
 			}
 			break;
 		case HIJACK_INACTIVE_PENDING:
+			buf = player_buf;
 			if (!ir_releasewait) {
 				ir_selected = 0;
 				hijack_status = HIJACK_INACTIVE;
@@ -1276,7 +1318,7 @@ hijack_display (struct display_dev *dev, unsigned char *player_buf)
 	restore_flags(flags);
 
 	// Prevent screen burn-in on an inactive/unattended player:
-	if (dev->power && blanker_timeout) {
+	if (blanker_timeout) {
 		static unsigned long blanker_lastpoll = 0;
 		static unsigned char blanked = 0, last_buf[EMPEG_SCREEN_BYTES] = {0,};
 		if (!blanker_activated)
@@ -1325,18 +1367,13 @@ void  // invoked from multiple places in empeg_input.c
 input_append_code(void *dev, unsigned long data)  // empeg_input.c
 {
 	static unsigned long ir_lastpressed = 0;
-	int i, hijacked = 0, knob_prefix_was_active;
+	int i, hijacked = 0, buttonlisted = 0, knob_prefix_was_active;
 	unsigned long flags;
 
-	if (data == IR_KNOB_RELEASED && data == ir_lastpressed)
-		return;	// we sometimes get two of these in a row (??)
+	//printk("data=%08lu, status=%d\n", data, hijack_status);
 	save_flags_cli(flags);
 	knob_prefix_was_active = (hijack_dispfunc == voladj_prefix);
 	blanker_activated = 0;
-	if (ir_delayed_knob_release && jiffies_since(ir_delayed_knob_release) > (HZ+(HZ/4))) {
-		ir_delayed_knob_release = 0;
-		real_input_append_code(dev, knobdata_released[knobdata_index] | 0x80000000);
-	}
 	if (hijack_status != HIJACK_INACTIVE) {
 		if (hijack_buttonlist && hijack_status == HIJACK_ACTIVE) {
 			if (hijack_buttonlist[0] < 2) {
@@ -1347,6 +1384,7 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 				if (data == hijack_buttonlist[i]) {
 					hijack_enq_button(data);
 					hijacked = 1;
+					buttonlisted = 1;
 					break;
 				}
 			}
@@ -1380,7 +1418,7 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 					if (hijack_status == HIJACK_ACTIVE)
 						hijacked = hijack_move(-1);
 					break;
-				case IR_KNOB_RELEASED:  // note: this one often arrives in pairs, so check knob_down first!
+				case IR_KNOB_RELEASED:
 					if (ir_knob_down && knob_prefix_was_active && hijack_status == HIJACK_ACTIVE) { 
 						hijack_deactivate();
 						ir_selected = 0;
@@ -1404,44 +1442,39 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 					break;
 			}
 		}
-	} else if (devices[0].power && data == IR_KW_CD_PRESSED) {
-		// ugly Kenwood remote hack: press/release CD quickly 3 times to activate menu
-		if ((ir_lastpressed & 0x7fffffff) == data && jiffies_since(ir_lasttime) < HZ)
-			++ir_trigger_count;
-		else
-			ir_trigger_count = 1;
 	}
-	// Update button states
-	if (ir_releasewait && data == ir_releasewait) {
-		ir_releasewait = 0;
-		hijacked = 1;
-	} else if (hijacked && (data & 0x80000001) == 0 && data != IR_KNOB_LEFT && data != IR_KNOB_RIGHT) {
-		ir_releasewait = data | ((((int)data) > 16) ? 0x80000000 : 0x00000001);
-	}
-	// save button PRESSED codes in ir_lastpressed
-	ir_lastpressed = data;
-	ir_lasttime = jiffies;
 	switch (data) {
+		case IR_KW_CD_PRESSED:
+			// ugly Kenwood remote hack: press/release CD quickly 3 times to activate menu
+			if (hijack_status == HIJACK_INACTIVE) {
+				if ((ir_lastpressed & 0x7fffffff) == data && jiffies_since(ir_lasttime) < HZ)
+					++ir_trigger_count;
+				else
+					ir_trigger_count = 1;
+			}
+			break;
 		case IR_RIO_MENU_PRESSED:
-			if (hijack_status == HIJACK_INACTIVE && !hijack_player_menu_is_active) {
+			if (!buttonlisted && hijack_status == HIJACK_INACTIVE && !hijack_player_menu_is_active) {
 				hijacked = 1; // hijack it and later send it with the release (below)
 				ir_knob_down = jiffies ? jiffies : 1;
 			}
 			break;
 		case IR_RIO_MENU_RELEASED:
-			if (ir_knob_down && hijack_status == HIJACK_INACTIVE && !hijack_player_menu_is_active) {
+			if (!buttonlisted && ir_knob_down && hijack_status == HIJACK_INACTIVE && !hijack_player_menu_is_active) {
 				if (!hijacked && jiffies_since(ir_knob_down) < (HZ/2))
 					real_input_append_code(dev, IR_RIO_MENU_PRESSED);
 			}
 			ir_knob_down = 0;
 			break;
 		case IR_KNOB_PRESSED:
-			hijacked = 1; // hijack it and later send it with the release (below)
-			if (!ir_delayed_knob_release)
-				ir_knob_down = jiffies ? jiffies : 1;
+			if (!buttonlisted) {
+				hijacked = 1; // hijack it and later send it with the release (below)
+				if (!ir_delayed_knob_release)
+					ir_knob_down = ir_long_knob_pending = jiffies ? jiffies : 1;
+			}
 			break;
-		case IR_KNOB_RELEASED:  // note: this one often arrives in pairs, so check knob_down first!
-			if (ir_knob_down && hijack_status == HIJACK_INACTIVE && !hijacked) {
+		case IR_KNOB_RELEASED:
+			if (!buttonlisted && ir_knob_down && hijack_status == HIJACK_INACTIVE && !hijacked) {
 				int index = hijack_player_menu_is_active ? 0 : knobdata_index;
 				data = knobdata_released[index];	// substitute our translation
 				if (jiffies_since(ir_knob_down) < (HZ/2)) {	// short press?
@@ -1457,7 +1490,7 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 					}
 				}
 			}
-			ir_knob_down = 0;
+			ir_knob_down = ir_long_knob_pending = 0;
 			break;
 		case IR_KW_PREVTRACK_PRESSED:
 		case IR_RIO_PREVTRACK_PRESSED:
@@ -1476,6 +1509,20 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 			ir_right_down = 0;
 			break;
 	}
+
+	// Update button states
+	if (ir_releasewait && data == ir_releasewait) {
+		ir_releasewait = 0;
+		hijacked = 1;
+	} else if (hijacked && (data & 0x80000001) == 0 && data != IR_KNOB_LEFT && data != IR_KNOB_RIGHT) {
+		ir_releasewait = data | ((((int)data) > 16) ? 0x80000000 : 0x00000001);
+	}
+
+	// save button PRESSED codes in ir_lastpressed
+	ir_lastpressed = data;
+	ir_lasttime    = jiffies;
+
+	// pass non-hijacked buttons to the player
 	restore_flags(flags);
 	if (!hijacked)
 		real_input_append_code(dev, data);
@@ -1761,8 +1808,7 @@ hijack_ioctl (struct inode *inode, struct file *filp, unsigned int cmd, unsigned
 				return rc;
 			save_flags_cli(flags);
 			for (i = 1; i < buttonlist[0]; ++i) {
-				extern void *input_devices;
-				while (!signal_pending(current) && real_input_append_code(input_devices, buttonlist[i])) {
+				while (!signal_pending(current) && real_input_append_code(&input_devices, buttonlist[i])) {
 					// no room in input queue, so wait 1/10sec and try again
 					restore_flags(flags);
 					current->state = TASK_INTERRUPTIBLE;

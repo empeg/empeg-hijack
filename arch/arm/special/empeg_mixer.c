@@ -156,6 +156,10 @@ static struct file_operations mixer_fops =
 	release:	empeg_mixer_release
 };
 
+int get_current_mixer_source (void)
+{
+	return mixer_global.input;
+}
 
 int __init empeg_mixer_init(void)
 {

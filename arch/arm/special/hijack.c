@@ -1095,7 +1095,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v74 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v75 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1411,8 +1411,8 @@ reboot_display (int firsttime)
 	if (left_pressed && right_pressed) {
 		save_flags_cli(flags);
 		state_cleanse();	// Ensure flash savearea is updated first
-		machine_restart(NULL);	// Reboot the machine NOW!  Fails in Tuner mode..
 		restore_flags(flags);	// never executed (?)
+		machine_restart(NULL);	// Reboot the machine NOW!  Fails in Tuner mode..
 		return NEED_REFRESH;
 	}
 	rc = NO_REFRESH;
@@ -1611,11 +1611,11 @@ hijack_move_repeat (void)
 }
 
 static int
-test_row (void *displaybuf, unsigned short row, unsigned char color)
+test_row (unsigned char *displaybuf, unsigned short row, unsigned char color)
 {
 	const unsigned int offset = 10;
-	unsigned char *first = ((unsigned char *)displaybuf) + (row * (EMPEG_SCREEN_COLS/2)) + offset;
-	unsigned char *test  = first + ((EMPEG_SCREEN_COLS/2) - offset - offset);
+	unsigned char *first = displaybuf + (row * (EMPEG_SCREEN_COLS/2)) + offset;
+	unsigned char *test  = first + ((EMPEG_SCREEN_COLS/2) - (offset << 1));
 	do {
 		if (*--test != color)
 			return 0;
@@ -1624,12 +1624,28 @@ test_row (void *displaybuf, unsigned short row, unsigned char color)
 }
 
 static int
+check_if_equalizer_is_active (unsigned char *displaybuf)
+{
+	unsigned char *row = displaybuf + (13 * (EMPEG_SCREEN_COLS/2));
+	const unsigned char eqrow[] = {	0xf0,0xff,0xff,0xf2,0xff,0xff,
+					0xf2,0xff,0xff,0xf2,0xff,0xff,
+					0xf2,0xff,0xff,0xf2,0xff,0xff,
+					0xf2,0xff,0xff,0xf2,0xff,0xff };
+					//0xf2,0xff,0xff,0xf2,0xff,0xff,
+					//0x00,0x00,0x00,0x00,0xff,0xff};
+	if (0 == memcmp(row, eqrow, sizeof(eqrow)))
+		return 1;	// equalizer settings active
+	return 0;	// equalizer settings not active
+}
+
+static int
 check_if_player_menu_is_active (void *player_buf)
 {
-	if (!test_row(player_buf, 2, 0x00))
-		return 0;
-	return (test_row(player_buf, 0, 0x00) && test_row(player_buf, 1, 0x11))
-	    || (test_row(player_buf, 3, 0x11) && test_row(player_buf, 4, 0x00));
+	if (test_row(player_buf, 2, 0x00))
+		if ((test_row(player_buf, 0, 0x00) && test_row(player_buf, 1, 0x11))
+		 || (test_row(player_buf, 3, 0x11) && test_row(player_buf, 4, 0x00)))
+			return 1;
+	return check_if_equalizer_is_active(player_buf);
 }
 
 static int

@@ -179,6 +179,7 @@ static void powerfail_reenabled_timeout(unsigned long);
 /* save/restore hijack savearea for user-defined-menu settings */
 void hijack_save_settings (unsigned char *buf);
 void hijack_restore_settings (const unsigned char *buf);
+
 #define HIJACK_SAVEAREA_OFFSET (STATE_BLOCK_SIZE - 2 - 8)
 
 void enable_powerfail(int enable)

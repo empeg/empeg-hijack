@@ -384,22 +384,27 @@ static void voladj_move (unsigned long ignored, int direction)
 
 static void voladj_refresh (unsigned long ignored, int firsttime)
 {
-	unsigned int i, col, prev = -1;
+	unsigned int i, col, mult, prev = -1;
 	unsigned char buf[32];
+	unsigned long flags;
 
 	if (firsttime) {
 		memset(voladj_history, 0, sizeof(voladj_history));
 		voladj_histx = 0;
 	}
-	voladj_history[voladj_histx = (voladj_histx + 1) % VOLADJ_HISTSIZE] = voladj_multiplier;
 	clear_hijacked_displaybuf(COLOR0);
+	save_flags_cli(flags);
+	voladj_history[voladj_histx = (voladj_histx + 1) % VOLADJ_HISTSIZE] = voladj_multiplier;
 	col = draw_string(0, 0, "Volume Auto Adjust:  ", COLOR2);
 	(void)draw_string(0, col, voladj_names[voladj_enabled], COLOR3);
-	sprintf(buf, "Current Multiplier: %2u.%02u",
-		voladj_multiplier >> MULT_POINT, (voladj_multiplier & MULT_MASK) * 100 / (1 << MULT_POINT));
+	restore_flags(flags);
+	mult = voladj_multiplier;
+	sprintf(buf, "Current Multiplier: %2u.%02u", mult >> MULT_POINT, (mult & MULT_MASK) * 100 / (1 << MULT_POINT));
 	(void)draw_string(3, 12, buf, COLOR2);
+	save_flags_cli(flags);
 	for (i = 1; i <= VOLADJ_HISTSIZE; ++i)
 		(void)voladj_plot(1, i - 1, voladj_history[(voladj_histx + i) % VOLADJ_HISTSIZE], &prev);
+	restore_flags(flags);
 }
 
 static void kfont_refresh (unsigned long ignored, int firsttime)
@@ -431,27 +436,29 @@ static unsigned long vitals_lasttime = 0;
 static void vitals_refresh (unsigned long ignored, int firsttime)
 {
 	unsigned int *permset=(unsigned int*)(EMPEG_FLASHBASE+0x2000);
-	//unsigned int *modset=(unsigned int*)(EMPEG_FLASHBASE+0x2000);
-	//unsigned long *user_splash=(unsigned long*)(EMPEG_FLASHBASE+0xa000);
-	unsigned long flags;
 	unsigned char buf[80];
 	int temp, col;
+	unsigned long flags;
 
-	if (firsttime || jiffies_since(vitals_lasttime) > HZ) {
+	if (firsttime || jiffies_since(vitals_lasttime) > (2*HZ)) {
 		clear_hijacked_displaybuf(COLOR0);
 		sprintf(buf, "HwRev:%02d, Build:%x", permset[0], permset[3]);
 		(void)draw_string(0, 0, buf, COLOR2);
 		sprintf(buf, "Flash:%dk, Ram:%dk", permset[9]==0xffffffff?1024:permset[9], permset[8]==0xffffffff?8192:permset[8]);
 		(void)draw_string(1, 0, buf, COLOR2);
+#if 0 // locks up the machine.
 		save_flags_cli(flags);
 		temp = empeg_readtherm(&OSMR0,&GPLR);
 		restore_flags(flags);
 		/* Correct for negative temperatures (sign extend) */
 		if (temp & 0x80)
 			temp = -(128 - (temp ^ 0x80));
-		sprintf(buf, "Temperature: %dC/%dF", temp, temp * 212 / 100 + 32);
+		sprintf(buf, "Temperature: %dC/%dF", temp, temp * 180 / 100 + 32);
 		(void)draw_string(2, 0, buf, COLOR2);
+#endif
+		save_flags_cli(flags);
 		(void)get_loadavg(buf);
+		restore_flags(flags);
 		temp = 0;
 		for (col = 0;; ++col) {
 			if (buf[col] == ' ' && ++temp == 3)
@@ -514,7 +521,7 @@ static void game_finale (void)
 	if (jiffies_since(game_ball_lastmove) < (HZ*2))
 		return;
 	if (game_bricks) {
-		(void)draw_string(1, 20, " Enhancements.v20 ", -COLOR3);
+		(void)draw_string(1, 20, " Enhancements.v21 ", -COLOR3);
 		(void)draw_string(2, 33, "by Mark Lord", COLOR3);
 		if (jiffies_since(game_ball_lastmove) < (HZ*3))
 			return;
@@ -640,9 +647,13 @@ static void game_move_ball (void)
 static void game_refresh (unsigned long ignored, int firsttime)
 {
 	int i;
+	unsigned long flags;
+
 	if (!firsttime) {
+		save_flags_cli(flags);
 		ir_selected = 0; // prevent accidental exit from game
 		game_move_ball();
+		restore_flags(flags);
 		return;
 	}
 	clear_hijacked_displaybuf(COLOR0);
@@ -695,27 +706,30 @@ static unsigned long menu_userdata[MENU_MAX_SIZE] = {0,};
 static void menu_refresh (unsigned long ignored, int firsttime)
 {
 	static int old_menu_item = 0;
+	unsigned long flags;
 
 	if (firsttime || menu_item != old_menu_item) {
 		old_menu_item = menu_item;
 		clear_hijacked_displaybuf(COLOR0);
 		if (firsttime)
 			menu_top = 0;
-		if (menu_item < menu_top)
-			menu_top = menu_item;
-		while (menu_item >= (menu_top + EMPEG_TEXT_ROWS))
+		if (old_menu_item < menu_top)
+			menu_top = old_menu_item;
+		while (old_menu_item >= (menu_top + EMPEG_TEXT_ROWS))
 			++menu_top;
 		for (menu_size = 0; menu_label[menu_size] != NULL; ++menu_size) {
 			if (menu_size >= menu_top && menu_size < (menu_top + EMPEG_TEXT_ROWS))
-				(void)draw_string(menu_size - menu_top, 0, menu_label[menu_size], (menu_size == menu_item) ? COLOR3 : COLOR2);
+				(void)draw_string(menu_size - menu_top, 0, menu_label[menu_size], (menu_size == old_menu_item) ? COLOR3 : COLOR2);
 		}
 		menu_lastpress = jiffies;
 	}
 	if (!firsttime) {
+		save_flags_cli(flags);
 		if (ir_selected)
 			activate_subfunc(menu_userdata[menu_item], menu_refreshfunc[menu_item], menu_movefunc[menu_item]);
 		else if (jiffies_since(menu_lastpress) > (5 * HZ))
 			hijack_deactivate(); // menu timed-out
+		restore_flags(flags);
 	}
 }
 
@@ -744,7 +758,9 @@ void hijack_display(struct display_dev *dev, unsigned char *player_buf)
 			if (hijack_subfunc == NULL) {
 				hijack_deactivate();
 			} else {
+				restore_flags(flags);
 				hijack_subfunc(hijack_userdata, 0);
+				save_flags_cli(flags);
 				if (ir_selected)
 					activate_subfunc(0, menu_refresh, menu_move);
 			}

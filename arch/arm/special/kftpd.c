@@ -38,6 +38,7 @@ extern int hijack_kftpd_control_port;			// from arch/arm/special/hijack.c
 extern int hijack_kftpd_data_port;			// from arch/arm/special/hijack.c
 extern int hijack_kftpd_verbose;			// from arch/arm/special/hijack.c
 extern int hijack_kftpd_show_dotdir;			// from arch/arm/special/hijack.c
+extern int hijack_max_connections;			// from arch/arm/special/hijack.c
 extern struct semaphore hijack_khttpd_startup_sem;	// from arch/arm/special/hijack.c
 extern struct semaphore hijack_kftpd_startup_sem;	// from arch/arm/special/hijack.c
 extern int sys_rmdir(const char *path); // fs/namei.c
@@ -49,9 +50,10 @@ extern int sys_newstat(char *, struct stat *);
 extern pid_t kernel_thread(int (*fn)(void *), void *arg, unsigned long flags);
 extern int sys_wait4 (pid_t pid,unsigned int * stat_addr, int options, struct rusage * ru);
 
-#define BUF_PAGES		2
+#define BUF_PAGES		1
 #define INET_ADDRSTRLEN		16
 
+// This data structure is allocated as a full page to prevent memory fragmentation:
 typedef struct server_parms_s {
 	struct socket		*clientsock;
 	struct socket		*servsock;
@@ -62,11 +64,13 @@ typedef struct server_parms_s {
 	int			data_port;
 	unsigned int		umask;
 	char			clientip[INET_ADDRSTRLEN];
-	char			servername[8];
+	char*			servername;
 	int			have_portaddr;
 	struct sockaddr_in	portaddr;
-	unsigned char		cwd[512];
-	unsigned char		tmp[1024];
+	unsigned char		cwd[1024];
+	unsigned char		buf[1024];
+	unsigned char		tmp2[768];
+	unsigned char		tmp3[768];
 } server_parms_t;
 
 #define INRANGE(c,min,max)	((c) >= (min) && (c) <= (max))
@@ -455,8 +459,7 @@ typedef struct filldir_parms_s {
 	unsigned int		nam_used;	// number of bytes used in nam[]
 	char			*nam;		// allocated buffer for names from filldir()
 	int			path_len;	// length of (non-zero terminated) base path in path[]
-	char			path[512];	// full dir prefix, plus current name appended for dentry lookups
-	char			lname[256];	// target path of a symbolic link
+	char			*path;		// full dir prefix, plus current name appended for dentry lookups
 } filldir_parms_t;
 
 // Callback routine for readdir().
@@ -529,7 +532,7 @@ format_dir (server_parms_t *parms, filldir_parms_t *p, ino_t ino, char *name, in
 	unsigned long	mode;
 	char		*b;
 	tm_t		tm;
-	char		ftype;
+	char		ftype, *lname = parms->tmp3;
 	int		rc, linklen = 0;
 
 	if ((p->buf_size - p->buf_used) < (58 + namelen)) { 
@@ -592,13 +595,13 @@ format_dir (server_parms_t *parms, filldir_parms_t *p, ino_t ino, char *name, in
 	*b++ = ' ';
 
 	if (ftype == 'l') {
-		linklen = sys_readlink(p->path, p->lname, sizeof(p->lname));
+		linklen = sys_readlink(p->path, lname, 512);
 		if (linklen <= 0) {
 			//printk("%s: readlink(%s) (dentry=%p) failed, rc=%d\n", parms->servername, p->path, dentry, linklen);
 			linklen = 0;
 		}
 	}
-	p->lname[linklen] = '\0';
+	lname[linklen] = '\0';
 
 	p->buf_used = b - p->buf;
 	if ((p->buf_size - p->buf_used) < ((parms->use_http ? (24+namelen) : 7) + namelen + (linklen ? (2 * linklen) : namelen))) {
@@ -617,7 +620,7 @@ format_dir (server_parms_t *parms, filldir_parms_t *p, ino_t ino, char *name, in
 		*b++ = 'F';
 		*b++ = '=';
 		*b++ = '"';
-		b = append_string(b, linklen ? p->lname : name, 1);
+		b = append_string(b, linklen ? lname : name, 1);
 		if (ftype == 'd')
 			*b++ = '/';
 		*b++ = '"';
@@ -639,7 +642,7 @@ format_dir (server_parms_t *parms, filldir_parms_t *p, ino_t ino, char *name, in
 		*b++ = '-';
 		*b++ = '>';
 		*b++ = ' ';
-		b = append_string(b, p->lname, 0);
+		b = append_string(b, lname, 0);
 	}
 done:
 	*b++ = '\r';
@@ -675,7 +678,7 @@ send_dirlist (server_parms_t *parms, char *path, int full_listing)
 	struct file	*filp;
 	unsigned int	response = 0;
 	filldir_parms_t	p;
-	const int	NAM_PAGES = 2;
+	const int	NAM_PAGES = 1;
 
 	memset(&p, 0, sizeof(p));
 	pathlen = strlen(path);
@@ -724,6 +727,7 @@ send_dirlist (server_parms_t *parms, char *path, int full_listing)
 			p.buf_size	= BUF_PAGES*PAGE_SIZE;
 			p.nam_size	= NAM_PAGES*PAGE_SIZE;
 			p.full_listing	= full_listing;
+			p.path		= parms->tmp2;
 			strcpy(p.path, path);
 			p.path_len	= pathlen;
 			if (p.path[pathlen - 1] != '/')
@@ -1046,32 +1050,32 @@ classify_path (char *path)
 }
 
 static void
-append_path (char *path, char *new)
+append_path (char *path, char *new, char *tmp)
 {
-	char	buf[1024], *b = buf, *p = path;
+	char *p = path;
 
 	if (*new == '/') {
-		strcpy(buf, new);
+		strcpy(tmp, new);
 	} else {
-		strcpy(buf, path);
-		strcat(buf, "/");
-		strcat(buf, new);
+		strcpy(tmp, path);
+		strcat(tmp, "/");
+		strcat(tmp, new);
 	}
 	// Now fix-up the path, resolving '..' and removing consecutive '/'
 	*p++ = '/';
-	while (*b) {
-		while (*b == '/')
-			++b;
-		if (b[0] == '.' && b[1] == '.' && (b[2] == '/' || b[2] == '\0')) {
-			b += 2;
+	while (*tmp) {
+		while (*tmp == '/')
+			++tmp;
+		if (tmp[0] == '.' && tmp[1] == '.' && (tmp[2] == '/' || tmp[2] == '\0')) {
+			tmp += 2;
 			while (*--p != '/');
 			if (p == path)
 				++p;
-		} else if (*b) { // copy simple path element
+		} else if (*tmp) { // copy simple path element
 			if (*(p-1) != '/')
 				*p++ = '/';
-			while (*b && *b != '/')
-				*p++ = *b++;
+			while (*tmp && *tmp != '/')
+				*p++ = *tmp++;
 		}
 	}
 	*p = '\0';
@@ -1136,9 +1140,9 @@ static response_t simple_response_table[] = {
 static int
 kftpd_handle_command (server_parms_t *parms)
 {
-	char		path[512], *buf = parms->tmp;
+	char		*path = parms->tmp2, *buf = parms->buf;
 	unsigned int	response = 0;
-	int		n, quit = 0, bufsize = sizeof(parms->tmp) - 1;
+	int		n, quit = 0, bufsize = sizeof(parms->buf) - 1;
 	response_t	*r;
 
 	n = ksock_rw(parms->clientsock, buf, bufsize, 0);
@@ -1173,7 +1177,7 @@ kftpd_handle_command (server_parms_t *parms)
 	// now look for commands involving more complex handling:
 	if (!strxcmp(buf, "CWD ", 1) && buf[4]) {
 		strcpy(path, parms->cwd);
-		append_path(path, &buf[4]);
+		append_path(path, &buf[4], parms->tmp3);
 		if (2 != classify_path(path)) {
 			response = 431;
 		} else {
@@ -1181,7 +1185,7 @@ kftpd_handle_command (server_parms_t *parms)
 			quit = send_dir_response(parms, 250, parms->cwd, "directory changed");
 		}
 	} else if (!strxcmp(buf, "CDUP", 0)) {
-		append_path(parms->cwd, "..");
+		append_path(parms->cwd, "..", parms->tmp3);
 		quit = send_dir_response(parms, 200, parms->cwd, NULL);
 	} else if (!strxcmp(buf, "PWD", 0)) {
 		quit = send_dir_response(parms, 257, parms->cwd, NULL);
@@ -1192,7 +1196,7 @@ kftpd_handle_command (server_parms_t *parms)
 			response = 501;
 		} else {
 			strcpy(path, parms->cwd);
-			append_path(path, p);
+			append_path(path, p, parms->tmp3);
 			response = do_chmod(parms, mode, path);
 		}
 	} else if (!strxcmp(buf, "SITE ", 1)) {
@@ -1210,7 +1214,7 @@ kftpd_handle_command (server_parms_t *parms)
 			response = 501;
 		} else {
 			strcpy(path, parms->cwd);
-			append_path(path, &buf[4]);
+			append_path(path, &buf[4], parms->tmp3);
 			response = do_mkdir(parms, path);
 		}
 	} else if (!strxcmp(buf, "RMD ", 1)) {
@@ -1218,7 +1222,7 @@ kftpd_handle_command (server_parms_t *parms)
 			response = 501;
 		} else {
 			strcpy(path, parms->cwd);
-			append_path(path, &buf[4]);
+			append_path(path, &buf[4], parms->tmp3);
 			response = do_rmdir(parms, path);
 		}
 	} else if (!strxcmp(buf, "DELE ", 1)) {
@@ -1226,7 +1230,7 @@ kftpd_handle_command (server_parms_t *parms)
 			response = 501;
 		} else {
 			strcpy(path, parms->cwd);
-			append_path(path, &buf[5]);
+			append_path(path, &buf[5], parms->tmp3);
 			response = do_delete(parms, path);
 		}
 	} else if (!strxcmp(buf, "LIST", 1) || !strxcmp(buf, "NLST", 1)) {
@@ -1239,7 +1243,7 @@ kftpd_handle_command (server_parms_t *parms)
 			strcpy(path, parms->cwd);
 			if (buf[j]) {
 				buf[j] = '\0';
-				append_path(path, &buf[j+1]);
+				append_path(path, &buf[j+1], parms->tmp3);
 			}
 			response = send_dirlist(parms, path, buf[0] == 'L');
 			if (!response)
@@ -1250,7 +1254,7 @@ kftpd_handle_command (server_parms_t *parms)
 			response = 501;
 		} else {
 			strcpy(path, parms->cwd);
-			append_path(path, &buf[5]);
+			append_path(path, &buf[5], parms->tmp3);
 			if (buf[0] == 'R')
 				response = send_file(parms, path);
 			else
@@ -1305,8 +1309,8 @@ khttpd_fix_hexcodes (char *buf)
 static int
 khttpd_handle_connection (server_parms_t *parms)
 {
-	char		*buf = parms->tmp;
-	int		response = 0, buflen = sizeof(parms->tmp) - 1, n;
+	char		*buf = parms->buf;
+	int		response = 0, buflen = sizeof(parms->buf) - 1, n;
 
 	n = ksock_rw(parms->clientsock, buf, buflen, 0);
 	if (n < 0) {
@@ -1422,36 +1426,28 @@ child_thread (void *arg)
 		sync();	// useful for flash upgrades
 	}
 	sock_release(parms->clientsock);
-	kfree(parms);
+	free_pages((unsigned long)parms, 1);
 	sys_exit(0);
 	return 0;
-}
-
-static void
-my_reaper (int signo)
-{
-	pid_t	child;
-
-	do {
-		int status;
-		child = sys_wait4(-1, &status, WUNTRACED|WNOHANG|__WCLONE, NULL);
-	} while (child > 0);
 }
 
 int
 kftpd_daemon (unsigned long use_http)	// invoked twice from init/main.c
 {
-	server_parms_t		*parms, *clientparms;
+	server_parms_t		parms, *clientparms;
 	int			server_port;
 	struct semaphore	*sema;
-	const char		*servername;
 	extern unsigned long	sys_signal(int, void *);
 
+	if (sizeof(server_parms_t) > PAGE_SIZE)	// we allocate client parms as single pages
+		return 0;
+	memset(&parms, 0, sizeof(parms));
+
 	if (use_http) {
-		servername = "khttpd";
+		parms.servername = "khttpd";
 		sema = &hijack_khttpd_startup_sem;
 	} else {
-		servername = "kftpd";
+		parms.servername = "kftpd";
 		sema = &hijack_kftpd_startup_sem;
 	}
 
@@ -1459,42 +1455,52 @@ kftpd_daemon (unsigned long use_http)	// invoked twice from init/main.c
 	set_fs(KERNEL_DS);
 	current->session = 1;
 	current->pgrp = 1;
-	strcpy(current->comm, servername);
+	strcpy(current->comm, parms.servername);
 	sigfillset(&current->blocked);
 
 	down(sema);	// wait for Hijack to get our port number from config.ini
-	server_port = use_http ? hijack_khttpd_port : hijack_kftpd_control_port;
 
-	if (server_port && (parms = kmalloc(sizeof(server_parms_t), GFP_KERNEL))) {
-		memset(parms, 0, sizeof(parms));
-		parms->use_http  = use_http;
-		strcpy(parms->servername, servername);
-		if (use_http) {
-			parms->verbose = hijack_khttpd_verbose;
+	if (use_http) {
+		server_port	= hijack_khttpd_port;
+		parms.verbose	= hijack_khttpd_verbose;
+		parms.use_http	= 1;
+	} else {
+		server_port	= hijack_kftpd_control_port;
+		parms.data_port	= hijack_kftpd_data_port;
+		parms.verbose	= hijack_kftpd_verbose;
+	}
+
+	if (server_port && hijack_max_connections > 0) {
+		if (make_socket(&parms, &parms.servsock, server_port)) {
+			printk("%s: make_socket(port=%d) failed\n", parms.servername, server_port);
+		} else if (parms.servsock->ops->listen(parms.servsock, 10) < 0) {	// queued=10
+			printk("%s: listen(port=%d) failed\n", parms.servername, server_port);
 		} else {
-			parms->data_port = hijack_kftpd_data_port;
-			parms->verbose = hijack_kftpd_verbose;
-		}
-		if (make_socket(parms, &parms->servsock, server_port)) {
-			printk("%s: make_socket(port=%d) failed\n", parms->servername, server_port);
-		} else if (parms->servsock->ops->listen(parms->servsock, 10) < 0) {	// queued=10
-			printk("%s: listen(port=%d) failed\n", parms->servername, server_port);
-		} else {
-			printk("%s: listening on port %d\n", parms->servername, server_port);
+			int childcount = 0;
+			printk("%s: listening on port %d\n", parms.servername, server_port);
 			while (1) {
-				my_reaper(0);
-				if (!ksock_accept(parms)) {
-					if (!(clientparms = kmalloc(sizeof(server_parms_t), GFP_KERNEL))) {
-						printk("%s: no memory for client parms\n", parms->servername);
-						sock_release(parms->clientsock);
+				int child;
+				do {
+					int status, flags = WUNTRACED | __WCLONE;
+					if (childcount < hijack_max_connections)
+						flags |= WNOHANG;
+					//else printk("%s: too many offspring, waiting\n", parms.servername);
+					child = sys_wait4(-1, &status, flags, NULL);
+					if (child > 0)
+						--childcount;
+				} while (child > 0);
+				if (!ksock_accept(&parms)) {
+					if (!(clientparms = (server_parms_t *)__get_free_pages(GFP_KERNEL,1))) {
+						printk("%s: no memory for client parms\n", parms.servername);
+						sock_release(parms.clientsock);
 					} else {
-						memcpy(clientparms, parms, sizeof(server_parms_t));
-						kernel_thread(child_thread, clientparms, CLONE_FS|CLONE_FILES|CLONE_SIGHAND);
+						memcpy(clientparms, &parms, sizeof(parms));
+						if (0 < kernel_thread(child_thread, clientparms, CLONE_FS|CLONE_FILES|CLONE_SIGHAND))
+							++childcount;
 					}
 				}
 			}
 		}
-		kfree(parms);
 	}
 	return 0;
 }

@@ -156,17 +156,9 @@ static struct file_operations mixer_fops =
 	release:	empeg_mixer_release
 };
 
-unsigned char get_current_mixer_source (void)
+unsigned char get_current_mixer_input (void)
 {
-	switch (mixer_global.input) {
-		case SOUND_MASK_RADIO:	// FM Tuner
-		case SOUND_MASK_LINE1:	// AM Tuner
-			return 'T';
-		case SOUND_MASK_LINE:	// Aux in
-			return 'A';
-		default:		// Main/mp3 player (SOUND_MASK_PCM)
-			return 'M';
-	}
+	return mixer_global.input;
 }
 
 int __init empeg_mixer_init(void)

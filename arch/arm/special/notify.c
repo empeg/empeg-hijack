@@ -22,7 +22,6 @@ extern int hijack_reboot;										// hijack.c
 extern int do_remount(const char *dir,int flags,char *data);
 extern int hijack_supress_notify, hijack_reboot;							// hijack.c
 extern int get_number (unsigned char **src, int *target, unsigned int base, const char *nextchars);	// hijack.c
-extern void hijack_button_enq_inputq (unsigned int button, unsigned int hold_time);			// hijack.c
 extern void input_append_code(void *ignored, unsigned long button);					// hijack.c
 extern void show_message (const char *message, unsigned long time);					// hijack.c
 extern long sleep_on_timeout(struct wait_queue **p, long timeout);			// kernel/sched.c
@@ -250,28 +249,6 @@ remount_drives (int writeable, int which)
 	return rc1;
 }
 
-static void
-insert_button_pair (unsigned int button, unsigned int hold_time)
-{
-	unsigned int release = 0x80000000;
-	struct wait_queue *wq = NULL;
-
-	button &= ~release;
-	if (button < 0xf) {
-		release = 1;
-		if (button == IR_KNOB_LEFT && button == IR_KNOB_RIGHT)
-			release = 0;
-		else
-			button &= ~1;
-	}
-	sleep_on_timeout(&wq, HZ/50);
-	input_append_code (NULL, button);
-	if (release) {
-		sleep_on_timeout(&wq, hold_time);
-		input_append_code (NULL, button|release);
-	}
-}
-
 #define INRANGE(c,min,max)	((c) >= (min) && (c) <= (max))
 #define TOUPPER(c)		(INRANGE((c),'a','z') ? ((c) - ('a' - 'A')) : (c))
 
@@ -289,18 +266,30 @@ strxcmp (const char *str, const char *pattern, int partial)
 	return (!partial && *str);	// 0 == matched; 1 == not matched
 }
 
+#define RELEASECODE(b)	(((b) > 0xf) ? (b) | 0x80000000 : (b) | 1)
+
 static unsigned char *
 do_button (unsigned char *s, int raw)
 {
 	unsigned int button;
+
 	if (*s && get_number(&s, &button, 16, NULL)) {
 		if (raw) {
 			input_append_code(NULL, button);
 		} else {
+			struct wait_queue *wq = NULL;
 			unsigned int hold_time = 5;
+			button &= ~0xc0000000;
+			if (button <= 0xf && button != IR_KNOB_LEFT)
+				button &= ~1;
 			if (s[0] == '.' && s[1] == 'L')
 				hold_time = HZ+(HZ/5);
-			insert_button_pair(button, hold_time);
+			sleep_on_timeout(&wq, HZ/25);
+			input_append_code (NULL, button);
+			if (button != IR_KNOB_LEFT && button != IR_KNOB_RIGHT) {
+				sleep_on_timeout(&wq, hold_time);
+				input_append_code (NULL, RELEASECODE(button));
+			}
 		}
 	}
 	return s;

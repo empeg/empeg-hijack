@@ -26,6 +26,8 @@
 #include <net/udp.h>
 #include <net/scm.h>
 
+#include <asm/arch/hijack.h>
+
 #define KHTTPD	"khttpd"
 #define KFTPD	"kftpd"
 
@@ -93,9 +95,6 @@ typedef struct server_parms_s {
 	unsigned char		tmp2[768];
 	unsigned char		tmp3[768];
 } server_parms_t;
-
-#define INRANGE(c,min,max)	((c) >= (min) && (c) <= (max))
-#define TOUPPER(c)		(INRANGE((c),'a','z') ? ((c) - ('a' - 'A')) : (c))
 
 extern int get_number (char **src, int *val, int base, const char *nextchars);	// hijack.c
 
@@ -968,7 +967,7 @@ get_fid_info (char *path, char *buf, int bufsize, char *atitle, int atitlelen, c
 		buf[size] = '\0';
 		close(fd);
 		find_tags(buf, size, labels, (char **)&tags);
-		if (TOUPPER(*tags.type) != 'P' && *tags.codec) {
+		if (TOUPPER(tags.type[0]) != 'P' && *tags.codec) {
 			switch (TOUPPER(tags.codec[1])) {
 				case 'P': mimetype = audio_mpeg; break;
 				case 'M': mimetype = audio_wma;	 break;

@@ -20,6 +20,7 @@
 
 #define IR_INTERNAL		((void *)-1)
 
+extern int hijack_player_started;
 extern int strxcmp (const char *str, const char *pattern, int partial);					// hijack.c
 extern int get_button_code (unsigned char **s_p, unsigned int *button, int eol_okay, const char *nextchars); // hijack.c
 extern int hijack_reboot;										// hijack.c
@@ -38,8 +39,6 @@ unsigned char notify_labels[] = "#AFGLMNSTV";	// 'F' must match next line
 #define NOTIFY_MAX_LINES	(sizeof(notify_labels)) // gives one extra for '\0'
 #define NOTIFY_MAX_LENGTH	64
 static char notify_data[NOTIFY_MAX_LINES][NOTIFY_MAX_LENGTH] = {{0,},};
-static const char notify_prefix[] = "  serial_notify_thread.cpp";
-static const char dhcp_prefix[]   = "  dhcp_thread.cpp";
 
 const char *
 notify_fid (void)
@@ -62,13 +61,10 @@ hijack_serial_notify (const unsigned char *s, int size)
 			// fall thru
 		case want_title:
 		{
-			const int notify_len = sizeof(notify_prefix) - 1;
-			const int dhcp_len   = sizeof(dhcp_prefix)   - 1;
-
-			if (size >= notify_len && !memcmp(s, notify_prefix, notify_len)) {
+			if (!strxcmp(s, "  serial_notify_thread.cpp", 1)) {
 				state = want_data;
 				return hijack_supress_notify;
-			} else if (size >= dhcp_len && !memcmp(s, dhcp_prefix, dhcp_len)) {
+			} else if (!strxcmp(s, "  dhcp_thread.cpp", 1)) {
 				state = want_eol;
 				return hijack_supress_notify;
 			}
@@ -96,6 +92,8 @@ hijack_serial_notify (const unsigned char *s, int size)
 					restore_flags(flags);
 				}
 				state = want_eol;
+				if (!hijack_player_started)
+					hijack_player_started = jiffies ? jiffies : -1;
 				return hijack_supress_notify;
 			}
 			break;

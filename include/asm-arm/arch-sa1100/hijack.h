@@ -31,6 +31,8 @@
 //    }
 //
 
+#define INRANGE(c,min,max)	((c) >= (min) && (c) <= (max))
+#define TOUPPER(c)		(INRANGE((c),'a','z') ? ((c) - ('a' - 'A')) : (c))
 
 // Parameter format for SETGEOM (pass a pointer to one of these)
 // When used, the hijack kernel will display ONLY these rows/cols

@@ -990,9 +990,6 @@ unsigned int input_poll(struct file *filp, poll_table *wait)
 {
 	struct input_dev *dev = filp->private_data;
 
-	extern void hijack_send_initial_buttons(void);
-	hijack_send_initial_buttons();
-
 	/* Add ourselves to the wait queue */
 	poll_wait(filp, &dev->wq, wait);
 

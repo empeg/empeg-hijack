@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v188"
+#define HIJACK_VERSION	"v189"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -51,6 +51,7 @@ int	hijack_fsck_disabled = 0;	// used in fs/ext2/super.c
 int	hijack_onedrive = 0;		// used in drivers/block/ide-probe.c
 int	hijack_reboot = 0;		// set to "1" to cause reboot on next display refresh
 int	hijack_player_is_restarting = 0;// used in fs/read_write.c, fs/exec.c
+unsigned int hijack_player_started = 0;	// set to jiffies on receipt of "Prolux 4 empeg car" from player //fixme
 
 static unsigned int PROMPTCOLOR = COLOR3, ENTRYCOLOR = -COLOR3;
 
@@ -144,15 +145,14 @@ typedef struct button_name_s {
 	char		name[12];
 } button_name_t;
 
-#define IR_FAKE_INITCAR		IR_NULL_BUTTON-1
-#define IR_FAKE_INITHOME	IR_NULL_BUTTON-2
-#define IR_FAKE_POPUP3		IR_NULL_BUTTON-3
-#define IR_FAKE_POPUP2		IR_NULL_BUTTON-4
-#define IR_FAKE_POPUP1		IR_NULL_BUTTON-5
-#define IR_FAKE_POPUP0		IR_NULL_BUTTON-6
-#define IR_FAKE_VOLADJ		IR_NULL_BUTTON-7
-#define IR_FAKE_KNOBSEEK	IR_NULL_BUTTON-8
-#define IR_FAKE_NEXTSRC		IR_NULL_BUTTON-9	// This MUST be the lowest numbered FAKE code
+#define IR_FAKE_INITIAL		(IR_NULL_BUTTON-1)
+#define IR_FAKE_POPUP3		(IR_NULL_BUTTON-2)
+#define IR_FAKE_POPUP2		(IR_NULL_BUTTON-3)
+#define IR_FAKE_POPUP1		(IR_NULL_BUTTON-4)
+#define IR_FAKE_POPUP0		(IR_NULL_BUTTON-5)
+#define IR_FAKE_VOLADJ		(IR_NULL_BUTTON-6)
+#define IR_FAKE_KNOBSEEK	(IR_NULL_BUTTON-7)
+#define IR_FAKE_NEXTSRC		(IR_NULL_BUTTON-8)	// This MUST be the lowest numbered FAKE code
 
 #define ALT BUTTON_FLAGS_ALTNAME
 static button_name_t button_names[] = {
@@ -164,8 +164,7 @@ static button_name_t button_names[] = {
 	{IR_FAKE_KNOBSEEK,		"KnobSeek"},
 	{IR_FAKE_NEXTSRC,		"NextSrc"},
 
-	{IR_FAKE_INITCAR,		"Initial.C"},
-	{IR_FAKE_INITHOME,		"Initial.H"},
+	{IR_FAKE_INITIAL,		"Initial"},
 	{IR_NULL_BUTTON,		"null"},
 	{IR_RIO_SOURCE_PRESSED,		"Source"},
 	{IR_RIO_1_PRESSED|ALT,		"Time"},
@@ -597,9 +596,6 @@ const unsigned char kfont [1 + '~' - ' '][KFONT_WIDTH] = {  // variable width fo
 	{0x02,0x01,0x02,0x04,0x02,0x00}  // ~
 	};
 
-#define INRANGE(c,min,max)	((c) >= (min) && (c) <= (max))
-#define TOUPPER(c)		(INRANGE((c),'a','z') ? ((c) - ('a' - 'A')) : (c))
-
 int
 strxcmp (const char *s, const char *pattern, int partial)
 {
@@ -875,12 +871,11 @@ hijack_enq_button (hijack_buttonq_t *q, unsigned int button, unsigned long hold_
 
 	save_flags_cli(flags);
 	head = q->head;
-	//if (head != q->tail && hold_time < hijack_button_pacing && q == &hijack_playerq && !IS_RELEASE(button))
-	if (head != q->tail && hold_time < hijack_button_pacing && q == &hijack_playerq)
+	if (head != q->tail && hold_time < hijack_button_pacing && q == &hijack_playerq && !IS_RELEASE(button))
+	//fixme? if (head != q->tail && hold_time < hijack_button_pacing && q == &hijack_playerq)
 		hold_time = hijack_button_pacing;	// ensure we have sufficient delay between press/release pairs
-	if (hijack_ir_debug) {
+	if (hijack_ir_debug)
 		printk("ENQ.%c: %08x.%ld\n", (q == &hijack_playerq) ? 'P' : ((q == &hijack_inputq) ? 'I' : 'U'), button, hold_time);
-	}
 	if (++head >= HIJACK_BUTTONQ_SIZE)
 		head = 0;
 	if (head != q->tail) {
@@ -916,12 +911,12 @@ static void
 hijack_enq_translations (ir_translation_t *t)
 {
 	unsigned int *newp = &t->new[0];
-	int count = t->count;
+	int count = t->count, waitrelease = (t->old < IR_FAKE_NEXTSRC);
 
 	while (count--) {
 		unsigned long code = *newp++;
 		hijack_enq_button(&hijack_inputq, code & ~BUTTON_FLAGS_LONGPRESS, 0);
-		if (count) {
+		if (count || !waitrelease) {
 			unsigned int button = code & ~(BUTTON_FLAGS^BUTTON_FLAGS_UISTATE);
 			hijack_enq_release(&hijack_inputq, button|(code & BUTTON_FLAGS_LONGPRESS), 0);
 		}
@@ -3080,12 +3075,21 @@ hijack_reboot_now (void *dev)
 void	// invoked from empeg_display.c
 hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 {
+	static int sent_initial_buttons = 0;
 	unsigned char *buf = player_buf;
 	unsigned long flags;
 	int refresh = NEED_REFRESH;
 
 	if (hijack_reboot)
 		hijack_reboot_now(dev);
+
+	// Send initial button sequences, if any
+	if (!sent_initial_buttons && hijack_player_started) {
+		sent_initial_buttons = 1;
+		printk("Hijack: sending initial buttons\n");
+		input_append_code(IR_INTERNAL, IR_FAKE_INITIAL);
+		input_append_code(IR_INTERNAL, RELEASECODE(IR_FAKE_INITIAL));
+	}
 
 	save_flags_cli(flags);
 	if (ir_delayed_rotate && jiffies_since(ir_lastevent) >= (HZ/10))
@@ -3373,11 +3377,12 @@ ir_setup_translations2 (unsigned char *s, unsigned int *table, int *had_errors)
 				old &= ~1;
 			if (old >= IR_FAKE_POPUP0 && old <= IR_FAKE_POPUP3) {
 				old |= IR_FLAGS_POPUP;
-			} else if (old > IR_NULL_BUTTON || old < IR_FAKE_NEXTSRC) {
+			} else if (old >= IR_FAKE_INITIAL || old < IR_FAKE_NEXTSRC) {
 				if (*s == '.') {
 					ir_flags_t *f;
 					do {
 						unsigned char c = *++s;
+						c = TOUPPER(c);
 						for (f = ir_flags; (f->symbol && f->symbol != c); ++f);
 						irflags |= f->flag;
 					} while (f->symbol);
@@ -3406,7 +3411,8 @@ ir_setup_translations2 (unsigned char *s, unsigned int *table, int *had_errors)
 						new &= ~1;
 					if (*s == '.') {
 						do {
-							switch (*++s) {
+							char c = *++s;
+							switch (TOUPPER(c)) {
 								case 'L': new |= BUTTON_FLAGS_LONGPRESS;	break;
 								case 'S': new |= BUTTON_FLAGS_SHIFT;		break;
 								case 'U': new |= BUTTON_FLAGS_UI;		break;
@@ -3426,7 +3432,7 @@ ir_setup_translations2 (unsigned char *s, unsigned int *table, int *had_errors)
 					good = 1;
 			}
 		}
-		if (!good) {
+		if (!table && !good) {
 			printline("[ir_translate] ERROR: ", line);
 			*had_errors = 1;
 		}
@@ -3951,6 +3957,7 @@ void
 hijack_process_config_ini (char *buf)
 {
 	static const char *acdc_labels[2] = {";@AC", ";@DC"};
+
 	printk("\n");
 	reset_hijack_options();
 	(void) edit_config_ini(buf, acdc_labels[empeg_on_dc_power], 0);
@@ -3987,27 +3994,6 @@ hijack_process_config_ini (char *buf)
 	up(&hijack_khttpd_startup_sem);	// wake-up kftpd now that we've parsed config.ini for port numbers
 #endif // CONFIG_NET_ETHERNET
 	set_drive_spindown_times();
-}
-
-void	// invoked from first button poll in empeg_input.c
-hijack_send_initial_buttons (void)
-{
-	static int sent_initial_buttons = 0;
-	unsigned long flags;
-
-	// Send initial button sequences, if any
-	if (!sent_initial_buttons) {
-		sent_initial_buttons = 1;
-		save_flags_cli(flags);
-		if (empeg_on_dc_power) {
-			input_append_code(IR_INTERNAL, IR_FAKE_INITCAR);
-			input_append_code(IR_INTERNAL, RELEASECODE(IR_FAKE_INITCAR));
-		} else {
-			input_append_code(IR_INTERNAL, IR_FAKE_INITHOME);
-			input_append_code(IR_INTERNAL, RELEASECODE(IR_FAKE_INITHOME));
-		}
-		restore_flags(flags);
-	}
 }
 
 static void
@@ -4091,61 +4077,61 @@ typedef struct hijack_savearea_s {
 void	// invoked from empeg_state.c
 hijack_save_settings (unsigned char *buf)
 {
+	hijack_savearea_t sa;
 	unsigned int knob;
-	hijack_savearea_t savearea;
 
 	// save state
 	if (empeg_on_dc_power)
-		savearea.voladj_dc_power = hijack_voladj_enabled;
+		sa.voladj_dc_power = hijack_voladj_enabled;
 	else
-		savearea.voladj_ac_power = hijack_voladj_enabled;
-	savearea.blanker_timeout	= blanker_timeout;
-	savearea.hightemp_threshold	= hightemp_threshold;
-	savearea.onedrive		= hijack_onedrive;
+		sa.voladj_ac_power = hijack_voladj_enabled;
+	sa.blanker_timeout	= blanker_timeout;
+	sa.hightemp_threshold	= hightemp_threshold;
+	sa.onedrive		= hijack_onedrive;
 	if (knobdata_index == 1)
 		knob = (1 << KNOBDATA_BITS) | popup0_index;
 	else
 		knob = knobdata_index;
 	if (empeg_on_dc_power)
-		savearea.knob_dc = knob;
+		sa.knob_dc	= knob;
 	else
-		savearea.knob_ac = knob;
-	savearea.blanker_sensitivity	= blanker_sensitivity;
-	savearea.timer_action		= timer_action;
-	savearea.menu_item		= menu_item;
-	savearea.restore_visuals	= carvisuals_enabled;
-	savearea.fsck_disabled		= hijack_fsck_disabled;
-	savearea.force_power		= hijack_force_power;
-	savearea.homework		= hijack_homework;
-	savearea.byte3_leftover		= 0;
-	savearea.byte5_leftover		= 0;
-	savearea.byte6_leftover		= 0;
-	memcpy(buf+HIJACK_SAVEAREA_OFFSET, &savearea, sizeof(savearea));
+		sa.knob_ac	= knob;
+	sa.blanker_sensitivity	= blanker_sensitivity;
+	sa.timer_action		= timer_action;
+	sa.menu_item		= menu_item;
+	sa.restore_visuals	= carvisuals_enabled;
+	sa.fsck_disabled	= hijack_fsck_disabled;
+	sa.force_power		= hijack_force_power;
+	sa.homework		= hijack_homework;
+	sa.byte3_leftover	= 0;
+	sa.byte5_leftover	= 0;
+	sa.byte6_leftover	= 0;
+	memcpy(buf+HIJACK_SAVEAREA_OFFSET, &sa, sizeof(sa));
 }
 
 static int
 hijack_restore_settings (char *buf)
 {
+	hijack_savearea_t sa;
 	extern int empeg_state_restore(unsigned char *);	// arch/arm/special/empeg_state.c
 	unsigned int knob, failed;
-	hijack_savearea_t savearea;
 
 	failed = empeg_state_restore(buf);
-        memcpy(&savearea, buf+HIJACK_SAVEAREA_OFFSET, sizeof(savearea));
-	hijack_force_power		= savearea.force_power;
+        memcpy(&sa, buf+HIJACK_SAVEAREA_OFFSET, sizeof(sa));
+	hijack_force_power		= sa.force_power;
 	if (hijack_force_power & 2)
 		empeg_on_dc_power	= hijack_force_power & 1;
 	else
 		empeg_on_dc_power	= ((GPLR & EMPEG_EXTPOWER) != 0);
 	if (empeg_on_dc_power)
-		hijack_voladj_enabled	= savearea.voladj_dc_power;
+		hijack_voladj_enabled	= sa.voladj_dc_power;
 	else
-		hijack_voladj_enabled	= savearea.voladj_ac_power;
-	hijack_homework			= savearea.homework;
-	blanker_timeout			= savearea.blanker_timeout;
-	hightemp_threshold		= savearea.hightemp_threshold;
-	hijack_onedrive			= savearea.onedrive;
-	knob = empeg_on_dc_power ? savearea.knob_dc : savearea.knob_ac;
+		hijack_voladj_enabled	= sa.voladj_ac_power;
+	hijack_homework			= sa.homework;
+	blanker_timeout			= sa.blanker_timeout;
+	hightemp_threshold		= sa.hightemp_threshold;
+	hijack_onedrive			= sa.onedrive;
+	knob = empeg_on_dc_power ? sa.knob_dc : sa.knob_ac;
 	if ((knob & (1 << KNOBDATA_BITS)) == 0) {
 		popup0_index		= 0;
 		knobdata_index		= knob;
@@ -4153,12 +4139,12 @@ hijack_restore_settings (char *buf)
 		popup0_index		= knob & ((1 << KNOBDATA_BITS) - 1);
 		knobdata_index		= 1;
 	}
-	blanker_sensitivity		= savearea.blanker_sensitivity;
-	timer_action			= savearea.timer_action;
-	menu_item			= savearea.menu_item;
+	blanker_sensitivity		= sa.blanker_sensitivity;
+	timer_action			= sa.timer_action;
+	menu_item			= sa.menu_item;
 	menu_init();
-	carvisuals_enabled		= savearea.restore_visuals;
-	hijack_fsck_disabled		= savearea.fsck_disabled;
+	carvisuals_enabled		= sa.restore_visuals;
+	hijack_fsck_disabled		= sa.fsck_disabled;
 
 	return failed;
 }
@@ -4168,11 +4154,11 @@ hijack_init (void *animptr)
 {
 	extern void hijack_notify_init (void);
 	int failed;
-	char savearea[128];
+	char buf[128];
 	const unsigned long animstart = HZ/3;
 
 	hijack_game_animptr = animptr;
-	failed = hijack_restore_settings(savearea);
+	failed = hijack_restore_settings(buf);
 	reset_hijack_options();
 	(void)init_temperature();
 	hijack_initq(&hijack_inputq);
@@ -4181,7 +4167,7 @@ hijack_init (void *animptr)
 	menu_init();
 	hijack_notify_init();
 	if (empeg_on_dc_power)
-		fix_visuals(savearea);
+		fix_visuals(buf);
 	if (failed)
 		show_message("Settings have been lost", HZ*7);
 	else

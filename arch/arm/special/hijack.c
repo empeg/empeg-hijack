@@ -363,14 +363,16 @@ draw_string (unsigned int rowcol, const unsigned char *s, int color)
 	if (inverse)
 		inverse = color;
 top:	if (s && row < EMPEG_SCREEN_ROWS) {
-		while (*s) {
+		unsigned char c;
+		while ((c = *s)) {
 			int col_adj;
-			if (*s++ == '\n' || -1 == (col_adj = draw_char(row, col, *(s-1), color, inverse))) {
+			if (c == '\n' || -1 == (col_adj = draw_char(row, col, c, color, inverse))) {
 				col  = 0;
 				row += KFONT_HEIGHT;
 				goto top;
 			}
 			col += col_adj;
+			++s;
 		}
 	}
 	return (col << 16) | row;
@@ -973,7 +975,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v58 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v59 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -1312,12 +1314,13 @@ reboot_display (int firsttime)
 static int
 showbutton_display (int firsttime)
 {
-	static unsigned long prev[2];
+	static unsigned long prev[4];
 	unsigned long flags, button;
+	int i;
 
 	save_flags_cli(flags);
 	if (firsttime) {
-		prev[0] = prev[1] = -1;
+		prev[0] = prev[1] = prev[2] = prev[3] = -1;
 		hijack_buttonlist = intercept_all_buttons;
 	}
 	if (hijack_dataq_tail != hijack_dataq_head) {
@@ -1329,19 +1332,24 @@ showbutton_display (int firsttime)
 			hijack_buttonlist = NULL;
 			ir_selected = 1; // return to main menu
 		} else {
-			prev[1] = prev[0];
+			for (i = 2; i >= 0; --i)
+				prev[i+1] = prev[i];
 			prev[0] = button;
 		}
 	}
 	restore_flags(flags);
 	if (firsttime || prev[0] != -1) {
 		clear_hijack_displaybuf(COLOR0);
-		(void) draw_string(ROWCOL(0,0), "Button Code Display.", COLOR3);
+		(void) draw_string(ROWCOL(0,0), "Raw Button Codes Display", COLOR3);
 		(void) draw_string(ROWCOL(1,0), "Repeat any button to exit", COLOR2);
+		if (prev[3] != -1)
+			(void)draw_number(ROWCOL(2,4), prev[3], "%08X", COLOR2);
+		if (prev[2] != -1)
+			(void)draw_number(ROWCOL(2,EMPEG_SCREEN_COLS/2), prev[2], "%08X", COLOR2);
 		if (prev[1] != -1)
-			(void)draw_number(ROWCOL(3,0), prev[1], "0x%08x", COLOR3);
+			(void)draw_number(ROWCOL(3,4), prev[1], "%08X", COLOR2);
 		if (prev[0] != -1)
-			(void)draw_number(ROWCOL(3,EMPEG_SCREEN_COLS/2), prev[0], "0x%08x", COLOR3);
+			(void)draw_number(ROWCOL(3,EMPEG_SCREEN_COLS/2), prev[0], "%08X", COLOR3);
 		return NEED_REFRESH;
 	}
 	return NO_REFRESH;
@@ -1710,6 +1718,141 @@ static int hijack_check_buttonlist (unsigned long data)
 	return 0;
 }
 
+typedef struct ir_translation_s {
+	unsigned long		old;	// original code (bit31 == 0)
+	unsigned long		new;	// new code (bit31 == 0)
+	int			down;	// current button status: 1=pressed
+	int			filler; // not used; pads table to even power of two
+} ir_translation_t;
+
+static ir_translation_t *ir_translation_table = NULL;
+static int ir_debug_translations = 0;
+
+const unsigned char hexchars[] = "0123456789abcdefABCDEF";
+
+static unsigned char *
+skipover (unsigned char *s, const unsigned char *skipchars)
+{
+	while (s && *s && strchr(skipchars, *s))
+		++s;
+	return s;
+}
+
+static int
+get_8hex (unsigned char **src, unsigned long *dest)
+{
+	int i;
+	unsigned long data = 0;
+	unsigned char *s = *src;
+
+	for (i = 0; i < 8; ++i) {
+		unsigned char *c = strchr(hexchars, *s);
+		int d;
+		if (!c)
+			return 1;  // failure
+		d = c - hexchars;
+		if (d > 0xf)
+			d -= 6;
+		data = (data << 4) | d;
+		++s;
+	}
+	*dest = data;
+	*src = s;
+	return 0; // success
+}
+
+static int
+ir_setup_translations2 (unsigned char *buf, ir_translation_t *table)
+{
+	const char header[] = "[ir_translate]", debug[] = "debug";
+	unsigned char *s;
+	int count = 0;
+
+	// find start of translations
+	if (!buf || !*buf)
+		return 0;
+	s = strstr(buf, header);
+	if (!s || !*s)
+		return 0;
+	if (ir_debug_translations)
+		printk("\n");
+	s += sizeof(header) - 1;
+	while ((s = skipover(s, " ;\t\r\n")) && *s && strchr(hexchars, *s)) {
+		unsigned long old, new;
+		if (!strncmp(s, debug, sizeof(debug)-1)) {
+			ir_debug_translations = 1;
+			s += sizeof(debug)-1;
+			continue;
+		}
+		if (get_8hex(&s, &old) || *s++ != ':' || get_8hex(&s, &new))
+			return count;
+		++count;
+		if (table) {
+			table->old = old;
+			table->new = new;
+			table->down = 0;
+			++table;
+			if (ir_debug_translations)
+				printk("ir_translate: %08lX -> %08lX\n", old, new);
+		}
+	}
+	return count;
+}
+
+static void
+ir_setup_translations (unsigned char *buf)
+{
+	ir_translation_t *table = NULL, *last;
+	unsigned long flags;
+	int count;
+
+	save_flags(flags);
+	ir_debug_translations = 0;
+	if (ir_translation_table) {
+		kfree(ir_translation_table);
+		ir_translation_table = NULL;
+	}
+	restore_flags(flags);
+	count = ir_setup_translations2(buf, NULL);	// first pass to count how many
+	if (count <= 0)
+		return;
+	table = kmalloc((count * sizeof(ir_translation_t)) + 1, GFP_KERNEL);
+	(void)ir_setup_translations2(buf, table);	// second pass to actually save the data
+	last = &table[count];
+	last->new = last->old = 0xffffffff;
+	save_flags(flags);
+	ir_translation_table = table;
+	restore_flags(flags);
+}
+
+static unsigned long
+ir_translate (unsigned long data)
+{
+	unsigned long code, released;
+	ir_translation_t *t;
+
+	if (ir_translation_table == NULL)
+		return data;		// no translations exist
+	released = data & 0x80000000;
+	code = data ^ released;
+	for (t = ir_translation_table; code != t->old; ++t) {
+		if (t->old == 0xffffffff)
+			return data;	// no translation exists for this code
+	}
+	if (released) {
+		if (t->down) {
+			t->down = 0;
+			return t->new | released;
+		}
+	} else {
+		if (!t->down) {
+			t->down = 1;
+			return t->new;
+		}
+	}
+	return 0xffffffff;		// data is a repeat, ignore it
+}
+
 // This routine covertly intercepts all button presses/releases,
 // giving us a chance to ignore them or to trigger our own responses.
 //
@@ -1719,6 +1862,11 @@ input_append_code(void *dev, unsigned long data)  // empeg_input.c
 	static unsigned long ir_lastpressed = -1;
 	int hijacked = 0;
 	unsigned long flags;
+
+	// Translation of foreign remotes happens here before anything else
+	data = ir_translate(data);
+	if (data == 0xffffffff)
+		return;
 
 	save_flags_cli(flags);
 	blanker_triggered = 0;
@@ -2044,7 +2192,7 @@ get_file (const char *path, unsigned char **buffer)
 		rc = -ENOENT;
 	} else {
 		if ((size = file->f_dentry->d_inode->i_size) > 0) {
-			unsigned char *buf = (unsigned char *)kmalloc(size, GFP_KERNEL);
+			unsigned char *buf = (unsigned char *)kmalloc(size+1, GFP_KERNEL);
 			if (!buf) {
 				rc = -ENOMEM;
 			} else {
@@ -2053,10 +2201,12 @@ get_file (const char *path, unsigned char **buffer)
 				set_fs(get_ds());
 				rc = file->f_op->read(file, buf, size, &(file->f_pos));
 				set_fs(old_fs);
-				if (rc < 0)
+				if (rc < 0) {
 					kfree(buf);
-				else
+				} else {
+					buf[rc] = '\0';
 					*buffer = buf;
+				}
 			}
 		}
 		filp_close(file,NULL);
@@ -2065,7 +2215,7 @@ get_file (const char *path, unsigned char **buffer)
   	return rc;
 }
 
-static void
+void
 hijack_read_config_file (const char *path)
 {
 	unsigned char *buf = NULL;
@@ -2073,6 +2223,8 @@ hijack_read_config_file (const char *path)
 	if (rc < 0) {
 		printk("hijack.c: open(%s) failed (errno=%d)\n", path, rc);
 	} else if (rc > 0) {
+
+		ir_setup_translations(buf);
 
 		// Code to parse config file goes here!
 		// Code to parse config file goes here!
@@ -2259,11 +2411,6 @@ int hijack_ioctl  (struct inode *inode, struct file *filp, unsigned int cmd, uns
 		}
 		default:			// Everything else
 		{
-			static int read_config = 0;
-			if (!read_config) {
-				read_config = 1;
-				hijack_read_config_file("/empeg/var/config.ini");
-			}
 			return display_ioctl(inode, filp, cmd, arg);
 		}
 	}

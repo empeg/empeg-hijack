@@ -656,7 +656,6 @@ static inline void input_kenwood_interrupt(struct input_dev *dev, int level,
 				mfr = cpu_data >> 16;
 				data1 = (cpu_data >> 8) & 0xff;
 				data2 = cpu_data & 0xff;
-
 				/* We've finished getting data, confirm
 				   it passes the validity check */
 				if (data1 == ((__u8)(~data2))) {
@@ -822,6 +821,7 @@ static void input_check_buffer(void *dev_id)
 	queue_task(&dev->timer, &tq_timer);
 }
 
+static int hijack_got_config_file = 0;
 static int input_open(struct inode *inode, struct file *filp)
 {
 	struct input_dev *dev = input_devices;
@@ -829,9 +829,10 @@ static int input_open(struct inode *inode, struct file *filp)
 	if (users)
 		return -EBUSY;
 
+	hijack_got_config_file = 0;
 	users++;
 	MOD_INC_USE_COUNT;
-	
+
 	/* This shouldn't be necessary, but there's something (IDE, audio?)
 	 * that's setting rather than or'ing these and breaking it after
 	 * initialisation.
@@ -865,7 +866,7 @@ static ssize_t input_read(struct file *filp, char *dest, size_t count,
 	int n;
 
 	struct wait_queue wait = { current, NULL };
-
+	
 	/* If we're nonblocking then return immediately if there's no data */
 	if ((filp->f_flags & O_NONBLOCK) && (dev->buf_rp == dev->buf_wp))
 		return -EAGAIN;
@@ -917,6 +918,12 @@ static ssize_t input_read(struct file *filp, char *dest, size_t count,
 unsigned int input_poll(struct file *filp, poll_table *wait)
 {
 	struct input_dev *dev = filp->private_data;
+
+	if (!hijack_got_config_file) {
+		extern void hijack_read_config_file(const char *);
+		hijack_got_config_file = 1;
+		hijack_read_config_file("/empeg/var/config.ini");
+	}
 
 	/* Add ourselves to the wait queue */
 	poll_wait(filp, &dev->wq, wait);

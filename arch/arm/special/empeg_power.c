@@ -210,7 +210,7 @@ int getbitset(void)
 		
 		saved_unstable = bitset & unstable_bits;
 	}
-#if 0
+
 	if (bitset & EMPEG_POWER_FLAG_LIGHTS) {
 		/* We've got some activity on the lights. */
 		last_lights_activity = jiffies;
@@ -218,15 +218,6 @@ int getbitset(void)
 		/* We had some activity less than a quarter of a second ago. */
 		bitset |= EMPEG_POWER_FLAG_LIGHTS;
 	}
-#else
-{
-	extern int headlight_sense_is_active (void);
-	if (headlight_sense_is_active())
-		bitset |= EMPEG_POWER_FLAG_LIGHTS;
-	else
-		bitset &= ~EMPEG_POWER_FLAG_LIGHTS;
-}
-#endif
 
 	return (bitset & ~unstable_bits) | saved_unstable;
 }

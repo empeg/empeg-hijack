@@ -1186,8 +1186,6 @@ hijack_tone_set (int bass_value, int bass_freq, int bass_q, int treble_value, in
 	}
 	(void)empeg_mixer_eq_set(sections);
 	(void)empeg_mixer_eq_apply();
-	
-
 }
 
 static int empeg_mixer_getdb(mixer_dev *dev)

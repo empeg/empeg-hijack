@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v239"
+#define HIJACK_VERSION	"v240"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -417,7 +417,7 @@ typedef struct hijack_db_table_s {
 	unsigned int	value;
 } hijack_db_table_t;
 
-const hijack_db_table_t hijack_db_table[27] =
+const hijack_db_table_t hijack_db_table[] =
 {
 	// No easy way to calculate logs at runtime. Small table solves a lot of problems.
 	// Some of these values have mathematical errors - bit 0 must be unset for some reason.
@@ -1877,7 +1877,7 @@ screen_compare (unsigned long *screen1, unsigned long *screen2)
 static unsigned int hijack_buttonled_on_level = 0;
 static unsigned int hijack_buttonled_level = 0;
 
-//fixme #ifdef EMPEG_KNOB_SUPPORTED
+#ifdef EMPEG_KNOB_SUPPORTED
 
 static const char buttonled_menu_label	[] = "Button Illumination Level";
 
@@ -1904,8 +1904,7 @@ static const char buttonled_menu_label	[] = "Button Illumination Level";
 // 242, then multiple 243's to step the brightness up (no idea why I never put
 // one to dim the other way...)
 
-//fixme: experimentally using this in empeg_power.c as well: fix it there
-int
+static int
 headlight_sense_is_active (void)
 {
 	static unsigned long lasttime = 0;
@@ -1924,9 +1923,6 @@ headlight_sense_is_active (void)
 	}
 	return !dimmer;
 }
-
-//fixme
-#ifdef EMPEG_KNOB_SUPPORTED
 
 static void	// invoked from empeg_display.c
 hijack_adjust_buttonled (int power)

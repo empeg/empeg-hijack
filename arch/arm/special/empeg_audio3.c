@@ -304,8 +304,8 @@ struct voladj_state* voladj_intinit(
   initial->desired_multiplier = initial->output_multiplier;
   initial->buf_size = buf_size;
   initial->headroom = 3 << (SHORT_FRAC_POINT - 2);
-  initial->real_silence = 25;
-  initial->fake_silence = 60;
+  initial->real_silence = real_silence;
+  initial->fake_silence = fake_silence;
 
   initial->increase = voladj_exp( (voladj_log( factor_per_second )
         *buf_size) / (4 * 44100));

@@ -483,8 +483,8 @@ hijack_voladj_update_history (int multiplier)
 }
 
 const unsigned int hijack_voladj_parms[(1<<VOLADJ_BITS)-1][5] = { // Values as suggested by Richard Lovejoy
-	{0x1800,	 100,	0x1000,	30,	80},  // Low
-	{0x2000,	 409,	0x1000,	30,	80},  // Medium (Normal)
+	{0x1800,	 100,	0x1000,	25,	60},  // Low
+	{0x2000,	 409,	0x1000,	25,	60},  // Medium (Normal)
 	{0x2000,	3000,	0x0c00,	30,	80}}; // High
 
 static void
@@ -973,7 +973,7 @@ game_finale (void)
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
-			(void)draw_string(ROWCOL(1,20), " Enhancements.v56 ", -COLOR3);
+			(void)draw_string(ROWCOL(1,20), " Enhancements.v57 ", -COLOR3);
 			(void)draw_string(ROWCOL(2,33), "by Mark Lord", COLOR3);
 			return NEED_REFRESH;
 		}
@@ -2029,8 +2029,62 @@ copy_buttonlist_from_user (unsigned long arg, unsigned long **buttonlist, unsign
 	return 0;
 }
 
-static int  // invoked from empeg_display.c::ioctl()
-hijack_ioctl (struct inode *inode, struct file *filp, unsigned int cmd, unsigned long arg)
+#include <linux/smp_lock.h>	// for lock_kernel() and unlock_kernel()
+
+static int
+get_file (const char *path, unsigned char **buffer)
+{
+	unsigned int size;
+	int rc = 0;
+	struct file *file;
+
+	*buffer = NULL;
+	lock_kernel();
+	file = filp_open(path,O_RDONLY,0);
+	if (!file)
+		return -ENOENT;
+	if ((size = file->f_dentry->d_inode->i_size) > 0) {
+		unsigned char *buf = (unsigned char *)kmalloc(size, GFP_KERNEL);
+		if (!buf) {
+			rc = -ENOMEM;
+		} else {
+			mm_segment_t old_fs = get_fs();
+			file->f_pos = 0;
+			set_fs(get_ds());
+			rc = file->f_op->read(file, buf, size, &(file->f_pos));
+			set_fs(old_fs);
+			if (rc < 0)
+				kfree(buf);
+			else
+				*buffer = buf;
+		}
+	}
+	filp_close(file,NULL);
+	unlock_kernel();
+  	return rc;
+}
+
+static void
+hijack_read_config_file (const char *path)
+{
+	unsigned char *buf = NULL;
+	int rc = get_file(path, &buf);
+	if (rc < 0) {
+		printk("hijack.c: open(%s) failed (errno=%d)\n", path, rc);
+	} else if (rc > 0) {
+
+		// Code to parse config file goes here!
+		// Code to parse config file goes here!
+		// Code to parse config file goes here!
+		// Code to parse config file goes here!
+		// Code to parse config file goes here!
+
+	}
+	if (buf) kfree(buf);
+}
+
+int display_ioctl (struct inode *inode, struct file *filp, unsigned int cmd, unsigned long arg);
+int hijack_ioctl  (struct inode *inode, struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	unsigned long flags;
 	int rc;
@@ -2204,7 +2258,14 @@ hijack_ioctl (struct inode *inode, struct file *filp, unsigned int cmd, unsigned
 			return 0;
 		}
 		default:			// Everything else
-			return -EINVAL;
+		{
+			static int read_config = 0;
+			if (!read_config) {
+				read_config = 1;
+				hijack_read_config_file("/empeg/var/config.ini");
+			}
+			return display_ioctl(inode, filp, cmd, arg);
+		}
 	}
 }
 
@@ -2215,3 +2276,4 @@ hijack_init (void)
 	menu_init();
 	init_temperature();
 }
+

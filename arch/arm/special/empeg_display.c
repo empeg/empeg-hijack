@@ -944,7 +944,7 @@ int display_ioctl(struct inode *inode, struct file *filp, unsigned int cmd,
 		break;	
 
 	default:
-		return hijack_ioctl(inode, filp, cmd, arg);
+		return -EINVAL;
 	}
 	
 	return 0;
@@ -978,7 +978,7 @@ static struct file_operations display_fops = {
 	NULL, /* display_write */
 	NULL, /* display_readdir */
 	display_poll,
-	display_ioctl,
+	hijack_ioctl,
 	display_mmap,
 	display_open,
 	NULL, /* display_flush */

@@ -1833,7 +1833,7 @@ khttpd_handle_connection (server_parms_t *parms)
 		static const char Range[] = "\nRange: bytes=";
 		static const char Host[] = "\nHost: ";
 		if (*x == '\n') {
-			if (!strxcmp(x, "\nUser-Agent: iTunes", 1)) {
+			if (!strxcmp(x, "\nUser-Agent: iTunes", 1) || !strxcmp(x, "\nUA-OS: MacOS", 1)) {
 				parms->apple_iTunes = 1;
 			} else if (!strxcmp(x, "\nIcy-MetaData:1", 1)) {
 				parms->icy_metadata = 1;
@@ -1890,6 +1890,8 @@ khttpd_handle_connection (server_parms_t *parms)
 		end = cmds + strlen(cmds);
 		if ((end - cmds) >= 4) {
 			char *saved = end;
+			if (*(end-1) == '/')
+				--end;
 			end -= 5;
 			if (!strxcmp(end, ".html", 1) || !strxcmp(++end, ".htm", 1)) {
 				parms->generate_playlist = 1;

@@ -232,6 +232,7 @@ unsigned long jiffies_since(unsigned long past_jiffies)
 }
 
 extern void input_append_code(void *dev, unsigned long data); /* in hijack.c */
+extern int hijack_ir_debug; /* in hijack.c */
 
 static void input_on_remote_repeat(struct input_dev *dev)
 {
@@ -870,6 +871,8 @@ static int input_release(struct inode *inode, struct file *filp)
 
 void input_wakeup_waiters (void)	// called from hijack.c
 {
+	if (hijack_ir_debug)
+		printk("Wakeup\n");
 	wake_up_interruptible(&input_devices->wq);
 }
 
@@ -891,6 +894,7 @@ static ssize_t input_read(struct file *filp, char *dest, size_t count,
 		return -EINVAL;
 
 	if (hijack_playerq_deq(&data)) {	// no data available?
+		int sig = 0;
 		struct wait_queue wait = { current, NULL };
 
 		// If we're nonblocking then return immediately
@@ -899,14 +903,19 @@ static ssize_t input_read(struct file *filp, char *dest, size_t count,
 
 		// Wait for some data to turn up - this method avoids race
 		// conditions see p209 of Linux device drivers.
+		if (hijack_ir_debug)
+			printk("Waiting..\n");
 		add_wait_queue(&dev->wq, &wait);
 		current->state = TASK_INTERRUPTIBLE;	
-		while (hijack_playerq_deq(&data) && !signal_pending(current))
+		while (hijack_playerq_deq(&data)) {
+			sig = signal_pending(current);
+			if (sig)
+				break;
 			schedule();
+		}
 		current->state = TASK_RUNNING;
 		remove_wait_queue(&dev->wq, &wait);
-
-		if (signal_pending(current))
+		if (sig)
 	    		return -ERESTARTSYS;
 	}
 
@@ -921,40 +930,24 @@ static ssize_t input_read(struct file *filp, char *dest, size_t count,
 	return n << 2;
 }
 
-#if 0
-// input_write() exists solely for DisplayServer
-static ssize_t
-input_write(struct file *filp, const char *buf, size_t count, loff_t *ppos)
-{
-	static struct empeg_ir_write {
-		int type;
-		input_code ircode;
-	} data;
-	struct input_dev *dev = filp->private_data;
-
-	if ( count < sizeof(struct empeg_ir_write) ) return count;
-	if (copy_from_user(&data, buf, sizeof(struct empeg_ir_write)))
-		return -EFAULT;
-	if ( data.type )
-		input_append_code(dev,data.ircode);
-	else
-		input_on_remote_code(dev,data.ircode);
-	return count;
-}
-#endif
-
 unsigned int input_poll(struct file *filp, poll_table *wait)
 {
 	struct input_dev *dev = filp->private_data;
 
 	/* Add ourselves to the wait queue */
+	if (wait && hijack_ir_debug)
+		printk("Poll wait\n");
 	poll_wait(filp, &dev->wq, wait);
 
 	/* Check if we've got data to read */
-	if (!hijack_playerq_deq(NULL))
+	if (!hijack_playerq_deq(NULL)) {
+		if (hijack_ir_debug)
+			printk("Poll ok\n");
 		return POLLIN | POLLRDNORM;
-	else
-		return 0;
+	}
+	if (wait && hijack_ir_debug)
+		printk("Poll fail\n");
+	return 0;
 }
 
 int input_ioctl(struct inode *inode, struct file *filp, unsigned int cmd,

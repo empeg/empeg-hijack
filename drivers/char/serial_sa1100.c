@@ -382,7 +382,7 @@ static _INLINE_ void receive_chars(struct async_struct *info,
 				stalk  = ch;
 				pktlen = 3;
 				goto ignore_char;
-			} else if (ch == 0x01 || ch == 0x03) {
+			} else if (ch == 0x01 || ch == 0x03) {	// FIXME: what do RDS packets use?
 				pktlen = 3;
 			}
 		}

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v330"
+#define HIJACK_VERSION	"v331"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -444,9 +444,10 @@ typedef struct hijack_buttondata_s {
 } hijack_buttondata_t;
 
 typedef struct hijack_buttonq_s {
+	unsigned long		last_deq;
 	unsigned short		head;
 	unsigned short		tail;
-	unsigned long		last_deq;
+	unsigned char		qname;
 	hijack_buttondata_t	data[HIJACK_BUTTONQ_SIZE];
 } hijack_buttonq_t;
 
@@ -484,7 +485,7 @@ static	int hijack_dc_servers;			// 1 == allow kftpd/khttpd when on DC power
 	int hijack_disable_emplode;		// 1 == block TCP port 8300 (Emplode/Emptool)
 	int hijack_extmute_off;			// buttoncode to inject when EXT-MUTE goes inactive
 	int hijack_extmute_on;			// buttoncode to inject when EXT-MUTE goes active
-static	int hijack_ir_debug;			// printk() for every ir press/release code
+	int hijack_ir_debug;			// printk() for every ir press/release code
 static	int hijack_spindown_seconds;		// drive spindown timeout in seconds
 	int hijack_trace_tuner;			// dump incoming tuner/stalk packets onto console
 #ifdef HIJACK_MOD_TUNER
@@ -1057,8 +1058,9 @@ draw_number (unsigned int rowcol, unsigned int number, const char *format, int c
 }
 
 static void
-hijack_initq (hijack_buttonq_t *q)
+hijack_initq (hijack_buttonq_t *q, unsigned char qname)
 {
+	q->qname = qname;
 	q->head = q->tail = q->last_deq = 0;
 	q->last_deq = jiffies;
 }
@@ -1127,16 +1129,16 @@ hijack_enq_button (hijack_buttonq_t *q, unsigned int button, unsigned long hold_
 	if (q != &hijack_inputq)
 		button &= ~(BUTTON_FLAGS^BUTTON_FLAGS_LONGPRESS);
 
-	save_flags_cli(flags);
+	save_flags_clif(flags);
 	head = q->head;
-	if (hijack_ir_debug)
-		printk("%lu: ENQ.%c: %08x.%ld\n", jiffies, (q == &hijack_playerq) ? 'P' : ((q == &hijack_inputq) ? 'I' : 'U'), button, hold_time);
 	if (++head >= HIJACK_BUTTONQ_SIZE)
 		head = 0;
 	if (head != q->tail) {
 		hijack_buttondata_t *data = &q->data[q->head = head];
 		data->button = button;
 		data->delay  = hold_time;
+		if (hijack_ir_debug)
+			printk("%lu: ENQ.%c: @%p: %08x.%ld\n", jiffies, q->qname, data, button, hold_time);
 	}
 	restore_flags(flags);
 	if (q == &hijack_playerq)
@@ -1220,12 +1222,14 @@ hijack_button_deq (hijack_buttonq_t *q, hijack_buttondata_t *rdata, int nowait)
 	unsigned short tail;
 	unsigned long flags;
 
-	save_flags_cli(flags);
+	save_flags_clif(flags);
 	if ((tail = q->tail) != q->head) {	// anything in the queue?
 		if (++tail >= HIJACK_BUTTONQ_SIZE)
 			tail = 0;
 		data = &q->data[tail];
 		if (nowait || !data->delay || jiffies_since(q->last_deq) > data->delay) {
+			if (hijack_ir_debug)
+				printk("%lu: DEQ.%c: @%p: %08x.%ld\n", jiffies, q->qname, data, data->button, data->delay);
 			rdata->button = data->button;
 			rdata->delay  = data->delay;
 			q->tail = tail;
@@ -1244,15 +1248,22 @@ hijack_playerq_deq (unsigned int *rbutton)	// for use by empeg_input.c
 	hijack_buttondata_t *data;
 	unsigned short tail;
 	unsigned long flags;
+	static int dmsg = 0;
 
-	save_flags_cli(flags);
+	save_flags_clif(flags);
 	while ((tail = hijack_playerq.tail) != hijack_playerq.head) {	// anything in the queue?
 		unsigned int button;
 		if (++tail >= HIJACK_BUTTONQ_SIZE)
 			tail = 0;
 		data = &(hijack_playerq.data[tail]);
-		if (jiffies_since(hijack_playerq.last_deq) < data->delay)
+		if (jiffies_since(hijack_playerq.last_deq) < data->delay) {
+			if (hijack_ir_debug && !dmsg) {
+				printk("Delaying..\n");
+				dmsg = 1;
+			}
 			break;		// no button available yet
+		}
+		dmsg = 0;
 
 		button = data->button;
 		if ((button & IR_STALK_MASK) == IR_STALK_MATCH) {
@@ -1260,12 +1271,12 @@ hijack_playerq_deq (unsigned int *rbutton)	// for use by empeg_input.c
 			// Dequeue/issue the stalk button, and loop again
 			//
 			if (hijack_ir_debug)
-				printk("%lu: DEQ.P: %08x.%ld (stalk)\n", jiffies, button, data->delay);
+				printk("%lu: DEQ.%c: @%p: %08x.%ld (stalk)\n", jiffies, hijack_playerq.qname, data, button, data->delay);
 			hijack_playerq.tail = tail;
 			hijack_playerq.last_deq = jiffies;
 			restore_flags(flags);
 			inject_stalk_button(button);
-			save_flags_cli(flags);
+			save_flags_clif(flags);
 		} else {
 			//
 			// If caller gave us a pointer, then deq/return button,
@@ -1273,7 +1284,7 @@ hijack_playerq_deq (unsigned int *rbutton)	// for use by empeg_input.c
 			//
 			if (rbutton) {
 				if (hijack_ir_debug)
-					printk("%lu: DEQ.P: %08x.%ld\n", jiffies, button, data->delay);
+					printk("%lu: DEQ.%c: @%p: %08x.%ld\n", jiffies, hijack_playerq.qname, data, button, data->delay);
 				*rbutton = button;
 				hijack_playerq.tail = tail;
 				hijack_playerq.last_deq = jiffies;
@@ -1283,7 +1294,7 @@ hijack_playerq_deq (unsigned int *rbutton)	// for use by empeg_input.c
 		}
 	}
 	restore_flags(flags);
-	return 1;	// no buttons available
+	return -EAGAIN;	// no buttons available
 }
 
 static void
@@ -2416,7 +2427,7 @@ popup_display (int firsttime)
 		hijack_last_moved = JIFFIES();
 		ir_numeric_input = &popup_index;	// allows cancel/top to reset it to 0
 		hijack_buttonlist = popup_buttonlist;
-		hijack_initq(&hijack_userq);
+		hijack_initq(&hijack_userq, 'U');
 		create_overlay(&geom);
 	}
 
@@ -2830,7 +2841,7 @@ calculator_display (int firsttime)
 	if (firsttime) {
 		total = value = operator = prev = 0;
 		hijack_buttonlist = calculator_buttons;;
-		hijack_initq(&hijack_userq);
+		hijack_initq(&hijack_userq, 'U');
 	} else while (hijack_button_deq(&hijack_userq, &data, 0)) {
 		for (i = CALCULATOR_BUTTONS_SIZE-1; i > 0; --i) {
 			if (data.button == calculator_buttons[i])
@@ -2917,7 +2928,7 @@ reboot_display (int firsttime)
 		(void) draw_string(ROWCOL(0,0), "Press & hold Left/Right\n  buttons to reboot.\n(or press 2 on the remote)\nAny other button aborts", PROMPTCOLOR);
 		left_pressed = right_pressed = 0;
 		hijack_buttonlist = intercept_all_buttons;
-		hijack_initq(&hijack_userq);
+		hijack_initq(&hijack_userq, 'U');
 		return NEED_REFRESH;
 	}
 	rc = NO_REFRESH;
@@ -2961,7 +2972,7 @@ showbutton_display (int firsttime)
 		counter = 0;
 		prev[0] = prev[1] = prev[2] = prev[3] = IR_NULL_BUTTON;
 		hijack_buttonlist = intercept_all_buttons;
-		hijack_initq(&hijack_userq);
+		hijack_initq(&hijack_userq, 'U');
 		// disable IR translations
 		saved_table = ir_translate_table;
 		ir_translate_table = NULL;
@@ -3677,6 +3688,8 @@ hijack_handle_buttons (const char *player_buf)
 		hijack_handle_button(data.button, data.delay, player_ui_flags, player_buf);
 		restore_flags(flags);
 	}
+	if (!hijack_playerq_deq(NULL))
+		input_wakeup_waiters();		// wake-up the player software
 }
 
 static unsigned int ir_downkey = IR_NULL_BUTTON, ir_delayed_rotate = 0;
@@ -4534,7 +4547,7 @@ int hijack_ioctl  (struct inode *inode, struct file *filp, unsigned int cmd, uns
 				return -EBUSY;
 			}
 			hijack_buttonlist = buttonlist;
-			hijack_initq(&hijack_userq);
+			hijack_initq(&hijack_userq, 'U');
 			restore_flags(flags);
 			return 0;
 		}
@@ -5187,9 +5200,9 @@ hijack_init (void *animptr)
 
 	menu_init();
 	reset_hijack_options();
-	hijack_initq(&hijack_inputq);
-	hijack_initq(&hijack_playerq);
-	hijack_initq(&hijack_userq);
+	hijack_initq(&hijack_inputq, 'I');
+	hijack_initq(&hijack_playerq, 'P');
+	hijack_initq(&hijack_userq, 'U');
 	hijack_notify_init();
 	if (failed) {
 		if (failed == 2)

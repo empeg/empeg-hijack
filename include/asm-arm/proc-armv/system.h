@@ -69,7 +69,7 @@ extern unsigned long cr_alignment;	/* defined in entry-armv.S */
 	do {							\
 	  unsigned long temp;					\
 	  __asm__ __volatile__(					\
-	"mrs	%1, cpsr		@ save_flags_cli\n"	\
+	"mrs	%1, cpsr		@ save_flags_clif\n"	\
 "	and	%0, %1, #192\n"					\
 "	orr	%1, %1, #192\n"					\
 "	msr	cpsr, %1"					\

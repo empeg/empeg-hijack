@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v223"
+#define HIJACK_VERSION	"v224"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -12,6 +12,7 @@ const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 #include <linux/malloc.h>
 #include <linux/delay.h>
 #include <linux/init.h>
+#include <linux/kernel_stat.h>
 
 #include <linux/empeg.h>
 #include <asm/uaccess.h>
@@ -1293,6 +1294,49 @@ get_drive_size (int hwif, int unit)
 }
 
 static int
+debug_display (int firsttime)
+{
+	unsigned char buf[64];
+	unsigned long flags;
+	unsigned int rowcol, bug = 0, ossr, oscr, osmr0;
+
+	if (!firsttime)
+		return NO_REFRESH;
+	clear_hijack_displaybuf(COLOR0);
+	save_flags_clif(flags);
+
+	ossr  = OSSR;
+	oscr  = OSCR;
+	osmr0 = OSMR0;
+	if (osmr0 > oscr) {
+		if ((unsigned)(osmr0 - oscr) > (unsigned)(2 * 36864))
+			bug = 1;
+	} else {
+		if ((unsigned)(oscr - osmr0) < (unsigned)(-(2 * 36864)))
+			bug = 2;
+	}
+	rowcol = ROWCOL(0,0);
+	if (bug) {
+		sprintf(buf, "BUG-%d", bug);
+		rowcol = draw_string_spaced(rowcol, buf, -COLOR3);
+	}
+	sprintf(buf, "Jiffies=%lu",  jiffies);
+	draw_string(rowcol, buf, PROMPTCOLOR);
+
+	sprintf(buf, "in=%u, ti=%u",  kstat_irqs(4), kstat_irqs(26));
+	draw_string(ROWCOL(1,0), buf, PROMPTCOLOR);
+
+	sprintf(buf, "cr:%08x,mr:%08x", oscr, osmr0);
+	draw_string(ROWCOL(2,0), buf, PROMPTCOLOR);
+
+	sprintf(buf, "sr:%08x", ossr);
+	draw_string(ROWCOL(3,0), buf, PROMPTCOLOR);
+
+	restore_flags(flags);
+	return NEED_REFRESH;
+}
+
+static int
 vitals_display (int firsttime)
 {
 	extern int nr_free_pages;
@@ -2378,6 +2422,7 @@ static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 	{ blanker_menu_label,		blanker_display,	blanker_move,		0},
 	{"Show Flash Savearea",		savearea_display,	savearea_move,		0},
 	{"Vital Signs",			vitals_display,		NULL,			0},
+	{"Vitals v2beta11",		debug_display,		NULL,			0},
 	{NULL,				NULL,			NULL,			0},};
 
 static void
@@ -2655,6 +2700,14 @@ do_nextsrc (void)
 	hijack_enq_button_pair(button);
 }
 
+static void
+preselect_menu_item (void *dispfunc)
+{
+	while (menu_table[menu_item].dispfunc != dispfunc)
+		menu_move(+1);
+	menu_move(+1); menu_move(-1);
+}
+
 static int
 timer_check_expiry (struct display_dev *dev)
 {
@@ -2681,11 +2734,8 @@ timer_check_expiry (struct display_dev *dev)
 	}
 
 	// Preselect timer in the menu:
-	if (hijack_status == HIJACK_IDLE) {
-		while (menu_table[menu_item].dispfunc != timer_display)
-			menu_move(+1);
-		menu_move(+1); menu_move(-1);
-	}
+	if (hijack_status == HIJACK_IDLE)
+		preselect_menu_item(timer_display);
 
 	// Beep Alarm
 	elapsed /= HZ;
@@ -3244,9 +3294,8 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	static unsigned long oldjiffies = 0, oldcount = 0;
 	if (jiffies == oldjiffies) {
 		if (++oldcount >= 5) {
-			char buf[32];
-			sprintf(buf, "stuck jiffies %lu", oldcount);
-			show_message(buf, 60*HZ);
+			activate_dispfunc(debug_display, NULL);
+			preselect_menu_item(timer_display);
 		}
 	} else {
 		if (oldcount >= 5) {

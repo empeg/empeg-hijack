@@ -99,6 +99,11 @@ static void dummy_mask_unmask_irq(unsigned int irq)
 {
 }
 
+void *get_irq_action (int irqnum)
+{
+	return irq_desc[irqnum].action;
+}
+
 void disable_irq(unsigned int irq)
 {
 	unsigned long flags;

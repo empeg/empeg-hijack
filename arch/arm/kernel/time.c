@@ -106,7 +106,7 @@ void do_gettimeofday(struct timeval *tv)
 {
 	unsigned long flags;
 	
-	save_flags_cli (flags);
+	save_flags_clif(flags);
 	*tv = xtime;
 	tv->tv_usec += do_gettimeoffset();
 
@@ -130,7 +130,9 @@ void do_gettimeofday(struct timeval *tv)
 
 void do_settimeofday(struct timeval *tv)
 {
-	cli ();
+	unsigned long flags;
+	
+	save_flags_clif (flags);
 	/* This is revolting. We need to set the xtime.tv_usec
 	 * correctly. However, the value in this location is
 	 * is value at the last tick.
@@ -149,7 +151,7 @@ void do_settimeofday(struct timeval *tv)
 	time_status |= STA_UNSYNC;
 	time_maxerror = NTP_PHASE_LIMIT;
 	time_esterror = NTP_PHASE_LIMIT;
-	sti();
+	restore_flags(flags);
 
 #ifdef CONFIG_EMPEG_CS4231
 	/* Update RTC on Mk2s (RTC is connected to 4231 sound chip) */

@@ -5,7 +5,7 @@
 #define EMPEG_SCREEN_ROWS 32	/* pixels */
 #define EMPEG_SCREEN_COLS 128	/* pixels */
 
-const unsigned char lcase_font[94][8] = {
+const unsigned char kfont[94][8] = {
 	{0x5f,0x00,0x00,0x00,0x00,0x00,0x00,0x00}, // !
 	{0x03,0x03,0x00,0x00,0x00,0x00,0x00,0x00}, // "
 	{0x14,0x3e,0x14,0x3e,0x14,0x00,0x00,0x00}, // #
@@ -129,7 +129,7 @@ static unsigned int draw_string (void *display, unsigned int row, unsigned int c
 
 	while ((c = *s++)) {
 		if (c >= 0x21 && c <= 0x7e) {
-			col += draw_fontchar((unsigned char *)display, row, col, lcase_font[c - 0x21]);
+			col += draw_fontchar((unsigned char *)display, row, col, kfont[c - 0x21]);
 		} else {
 			col += draw_fontchar((unsigned char *)display, row, col, "");
 			col += draw_fontchar((unsigned char *)display, row, col, "");
@@ -199,10 +199,12 @@ static void game_finale (void)
 	// freeze the display for two seconds, so user knows game is over
 	if (jiffies_since(game_ball_lastmove) < (HZ*2))
 		return;
-	(void)draw_string(game_buffer, 1, 20, "Enhancements.V12");
-	(void)draw_string(game_buffer, 2, 30, "by Mark Lord");
-	if (jiffies_since(game_ball_lastmove) < (HZ*3))
-		return;
+	if (game_bricks) {
+		(void)draw_string(game_buffer, 1, 20, "Enhancements.V13");
+		(void)draw_string(game_buffer, 2, 30, "by Mark Lord");
+		if (jiffies_since(game_ball_lastmove) < (HZ*3))
+			return;
+	}
 
 	// just exit if the user lost
 	if (game_animbase == 0 || game_bricks > 0) {

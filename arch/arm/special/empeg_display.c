@@ -517,6 +517,7 @@ static void display_queue_add(struct display_dev *dev)
 #define GAME_ROWS (EMPEG_SCREEN_HEIGHT)
 #define GAME_COLS (EMPEG_SCREEN_WIDTH*EMPEG_SCREEN_BPP/8)
 #define GAME_VBOUNCE 0xff
+#define GAME_BRICKS 0xee
 #define GAME_HBOUNCE 0x77
 #define GAME_BALL 0xff
 #define GAME_OVER 0x11
@@ -524,35 +525,37 @@ static void display_queue_add(struct display_dev *dev)
 
 int game_is_active;
 static unsigned char game_buffer[GAME_ROWS][GAME_COLS];
-static int game_over, game_row, game_col, game_hdir, game_vdir, game_paddle_col, game_paddle_lastdir, game_speed;
+static int game_over, game_row, game_col, game_hdir, game_vdir, game_paddle_col, game_paddle_lastdir, game_speed, game_bricks;
 static unsigned long game_starttime, game_ball_lastmove, game_paddle_lastmove, game_animbase = 0, game_animtime;
 extern unsigned long knob_down;
 
-void game_start (void)
+static void game_start (void)
 {
 	int i;
 	game_is_active = 1;
 	memset(game_buffer,0,EMPEG_SCREEN_SIZE);
 	game_paddle_col = GAME_COLS / 2;
-	for (i = 0; i < GAME_COLS; ++i)
+	for (i = 0; i < GAME_COLS; ++i) {
 		game_buffer[0][i] = GAME_VBOUNCE;
-	for (i = 0; i < GAME_COLS; ++i)
 		game_buffer[GAME_ROWS-1][i] = GAME_OVER;
+		game_buffer[5][i] = GAME_BRICKS;
+	}
 	for (i = 0; i < GAME_ROWS; ++i)
 		game_buffer[i][0] = game_buffer[i][GAME_COLS-1] = GAME_HBOUNCE;
 	memset(&game_buffer[GAME_ROWS-3][game_paddle_col],GAME_VBOUNCE,GAME_PADDLE_SIZE);
 	game_hdir = 1;
 	game_vdir = 1;
-	game_row = 1;
+	game_row = 6;
 	game_col = jiffies % GAME_COLS;
 	if (game_buffer[game_row][game_col] == GAME_HBOUNCE)
 		game_col = game_col ? GAME_COLS - 1 : 1;
 	game_ball_lastmove = jiffies;
-	game_starttime = jiffies;
+	game_bricks = GAME_COLS - 2;
 	game_over = 0;
 	game_speed = 16;
 	game_animtime = 0;
 	framenr = 0;
+	game_starttime = jiffies;
 }
 
 static void game_finale (void)
@@ -565,8 +568,8 @@ static void game_finale (void)
 	if ((jiffies - game_ball_lastmove) < (HZ*2))
 		return;
 
-	// just quit if the game was short
-	if (game_animbase == 0 || (jiffies - game_starttime) < (62*HZ)) {
+	// just exit if the user lost
+	if (game_animbase == 0 || game_bricks > 0) {
 		game_is_active = 0;
 		return;
 	}
@@ -589,6 +592,7 @@ static void game_finale (void)
 	game_animtime = jiffies;
 }
 
+// Invoked from empeg_input.c
 void game_move_right (void)
 {
 	unsigned char *paddlerow = game_buffer[GAME_ROWS-3];
@@ -608,6 +612,7 @@ void game_move_right (void)
 	restore_flags(flags);
 }
 
+// Invoked from empeg_input.c
 void game_move_left (void)
 {
 	unsigned char *paddlerow = game_buffer[GAME_ROWS-3];
@@ -627,7 +632,16 @@ void game_move_left (void)
 	restore_flags(flags);
 }
 
-void game_move_ball (void)
+static void game_nuke_brick (int row, int col)
+{
+	if (col > 0 && col < GAME_COLS && game_buffer[row][col] == GAME_BRICKS) {
+		game_buffer[row][col] = 0;
+		if (--game_bricks <= 0)
+			game_over = 1;
+	}
+}
+
+static void game_move_ball (void)
 {
 	unsigned long flags;
 
@@ -647,6 +661,11 @@ void game_move_ball (void)
 		game_hdir = 0 - game_hdir;
 		game_col += game_hdir;
 	}
+	if (game_buffer[game_row][game_col] == GAME_BRICKS) {
+		game_nuke_brick(game_row,game_col);
+		game_nuke_brick(game_row,game_col-1);
+		game_nuke_brick(game_row,game_col+1);
+	}
 	if (game_buffer[game_row][game_col] == GAME_VBOUNCE) {
 		// need to bounce vertically
 		game_vdir = 0 - game_vdir;
@@ -663,7 +682,7 @@ void game_move_ball (void)
 	}
 	if (game_buffer[game_row][game_col] == GAME_OVER)
 		game_over = 1;
-	game_buffer[game_row][game_col] = GAME_BALL;
+	game_buffer[game_row][game_col] = game_over ? 0 : GAME_BALL;
 	restore_flags(flags);
 }
 
@@ -837,12 +856,13 @@ static void handle_splash(struct display_dev *dev)
 	if ((logo_type & LOGO_MASK) == LOGO_RIO) {
 		display_animation((unsigned long)rio_ani);
 		ani_ptr=(unsigned long*)rio_ani;
+		game_animbase = (unsigned long)empeg_ani;
 	} else {
 		display_animation((unsigned long)empeg_ani);
 		ani_ptr=(unsigned long*)empeg_ani;
+		game_animbase = (unsigned long)rio_ani;
 	}
 
-	game_animbase = (unsigned long)ani_ptr;
 	/* Work out time to play animation: 1s (0.5 start & end) + frames */
 	animation_time=HZ;
 	while(*ani_ptr++) animation_time+=(HZ/ANIMATION_FPS);

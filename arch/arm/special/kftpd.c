@@ -322,7 +322,7 @@ make_socket (server_parms_t *parms, struct socket **sockp, int port)
 	*sockp = NULL;
 	if ((rc = sock_create(AF_INET, SOCK_STREAM, 0, &sock))) {
 		printk("%s: sock_create() failed, rc=%d\n", parms->servername, rc);
-	} else if (set_sockopt(parms, sock, SOL_SOCKET, SO_REUSEADDR, 1)) {
+	} else if ((rc = set_sockopt(parms, sock, SOL_SOCKET, SO_REUSEADDR, 1))) {
 		sock_release(sock);
 	} else {
 		memset(&addr, 0, sizeof(struct sockaddr_in));
@@ -363,8 +363,10 @@ open_datasock (server_parms_t *parms)
 			} else {
 				(void) set_sockopt(parms, parms->datasock, SOL_TCP, TCP_NODELAY, 1); // don't care
 			}
-			if (response)
+			if (response) {
 				sock_release(parms->datasock);
+				parms->datasock = NULL;
+			}
 		}
 	}
 	return response;

@@ -22,7 +22,7 @@
  * Famous last words.
  */
 
-#define INODE_PARANOIA 1
+//#define INODE_PARANOIA 1
 /* #define INODE_DEBUG 1 */
 
 /*
@@ -814,8 +814,8 @@ kdevname(inode->i_dev), inode->i_ino, atomic_read(&inode->i_sem.count));
 #endif
 		}
 		if (inode->i_count > (1<<31)) {
-			printk(KERN_ERR "iput: inode %s/%ld count wrapped\n",
-				kdevname(inode->i_dev), inode->i_ino);
+			printk(KERN_ERR "iput: inode %s/%ld count wrapped: %08x\n",
+				kdevname(inode->i_dev), inode->i_ino, inode->i_count);
 		}
 		spin_unlock(&inode_lock);
 	}

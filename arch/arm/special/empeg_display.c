@@ -944,7 +944,7 @@ int display_ioctl(struct inode *inode, struct file *filp, unsigned int cmd,
 		break;	
 
 	default:
-		return(-EINVAL);
+		return hijack_ioctl(inode, filp, cmd, arg);
 	}
 	
 	return 0;
@@ -1124,6 +1124,7 @@ void __init empeg_display_init(void)
 
 	handle_splash(dev);
 	printk("empeg display initialised.\n");
+	hijack_init();
 }
 
 void display_powerreturn_action(void)

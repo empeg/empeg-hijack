@@ -49,7 +49,7 @@ extern __inline__ int reset_timer (void)
 	   been passed by the time the OSMR was written to.
 	   hugo@empeg.com
         */
-	save_flags_cli(flags);
+	save_flags_cli(flags);		// should be save_flags_clif()  --M.Lord
 	last_os_timer_match=OSMR0;
 
         /* Clear match on timer 0 */

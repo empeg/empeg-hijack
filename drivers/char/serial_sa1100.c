@@ -469,8 +469,9 @@ fake_tuner (unsigned char c)
 				case 0x05: eat = 1; break;
 				case 0x03: eat = 4; break;
 				case 0x01: eat = 9; break;
-				case 0x00: eat =10; break;
+				case 0x00: eat =10; break; // read module id, and set LED on/off
 				case 0xff: eat = 1; break;
+				case 0x09: eat = 1; break; // read tuner dial (tuner ID)
 			}
 			// fall thru
 		default:
@@ -487,8 +488,9 @@ fake_tuner (unsigned char c)
 				case 0x05: response = 0x00000501; break;
 				case 0x03: response = 0x00000301; break;
 				case 0x01: response = 0x00000101; break;
-				case 0x00: response = 0x00030001; break;
+				case 0x00: response = 0x00030001; break; // read module id, and set LED on/off: tuner == 0x03
 				case 0xff: response = 0x0027ff01; break;
+				case 0x09: response = 0x00080901; break; // read tuner dial: pretend it's set to '8'
 			}
 			response |= ((response >> 16) + (response >> 8)) << 24;
 			hijack_serial_insert ((char *)&response, 4, 0);
@@ -527,8 +529,12 @@ static _INLINE_ void transmit_chars(struct async_struct *info, int *intr_done)
 	count = info->xmit_fifo_size;
 	while(serial_inp(info, UTSR1) & UTSR1_TNF) {
 		char ch = info->xmit_buf[info->xmit_tail++];
-		if (info == IRQ_ports[15] && hijack_fake_tuner)
-			fake_tuner(ch);
+		if (info == IRQ_ports[15]) {
+			if (hijack_trace_tuner)
+				printk("tuner:out=%02x\n", ch);
+			if (hijack_fake_tuner)
+				fake_tuner(ch);
+		}
 		serial_out(info, UART_TX, ch);
 		info->xmit_tail &= (SERIAL_XMIT_SIZE-1);
                 info->state->icount.tx++;

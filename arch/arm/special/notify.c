@@ -20,6 +20,7 @@
 
 #define IR_INTERNAL		((void *)-1)
 
+extern int sys_sync(void);
 extern int hijack_player_started;
 extern int hijack_do_command (void *sparms, char *buf);
 extern int strxcmp (const char *str, const char *pattern, int partial);					// hijack.c
@@ -150,6 +151,50 @@ hijack_convert_time (time_t time, tm_t *tm)
 	tm->tm_mon   = month;
 	tm->tm_mday  = day + 1;
 	return tm;
+}
+
+int
+remount_drives (int writeable)
+{
+	int	len, flags;
+	char	buf[256], *b, *message, *match, mount_opts[] = "nocheck";
+
+	if (writeable) {
+		flags = (MS_NODIRATIME | MS_NOATIME);
+		message = "Remounting read-write";
+		match = "ext2 ro";
+	} else {
+		flags = MS_RDONLY;
+		message = "Remounting read-only";
+		match = "ext2 rw";
+	}
+		
+	show_message(message, 99*HZ);
+	lock_kernel();
+	len = get_filesystem_info(buf);
+	buf[len] = '\0';
+	for (b = buf; *b;) {
+		unsigned char *fsname, *fstype;
+		while (*++b != ' ');
+		fsname = ++b;
+		while (*++b != ' ');
+		*b = '\0';
+		fstype = ++b;
+		while (*++b != ' ');
+		while (*++b != ' ');
+		*b++ = '\0';
+		if (!strxcmp(fstype, match, 1)) {
+			printk("hijack: %s: %s\n", message, fsname); 
+			(void)do_remount(fsname, flags, mount_opts);
+		}
+		while (*b && *b++ != '\n');
+	}
+	unlock_kernel();
+	sys_sync();
+	sys_sync();
+	sys_sync();
+	show_message("Done", HZ);
+	return 0;
 }
 
 #ifdef CONFIG_NET_ETHERNET
@@ -288,49 +333,6 @@ static struct proc_dir_entry proc_screen_raw_entry = {
 	&hijack_proc_screen_raw_read, /* get_info() */
 };
 
-int
-remount_drives (int writeable)
-{
-	int	len, flags;
-	char	buf[256], *b, *message, *match, mount_opts[] = "nocheck";
-
-	if (writeable) {
-		flags = (MS_NODIRATIME | MS_NOATIME);
-		message = "Remounting read-write";
-		match = "ext2 ro";
-	} else {
-		flags = MS_RDONLY;
-		message = "Remounting read-only";
-		match = "ext2 rw";
-	}
-		
-	show_message(message, 99*HZ);
-	lock_kernel();
-	len = get_filesystem_info(buf);
-	buf[len] = '\0';
-	for (b = buf; *b;) {
-		unsigned char *fsname, *fstype;
-		while (*++b != ' ');
-		fsname = ++b;
-		while (*++b != ' ');
-		*b = '\0';
-		fstype = ++b;
-		while (*++b != ' ');
-		while (*++b != ' ');
-		*b++ = '\0';
-		if (!strxcmp(fstype, match, 1)) {
-			printk("hijack: %s: %s\n", message, fsname); 
-			(void)do_remount(fsname, flags, mount_opts);
-		}
-		while (*b && *b++ != '\n');
-	}
-	unlock_kernel();
-	sync();
-	sync();
-	show_message("Done", HZ);
-	return 0;
-}
-
 #define RELEASECODE(b)	(((b) > 0xf) ? (b) | 0x80000000 : (b) | 1)
 
 unsigned char *
@@ -380,6 +382,22 @@ proc_notify_write (struct file *file, const char *buffer, unsigned long count, v
 	return rc;
 }
 
+extern struct file_operations  flash_fops;
+static struct inode_operations kflash_ops = {
+	&flash_fops,
+	NULL,
+};
+
+static struct proc_dir_entry proc_kflash_entry = {
+	0,			/* inode (dynamic) */
+	12,			/* length of name */
+	"empeg_kernel",		/* name */
+	S_IFBLK|S_IRUSR|S_IWUSR,/* mode */
+	1, 0, 0,		/* links, owner, group */
+	MKDEV(60,8),		/* size holds device number */
+	&kflash_ops,		/* inode operations */
+};
+
 #else
 
 #define proc_notify_write NULL
@@ -422,22 +440,6 @@ static struct proc_dir_entry proc_notify_entry = {
 	NULL,				// readlink
 	0,				// usage count
 	0				// deleted flag
-};
-
-extern struct file_operations  flash_fops;
-static struct inode_operations kflash_ops = {
-	&flash_fops,
-	NULL,
-};
-
-static struct proc_dir_entry proc_kflash_entry = {
-	0,			/* inode (dynamic) */
-	12,			/* length of name */
-	"empeg_kernel",		/* name */
-	S_IFBLK|S_IRUSR|S_IWUSR,/* mode */
-	1, 0, 0,		/* links, owner, group */
-	MKDEV(60,8),		/* size holds device number */
-	&kflash_ops,		/* inode operations */
 };
 
 void hijack_notify_init (void)

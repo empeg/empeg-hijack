@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v221"
+#define HIJACK_VERSION	"v222"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -21,6 +21,7 @@ const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 #include "../../../drivers/block/ide.h"	// for ide_hwifs[]
 #include "empeg_display.h"
 
+extern int remount_drives (int writeable);				// arch/arm/special/notify.c
 extern int sys_newfstat(int, struct stat *);
 extern int sys_sync(void);						// fs/buffer.c
 extern int get_loadavg(char * buffer);					// fs/proc/array.c
@@ -1297,8 +1298,9 @@ vitals_display (int firsttime)
 	extern int nr_free_pages;
 	extern const char *notify_fid(void);
 	unsigned int *permset=(unsigned int*)(EMPEG_FLASHBASE+0x2000);
-	unsigned char *sa, buf[80];
+	unsigned char buf[80];
 	int rowcol, temp, i, count, model = 0x2a;
+	unsigned char *sa;
 	unsigned long flags;
 
 	if (!firsttime && jiffies_since(hijack_last_refresh) < HZ)
@@ -3221,6 +3223,7 @@ hijack_reboot_now (void *dev)
 	(void) draw_string(ROWCOL(2,32), "Rebooting..", PROMPTCOLOR);
 	display_blat(dev, (unsigned char *)hijack_displaybuf);
 
+	(void) remount_drives(0);	// ensure things are unmounted properly
 	state_cleanse();		// Ensure flash savearea is updated first
 	save_flags_clif(flags);		// clif is necessary for machine_restart
 	machine_restart(NULL);		// never returns
@@ -3240,13 +3243,15 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	// fixme: lockup detection logic
 	static unsigned long oldjiffies = 0, oldcount = 0;
 	if (jiffies == oldjiffies) {
-		if (++oldcount >= 5)
-			show_message("ERROR: stuck jiffies", 60*HZ);
+		if (++oldcount >= 5) {
+			char buf[32];
+			sprintf(buf, "stuck jiffies %lu", oldcount);
+			show_message(buf, 60*HZ);
+		}
 	} else {
 		if (oldcount >= 5) {
-			unsigned long elapsed = jiffies_since(oldjiffies);
-			char buf[36];
-			sprintf(buf, "unstuck at %lu.%lu secs", elapsed / HZ, 100 * elapsed % HZ);
+			char buf[32];
+			sprintf(buf, "unstuck jiffies %lu", oldcount);
 			show_message(buf, 20*60*HZ);
 		}
 		oldjiffies = jiffies;

@@ -98,6 +98,7 @@ typedef struct server_parms_s {
 	char			nodata;			// bool
 	char			method_head;		// bool
 	char			auth;			// khttpd_auth_t
+	char			is_mozilla;		// HTTP only
 	unsigned short		data_port;
 	off_t			start_offset;		// starting offset for next FTP/HTTP file transfer
 	off_t			end_offset;		// for current HTTP file read
@@ -1037,10 +1038,13 @@ khttp_send_file_header (server_parms_t *parms, char *path, off_t length, char *b
 	if (mimetype)
 		len += sprintf(buf+len, "Content-Type: %s\r\n", mimetype);
 	if (artist_title[0]) {	// tune title for WinAmp, XMMS, Save-To-Disk, etc..
-		if (parms->icy_metadata)
+		if (parms->icy_metadata) {
 			len += sprintf(buf+len, "icy-name:%s\r\n", artist_title);
-		else
+		} else if (parms->is_mozilla) { // Mmm.. I wonder if we could we just do \" here for all agents?
+			len += sprintf(buf+len, "Content-Disposition: attachment; filename=\"%s.%s\"\r\n", artist_title, tags.codec);
+		} else {
 			len += sprintf(buf+len, "Content-Disposition: attachment; filename=%s.%s\r\n", artist_title, tags.codec);
+		}
 	}
 	buf[len++] = '\r';
 	buf[len++] = '\n';
@@ -2180,7 +2184,9 @@ khttpd_handle_connection (server_parms_t *parms)
 		static const char Host[] = "\nHost: ";
 		static const char Auth[] = "\nAuthorization: Basic ";
 		if (*x == '\n') {
-			if (!strxcmp(x, "\nUser-Agent: NSPlayer", 1) || !strxcmp(x, "\nUser-Agent: Windows-Media-Player", 1) || !strxcmp(x, "\nUser-Agent: iTunes", 1)) {
+			if (!strxcmp(x, "\nUser-Agent: Mozilla", 1)) {
+				parms->is_mozilla = 1;
+			} else if (!strxcmp(x, "\nUser-Agent: NSPlayer", 1) || !strxcmp(x, "\nUser-Agent: Windows-Media-Player", 1) || !strxcmp(x, "\nUser-Agent: iTunes", 1)) {
 				parms->streaming = 1;
 			} else if (!strxcmp(x, "\nIcy-MetaData:1", 1)) {
 				parms->streaming = 1;

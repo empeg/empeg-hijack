@@ -48,6 +48,7 @@ if [ "$CONFIG_EXPERIMENTAL" = "y" ]; then
   fi    
 fi
 tristate 'ROM filesystem support' CONFIG_ROMFS_FS
+tristate 'FTP filesystem support' CONFIG_FTPFS_FS
 tristate 'Second extended fs support' CONFIG_EXT2_FS
 tristate 'Second extended fs development code' CONFIG_EXT3_FS
 

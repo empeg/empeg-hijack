@@ -11,6 +11,8 @@
 
 #include <asm/uaccess.h>
 
+extern int hijack_trace_fs;
+
 /*
  * Revalidate the inode. This is required for proper NFS attribute caching.
  */
@@ -136,6 +138,7 @@ asmlinkage int sys_stat(char * filename, struct __old_kernel_stat * statbuf)
 		dput(dentry);
 	}
 	unlock_kernel();
+	if (hijack_trace_fs) printk("sys_stat(\"%s\") = %d\n", filename, error);
 	return error;
 }
 #endif
@@ -157,6 +160,7 @@ asmlinkage int sys_newstat(char * filename, struct stat * statbuf)
 		dput(dentry);
 	}
 	unlock_kernel();
+	if (hijack_trace_fs) printk("sys_newstat(\"%s\") = %d\n", filename, error);
 	return error;
 }
 
@@ -183,6 +187,7 @@ asmlinkage int sys_lstat(char * filename, struct __old_kernel_stat * statbuf)
 		dput(dentry);
 	}
 	unlock_kernel();
+	if (hijack_trace_fs) printk("sys_lstat(\"%s\") = %d\n", filename, error);
 	return error;
 }
 
@@ -205,6 +210,7 @@ asmlinkage int sys_newlstat(char * filename, struct stat * statbuf)
 		dput(dentry);
 	}
 	unlock_kernel();
+	if (hijack_trace_fs) printk("sys_newlstat(\"%s\") = %d\n", filename, error);
 	return error;
 }
 
@@ -278,5 +284,6 @@ asmlinkage int sys_readlink(const char * path, char * buf, int bufsiz)
 		dput(dentry);
 	}
 	unlock_kernel();
+	if (hijack_trace_fs) printk("sys_readlink(\"%s\") = %d\n", path, error);
 	return error;
 }

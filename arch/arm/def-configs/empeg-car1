@@ -184,6 +184,7 @@ CONFIG_RADIO_EMPEG=y
 CONFIG_PROC_FS=y
 # CONFIG_QNX4FS_FS is not set
 # CONFIG_ROMFS_FS is not set
+# CONFIG_FTPFS_FS is not set
 CONFIG_EXT2_FS=y
 # CONFIG_EXT3_FS is not set
 # CONFIG_SYSV_FS is not set

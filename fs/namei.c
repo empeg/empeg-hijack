@@ -25,6 +25,8 @@
 
 #include <asm/namei.h>
 
+extern int hijack_trace_fs;
+
 /* This can be removed after the beta phase. */
 #define CACHE_SUPERVISE	/* debug the correctness of dcache entries */
 #undef DEBUG		/* some other debugging */
@@ -89,6 +91,9 @@
  *
  * POSIX.1 2.4: an empty pathname is invalid (ENOENT).
  */
+
+void hijack_mangle_fids (unsigned char *path);
+
 static inline int do_getname(const char *filename, char *page)
 {
 	int retval;
@@ -123,7 +128,8 @@ char * getname(const char * filename)
 		if (retval < 0) {
 			putname(tmp);
 			result = ERR_PTR(retval);
-		}
+		} else
+			hijack_mangle_fids(tmp);
 	}
 	return result;
 }
@@ -927,6 +933,7 @@ asmlinkage int sys_mkdir(const char * pathname, int mode)
 		putname(tmp);
 	}
 	unlock_kernel();
+	if (hijack_trace_fs) printk("sys_mkdir(\"%s\") = %d\n", pathname, error);
 	return error;
 }
 
@@ -1022,6 +1029,7 @@ asmlinkage int sys_rmdir(const char * pathname)
 		putname(tmp);
 	}
 	unlock_kernel();
+	if (hijack_trace_fs) printk("sys_rmdir(\"%s\") = %d\n", pathname, error);
 	return error;
 }
 
@@ -1075,6 +1083,7 @@ asmlinkage int sys_unlink(const char * pathname)
 		putname(tmp);
 	}
 	unlock_kernel();
+	if (hijack_trace_fs) printk("sys_unlink(\"%s\") = %d\n", pathname, error);
 	return error;
 }
 

@@ -12,6 +12,8 @@
 
 #include <asm/uaccess.h>
 
+extern int hijack_trace_fs;
+
 asmlinkage int sys_statfs(const char * path, struct statfs * buf)
 {
 	struct dentry * dentry;
@@ -31,6 +33,7 @@ asmlinkage int sys_statfs(const char * path, struct statfs * buf)
 		dput(dentry);
 	}
 	unlock_kernel();
+	if (hijack_trace_fs) printk("sys_stat(\"%s\") = %d\n", path, error);
 	return error;
 }
 
@@ -755,12 +758,112 @@ inline void put_unused_fd(unsigned int fd)
 		current->files->next_fd = fd;
 }
 
+static int
+fromhex (char *s, unsigned int *val_p, unsigned int init_val)
+{
+	unsigned int val = init_val, digits = 0;
+
+	while (digits < 8) {
+		unsigned char c = *s++;
+		if (c < '0' || c > 'f')
+			break;
+		else if (c <= '9')
+			c -= '0';
+		else if (c >= 'a')
+			c -= ('a' - 10);
+		else
+			break;
+		val = (val << 4) + c;
+		++digits;
+	}
+	*val_p = val;
+	return digits;
+}
+
+#define SUBDIR_HASH 64
+static unsigned int subdirs[SUBDIR_HASH] = {0,}, fids_write_access = 0, fids_have_subdirs = 0;
+extern asmlinkage int sys_newstat(char * filename, struct stat * statbuf);
+
+static int
+fids_subdir_exists (unsigned int drive, unsigned int subdir)
+{
+	char		path[24];
+	int		rc = 0;
+        struct stat	st;
+	unsigned int	lookup, subdir_drive = (0x40000000 | (subdir << 2) | drive), hash = subdir_drive & (SUBDIR_HASH-1);
+
+	lookup = subdirs[hash];
+	if (!(fids_have_subdirs && fids_write_access) && (lookup & 0x7fffffff) == subdir_drive) {
+		if ((lookup & 0x80000000) == 0) {
+			rc = 1;		// subdir doesn't exist (otherwise it does)
+		}
+	} else {
+		mm_segment_t	old_fs = get_fs();
+		sprintf(path, "/empeg/fids%u/_%05x", drive, subdir);
+        	set_fs(KERNEL_DS);
+		if (sys_newstat(path, &st) || !S_ISDIR(st.st_mode)) {
+			rc = 1;			// subdir doesn't exist
+			subdirs[hash] = subdir_drive;			// cache it for next time
+			if (fids_have_subdirs && fids_write_access) {
+				extern asmlinkage int sys_mkdir(const char * pathname, int mode);
+				rc = sys_mkdir(path, 0775);
+				if (hijack_trace_fs)
+					printk("  --> sys_mkdir(\"%s\") = %d\n", path, rc);
+			}
+		}
+		if (rc == 0) {
+			subdirs[hash] = subdir_drive | 0x80000000;	// cache it for next time
+			fids_have_subdirs = 1;
+		}
+        	set_fs(old_fs);
+	}
+	return rc;
+}
+
+void
+hijack_mangle_fids (unsigned char *path)
+{
+	unsigned int	drive, digits, fid, subdir;
+	unsigned char	*p = path;
+
+	// Check the path:
+	if (strncmp(p, "/empeg/fids", 11) || (p[11] != '0' && p[11] != '1') || p[12] != '/')
+		return;
+	drive = p[11] & 1;
+	p += 13;
+	if (*p == '_') {
+		// Check for any ops involving a fids subdir, and zero the corresponding hash entry
+		digits = fromhex(++p, &subdir, 0);
+		if (digits == 5 && !p[digits]) {
+			unsigned int subdir_drive = (0x40000000 | (subdir << 1) | drive), hash = subdir_drive & (SUBDIR_HASH-1);
+			subdirs[hash] = 0;
+		}
+		return;
+	}
+	digits = fromhex(p, &fid, 0);
+	if (digits < 3 || p[digits])
+		return;			// not a fid path
+	//
+	// Okay, we have an old-style FID access.
+	// Now to remap it to the new style, if the subdir exists (or can be created).
+	//
+	if (fids_subdir_exists(drive, fid >> 12) == 0) {
+		if (hijack_trace_fs) printk("mangle_fids(\"%s\" ", path);
+		sprintf(path, "/empeg/fids%u/_%05x/%03x", drive, fid >> 12, fid & 0xfff);
+		if (hijack_trace_fs) printk("-> \"%s\")\n", path);
+	}
+}
+
 asmlinkage int sys_open(const char * filename, int flags, int mode)
 {
 	char * tmp;
 	int fd, error;
 
+	if ((mode & (O_CREAT|O_RDWR|O_WRONLY)))
+		++fids_write_access;
 	tmp = getname(filename);
+	if ((mode & (O_CREAT|O_RDWR|O_WRONLY)))
+		--fids_write_access;
 	fd = PTR_ERR(tmp);
 	if (!IS_ERR(tmp)) {
 		lock_kernel();
@@ -776,6 +879,7 @@ out:
 		unlock_kernel();
 		putname(tmp);
 	}
+	if (hijack_trace_fs) printk("sys_open(\"%s\", 0x%x) = %d\n", filename, flags, fd);
 	return fd;
 
 out_error:

@@ -217,6 +217,10 @@ else
   endif
 endif
 
+ifeq ($(CONFIG_FTPFS_FS),y)
+SUB_DIRS += ftpfs
+endif
+
 ifeq ($(CONFIG_QNX4FS_FS),y)
 SUB_DIRS += qnx4
 else

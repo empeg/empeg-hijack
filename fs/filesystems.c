@@ -68,6 +68,10 @@ void __init filesystem_setup(void)
 	init_romfs_fs();
 #endif
 
+#ifdef CONFIG_FTPFS_FS
+	init_ftpfs_fs();
+#endif
+
 #ifdef CONFIG_UMSDOS_FS
 	init_umsdos_fs();
 #endif

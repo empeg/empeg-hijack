@@ -855,6 +855,7 @@ static const mime_type_t mime_types[] = {
 	{"/etc/*",		 text_plain,		0},
 	{"/proc/*",		 text_plain,		0},
 	{"/drive?/fids/*1",	 text_plain,		0},
+	{"/empeg/fids?/*1",	 text_plain,		0},
 	{"*bin/*",		 application_octet,	0},
 	{"/proc/version",	 text_plain,		1},
 	{NULL,			NULL,			0}};
@@ -929,54 +930,11 @@ static int
 open_fid_file (char *path)
 {
 	int		fd;
-	char		buf[24];
 
-	if (hijack_khttpd_new_fid_dirs) {
-		int p, b;
-		strcpy(buf, "/drive0/fids/_00000/000");
-		b = strlen(buf) - 1;
-	        if (hijack_khttpd_new_fid_dirs != 2) {
-			buf[b-2] = '1';
-			fd = open(buf, O_RDONLY, 0);
-			if (fd == -1) {
-				buf[6] = '1';
-				fd = open(buf, O_RDONLY, 0);
-			}
-			buf[b-2] = '0';
-			if (fd == -1) {
-				hijack_khttpd_new_fid_dirs = 0;
-				goto old_style;
-			} else {
-				hijack_khttpd_new_fid_dirs = 2;
-				printk("hijack: found new-style fids subdirectories\n");
-				(void)close(fd);
-			}
-		}
-		p = strlen(path) - 1;
-		if (path[p] != '/') {
-			do {	// copy the fid number to new format
-				unsigned char c = path[p];
-				if (buf[b] == '_' || !(INRANGE(c,'0','9') || INRANGE(c,'a','f')))
-					goto old_style;
-				if (buf[b] == '/')
-					b--;
-				buf[b--] = path[p];
-			} while (path[--p] != '/');
-			buf[6] = path[6];				// copy the drive number 0/1
-			if ((fd = open(buf, O_RDONLY, 0)) >= 0)		// try the specified drive first
-				return fd;
-			buf[6] ^= 1;					// failed, now try the other drive
-			if ((fd = open(buf, O_RDONLY, 0)) >= 0) {
-				path[6] ^= 1;				// point path at the successful drive
-				return fd;
-			}
-		}
-	}
-old_style:						// try the old/original fid structure:
 	if ((fd = open(path, O_RDONLY, 0)) < 0) {	// try the specified drive first
-		path[6] ^= 1;				// failed, now try the other drive
+		path[11] ^= 1;				// failed, now try the other drive
 		if ((fd = open(path, O_RDONLY, 0)) < 0)
-			path[6] ^= 1;			// point back at original drive
+			path[11] ^= 1;			// point back at original drive
 	}
 	return fd;
 }
@@ -992,7 +950,7 @@ khttp_send_file_header (server_parms_t *parms, char *path, off_t length, char *b
 	char		artist_title[128];
 
 	artist_title[0] = '\0';
-	if (hijack_glob_match(path, "/drive?/fids/*0")) {
+	if (hijack_glob_match(path, "/empeg/fids?/*0")) {
 		char c, *lastc = path + strlen(path) - 1;
 		int		fd, size;
 
@@ -1071,7 +1029,7 @@ prepare_file_xfer (server_parms_t *parms, char *path, file_xfer_t *xfer, int wri
 	else
 		flags = O_RDONLY;
 
-	if (!writing && parms->use_http && hijack_glob_match(path, "/drive?/fids/*"))
+	if (!writing && parms->use_http && hijack_glob_match(path, "/empeg/fids?/*"))
 		fd = open_fid_file(path);
 	else
 		fd = open(path, flags, 0666 & ~parms->umask);
@@ -1213,7 +1171,7 @@ send_playlist (server_parms_t *parms, char *path)
 {
 	http_response_t	*response = NULL;
 	unsigned int	secs = 0, entries = 0;
-	unsigned char	*p, subpath[] = "/drive0/fids/XXXXXXXXXX", artist_title[128], fidtype;
+	unsigned char	*p, subpath[] = "/empeg/fids0/XXXXXXXXXX", artist_title[128], fidtype;
 	int		pfid, fid, size, used = 0, xmit_threshold, fidfiles[16], fidx = -1;	// up to 16 levels of nesting
 	static const char *playlist_format[3] = {text_html, audio_m3u, text_xml};
 	static char	*tagtypes[2] = {"playlist", "tune"};
@@ -1336,7 +1294,7 @@ open_fidfile:
 			goto aborted;
 		} // else: empty playlist; just continue..
 	}
-	path[6] = subpath[6];	// update the drive number '0'|'1'
+	path[11] = subpath[11];	// update the drive number '0'|'1'
 	xmit_threshold = (parms->generate_playlist == xml) ? 1536 : 512;
 	while (fidx >= 0) {
 		while (sizeof(fid) == read(fidfiles[fidx], (char *)&fid, sizeof(fid))) {
@@ -1358,7 +1316,7 @@ open_fidfile:
 			}
 			size = read(fd, parms->tmp3, sizeof(parms->tmp3)-1);
 			close(fd);
-			path[6] = subpath[6];	// update the drive number '0'|'1'
+			path[11] = subpath[11];	// update the drive number '0'|'1'
 			if (size <= 0) {
 				// Hmmm.. empty tags file.  This IS a database error, and should never happen.
 				// But we'll just ignore it here.
@@ -1779,7 +1737,7 @@ hijack_do_command (void *sparms, char *buf)
 			if (!strxcmp(s, "NODATA", 0)) {
 				parms->nodata = 1;
 			} else if (!strxcmp(s, "FID=", 1)) {
-				sprintf(parms->cwd, "/drive0/fids/%s", s+4);
+				sprintf(parms->cwd, "/empeg/fids0/%s", s+4);
 			} else if (!strxcmp(s, "STYLE=", 1) && *(s += 6) && strlen(s) < sizeof(parms->style)) {
 				strcpy(parms->style, s);
 			} else if (strxcmp(s, "EXT=", 1) || !*(s += 4)) {
@@ -1792,7 +1750,7 @@ hijack_do_command (void *sparms, char *buf)
 				} else if (!strxcmp(s, ".xml", 0)) {
 					parms->generate_playlist = xml;
 				} else {
-					// Just ignore it:  .mp3, .wma, .wav, ..
+					// Just ignore it:  .mp3, .wma, .wav, ...
 				}
 			}
 		}
@@ -2165,7 +2123,7 @@ khttpd_handle_connection (server_parms_t *parms)
 		if (parms->generate_playlist) {
 			if (!hijack_khttpd_playlists)
 				response = &access_not_permitted;
-			else if (!hijack_glob_match(path, "/drive?/fids/??*1"))
+			else if (!hijack_glob_match(path, "/empeg/fids?/??*1"))
 				response = &invalid_playlist_path;
 			else if (!*path)
 				response = &(http_response_t){400, "Missing Pathname"};

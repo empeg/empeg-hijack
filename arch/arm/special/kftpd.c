@@ -463,7 +463,7 @@ filldir (void *data, const char *name, int namelen, off_t offset, ino_t ino)
 }
 
 static const char dirlist_html_trailer1[] = "</PRE><HR>\r\n%s<FONT SIZE=-2>%s</FONT></BODY></HTML>\r\n";
-static const char dirlist_html_trailer2[] = "<A HREF=\"/?FID=101.htm\"><FONT SIZE=-1>[Click here for playlists]</FONT></A><BR>\r\n";
+static const char dirlist_html_trailer2[] = "<A HREF=\"/?FID=101&EXT=.htm\"><FONT SIZE=-1>[Click here for playlists]</FONT></A><BR>\r\n";
 #define DIRLIST_TRAILER_MAX (sizeof(dirlist_html_trailer1) + sizeof(dirlist_html_trailer1) + 25) // 25 is for version string
 
 static int
@@ -773,7 +773,7 @@ khttpd_respond (server_parms_t *parms, int rcode, const char *title, const char 
 
 
 static void
-khttpd_redirect (server_parms_t *parms, const char *path)
+khttpd_redirect (server_parms_t *parms, const char *path, char *slash)
 {
 	static const char http_redirect[] =
 		"HTTP/1.1 302 Found\r\n"
@@ -790,7 +790,6 @@ khttpd_redirect (server_parms_t *parms, const char *path)
 	char *buf = parms->tmp3;
 
 	unsigned int	len, rc;
-	char *slash = parms->generate_playlist ? "" : "/";
 
 	len = sprintf(buf, http_redirect, path, slash, path, slash);
 	rc = ksock_rw(parms->clientsock, buf, len, -1);
@@ -975,8 +974,8 @@ khttp_send_file_header (server_parms_t *parms, char *path, off_t length, char *b
 	if (artist_title[0]) {	// tune title for WinAmp, XMMS, Save-To-Disk, etc..
 		if (parms->icy_metadata)
 			len += sprintf(buf+len, "icy-name:%s\r\n", artist_title);
-		else
-			len += sprintf(buf+len, "Content-Disposition: attachment; filename=\"%s.%s\"\r\n", artist_title, tags.codec);
+		else	// filename= below should be quoted ("), but mozilla doesn't like the quotes:
+			len += sprintf(buf+len, "Content-Disposition: attachment; filename=%s.%s\r\n", artist_title, tags.codec);
 	}
 	buf[len++] = '\r';
 	buf[len++] = '\n';
@@ -1030,7 +1029,7 @@ prepare_file_xfer (server_parms_t *parms, char *path, file_xfer_t *xfer, int wri
 		if (writing || !parms->use_http || parms->generate_playlist) {
 			response = 550;
 		} else {
-			khttpd_redirect(parms, path);
+			khttpd_redirect(parms, path, "/");
 			xfer->redirected = 1;
 		}
 	} else if (end_offset != -1 && (xfer->st.st_size && end_offset >= xfer->st.st_size)) {
@@ -1106,7 +1105,7 @@ encode_url (unsigned char *out, unsigned char *s, int partial_encode)
 			*out++ = '%';
 			*out++ = hexchars[c >> 4];
 			*out++ = hexchars[c & 0xf];
-		} else if (partial_encode == 1) { // for stupid iTunes playlist display
+		} else if (partial_encode == 1) { // for netscape, and stupid iTunes playlist display
 			*out++ = (c == ' ' || c == '?') ? '_' : c;
 		} else {  // xml
 			if (c == '<' || c == '>' || c == '&') {
@@ -1193,17 +1192,12 @@ send_playlist (server_parms_t *parms, char *path)
 
 	// If tagfile is for a "tune", then send a .m3u playlist for it, and quit
 	if (fidtype == 'T') {
-		if (!strxcmp(tags.codec, "mp3", 0)) {
-			secs = str_val(tags.duration) / 1000;
-			used  = sprintf(xfer.buf, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s\r\n\r\n"
-				"#EXTM3U\r\n#EXTINF:%u,%s\r\nhttp://%s/", audio_m3u, secs, artist_title, parms->hostname);
-			used += encode_url(xfer.buf+used, artist_title, parms->apple_iTunes);
-			used += sprintf(xfer.buf+used, "?FID=%x.%s\r\n", pfid^1, tags.codec);
-			(void)ksock_rw(parms->datasock, xfer.buf, used, -1);
-		} else { // wma, wav
-			path[strlen(path)-1] = '0';
-			khttpd_redirect(parms, path);
-		}
+		secs = str_val(tags.duration) / 1000;
+		used  = sprintf(xfer.buf, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s\r\n\r\n"
+			"#EXTM3U\r\n#EXTINF:%u,%s\r\nhttp://%s/", audio_m3u, secs, artist_title, parms->hostname);
+		used += encode_url(xfer.buf+used, artist_title, parms->apple_iTunes);
+		used += sprintf(xfer.buf+used, "?FID=%x&EXT=.%s\r\n", pfid^1, tags.codec);
+		(void)ksock_rw(parms->datasock, xfer.buf, used, -1);
 		goto cleanup;
 	}
 
@@ -1216,10 +1210,10 @@ send_playlist (server_parms_t *parms, char *path)
 			used += sprintf(xfer.buf+used,
 				"<HTML><HEAD><TITLE>%s playlists: %s</TITLE></HEAD>\r\n"
 				"<BODY><TABLE BGCOLOR=\"WHITE\" BORDER=\"2\"><THEAD>\r\n"
-				"<TR><TD> <A HREF=\"/?FID=%x.m3u\"><B>Stream</B></A> ",
+				"<TR><TD> <A HREF=\"/?FID=%x&EXT=.m3u\"><B>Stream</B></A> ",
 				parms->hostname, artist_title, pfid);
 			if (hijack_khttpd_commands)
-				used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?FID=%x&SERIAL=%%23%x.htm\"><B>Play</B></A> ", pfid, pfid^1);
+				used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?FID=%x&SERIAL=%%23%x&EXT=.htm\"><B>Play</B></A> ", pfid, pfid^1);
 			if (hijack_khttpd_files)
 				used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?FID=%x\"><B>Tags</B></A> ", pfid);
 			used += sprintf(xfer.buf+used, "<TD ALIGN=CENTER> <FONT SIZE=+2><B><EM>%s</EM></B></FONT> <TD> <B>Length</B> "
@@ -1319,20 +1313,24 @@ open_fidfile:
 			// spit out an appropriately formed representation for this fid:
 			switch (parms->generate_playlist) {
 				case 1:	// html
-					used += sprintf(xfer.buf+used, "<TR><TD> <A HREF=\"/?FID=%x.m3u\"><em>Stream</em></A> ", fid);
+					used += sprintf(xfer.buf+used, "<TR><TD> <A HREF=\"/?FID=%x&EXT=.m3u\"><em>Stream</em></A> ", fid);
 					if (hijack_khttpd_commands)
-						used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?FID=%x&SERIAL=%%23%x.htm\"><em>Play</em></A> ", pfid, fid^1);
+						used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?FID=%x&SERIAL=%%23%x&EXT=.htm\"><em>Play</em></A> ", pfid, fid^1);
 					if (hijack_khttpd_files)
 						used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?FID=%x\"><EM>Tags</EM></A> ", fid);
 					if (fidtype == 'T') {
-						if (hijack_khttpd_files)
-							used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?FID=%x\">%s</A> ", fid^1, tags.title);
-						else
+						if (hijack_khttpd_files) {
+							combine_artist_title(tags.artist, tags.title, artist_title, sizeof(artist_title));
+							used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/");
+							used += encode_url(xfer.buf+used, artist_title, 1);
+							used += sprintf(xfer.buf+used, ".%s?FID=%x&EXT=.%s\">%s</A> ", tags.codec, fid^1, tags.codec, tags.title);
+						} else {
 							used += sprintf(xfer.buf+used, "<TD> %s ", tags.title);
+						}
 						used += sprintf(xfer.buf+used, "<TD ALIGN=CENTER> %u:%02u <TD> %s <TD> %s&nbsp <TD> %s&nbsp \r\n",
 							secs/60, secs%60, tags.type, tags.artist, tags.source);
 					} else {
-						used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?FID=%x.htm\">%s</A> "
+						used += sprintf(xfer.buf+used, "<TD> <A HREF=\"/?FID=%x&EXT=.htm\">%s</A> "
 							"<TD ALIGN=CENTER> %u <TD> %s <TD> %s&nbsp <TD> %s&nbsp \r\n",
 							fid, tags.title, entries, tags.type, tags.artist, tags.source);
 					}
@@ -1343,7 +1341,7 @@ open_fidfile:
 						subpath[sublen - 1] = '0';
 						used += sprintf(xfer.buf+used, "#EXTINF:%u,%s\r\nhttp://%s/", secs, artist_title, parms->hostname);
 						used += encode_url(xfer.buf+used, artist_title, parms->apple_iTunes);
-						used += sprintf(xfer.buf+used, "?FID=%x.%s\r\n", fid^1, tags.codec);
+						used += sprintf(xfer.buf+used, "?FID=%x&EXT=.%s\r\n", fid^1, tags.codec);
 					}
 					break;
 				case 3: // xml
@@ -1609,41 +1607,69 @@ hijack_do_command (void *sparms, char *buf)
 
 	while (!rc && *nextline) {
 		int nocache = 1;
-		char *s;
-		s = nextline;
-		while (*nextline && *++nextline != '\n' && *nextline != ';' && *nextline != '&');
-		if (*nextline)
-			*nextline++ = '\0';
-		khttpd_fix_hexcodes(s);		// process %xx escapes
-		if (!strxcmp(s, "BUTTON=", 1)) {
-			s = do_button(s+7, 0);
-		} else if (!strxcmp(s, "BUTTONRAW=", 1)) {
-			s = do_button(s+10, 1);
-		} else if (!strxcmp(s, "RW", 0)) {
-			rc = remount_drives(1);
-		} else if (!strxcmp(s, "RO", 0)) {
-			rc = remount_drives(0);
-		} else if (!strxcmp(s, "REBOOT", 0)) {
-			(void) remount_drives(0);
-			hijack_reboot = 1;
-		} else if (!strxcmp(s, "POPUP ", 1) && *(s += 6)) {
-			int secs;
-			if (get_number(&s, &secs, 10, NULL) && *s++ == ' ' && *s)
-				show_message(s, secs * HZ);
-			else
-				rc = -EINVAL;
-		} else if (!strxcmp(s, "SERIAL=", 1) && *(s += 7)) {
-			hijack_serial_insert(s, strlen(s), 1);
-			hijack_serial_insert("\n", 1, 1);
-		} else if (parms && !strxcmp(s, "FID=", 1)) {
-			sprintf(parms->cwd, "/drive0/fids/%s", s+4);
-			nocache = 0;
-		} else if (parms && !strxcmp(s, "STYLE=", 1) && *(s += 6) && strlen(s) < sizeof(parms->style)) {
-			strcpy(parms->style, s);
-			nocache = 0;
-		} else {
-			rc = -EINVAL;
+		char c, *s;
+		for (s = nextline; (c = *nextline); ++nextline) {
+			if (c == '+') {
+				*nextline = ' ';
+			} else if (c == '\n' || c == ';' || c == '&') {
+				*nextline++ = '\0';
+				break;
+			}
 		}
+		khttpd_fix_hexcodes(s);		// process %xx escapes
+		if (!parms || hijack_khttpd_commands) {
+			if (!strxcmp(s, "BUTTON=", 1)) {
+				s = do_button(s+7, 0);
+				goto next;
+			} else if (!strxcmp(s, "BUTTONRAW=", 1)) {
+				s = do_button(s+10, 1);
+				goto next;
+			} else if (!strxcmp(s, "RW", 0)) {
+				rc = remount_drives(1);
+				goto next;
+			} else if (!strxcmp(s, "RO", 0)) {
+				rc = remount_drives(0);
+				goto next;
+			} else if (!strxcmp(s, "REBOOT", 0)) {
+				(void) remount_drives(0);
+				hijack_reboot = 1;
+				goto next;
+			} else if (!strxcmp(s, "POPUP ", 1) && *(s += 6)) {
+				int secs;
+				if (get_number(&s, &secs, 10, NULL) && *s++ == ' ' && *s)
+					show_message(s, secs * HZ);
+				else
+					rc = -EINVAL;
+				goto next;
+			} else if (!strxcmp(s, "SERIAL=", 1) && *(s += 7)) {
+				hijack_serial_insert(s, strlen(s), 1);
+				hijack_serial_insert("\n", 1, 1);
+				goto next;
+			}
+		}
+		if (!parms) {
+			rc = -EINVAL;
+		} else {
+			nocache = 0;
+			if (!strxcmp(s, "FID=", 1)) {
+				sprintf(parms->cwd, "/drive0/fids/%s", s+4);
+			} else if (!strxcmp(s, "STYLE=", 1) && *(s += 6) && strlen(s) < sizeof(parms->style)) {
+				strcpy(parms->style, s);
+			} else if (strxcmp(s, "EXT=", 1) || !*(s += 4)) {
+				rc = -EINVAL;
+			} else {
+				if (!strxcmp(s, ".html", 0) || !strxcmp(s, ".htm", 0)) {
+					parms->generate_playlist = 1;
+				} else if (!strxcmp(s, ".m3u", 0)) {
+					parms->generate_playlist = 2;
+				} else if (!strxcmp(s, ".xml", 0)) {
+					parms->generate_playlist = 3;
+				} else {
+					// Just ignore it:  .mp3, .wma, .wav, ..
+				}
+			}
+		}
+	next:
 		if (nocache && parms)
 			parms->nocache = 1;
 	}
@@ -1962,7 +1988,7 @@ khttpd_handle_connection (server_parms_t *parms)
 		printk(KHTTPD": GET \"%s\"\n", path);
 	// a useful shortcut
 	if (!strxcmp(path, "/?playlists", 1)) {
-		khttpd_redirect(parms, "/drive0/fids/101?.htm");
+		khttpd_redirect(parms, "/?FID=101&EXT=.htm", "");
 		return;
 	}
 	for (p = path; *p; ++p) {
@@ -1976,42 +2002,9 @@ khttpd_handle_connection (server_parms_t *parms)
 	khttpd_fix_hexcodes(strcpy(parms->cwd, path));
 	path = parms->cwd;
 	if (cmds && *cmds) {
-		char *end;
-
-		// translate '+' into ' '
-		while ((c = *++p)) {
-			if (c == '+')
-				*p = ' ';
-		}
-		end = cmds + strlen(cmds);
-		if ((end - cmds) >= 4) {
-			char *saved = end;
-			if (*(end-1) == '/')
-				--end;
-			end -= 5;
-			if (!strxcmp(end, ".html", 1) || !strxcmp(++end, ".htm", 1)) {
-				parms->generate_playlist = 1;
-			} else if (!strxcmp(end, ".m3u", 1)) {
-				parms->generate_playlist = 2;
-			} else if (!strxcmp(end, ".xml", 1)) {
-				parms->generate_playlist = 3;
-			} else if (strxcmp(end, ".mp3", 1)) {	// just ignore a trailing .mp3 extension
-				end = saved;
-			}
-		}
-		*end = '\0';
-		if (*cmds) {
-			if (hijack_khttpd_commands) {
-				hijack_do_command(parms, cmds); // ignore errors
-				if (!*path) {
-					const char r204[] = "HTTP/1.1 204 No Response\r\nConnection: close\r\n\r\n";
-					ksock_rw(parms->clientsock, r204, sizeof(r204)-1, -1);
-					return;
-				}
-			} else {
-				response = &access_not_permitted;
-				goto quit;
-			}
+		if (hijack_do_command(parms, cmds)) {
+			response = &access_not_permitted;
+			goto quit;
 		}
 		if (parms->generate_playlist) {
 			if (!hijack_khttpd_playlists)
@@ -2023,6 +2016,11 @@ khttpd_handle_connection (server_parms_t *parms)
 			else 
 				response = send_playlist(parms, path);
 			goto quit;
+		}
+		if (!*path) {
+			const char r204[] = "HTTP/1.1 204 No Response\r\nConnection: close\r\n\r\n";
+			ksock_rw(parms->clientsock, r204, sizeof(r204)-1, -1);
+			return;
 		}
 	}
 	if (!(pathlen = strlen(path))) {

@@ -193,7 +193,7 @@ remount_drives (int writeable)
 	}
 	unlock_kernel();
 	if (did_something)
-		show_message("Done", HZ);
+		show_message(writeable ? "Remounted read-write" : "Remounted read-only", HZ);
 	return !did_something;
 }
 

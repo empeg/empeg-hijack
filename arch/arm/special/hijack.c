@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v277"
+#define HIJACK_VERSION	"v278"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -96,6 +96,8 @@ static void (*hijack_movefunc)(int) = NULL;
 #define BUTTON_FLAGS_UISTATE	(BUTTON_FLAGS_UI|BUTTON_FLAGS_NOTUI)
 #define BUTTON_FLAGS		(0xff000000)
 #define IR_NULL_BUTTON		(~BUTTON_FLAGS)
+
+#define LONGPRESS_DELAY		((HZ)+((HZ)/10)) // delay between press/release for emulated longpresses
 
 // Sony Stalk packets look like this:
 //
@@ -1114,7 +1116,7 @@ hijack_enq_release (hijack_buttonq_t *q, unsigned int rawbutton, unsigned long h
 	if (button != IR_NULL_BUTTON) {
 		button |= (rawbutton & BUTTON_FLAGS_UISTATE);
 		if (rawbutton & BUTTON_FLAGS_LONGPRESS)
-			hold_time = HZ;
+			hold_time = LONGPRESS_DELAY;
 		hijack_enq_button(q, button, hold_time);
 	}
 }
@@ -2300,7 +2302,7 @@ popup_display (int firsttime)
 				popup_got_press = JIFFIES();
 				hijack_enq_button(&hijack_playerq, b, 0);
 				if (button & BUTTON_FLAGS_LONGPRESS)
-					hijack_enq_release(&hijack_playerq, b, HZ);
+					hijack_enq_release(&hijack_playerq, b, LONGPRESS_DELAY);
 			}
 		} else {
 			if (popup_got_press) {

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v217"
+#define HIJACK_VERSION	"v218"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #define __KERNEL_SYSCALLS__
@@ -755,6 +755,8 @@ draw_string (unsigned int rowcol, const unsigned char *s, int color)
 	int firstcol = (EMPEG_SCREEN_COLS*2), firstrow = 0;
 	unsigned char firstchar;
 #endif // ROUND_CORNERS
+	int no_wraplines = row & 0x04000;
+	row &= ~0x4000;
 
 	if (!s || !*s)
 		return rowcol;
@@ -775,6 +777,8 @@ top:	if (row < EMPEG_SCREEN_ROWS) {
 		while ((c = *s)) {
 			int col_adj;
 			if ((c == '\n' && *s++) || -1 == (col_adj = draw_char(row, col, c, foreground, background))) {
+				if (no_wraplines)
+					break;
 				col  = 0;
 				row += KFONT_HEIGHT;
 				goto top;
@@ -2402,7 +2406,7 @@ menu_move (int direction)
 	}
 	empeg_state_dirty = 1;
 }
-
+#if 0 //fixme
 static int
 menu_display (int firsttime)
 {
@@ -2431,6 +2435,76 @@ menu_display (int firsttime)
 	}
 	return NO_REFRESH;
 }
+#else //fixme
+static int
+menu_display (int firsttime)
+{
+	static int old_menu_item, moving;
+	static const hijack_geom_t geom = {2, 2+6+KFONT_HEIGHT, 2, EMPEG_SCREEN_COLS-2};
+	unsigned int rowcol = (geom.first_row+4)|((geom.first_col+6)<<16);
+
+	if (firsttime) {
+		moving = 0;
+		create_overlay(&geom);
+		hijack_last_moved = jiffies ? jiffies : -1;
+		old_menu_item = menu_item;
+		(void)draw_string_spaced(rowcol, menu_table[old_menu_item].label, ENTRYCOLOR);
+	}
+	if (moving || menu_item != old_menu_item) {
+		static char buf[1024];
+		const char *old, *new;
+		static int direction, end, pos, new_menu_item;
+		if (!moving) {
+			moving = 1;
+			new_menu_item = menu_item;
+			if (old_menu_item == 0 && new_menu_item != 1)
+				direction = -1;
+			else if (new_menu_item == 0 && old_menu_item != 1)
+				direction =  1;
+			else if (new_menu_item > old_menu_item)
+				direction =  1;
+			else
+				direction = -1;
+			old = menu_table[old_menu_item].label;
+			new = menu_table[new_menu_item].label;
+			if (direction == -1) {
+				end = 0;
+				strcpy(buf, new);
+				pos = strlen(new);
+				buf[pos++] = ' ';
+				buf[pos++] = ' ';
+				strcpy(buf+pos, old);
+			} else {
+				pos = 0;
+				strcpy(buf, old);
+				end = strlen(old);
+				buf[end++] = ' ';
+				buf[end++] = ' ';
+				strcpy(buf+end, new);
+			}
+		}
+		menu_item = new_menu_item;
+		clear_hijack_displaybuf(COLOR0);
+		pos += direction;
+		if (pos == end) {
+			moving = 0;
+			old_menu_item = menu_item;
+			(void)draw_string_spaced(rowcol|0x4000, menu_table[new_menu_item].label, ENTRYCOLOR);
+		} else {
+			(void)draw_string_spaced(rowcol|0x4000, &buf[pos], COLOR3);
+		}
+		draw_frame(&geom);
+		return NEED_REFRESH;
+	}
+	if (ir_selected) {
+		menu_item_t *item = &menu_table[menu_item];
+		activate_dispfunc(item->dispfunc, item->movefunc);
+	} else if (jiffies_since(hijack_last_moved) > (HZ*5)) {
+		hijack_deactivate(HIJACK_IDLE_PENDING); // menu timed-out
+	}
+	return NO_REFRESH;
+}
+#endif //fixme
 
 static int userland_display_updated = 0;
 

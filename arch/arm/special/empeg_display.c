@@ -685,6 +685,7 @@ void display_queue_draw(struct display_dev *dev)
 }
 
 extern void trigger_display_redraw(void);
+extern int hijack_reducedisplay_enabled;
 
 static void display_refresh(struct display_dev *dev)
 {
@@ -697,7 +698,9 @@ static void display_refresh(struct display_dev *dev)
 	display_queue_flush(dev);
 	display_queue_add(dev);
 	//display_queue_draw(dev);
-	trigger_display_redraw(); // Redundant? (the audio layer does this on a fixed clock)
+	if (hijack_reducedisplay_enabled == 0) {
+		trigger_display_redraw(); // Redundant? (the audio layer does this on a fixed clock)
+	}
 }
 
 /* Display splash screen */

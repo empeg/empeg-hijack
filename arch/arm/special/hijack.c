@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v359"
+#define HIJACK_VERSION	"v360"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -679,6 +679,7 @@ static const char hightemp_menu_label	[] = "High Temperature Warning";
 static const char delaytime_menu_label	[] = "Left/Right Time Alignment";
 static const char homework_menu_label	[] = "Home/Work Location";
 static const char knobdata_menu_label	[] = "Knob Press Redefinition";
+static const char reducedisplay_menu_label[] = "Reduce Display Overhead";
 static const char carvisuals_menu_label	[] = "Restore DC/Car Visuals";
 static const char blankerfuzz_menu_label[] = "Screen Blanker Sensitivity";
 static const char blanker_menu_label	[] = "Screen Blanker Timeout";
@@ -1971,6 +1972,30 @@ saveserial_display (int firsttime)
 	return NEED_REFRESH;
 }
 
+int hijack_reducedisplay_enabled;
+
+static void
+reducedisplay_move (int direction)
+{
+	hijack_reducedisplay_enabled = !hijack_reducedisplay_enabled;
+}
+
+static int
+reducedisplay_display (int firsttime)
+{
+	unsigned int rowcol;
+
+	if (!firsttime && !hijack_last_moved)
+		return NO_REFRESH;
+	hijack_last_moved = 0;
+	clear_hijack_displaybuf(COLOR0);
+	(void)draw_string(ROWCOL(0,0), reducedisplay_menu_label, PROMPTCOLOR);
+	rowcol = draw_string(ROWCOL(2,0), "Reduce Overhead: ", PROMPTCOLOR);
+	(void)   draw_string_spaced(rowcol, disabled_enabled[hijack_reducedisplay_enabled], ENTRYCOLOR);
+	(void)   draw_string(ROWCOL(3,10), "(value is not saved)", PROMPTCOLOR);
+	return NEED_REFRESH;
+}
+
 static void
 carvisuals_move (int direction)
 {
@@ -2992,6 +3017,7 @@ static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 #endif // EMPEG_KNOB_SUPPORTED
 	{ delaytime_menu_label,		delaytime_display,	delaytime_move,		0},
 	{"Reboot Machine",		reboot_display,		NULL,			0},
+	{ reducedisplay_menu_label,	reducedisplay_display,	reducedisplay_move,	0},
 	{ carvisuals_menu_label,	carvisuals_display,	carvisuals_move,	0},
 	{ blankerfuzz_menu_label,	blankerfuzz_display,	blankerfuzz_move,	0},
 	{ blanker_menu_label,		blanker_display,	blanker_move,		0},
@@ -5190,6 +5216,7 @@ hijack_init (void *animptr)
 	char buf[128], msg[32];
 	unsigned long anistart = HZ;
 
+	hijack_reducedisplay_enabled = 1;
 	hijack_khttpd_new_fid_dirs = 1;	// look for new fids directory structure
 	hijack_player_init_pid = 0;
 	hijack_game_animptr = animptr;

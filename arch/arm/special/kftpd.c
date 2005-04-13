@@ -192,6 +192,10 @@ ksock_rw (struct socket *sock, const char *buf, int buf_size, int minimum)
 		else
 			rc = sock_recvmsg(sock, &msg, len, 0);
 		switch (rc) {
+			case 0:
+				if (!sending)
+					return bytecount;
+				break;
 			case -EAGAIN:
 				if (sending) {
 					flags = 0;	// use synchronous send instead
@@ -207,9 +211,10 @@ ksock_rw (struct socket *sock, const char *buf, int buf_size, int minimum)
 					rc = 0;
 				}
 				break;
+			default:
+				printk("ksock_rw(): error: %d\n", rc);
+				return rc;
 		}
-		if (rc < 0 || (!sending && rc == 0))
-			break;
 		bytecount += rc;
 	} while (bytecount < minimum);
 	return bytecount;

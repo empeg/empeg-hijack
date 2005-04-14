@@ -212,8 +212,10 @@ ksock_rw (struct socket *sock, const char *buf, int buf_size, int minimum)
 				}
 				break;
 			default:
-				printk("ksock_rw(): error: %d\n", rc);
-				return rc;
+				if (rc < 0) {
+					printk("ksock_rw(%s): error: %d\n", sending ? "send" : "recv", rc);
+					return rc;
+				}
 		}
 		bytecount += rc;
 	} while (bytecount < minimum);

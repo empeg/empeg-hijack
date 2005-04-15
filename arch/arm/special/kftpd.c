@@ -211,6 +211,8 @@ ksock_rw (struct socket *sock, const char *buf, int buf_size, int minimum)
 					rc = 0;
 				}
 				break;
+			case -ECONNRESET:
+				return rc;
 			default:
 				if (rc < 0) {
 					printk("ksock_rw(%s): error: %d\n", sending ? "send" : "recv", rc);

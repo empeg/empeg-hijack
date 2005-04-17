@@ -1896,7 +1896,8 @@ kftpd_handle_command (server_parms_t *parms)
 		bufsize = 511;	// limit path lengths, so we can use the other half for other stuff
 	n = ksock_rw(parms->clientsock, buf, bufsize, 0);
 	if (n < 0) {
-		printk(KFTPD": ksock_rw() failed, rc=%d\n", n);
+		if (n != -ECONNRESET)
+			printk(KFTPD": ksock_rw() failed, rc=%d\n", n);
 		return -1;
 	} else if (n == 0) {
 		if (parms->verbose)

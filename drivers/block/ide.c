@@ -142,7 +142,9 @@ static int	initializing;     /* set while initializing built-in drivers */
  * ide_lock is used by the Atari code to obtain access to the IDE interrupt,
  * which is shared between several drivers.
  */
+#if defined(__mc68000__) || defined(CONFIG_APUS)
 static int	ide_lock = 0;
+#endif
 
 /*
  * ide_modules keeps track of the available IDE chipset/probe/driver modules.
@@ -731,6 +733,18 @@ void ide_end_drive_cmd (ide_drive_t *drive, byte stat, byte err)
 			args[1] = err;
 			args[2] = IN_BYTE(IDE_NSECTOR_REG);
 		}
+	} else if (rq->cmd == IDE_DRIVE_TASK) {
+		byte *args = (byte *) rq->buffer;
+		rq->errors = !OK_STAT(stat,READY_STAT,BAD_STAT);
+		if (args) {
+			args[0] = stat;
+			args[1] = err;
+			args[2] = IN_BYTE(IDE_NSECTOR_REG);
+			args[3] = IN_BYTE(IDE_SECTOR_REG);
+			args[4] = IN_BYTE(IDE_LCYL_REG);
+			args[5] = IN_BYTE(IDE_HCYL_REG);
+			args[6] = IN_BYTE(IDE_SELECT_REG);
+		}
 	}
 	spin_lock_irqsave(&io_request_lock, flags);
 	drive->queue = rq->next;
@@ -841,7 +855,7 @@ ide_startstop_t ide_error (ide_drive_t *drive, const char *msg, byte stat)
 	if (drive == NULL || (rq = HWGROUP(drive)->rq) == NULL)
 		return ide_stopped;
 	/* retry only "normal" I/O: */
-	if (rq->cmd == IDE_DRIVE_CMD) {
+	if (rq->cmd == IDE_DRIVE_CMD || rq->cmd == IDE_DRIVE_TASK) {
 		rq->errors = 1;
 		ide_end_drive_cmd(drive, stat, err);
 		return ide_stopped;
@@ -1012,6 +1026,19 @@ static ide_startstop_t execute_drive_cmd (ide_drive_t *drive, struct request *rq
 {
 	byte *args = rq->buffer;
 	if (args) {
+		if (rq->cmd == IDE_DRIVE_TASK) {
+ 			byte sel;
+ 			OUT_BYTE(args[1], IDE_FEATURE_REG);
+ 			OUT_BYTE(args[3], IDE_SECTOR_REG);
+ 			OUT_BYTE(args[4], IDE_LCYL_REG);
+ 			OUT_BYTE(args[5], IDE_HCYL_REG);
+ 			sel = (args[6] & ~0x10);
+ 			if (drive->select.b.unit)
+ 				sel |= 0x10;
+ 			OUT_BYTE(sel, IDE_SELECT_REG);
+ 			ide_cmd(drive, args[0], args[2], &drive_cmd_intr);
+ 			return ide_started;
+		}
 #ifdef DEBUG
 		printk("%s: DRIVE_CMD cmd=0x%02x sc=0x%02x fr=0x%02x xx=0x%02x\n",
 		 drive->name, args[0], args[1], args[2], args[3]);
@@ -1019,6 +1046,10 @@ static ide_startstop_t execute_drive_cmd (ide_drive_t *drive, struct request *rq
 		if (args[0] == WIN_SMART) {
 			OUT_BYTE(0x4f, IDE_LCYL_REG);
 			OUT_BYTE(0xc2, IDE_HCYL_REG);
+			OUT_BYTE(args[2], IDE_FEATURE_REG);
+			OUT_BYTE(args[1], IDE_SECTOR_REG);
+			ide_cmd(drive, args[0], args[3], &drive_cmd_intr);
+			return ide_started;
 		}
 		OUT_BYTE(args[2],IDE_FEATURE_REG);
 		ide_cmd(drive, args[0], args[1], &drive_cmd_intr);
@@ -1081,7 +1112,7 @@ static ide_startstop_t start_request (ide_drive_t *drive)
 		return startstop;
 	}
 	if (!drive->special.all) {
-		if (rq->cmd == IDE_DRIVE_CMD) {
+		if (rq->cmd == IDE_DRIVE_CMD || rq->cmd == IDE_DRIVE_TASK) {
 			return execute_drive_cmd(drive, rq);
 		}
 		if (drive->driver != NULL) {
@@ -2277,6 +2308,16 @@ int ide_wait_cmd (ide_drive_t *drive, int cmd, int nsect, int feature, int secto
 	return ide_do_drive_cmd(drive, &rq, ide_wait);
 }
 
+int ide_wait_cmd_task (ide_drive_t *drive, byte *buf)
+{
+	struct request rq;
+
+	ide_init_drive_cmd(&rq);
+	rq.cmd = IDE_DRIVE_TASK;
+	rq.buffer = buf;
+	return ide_do_drive_cmd(drive, &rq, ide_wait);
+}
+
 static int ide_ioctl (struct inode *inode, struct file *file,
 			unsigned int cmd, unsigned long arg)
 {
@@ -2375,7 +2416,18 @@ static int ide_ioctl (struct inode *inode, struct file *file,
 				kfree(argbuf);
 			return err;
 		}
-
+		case HDIO_DRIVE_TASK:
+		{
+			byte args[7], *argbuf = args;
+			int argsize = 7;
+			if (!capable(CAP_SYS_ADMIN) || !capable(CAP_SYS_RAWIO)) return -EACCES;
+			if (copy_from_user(args, (void *)arg, 7))
+				return -EFAULT;
+			err = ide_wait_cmd_task(drive, argbuf);
+			if (copy_to_user((void *)arg, argbuf, argsize))
+				err = -EFAULT;
+			return err;
+		}
 		case HDIO_SCAN_HWIF:
 		{
 			int args[3];

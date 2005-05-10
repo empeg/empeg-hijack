@@ -586,7 +586,6 @@ void rds_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 
 static int rds_read_procmem(char *buf, char **start, off_t offset, int len, int unused)
 {
-	struct rds_dev *dev = rds_devices;
 	len = 0;
 
 	LOG(0);

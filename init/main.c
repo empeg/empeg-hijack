@@ -1389,8 +1389,7 @@ asmlinkage void __init start_kernel(void)
 	memory_start = paging_init(memory_start,memory_end);
 #ifdef CONFIG_SA1100_EMPEG
 	{
-		unsigned int *flash=(unsigned int*)(EMPEG_FLASHBASE+0x2000);
-		printk("empeg-car player (hardware revision %d, serial number %05d) %luMB DRAM\n", flash[0], flash[1], (memory_end - PAGE_OFFSET) >> 20);
+		printk("empeg-car player (hardware revision %d, serial number %05d) %luMB DRAM\n", empeg_hardwarerevision(), get_empeg_id(), (memory_end - PAGE_OFFSET) >> 20);
 		printk("Command line: %s\n", command_line);
 	}
 #endif

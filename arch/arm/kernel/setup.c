@@ -83,7 +83,9 @@ char saved_command_line[COMMAND_LINE_SIZE];
 
 static struct proc_info_item proc_info;
 static const char *machine_name;
+#ifndef CONFIG_EMPEG_EXTRA_RAM
 static char command_line[COMMAND_LINE_SIZE] = { 0, };
+#endif
 
 static char default_command_line[COMMAND_LINE_SIZE] __initdata = CONFIG_CMDLINE;
 static union { char c[4]; unsigned long l; } endian_test __initdata = { { 'l', '?', '?', 'b' } };
@@ -127,6 +129,7 @@ static void __init setup_processor(void)
 	processor._proc_init();
 }
 
+#ifndef CONFIG_EMPEG_EXTRA_RAM
 static unsigned long __init memparse(char *ptr, char **retptr)
 {
 	unsigned long ret = simple_strtoul(ptr, retptr, 0);
@@ -144,6 +147,7 @@ static unsigned long __init memparse(char *ptr, char **retptr)
 	}
 	return ret;
 }
+#endif
 
 /*
  * Initial parsing of the command line.  We need to pick out the
@@ -152,6 +156,23 @@ static unsigned long __init memparse(char *ptr, char **retptr)
 static void __init
 parse_cmdline(char **cmdline_p, char *from)
 {
+#ifdef CONFIG_EMPEG_EXTRA_RAM
+	switch (empeg_hardwarerevision()) {
+		case 9:
+			*cmdline_p = "mem=16m";
+			mem_end = PAGE_OFFSET + 16*1024*1024;
+			break;
+		case 7:
+			*cmdline_p = "mem=12m";
+			mem_end = PAGE_OFFSET + 12*1024*1024;
+			break;
+		default:
+			*cmdline_p = "mem=8m";
+			mem_end = PAGE_OFFSET +  8*1024*1024;
+			break;
+	}
+	strcpy(from,*cmdline_p);
+#else
 	char c = ' ', *to = command_line;
 	int usermem = 0, len = 0;
 
@@ -185,6 +206,7 @@ parse_cmdline(char **cmdline_p, char *from)
 	/* remove trailing spaces */
 	while (*--to == ' ' && to != command_line)
 		*to = '\0';
+#endif // CONFIG_EMPEG_EXTRA_RAM
 }
 
 static void __init
@@ -628,21 +650,36 @@ setup_arch(char **cmdline_p, unsigned long * memory_start_p, unsigned long * mem
  		setup_initrd( 0xd0000000+((1024-320)*1024), (320*1024) );
 #endif
 	}
+#ifdef CONFIG_EMPEG_EXTRA_RAM
+{
+	// Map FLASH memory, so we get access to hwrev/serialno:
+	volatile pgd_t *pagedir = (void *)0xc0004000;
+	pagedir[EMPEG_FLASHBASE >> 20].pgd = 0x00000000 | 0x402;
 
+	// Note: this is a bit of a compiler-dependent mess,
+	// so don't rearrange anything unnecessarily, or it
+	// may break something.  I really should figure out how
+	// to properly do TLB and D-cache flushes here someday..
+	//
+	// With that in mind, this printk() is *necessary*; don't nuke it:
+	printk("Added temporary pagedir entry for flash memory access\n");
+}
+#endif
 	parse_cmdline(cmdline_p, from);
 
 	if (!mem_end)
 		mem_end = PAGE_OFFSET + MEM_SIZE;
 
+#ifdef CONFIG_EMPEG_EXTRA_RAM
+	empeg_setup_bank_mapping(empeg_hardwarerevision());
+	mem_end = check_for_extra_dram(mem_end);
+#else
 	/* Botch revision number */
 	/* Setup the virt/phys mapping tables */
 	if(mem_end < (PAGE_OFFSET + 16*1024*1024))
 		empeg_setup_bank_mapping(7);
 	else
 		empeg_setup_bank_mapping(9);
-
-#ifdef CONFIG_EMPEG_EXTRA_RAM
-	mem_end = check_for_extra_dram(mem_end);
 #endif
 	init_task.mm->start_code = (unsigned long) &_text;
 	init_task.mm->end_code	 = (unsigned long) &_etext;

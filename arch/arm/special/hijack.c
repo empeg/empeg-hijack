@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v430"
+#define HIJACK_VERSION	"v431"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -5184,7 +5184,7 @@ set_fan_control (void)
 		i2c_write8(FAN_CONTROL_DEVADDR, FAN_CONTROL_START, NULL, 0);	// (re-)start conversions
 	#if 0
 		i2c_read8(FAN_CONTROL_DEVADDR,  FAN_CONTROL_TEMP,   tmp, sizeof(tmp));	// read current temperature
-		printk("fan control temperature = %d\n", (int)tmp[0]);
+		printk("fan control temperature = %d\n", (short)tmp[0]);
 	#endif
 	}
 }

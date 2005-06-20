@@ -394,7 +394,7 @@ static _INLINE_ void receive_chars(struct async_struct *info,
 			// we want to turn off the "fake_tuner" (if enabled).
 			// But we can only safely do so after the END of
 			// the first full tuner packet (which we discard here,
-			// to avoid duplication from the fake_tuner repsonses.
+			// to avoid duplication from the fake_tuner responses.
 			//
 			if (hijack_fake_tuner) {
 				if (pktlen == 0) {

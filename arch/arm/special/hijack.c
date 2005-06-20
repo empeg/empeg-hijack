@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v431"
+#define HIJACK_VERSION	"v432"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -503,6 +503,7 @@ int hijack_khttpd_new_fid_dirs;			// 0 == don't look for new fids sub-directorie
 // Externally tuneable parameters for config.ini; the voladj_parms are also tuneable
 //
 static	int hijack_buttonled_off_level;		// button brightness when player is "off"
+static	int hijack_buttonled_dim_level;		// when non-zero, button brightness when headlights are on
 static	int hijack_dc_servers;			// 1 == allow kftpd/khttpd when on DC power
 	int hijack_disable_emplode;		// 1 == block TCP port 8300 (Emplode/Emptool)
 	int hijack_extmute_off;			// buttoncode to inject when EXT-MUTE goes inactive
@@ -611,6 +612,7 @@ static const hijack_option_t hijack_option_table[] =
 // config.ini string		address-of-variable		default			howmany	min	max
 //===========================	==========================	=========		=======	===	================
 {"buttonled_off",		&hijack_buttonled_off_level,	1,			1,	0,	7},
+{"buttonled_dim",		&hijack_buttonled_dim_level,	0,			1,	0,	7},
 {"dc_servers",			&hijack_dc_servers,		0,			1,	0,	1},
 {"disable_emplode",		&hijack_disable_emplode,	0,			1,	0,	1},
 {"spindown_seconds",		&hijack_spindown_seconds,	30,			1,	0,	(239 * 5)},
@@ -2281,8 +2283,11 @@ hijack_adjust_buttonled (int power)
 		brightness = hijack_buttonled_off_level;
 	else
 		brightness = 0;
-	if (headlight_sense_is_active())
-		brightness = (brightness + 1) / 2;
+	if (headlight_sense_is_active()) {
+		brightness = hijack_buttonled_dim_level;
+		if (!brightness)
+			brightness = (brightness + 1) / 2;
+	}
 	brightness = bright_levels[brightness];
 	if (hijack_buttonled_level != brightness) {
 		// don't do adjustments until buttons have been idle for half a second or more

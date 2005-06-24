@@ -1242,7 +1242,7 @@ send_playlist (server_parms_t *parms, char *path)
 	static char	*tagtypes[2] = {"playlist", "tune"};
 	static char	*labels[] = {"type=", "artist=", "title=", "codec=", "duration=", "source=", "length=", "genre=", "year=", "comment=", "tracknr=", "offset=", "options=", "bitrate=", "samplerate=", NULL};
 	struct 		{char *type, *artist, *title, *codec, *duration, *source, *length, *genre, *year, *comment, *tracknr, *offset, *options, *bitrate, *samplerate;} tags;
-	const char	*tagtype, *enc;
+	const char	*tagtype, *encoding;
 	file_xfer_t	xfer;
 
 	// extract fid from path[]:
@@ -1286,8 +1286,9 @@ send_playlist (server_parms_t *parms, char *path)
 	}
 
 	// Send the playlist header, in either html, m3u, or xml format:
-	used += sprintf(xfer.buf+used, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s\r\n\r\n",
-		playlist_format[parms->generate_playlist - 1]);
+	encoding = (player_version >= MK2_PLAYER_v3a1) ? "UTF-8" : "ISO-8859-1";
+	used += sprintf(xfer.buf+used, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s; charset-%s\r\n\r\n",
+		playlist_format[parms->generate_playlist - 1], encoding);
 
 	switch (parms->generate_playlist) {
 		case html:
@@ -1311,13 +1312,12 @@ send_playlist (server_parms_t *parms, char *path)
 			break;
 		case xml: // xml
 		{	int full_access = parms->auth == auth_full;
-			enc = (player_version >= MK2_PLAYER_v3a1) ? "UTF-8" : "iso-8859-1";
 			used += sprintf(xfer.buf+used,
 				"<?xml version=\"1.0\" encoding=\"%s\"?>\r\n"
 				"<?xml-stylesheet type=\"text/xsl\" href=\"%s\"?>\r\n"
 				"<%s stylesheet=\"%s\" host=\"%s\" allow_files=\"%d\" allow_commands=\"%d\" "
 				"type=\"%s\" tagfid=\"%x\" fid=\"%x\" length=\"%s\" "
-				"year=\"%s\" options=\"%s\"", enc,
+				"year=\"%s\" options=\"%s\"", encoding,
 				parms->style, (fidtype == 'T' ? "item" : "playlist"), parms->style, parms->hostname, full_access,
 				full_access, tagtype, pfid, pfid^1, tags.length, tags.year, tags.options);
 			used += encode_tag1(xfer.buf+used, "genre",   tags.genre);

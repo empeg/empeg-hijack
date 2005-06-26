@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v434"
+#define HIJACK_VERSION	"v435"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -5402,7 +5402,7 @@ hijack_restore_settings (char *buf, char *msg)
 }
 #endif // EMPEG_KNOB_SUPPORTED
 	if (force_power == FORCE_AC || force_power == FORCE_DC) {
-		empeg_on_dc_power = (force_power == FORCE_AC) ? 0 : 1;
+		empeg_on_dc_power = (force_power == FORCE_DC);
 		sprintf(msg, "Forced %s mode", acdc_text[empeg_on_dc_power]);
 		printk("%s\n", msg);
 		//

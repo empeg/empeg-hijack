@@ -119,20 +119,19 @@ static int i2c_getdatabit(void)
 
 static void i2c_putdatabit(int bit)
 {
+	unsigned int old_bit;
 	/* First set the data bit (clock low) */
 	GPCR = IIC_CLOCK;
-	if (bit) {
-	    if (GPLR & IIC_DATAOUT) {
-		GPCR = IIC_DATAOUT;
+	old_bit = !(GPLR & IIC_DATAOUT);
+	if (bit != old_bit) {
+		if (bit)
+			GPCR = IIC_DATAOUT;
+		else
+			GPSR = IIC_DATAOUT;
 		i2c_delay_long();
-	    }
+	} else {
+		i2c_delay_short();
 	}
-	else {
-	    if (!(GPLR & IIC_DATAOUT)) {
-		GPSR = IIC_DATAOUT;
-	    }
-	}
-	i2c_delay_short();
 
 	/* Now trigger the clock */
 	GPSR = IIC_CLOCK;
@@ -206,7 +205,8 @@ static int i2c_putbyte(int byte)
 		i2c_putdatabit(byte & (1 << i));
 	
 	/* data high (ie, no drive) */
-	GPCR = IIC_DATAOUT | IIC_CLOCK;
+	GPCR = IIC_DATAOUT;
+	GPCR = IIC_CLOCK;
 
 	i2c_delay_long();
 	

@@ -1280,8 +1280,7 @@ static int rs_write(struct tty_struct * tty, int from_user,
 	int	c, ret = 0;
 	struct async_struct *info = (struct async_struct *)tty->driver_data;
 	unsigned long flags;
-	extern int buggy_v3alpha;	// hijack.c
-				
+
 	if (serial_paranoia_check(info, tty->device, "rs_write"))
 		return 0;
 
@@ -1291,10 +1290,7 @@ static int rs_write(struct tty_struct * tty, int from_user,
 	save_flags(flags);
 
 #ifdef CONFIG_SMC9194_TIFON	// Mk2 or later? (Mk1 has no ethernet chip)
-	//
-	// Some v3alphas seem to have console/notify streams reversed from v2final.  Weird.
-	//
-	if (from_user == buggy_v3alpha && hijack_serial_notify(buf, count))
+	if (!from_user && hijack_serial_notify(buf, count))
 		ret = count;
 	else
 #endif

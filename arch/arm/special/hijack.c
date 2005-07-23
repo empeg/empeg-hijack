@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v435"
+#define HIJACK_VERSION	"v436"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -2401,23 +2401,7 @@ knobdata_display (int firsttime)
 	return NEED_REFRESH;
 }
 
-int player_version = 0, buggy_v3alpha = 0;		// also referenced in drivers/char/serial_sa1100.c
-
-static int
-undo_lavatory_floor_visual (unsigned char *statebuf)
-{
-	int was_bad = 0;
-	unsigned char offset;
-
-	for (offset = 0x1c ; offset <= 0x1f; ++offset) {
-		unsigned char *vis = statebuf + offset;
-		if (*vis == 0x19 || *vis == 0x18) {	// lavatory floor visual -- badly broken!
-			*vis = 0x1a;
-			was_bad = 1;
-		}
-	}
-	return was_bad;
-}
+int player_version = 0;		// used in kftpd.c, possibly elsewhere
 
 static void
 get_player_version (void)
@@ -2427,27 +2411,9 @@ get_player_version (void)
 	struct stat st;
 
 	set_fs(KERNEL_DS);
-	if (0 == sys_newstat("/proc/self/exe", &st)) {
+	if (0 == sys_newstat("/proc/self/exe", &st))
 		player_version = st.st_size;
-	}
 	set_fs(old_fs);
-	switch (player_version) {
-		case MK2_PLAYER_v3a1:
-		case MK2_PLAYER_v3a2:
-		case MK2_PLAYER_v3a3:
-		case MK2_PLAYER_v3a5:
-		case MK2_PLAYER_v3a6:
-			buggy_v3alpha = 1;
-			break;
-		default:
-			buggy_v3alpha = 0;
-			break;
-	}
-	if (player_version == MK2_PLAYER_v3a8) {
-		if (undo_lavatory_floor_visual(*empeg_state_writebuf)) {
-			undo_lavatory_floor_visual(hijack_get_state_read_buffer());
-		}
-	}
 }
 
 #endif // EMPEG_KNOB_SUPPORTED
@@ -2460,13 +2426,6 @@ knobseek_move_visuals (int direction)
 	unsigned int button;
 
 	button = (direction > 0) ? IR_RIO_VISUAL_PRESSED : IR_PREV_VISUAL_PRESSED;
-#ifdef EMPEG_KNOB_SUPPORTED
-	if (button == IR_PREV_VISUAL_PRESSED && player_version >= MK2_PLAYER_v3a1) {
-		if ((empeg_tuner_present || hijack_fake_tuner) && get_current_mixer_source() != IR_FLAGS_TUNER) {
-			button = IR_KSNEXT_PRESSED;
-		}
-	}
-#endif // EMPEG_KNOB_SUPPORTED
 	hijack_enq_button_pair(button);
 }
 
@@ -5147,10 +5106,6 @@ reset_hijack_options (void)
 		}
 		++h;
 	}
-#ifdef EMPEG_KNOB_SUPPORTED
-	if (buggy_v3alpha)
-		hijack_spindown_seconds /= 2;
-#endif
 }
 
 #ifdef CONFIG_EMPEG_I2C_FAN_CONTROL
@@ -5169,29 +5124,33 @@ int i2c_read8  (unsigned char device, unsigned char command, unsigned char *data
 #define FAN_CONTROL_CONFIG	0xac	// read/write configuration register
 
 static void
+fan_write8 (unsigned char command, unsigned char *data, int count)
+{
+	if (i2c_write8(FAN_CONTROL_DEVADDR, command, data, count)) {
+		printk("Fan control error\n");
+		show_message("Fan control error", 10*HZ);
+	}
+}
+
+static void
 set_fan_control (void)
 {
 	unsigned char tmp[2];
 
-	if (i2c_write8(FAN_CONTROL_DEVADDR, FAN_CONTROL_STOP, NULL, 0)) {	// stop conversions
-		fan_control_enabled = 0;
-		printk("Fan control error; disabling\n");
-		show_message("Fan control error", 5*HZ);
-	} else {
-		tmp[0] = 0x02;	// 9-bit continuous mode, T-Out active high
-		i2c_write8(FAN_CONTROL_DEVADDR, FAN_CONTROL_CONFIG, tmp, 1);	// configure chip
-		tmp[0] = fan_control_low;
-		tmp[1] = 0;
-		i2c_write8(FAN_CONTROL_DEVADDR, FAN_CONTROL_LOW,    tmp, 2);	// set low temp threshold
-		tmp[0] = fan_control_high;
-		//tmp[1] = 0;
-		i2c_write8(FAN_CONTROL_DEVADDR, FAN_CONTROL_HIGH,   tmp, 2);	// set high temp threshold
-		i2c_write8(FAN_CONTROL_DEVADDR, FAN_CONTROL_START, NULL, 0);	// (re-)start conversions
-	#if 0
-		i2c_read8(FAN_CONTROL_DEVADDR,  FAN_CONTROL_TEMP,   tmp, sizeof(tmp));	// read current temperature
-		printk("fan control temperature = %d\n", (short)tmp[0]);
-	#endif
-	}
+	fan_write8(FAN_CONTROL_STOP,  NULL, 0);		// stop conversions
+	tmp[0] = 0x02;					// 9-bit continuous mode, T-Out active high
+	fan_write8(FAN_CONTROL_CONFIG, tmp, 1);		// configure chip
+	tmp[0] = fan_control_low;
+	tmp[1] = 0;
+	fan_write8(FAN_CONTROL_LOW,    tmp, 2);		// set low temp threshold
+	tmp[0] = fan_control_high;
+	//tmp[1] = 0;
+	fan_write8(FAN_CONTROL_HIGH,   tmp, 2);		// set high temp threshold
+	fan_write8(FAN_CONTROL_START, NULL, 0);		// (re-)start conversions
+#if 1
+	i2c_read8(FAN_CONTROL_DEVADDR,  FAN_CONTROL_TEMP,   tmp, sizeof(tmp));	// read current temperature
+	printk("fan control temperature = %d\n", (short)tmp[0]);
+#endif
 }
 
 #endif // CONFIG_EMPEG_I2C_FAN_CONTROL

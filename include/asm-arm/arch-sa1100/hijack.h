@@ -67,6 +67,7 @@ extern int player_version;	// hijack.c
 #define MK2_PLAYER_v3a6		1915200
 #define MK2_PLAYER_v3a7		1919880
 #define MK2_PLAYER_v3a8		1893660
+#define MK2_PLAYER_v3a10	1899484
 
 #define INRANGE(c,min,max)	((c) >= (min) && (c) <= (max))
 #define TOUPPER(c)		(INRANGE((c),'a','z') ? ((c) - ('a' - 'A')) : (c))

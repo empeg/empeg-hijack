@@ -451,10 +451,12 @@ static struct machine_desc machine_desc[] __initdata = {
 	}
 };
 
-#ifdef CONFIG_EMPEG_EXTRA_RAM
 
 #define ONE_MB		(1024 * 1024)
 #define _16MB		(PAGE_OFFSET + (16 * ONE_MB))
+
+#ifdef CONFIG_EMPEG_EXTRA_RAM
+
 #define NPATTERNS	8
 
 volatile unsigned long patterns [NPATTERNS]

@@ -1287,7 +1287,7 @@ send_playlist (server_parms_t *parms, char *path)
 
 	// Send the playlist header, in either html, m3u, or xml format:
 	encoding = (player_version >= MK2_PLAYER_v3a1) ? "UTF-8" : "ISO-8859-1";
-	used += sprintf(xfer.buf+used, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s; charset-%s\r\n\r\n",
+	used += sprintf(xfer.buf+used, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s; charset=%s\r\n\r\n",
 		playlist_format[parms->generate_playlist - 1], encoding);
 
 	switch (parms->generate_playlist) {

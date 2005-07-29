@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v438"
+#define HIJACK_VERSION	"v439"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -2284,8 +2284,9 @@ hijack_adjust_buttonled (int power)
 	else
 		brightness = 0;
 	if (headlight_sense_is_active()) {
-		brightness = hijack_buttonled_dim_level;
-		if (!brightness)
+		if (hijack_buttonled_dim_level)
+			brightness = hijack_buttonled_dim_level;
+		else
 			brightness = (brightness + 1) / 2;
 	}
 	brightness = bright_levels[brightness];

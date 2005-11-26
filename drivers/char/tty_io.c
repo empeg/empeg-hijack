@@ -2170,20 +2170,17 @@ static int ttyH_write_room (struct tty_struct *tty)
  */
 static int ttyH_write (struct tty_struct *tty, int from_user, const unsigned char *buf, int count)
 {
-	extern int hijack_suppress_notify;				// hijack.c
 	extern void hijack_serial_notify(const unsigned char *, int);	// notify.c
 	unsigned char *outp, out[ttyH_buf_size];
 
 	if (from_user) {
 		if (count >= ttyH_buf_size)
 			count = ttyH_buf_size - 1;
-		if (copy_from_user(out, buf, count)) {
-			printk("ttyH_write: %p EFAULT\n", buf);
+		if (copy_from_user(out, buf, count))
 			return -EFAULT;
-		}
 		outp = out;
 	} else {
-		outp = buf;
+		outp = (unsigned char *)buf;
 	}
 	hijack_serial_notify(outp, count);
 	return count;
@@ -2196,7 +2193,7 @@ static void ttyH_break_ctl (struct tty_struct *tty, int dont_care)
 /* enqueue inbound commands for player */
 void ttyH_rx (const char *buf, int size)
 {
-	struct tty_struct *tty = ttyH_table[1];
+	struct tty_struct *tty = ttyH_table[0];
 	unsigned long flags;
 
 	if (!tty)

@@ -813,6 +813,23 @@ int search_binary_handler(struct linux_binprm *bprm,struct pt_regs *regs)
 	return retval;
 }
 
+static void reopen_std_streams (const char *path)
+{
+	extern asmlinkage int sys_dup(int);
+	mm_segment_t old_fs = get_fs();
+
+	sys_close(2);
+	sys_close(1);
+	sys_close(0);
+
+	set_fs(KERNEL_DS);
+	sys_open(path, O_RDWR, 0);
+	set_fs(old_fs);
+
+	sys_dup(0);
+	sys_dup(1);
+}
+
 /*
  * sys_execve() executes a new program.
  */
@@ -852,14 +869,12 @@ int do_execve(char * filename, char ** argv, char ** envp, struct pt_regs * regs
 	}
 	if (!strcmp(filename, "/empeg/bin/player")) {
 		extern pid_t	hijack_player_init_pid;
-		extern int	empeg_on_dc_power, hijack_saveserial;
+		extern int	empeg_on_dc_power, hijack_player_serial;
 		hijack_player_init_pid = -1;	// cannot use current->pid yet because player forks later
 		fetch_zoneinfo = 1;
-		if (bprm.argc == 1 && empeg_on_dc_power && hijack_saveserial) {
-			static char *a[] = {"player", "-s-"};
-			argv = a;
-			bprm.argc = subst_argv = 2;
-			printk("\nplayer starting with \"-s-\" flag\n");
+		if (!hijack_player_serial) {
+			reopen_std_streams("/proc/ttyH");
+			printk("\nplayer redirected to /proc/ttyH\n");
 		}
 	}
 	retval = prepare_binprm(&bprm);

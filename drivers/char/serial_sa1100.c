@@ -313,14 +313,12 @@ static _INLINE_ void rs_sched_event(struct async_struct *info,
 	mark_bh(SERIAL_BH);
 }
 
-void hijack_serial_rx_insert (const char *buf, int size, int port)
-{
 #ifdef CONFIG_HIJACK_TUNER
-	struct async_struct *info = port ? IRQ_ports[17] : IRQ_ports[15];
+void hijack_tuner_rx_insert (const char *buf, int size)
+{
+	struct async_struct *info = IRQ_ports[15];
 
-	if (!info) {
-		printk("hijack_serial_rx_insert: serial port(%d) not currently open\n", port);
-	} else {
+	if (info) {
 		struct tty_struct *tty = info->tty;
 		struct	async_icount *icount = &info->state->icount;
 		unsigned long flags;
@@ -339,8 +337,8 @@ void hijack_serial_rx_insert (const char *buf, int size, int port)
 		tty_flip_buffer_push(tty);
 		restore_flags(flags);
 	}
-#endif // CONFIG_HIJACK_TUNER
 }
+#endif // CONFIG_HIJACK_TUNER
 
 extern int hijack_fake_tuner, hijack_trace_tuner;
 static int tuner_loopback = 0;
@@ -534,7 +532,7 @@ fake_tuner (unsigned char c)
 			response |= ((response >> 16) + (response >> 8)) << 24;
 			if (hijack_trace_tuner)
 				printk("fake_tuner: insert=%08x\n", ntohl(response));
-			hijack_serial_rx_insert ((char *)&response, 4, 0);
+			hijack_tuner_rx_insert ((char *)&response, 4);
 	}
 }
 #endif CONFIG_HIJACK_TUNER
@@ -1222,8 +1220,7 @@ static void change_speed(struct async_struct *info)
 	}
 }
 
-#ifdef CONFIG_SMC9194_TIFON	// Mk2 or later? (Mk1 has no ethernet chip)
-extern int hijack_serial_notify (const unsigned char *, int);
+#ifdef CONFIG_HIJACK_TUNER	// Mk2 or later
 #include <asm/arch/hijack.h>
 #endif
 
@@ -1237,10 +1234,6 @@ static void rs_put_char(struct tty_struct *tty, unsigned char ch)
 
 	if (!tty || !info->xmit_buf)
 		return;
-#ifdef CONFIG_SMC9194_TIFON	// Mk2 or later? (Mk1 has no ethernet chip)
-	if (hijack_serial_notify(&ch, 1))
-		return;
-#endif
 
 	save_flags(flags); cli();
 	if (info->xmit_cnt >= SERIAL_XMIT_SIZE - 1) {
@@ -1289,11 +1282,6 @@ static int rs_write(struct tty_struct * tty, int from_user,
 
 	save_flags(flags);
 
-#ifdef CONFIG_SMC9194_TIFON	// Mk2 or later? (Mk1 has no ethernet chip)
-	if (!from_user && hijack_serial_notify(buf, count))
-		ret = count;
-	else
-#endif
 	if (from_user) {
 		down(&tmp_buf_sem);
 		while (1) {

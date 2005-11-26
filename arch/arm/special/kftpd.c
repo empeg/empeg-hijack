@@ -38,7 +38,7 @@ extern int hijack_reboot;
 extern void hijack_set_voladj_parms(void);
 extern int hijack_get_set_option (unsigned char **s_p);
 extern int remount_drives (int writeable);
-extern void hijack_serial_rx_insert (const char *buf, int size, int port);	// drivers/char/serial_sa1100.c
+extern void ttyH_rx (const char *buf, int size);	// drivers/char/tty_io.c
 extern int hijack_glob_match (const char *n, const char *p);
 extern tm_t *hijack_convert_time(time_t, tm_t *);	// from arch/arm/special/notify.c
 extern void sys_exit(int);
@@ -1790,8 +1790,8 @@ hijack_do_command (void *sparms, char *buf)
 					hijack_set_voladj_parms();
 				goto next;
 			} else if (!strxcmp(s, "SERIAL=", 1) && *(s += 7)) {
-				hijack_serial_rx_insert(s, strlen(s), 1);
-				hijack_serial_rx_insert("\n", 1, 1);
+				ttyH_rx(s, strlen(s));
+				ttyH_rx("\n", 1);
 				goto next;
 			}
 		}

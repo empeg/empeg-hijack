@@ -91,6 +91,7 @@
 #include <linux/kbd_kern.h>
 #include <linux/vt_kern.h>
 #include <linux/selection.h>
+#include <linux/serial.h>
 
 #include <linux/kmod.h>
 
@@ -373,7 +374,7 @@ static long long tty_lseek(struct file * file,	long long offset, int orig)
 	return -ESPIPE;
 }
 
-static struct file_operations tty_fops = {
+struct file_operations tty_fops = {
 	tty_lseek,
 	tty_read,
 	tty_write,
@@ -2143,6 +2144,83 @@ static struct tty_driver dev_ptmx_driver;
 static struct tty_driver dev_console_driver;
 #endif
 
+static struct tty_driver  ttyH_driver;
+static int                ttyH_refcount;
+static struct tty_struct *ttyH_table[1];
+static struct termios    *ttyH_termios[1];
+static struct termios    *ttyH_termios_locked[1];
+static const int	  ttyH_buf_size = 128;
+
+static int ttyH_open (struct tty_struct *tty, struct file *filp)
+{
+	return 0;
+}
+
+static int ttyH_write_room (struct tty_struct *tty)
+{
+	return ttyH_buf_size - 1;
+}
+
+/*
+ * handle outbound characters from player
+ *
+ * NOTE: the "from_user" parm is really a (struct file *) pointer!
+ * This code gets invoked from tty_io.c, as the "write()" function
+ * that is called from within do_tty_write().
+ */
+static int ttyH_write (struct tty_struct *tty, int from_user, const unsigned char *buf, int count)
+{
+	extern int hijack_suppress_notify;				// hijack.c
+	extern void hijack_serial_notify(const unsigned char *, int);	// notify.c
+	unsigned char *outp, out[ttyH_buf_size];
+
+	if (from_user) {
+		if (count >= ttyH_buf_size)
+			count = ttyH_buf_size - 1;
+		if (copy_from_user(out, buf, count)) {
+			printk("ttyH_write: %p EFAULT\n", buf);
+			return -EFAULT;
+		}
+		outp = out;
+	} else {
+		outp = buf;
+	}
+	hijack_serial_notify(outp, count);
+	return count;
+}
+
+static void ttyH_break_ctl (struct tty_struct *tty, int dont_care)
+{
+}
+
+/* enqueue inbound commands for player */
+void ttyH_rx (const char *buf, int size)
+{
+	struct tty_struct *tty = ttyH_table[1];
+	unsigned long flags;
+
+	if (!tty)
+		return;
+	save_flags_clif(flags);
+	while (size-- > 0) {
+		while (tty->flip.count >= TTY_FLIPBUF_SIZE)
+			schedule();	// wait for some room in buffer
+		*tty->flip.char_buf_ptr = *buf++;
+		*tty->flip.flag_buf_ptr = 0;
+		tty->flip.flag_buf_ptr++;
+		tty->flip.char_buf_ptr++;
+		tty->flip.count++;
+	}
+	tty_flip_buffer_push(tty);
+	restore_flags(flags);
+}
+
+/* return count of chars waiting to be transmitted */
+static int  ttyH_chars_in_buffer (struct tty_struct *tty)
+{
+	return 0;
+}
+
 /*
  * Ok, now we can initialize the rest of the tty devices and can count
  * on memory allocations, interrupts etc..
@@ -2209,6 +2287,31 @@ __initfunc(int tty_init(void))
 
 	kbd_init();
 #endif
+
+	ttyH_driver = dev_tty_driver;
+	ttyH_driver.driver_name = "/proc/ttyH";
+	ttyH_driver.name = dev_tty_driver.driver_name + 6;
+	ttyH_driver.major = 4;
+	ttyH_driver.minor_start = 64 + 4;
+	ttyH_driver.type = TTY_DRIVER_TYPE_SERIAL;
+	ttyH_driver.subtype = SERIAL_TYPE_NORMAL;
+	ttyH_driver.init_termios = tty_std_termios;
+	ttyH_driver.init_termios.c_cflag = B115200 | CS8 | CREAD | HUPCL | CLOCAL;
+	ttyH_driver.flags = TTY_DRIVER_REAL_RAW;
+	ttyH_driver.refcount = &ttyH_refcount;
+	ttyH_driver.table = ttyH_table;
+	ttyH_driver.termios = ttyH_termios;
+	ttyH_driver.termios_locked = ttyH_termios_locked;
+
+	ttyH_driver.open = ttyH_open;
+	ttyH_driver.write = ttyH_write;
+	ttyH_driver.write_room = ttyH_write_room;
+	ttyH_driver.break_ctl = ttyH_break_ctl;
+	ttyH_driver.chars_in_buffer = ttyH_chars_in_buffer;
+
+	if (tty_register_driver(&ttyH_driver))
+		panic("Couldn't register /dev/ttyH driver\n");
+
 #ifdef CONFIG_ESPSERIAL  /* init ESP before rs, so rs doesn't see the port */
 	espserial_init();
 #endif

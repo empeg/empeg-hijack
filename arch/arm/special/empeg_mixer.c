@@ -923,7 +923,7 @@ void empeg_mixer_select_input(int input)
 	  { 0xffc, 0x0086 }, /* level IAC off=e080 */
 	  { 0xffb, 0x0aed },
 	  { 0xffa, 0x1048 },
-	  { 0xff9, 0x0020 }, /* no I2S out */
+	  { 0xff9, 0xD020 }, /* I2S out */
 	  { 0xff3, 0x0000 },
 	  { 0,0 } };
 	
@@ -934,7 +934,7 @@ void empeg_mixer_select_input(int input)
 	  { 0xffc, 0x0000 }, /* level IAC off=e080 */
 	  { 0xffb, 0x0aed },
 	  { 0xffa, 0x1044 },
-	  { 0xff9, 0x0000 }, /* no I2S out */
+	  { 0xff9, 0xD000 }, /* I2S out */
 	  { 0xff3, 0x0000 },
 	  { 0,0 } };
 	
@@ -945,7 +945,7 @@ void empeg_mixer_select_input(int input)
 	  { 0xffc, 0xe086 },
 	  { 0xffb, 0x0aed },
 	  { 0xffa, 0x1048 },
-	  { 0xff9, 0x1240 }, /* I2S input */
+	  { 0xff9, 0x1240 }, /* I2S out */
 	  { 0xff3, 0x0000 },
 	  { 0,0 } };
 
@@ -957,7 +957,7 @@ void empeg_mixer_select_input(int input)
 	  { 0xffc, 0x6080 }, /*LEVEL_IAC*/
 	  { 0xffb, 0x0aed }, /*IAC*/
 	  { 0xffa, 0x904a }, /*SEL*/
-	  { 0xff9, 0x0000 }, /*HOST*/ /* no I2S out */
+	  { 0xff9, 0xD000 }, /*HOST*/ /* I2S out */
 	  { 0xff3, 0x0000 }, /*RDS_CONTROL*/
 	  { 0,0 } };
 

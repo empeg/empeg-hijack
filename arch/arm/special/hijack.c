@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v443"
+#define HIJACK_VERSION	"v444"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -538,6 +538,7 @@ static	int hijack_standby_minutes;		// number of minutes after screen blanks bef
 	int hijack_trace_fs;			// trace major filesystem accesses, on serial console
 	int hijack_standbyLED_on, hijack_standbyLED_off;	// on/off duty cycle for standby LED
 static	int hijack_keypress_flash;		// flash display when buttons are pressed
+	unsigned int hijack_visuals_gain;	// gain factor for cs4321a sampling (FM & AUX)
 
 
 // Bass Treble Adjustment stuff follows  --genixia
@@ -668,6 +669,7 @@ static const hijack_option_t hijack_option_table[] =
 {"bass_q",			&hijack_bass_q,			0x4b00,			1,	0x0000,	0xffff}, // Useful in config.ini to set my suggested values as default
 {"treble_freq",			&hijack_treble_freq,		0x6d50,			1,	0x0000,	0xffff}, // and for testing purposes. We shouldn't advertise these settings
 {"treble_q",			&hijack_treble_q,		0xc800,			1,	0x0000,	0xffff}, // as we don't know what they really mean.  --genixia
+{"visuals_gain",		&hijack_visuals_gain,		0x1f,			1,	0,	0x1f},
 {"volume_boost_FM",		&hijack_volboost[0],		0,			1,	-100,	100},
 {"volume_boost_MP3",		&hijack_volboost[1],		0,			1,	-100,	100},
 {"volume_boost_AUX",		&hijack_volboost[2],		0,			1,	-100,	100},

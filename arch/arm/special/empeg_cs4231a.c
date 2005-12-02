@@ -176,6 +176,7 @@ static int setmode(struct cs4231_dev *dev, int channel, int rate, int stereo,
 	int a=0,timeout=jiffies+HZ;
 	int stopped = 0;
 
+//printk("channel=%d, rate=%d, stereo=%d, gain=%d\n", channel, rate, stereo, gain);
 	if (stereo >= 0 || rate >= 0)
 	{
 		stopped = 1;
@@ -186,7 +187,7 @@ static int setmode(struct cs4231_dev *dev, int channel, int rate, int stereo,
 
 	if (channel>=0) {
 		/* Select channel */
-		int chbyte=(channel<<6),gain;
+		unsigned int chbyte=(channel<<6),gain;
 
 		/* Valid? */
 		if (channel>EMPEG_AUDIOIN_CHANNEL_MIC) return -EINVAL;
@@ -195,10 +196,10 @@ static int setmode(struct cs4231_dev *dev, int channel, int rate, int stereo,
 		if (channel==EMPEG_AUDIOIN_CHANNEL_MIC) chbyte|=0x20;
 
 		INDEX(LEFT_INPUT);
-		gain=READDATA();
-		WRITEDATA(chbyte|(gain&0x1f));	
+		gain=READDATA() & 0x0f;
+		WRITEDATA(chbyte|gain);	
 		INDEX(RIGHT_INPUT);
-		WRITEDATA(chbyte|(gain&0x1f));
+		WRITEDATA(chbyte|gain);
 
 		/* Update structure */
 		dev->channel=channel;
@@ -206,13 +207,25 @@ static int setmode(struct cs4231_dev *dev, int channel, int rate, int stereo,
 
 	/* Setting gain? */
 	if (gain>=0) {
+		extern unsigned int hijack_visuals_gain;
+		unsigned int chbyte;
+
 		/* Set gain on left/right: each increment is 1.5dB gain */
-		if (gain>15) return -EINVAL;
+		if (gain > 0xf) return -EINVAL;
 
 		INDEX(LEFT_INPUT);
-		WRITEDATA((READDATA()&0xf0)|gain);
+		chbyte=READDATA();
+		if (hijack_visuals_gain) {
+			if ((chbyte >> 6) != EMPEG_AUDIOIN_CHANNEL_MIC) {
+				chbyte &= 0xc0;
+				gain = hijack_visuals_gain & 0x1f;
+				if ((gain & 0x10)) /* +20dB boost? */
+					gain = (gain & 0x0f) | 0x20;
+			}
+		}
+		WRITEDATA((chbyte&0xe0)|gain);
 		INDEX(RIGHT_INPUT);
-		WRITEDATA((READDATA()&0xf0)|gain);
+		WRITEDATA((READDATA()&0xe0)|gain);
 
 		/* Update structure */
 		dev->gain=gain;
@@ -297,12 +310,36 @@ static int setmode(struct cs4231_dev *dev, int channel, int rate, int stereo,
 	return(0);
 }
 
+static unsigned int cs4231_get_rx_byte (struct cs4231_dev *dev, int *head_p)
+{
+	int head = *head_p;
+
+	if (--head < 0)
+		head = CS4231_BUFFER_SIZE - 1;
+	*head_p = head;
+	return dev->rx_buffer[head];
+}
+
 static int cs4231_read_procmem(char *buf, char **start, off_t offset, int len, int unused)
 {
 	struct cs4231_dev *dev = cs4231_devices;
-	len = 0;
+	int s1, s2, head;
+	unsigned long flags;
 
+	/*
+	 * Get most recent sample pair from the rx_buffer
+	 */
+	save_flags_clif(flags);
+	head = dev->rx_head;
+	s1  = cs4231_get_rx_byte(dev, &head) << 8;
+	s1 |= cs4231_get_rx_byte(dev, &head);
+	s2  = cs4231_get_rx_byte(dev, &head) << 8;
+	s2 |= cs4231_get_rx_byte(dev, &head);
+	restore_flags(flags);
+
+	len = 0;
 	len+=sprintf(buf+len,"samples: %d\n",dev->samples);
+	len+=sprintf(buf+len,"recent:  %04x %04x\n", s2, s1);
 
 	LOG(0);
 	len+=sprintf(buf+len,"Log: %s",log);

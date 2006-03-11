@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v444"
+#define HIJACK_VERSION	"v445"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -51,6 +51,7 @@ extern void hijack_tone_set(int, int, int, int, int, int);					// arch/arm/speci
 extern int empeg_readtherm(volatile unsigned int *timerbase, volatile unsigned int *gpiobase);	// arch/arm/special/empeg_therm.S
 extern int empeg_inittherm(volatile unsigned int *timerbase, volatile unsigned int *gpiobase);	// arch/arm/special/empeg_therm.S
        int display_ioctl (struct inode *inode, struct file *filp, unsigned int cmd, unsigned long arg); //arch/arm/special/empeg_display.c
+extern int hijack_current_mixer_input;
 
 #ifdef CONFIG_HIJACK_TUNER	// Mk2 or later? (Mk1 has no ethernet chip)
 #define EMPEG_KNOB_SUPPORTED	// Mk2 and later have a front-panel knob
@@ -244,7 +245,12 @@ typedef struct button_name_s {
 #define IR_FAKE_TREBLEADJ	(IR_NULL_BUTTON-15)
 #define IR_FAKE_QUICKTIMER	(IR_NULL_BUTTON-16)
 #define IR_FAKE_VISUALSEEK	(IR_NULL_BUTTON-17)
-#define IR_FAKE_HIJACKMENU	(IR_NULL_BUTTON-18)	// This MUST be the lowest numbered FAKE code
+#define IR_FAKE_SAVESRC		(IR_NULL_BUTTON-18)
+#define IR_FAKE_SAVEAUX		(IR_NULL_BUTTON-19)
+#define IR_FAKE_RESTORESRC	(IR_NULL_BUTTON-20)
+#define IR_FAKE_AM		(IR_NULL_BUTTON-21)
+#define IR_FAKE_FM		(IR_NULL_BUTTON-22)
+#define IR_FAKE_HIJACKMENU	(IR_NULL_BUTTON-23)	// This MUST be the lowest numbered FAKE code
 #define ALT			BUTTON_FLAGS_ALTNAME
 
 typedef struct ir_translation_s {
@@ -267,16 +273,23 @@ static struct {
 // a default translation for PopUp0 menu:
 static struct {
 		ir_translation_t	hdr;
-		unsigned int		buttons[9];
+		unsigned int		buttons[16];
 	} popup0_default_translation =
-	{	{IR_FAKE_POPUP0, 0, 9, 0},
+	{	{IR_FAKE_POPUP0, 0, 16, 0},
 		{IR_FAKE_CLOCK,
+		IR_RIO_INFO_PRESSED|ALT|BUTTON_FLAGS_LONGPRESS,	// "Detail"
+		IR_RIO_SOUND_PRESSED|ALT|BUTTON_FLAGS_LONGPRESS,// "Equalizer"
+		IR_RIO_PLAY_PRESSED|ALT|BUTTON_FLAGS_LONGPRESS,	// "Hush"
 		IR_RIO_INFO_PRESSED,
 		IR_KNOB_PRESSED,
 		IR_FAKE_KNOBSEEK,
-		IR_RIO_MARK_PRESSED|ALT,
+		IR_RIO_MARK_PRESSED|ALT,			// "Mark"
 		IR_FAKE_NEXTSRC,
-		IR_RIO_0_PRESSED|ALT,	// Shuffle
+		IR_RIO_SELECTMODE_PRESSED,
+		IR_RIO_0_PRESSED|ALT,				// "Shuffle"
+		IR_RIO_SOURCE_PRESSED,
+		IR_FAKE_AM,
+		IR_FAKE_FM,
 		IR_FAKE_VISUALSEEK,
 		IR_FAKE_VOLADJMENU}
 	};
@@ -294,12 +307,17 @@ static button_name_t button_names[] = {
 	{"VolAdjLow",	IR_FAKE_VOLADJ1},	// index 4 assumed later in hijack_option_table[]
 	{"VolAdjMed",	IR_FAKE_VOLADJ2},	// index 5 assumed later in hijack_option_table[]
 	{"VolAdjHigh",	IR_FAKE_VOLADJ3},	// index 6 assumed later in hijack_option_table[]
-	{"BassAdj",	IR_FAKE_BASSADJ},
+	{"BassAdj",	IR_FAKE_BASSADJ},	// ...
 	{"TrebleAdj",	IR_FAKE_TREBLEADJ},
 	{"VolAdjOff",	IR_FAKE_VOLADJOFF},
 	{"KnobSeek",	IR_FAKE_KNOBSEEK},
 	{"Clock",	IR_FAKE_CLOCK},
 	{"NextSrc",	IR_FAKE_NEXTSRC},
+	{"SaveSrc",	IR_FAKE_SAVESRC},
+	{"SaveAux",	IR_FAKE_SAVEAUX},
+	{"RestoreSrc",	IR_FAKE_RESTORESRC},
+	{"AM",		IR_FAKE_AM},
+	{"FM",		IR_FAKE_FM},
 	{"VolAdj",	IR_FAKE_VOLADJMENU},
 	{"QuickTimer",	IR_FAKE_QUICKTIMER},
 	{"HijackMenu",	IR_FAKE_HIJACKMENU},
@@ -351,9 +369,9 @@ static button_name_t button_names[] = {
 	{"Vol ",	IR_RIO_VOLPLUS_PRESSED},	// for http "button=vol+", where '+' becomes a space..
 	{"Detail",	IR_RIO_INFO_PRESSED|ALT|BUTTON_FLAGS_LONGPRESS},
 	{"Info",	IR_RIO_INFO_PRESSED},
-	{"Pause",	IR_RIO_PLAY_PRESSED|ALT},
-	{"Play",	IR_RIO_PLAY_PRESSED},
 	{"Hush",	IR_RIO_PLAY_PRESSED|ALT|BUTTON_FLAGS_LONGPRESS},
+	{"Play",	IR_RIO_PLAY_PRESSED|ALT},
+	{"Pause",	IR_RIO_PLAY_PRESSED},
 
 	{"Top",		IR_TOP_BUTTON_PRESSED},
 	{"Bottom",	IR_BOTTOM_BUTTON_PRESSED},
@@ -364,8 +382,8 @@ static button_name_t button_names[] = {
 	{"Knob",	IR_KNOB_PRESSED},
 	{"SeekTool",	IR_KNOB_PRESSED|ALT},
 
-	{"AM",		IR_KW_AM_PRESSED},
-	{"FM",		IR_KW_FM_PRESSED},
+	{"AM-",		IR_KW_AM_PRESSED},
+	{"FM+",		IR_KW_FM_PRESSED},
 	{"Direct",	IR_KW_DIRECT_PRESSED},
 	{"*",		IR_KW_STAR_PRESSED|ALT},
 	{"Star",	IR_KW_STAR_PRESSED},
@@ -409,8 +427,10 @@ static button_name_t button_names[] = {
 	};
 #undef ALT
 
-#define KNOBDATA_BITS 3
-#define KNOBDATA_SIZE (1 << KNOBDATA_BITS)
+#define KNOBDATA_SIZE	8
+#define KNOBDATA_MASK	(KNOBDATA_SIZE - 1)
+#define KNOBDATA_BITS	4
+#define POPUP0_MASK	((1 << KNOBDATA_BITS) - 1)
 static int knobdata_index = 0;
 static int popup0_index = 0;		// (PopUp0) saved/restored index
 static int hijack_knobseek = 0;
@@ -421,8 +441,9 @@ static unsigned long ir_knob_busy = 0, ir_knob_down = 0;
 
 // Mmm.. this *could* be eliminated entirely, in favour of IR-translations and PopUp's..
 // But for now, we leave it in because it is (1) a Major convenience, and (2) can be modified "on the fly".
-static const char *knobdata_labels[] = {"[default]", button_names[0].name, "VolAdj+", "Details", "Info", "Mark", "Shuffle", "NextSrc"};
-static const unsigned int knobdata_buttons[1<<KNOBDATA_BITS] = {
+static const char *knobdata_labels[KNOBDATA_SIZE] =
+	{"[default]", button_names[0].name, "VolAdj+", "Details", "Info", "Mark", "Shuffle", "NextSrc"};
+static const unsigned int knobdata_buttons[KNOBDATA_SIZE] = {
 	IR_KNOB_PRESSED,
 	IR_FAKE_POPUP0,
 	IR_KNOB_PRESSED,
@@ -2356,7 +2377,6 @@ static unsigned short
 get_current_mixer_source (void)
 {
 	unsigned short source;
-	extern int hijack_current_mixer_input;
 	int input = hijack_current_mixer_input;
 
 	switch (input) {
@@ -2380,7 +2400,7 @@ get_current_mixer_source (void)
 static void
 knobdata_move (int direction)
 {
-	knobdata_index = direction ? (knobdata_index + direction) & (KNOBDATA_SIZE-1) : 0;
+	knobdata_index = direction ? (knobdata_index + direction) & KNOBDATA_MASK : 0;
 	empeg_state_dirty = 1;
 }
 
@@ -2516,7 +2536,7 @@ popup_move (int direction)
 			popup_index = 0;
 		current_popup->popup_index = popup_index;
 		if (current_popup->old == IR_FAKE_POPUP0) {
-			popup0_index = current_popup->popup_index & 7;
+			popup0_index = current_popup->popup_index & POPUP0_MASK;
 			empeg_state_dirty = 1;
 		}
 	}
@@ -3216,7 +3236,7 @@ popup_activate (unsigned int button, int seek_tool)
 	}
 	if (current_popup != NULL) {
 		if (current_popup->old == IR_FAKE_POPUP0)
-			current_popup->popup_index = (current_popup->popup_index & ~7) | popup0_index;
+			current_popup->popup_index = (current_popup->popup_index & ~POPUP0_MASK) | popup0_index;
 		activate_dispfunc(popup_display, popup_move, 0);
 	}
 }
@@ -3283,14 +3303,60 @@ get_player_ui_flags (const unsigned char *buf)
 }
 
 static void
+switch_to_src (int from_src, int to_src)
+{
+	if (from_src != to_src) {
+		unsigned int button = 0;
+		switch (to_src) {
+			case INPUT_AUX:
+				if (from_src != INPUT_PCM) {
+					if (!kenwood_disabled) {
+						button = IR_KW_TAPE_PRESSED;
+						break;
+					}
+					hijack_enq_button_pair(IR_RIO_SOURCE_PRESSED);
+				}
+				// fall thru
+			case INPUT_PCM:
+				button = IR_RIO_SOURCE_PRESSED;
+				break;
+
+			case INPUT_RADIO_AM:
+				if (from_src != INPUT_RADIO_FM)
+					hijack_enq_button_pair(IR_RIO_TUNER_PRESSED);
+				// fall thru
+			case INPUT_RADIO_FM:
+				button = IR_RIO_TUNER_PRESSED;
+				break;
+		}
+		if (button)
+			hijack_enq_button_pair(button);
+	}
+}
+
+static void
+save_restore_src (int action)
+{
+	static int saved_src = 0;
+	int src, new;
+
+	src = hijack_current_mixer_input;
+	new = saved_src;
+	if (action) {	// 0=restore, 1==save, 2==save_and_switch_to_AUX
+		new = saved_src = src;
+		if (action == 2)
+			new = INPUT_AUX;
+	}
+	switch_to_src(src, new);
+}
+
+static void
 do_nextsrc (void)
 {
 	unsigned int button;
-	unsigned long flags;
 
 	// main -> tuner [ -> aux ] -> main
 	// main -> tuner -> aux -> main
-	save_flags_cli(flags);
 	button = IR_RIO_SOURCE_PRESSED;
 	switch (get_current_mixer_source()) {
 		case IR_FLAGS_TUNER:
@@ -3306,7 +3372,6 @@ do_nextsrc (void)
 				button = IR_RIO_TUNER_PRESSED;
 			break;
 	}
-	restore_flags(flags);
 	hijack_enq_button_pair(button);
 }
 
@@ -3532,6 +3597,26 @@ hijack_handle_button (unsigned int button, unsigned long delay, unsigned int pla
 			break;
 		case IR_FAKE_NEXTSRC:
 			do_nextsrc();
+			hijacked = 1;
+			break;
+		case IR_FAKE_SAVEAUX:	// save current source, and then switch to aux
+			save_restore_src(2);
+			hijacked = 1;
+			break;
+		case IR_FAKE_SAVESRC:
+			save_restore_src(1);
+			hijacked = 1;
+			break;
+		case IR_FAKE_RESTORESRC:
+			save_restore_src(0);
+			hijacked = 1;
+			break;
+		case IR_FAKE_AM:
+			switch_to_src(hijack_current_mixer_input, INPUT_RADIO_AM);
+			hijacked = 1;
+			break;
+		case IR_FAKE_FM:
+			switch_to_src(hijack_current_mixer_input, INPUT_RADIO_FM);
 			hijacked = 1;
 			break;
 		case IR_FAKE_POPUP0:
@@ -5226,13 +5311,13 @@ hijack_process_config_ini (char *buf, off_t f_pos)
 typedef struct hijack_savearea_acdc_s {	// 32-bits total
 	signed   delaytime		: 8;			// 8 bits
 
-	unsigned knob			: 1+KNOBDATA_BITS;	// 4 bits
+	unsigned spare4			: 4;			// 4 bits
 	unsigned buttonled_level	: BUTTONLED_BITS;	// 3 bits
 	unsigned volumelock_enabled	: 1;			// 1 bit
 
 	unsigned voladj			: VOLADJ_BITS;		// 2 bits
 	unsigned player_serial		: 1;			// 1 bits
-	unsigned spare5			: 5;			// 6 bits
+	unsigned knob			: 1+KNOBDATA_BITS;	// 5 bits
 
 	unsigned bass_adj		: 4;			// 4 bits
 	unsigned treble_adj		: 4;			// 4 bits
@@ -5286,7 +5371,7 @@ hijack_save_settings (unsigned char *buf)
 	}
 
 	// save state
-	knob = (knobdata_index == 1) ? (1<<KNOBDATA_BITS) | popup0_index : knobdata_index;
+	knob = (knobdata_index == 1) ? (1 << KNOBDATA_BITS) | popup0_index : knobdata_index;
 	acdc->knob			= knob;
 	acdc->delaytime			= hijack_delaytime;
 	acdc->buttonled_level		= hijack_buttonled_on_level;
@@ -5381,9 +5466,9 @@ hijack_restore_settings (char *buf, char *msg)
 	hijack_player_serial		= acdc->player_serial;
 	if ((knob & (1 << KNOBDATA_BITS)) == 0) {
 		popup0_index		= 0;
-		knobdata_index		= knob;
+		knobdata_index		= knob & KNOBDATA_MASK;
 	} else {
-		popup0_index		= knob & ((1 << KNOBDATA_BITS) - 1);
+		popup0_index		= knob & POPUP0_MASK;
 		knobdata_index		= 1;
 	}
 

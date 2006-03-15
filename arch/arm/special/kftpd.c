@@ -211,6 +211,7 @@ ksock_rw (struct socket *sock, const char *buf, int buf_size, int minimum)
 					rc = 0;
 				}
 				break;
+			case -EPIPE:
 			case -ECONNRESET:
 				return rc;
 			default:
@@ -1897,7 +1898,7 @@ kftpd_handle_command (server_parms_t *parms)
 		bufsize = 511;	// limit path lengths, so we can use the other half for other stuff
 	n = ksock_rw(parms->clientsock, buf, bufsize, 0);
 	if (n < 0) {
-		if (n != -ECONNRESET)
+		if (parms->verbose)
 			printk(KFTPD": ksock_rw() failed, rc=%d\n", n);
 		return -1;
 	} else if (n == 0) {

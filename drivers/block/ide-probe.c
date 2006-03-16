@@ -170,6 +170,19 @@ static void delay_50ms (void)
 	while (0 < (signed long)(timeout - jiffies));
 }
 
+#ifdef CONFIG_SA1100_EMPEG
+static void ide_data_test (ide_drive_t *drive, u16 pattern)
+{
+	u16 result;
+
+	outw(pattern,IDE_DATA_REG);
+	udelay(1);
+	result = inw(IDE_DATA_REG);
+	printk("ide_data_test: wrote 0x%04x read 0x%04x%s\n",
+		pattern, result, pattern == result ? "" : " -- FAILED");
+}
+#endif
+
 /*
  * try_to_identify() sends an ATA(PI) IDENTIFY request to a drive
  * and waits for a response.  It also monitors irqs while this is
@@ -327,7 +340,14 @@ static int do_probe (ide_drive_t *drive, byte cmd)
 		}
 		return 3;    /* no i/f present: mmm.. this should be a 4 -ml */
 	}
-
+#ifdef CONFIG_SA1100_EMPEG
+	if (drive->select.b.unit == 0) {
+		ide_data_test(drive, 0x0000);
+		ide_data_test(drive, 0xffff);
+		ide_data_test(drive, 0xaaaa);
+		ide_data_test(drive, 0x5555);
+	}
+#endif
 	if (OK_STAT(GET_STAT(),READY_STAT,BUSY_STAT)
 	 || drive->present || cmd == WIN_PIDENTIFY)
 	{

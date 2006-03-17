@@ -332,14 +332,6 @@ static int do_probe (ide_drive_t *drive, byte cmd)
 	delay_50ms();	/* needed for some systems (e.g. crw9624 as drive0 with disk as slave) */
 	SELECT_DRIVE(hwif,drive);
 	delay_50ms();
-
-	if (IN_BYTE(IDE_SELECT_REG) != drive->select.all && !drive->present) {
-		if (drive->select.b.unit != 0) {
-			SELECT_DRIVE(hwif,&hwif->drives[0]);	/* exit with drive0 selected */
-			delay_50ms();		/* allow BUSY_STAT to assert & clear */
-		}
-		return 3;    /* no i/f present: mmm.. this should be a 4 -ml */
-	}
 #ifdef CONFIG_SA1100_EMPEG
 	if (drive->select.b.unit == 0) {
 		ide_data_test(drive, 0x0000);
@@ -348,6 +340,13 @@ static int do_probe (ide_drive_t *drive, byte cmd)
 		ide_data_test(drive, 0x5555);
 	}
 #endif
+	if (IN_BYTE(IDE_SELECT_REG) != drive->select.all && !drive->present) {
+		if (drive->select.b.unit != 0) {
+			SELECT_DRIVE(hwif,&hwif->drives[0]);	/* exit with drive0 selected */
+			delay_50ms();		/* allow BUSY_STAT to assert & clear */
+		}
+		return 3;    /* no i/f present: mmm.. this should be a 4 -ml */
+	}
 	if (OK_STAT(GET_STAT(),READY_STAT,BUSY_STAT)
 	 || drive->present || cmd == WIN_PIDENTIFY)
 	{

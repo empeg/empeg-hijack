@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v448"
+#define HIJACK_VERSION	"v449"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -637,8 +637,8 @@ static const hijack_option_t hijack_option_table[] =
 {"dc_servers",			&hijack_dc_servers,		0,			1,	0,	1},
 {"disable_emplode",		&hijack_disable_emplode,	0,			1,	0,	1},
 {"spindown_seconds",		&hijack_spindown_seconds,	30,			1,	0,	(239 * 5)},
-{"extmute_off",			&hijack_extmute_off,		0,			1,	0,	IR_NULL_BUTTON},
-{"extmute_on",			&hijack_extmute_on,		0,			1,	0,	IR_NULL_BUTTON},
+{"extmute_off",			&hijack_extmute_off,		0,			-1,	0,	IR_NULL_BUTTON},
+{"extmute_on",			&hijack_extmute_on,		0,			-1,	0,	IR_NULL_BUTTON},
 {"fake_tuner",			&hijack_fake_tuner,		0,			1,	0,	1},
 #ifdef CONFIG_EMPEG_I2C_FAN_CONTROL
 {"fan_control",			&fan_control_enabled,		0,			1,	0,	1},
@@ -4936,7 +4936,8 @@ hijack_glob_match (const char *n, const char *p)
 static int
 get_option_vals (int syntax_only, unsigned char **s, const hijack_option_t *opt)
 {
-	int i, rc = 0;
+	int i, rc = 0;	// failure
+
 	if (opt->num_items == 0) {
 		unsigned char *t;
 		t = findchars(*s, "\n;\r");
@@ -4949,6 +4950,13 @@ get_option_vals (int syntax_only, unsigned char **s, const hijack_option_t *opt)
 			*t = c;
 		}
 		rc = 1;	// success
+	} else if (opt->num_items == -1) {	// button code
+		unsigned int val;
+		if (get_button_code(s, &val, 1, 0, ".,; \t\n")) {
+			if (!syntax_only && opt->target)
+				*(int *)(opt->target) = val;
+			rc = 1;	// success
+		}
 	} else {
 		for (i = 0; i < opt->num_items; ++i) {
 			int val;
@@ -5181,7 +5189,7 @@ reset_hijack_options (void)
 	for (h = hijack_option_table; h->name; ++h) {
 		int n = h->num_items, *val = h->target;
 		if (val) {
-			if (n == 1) {
+			if (n == 1 || n == -1) {
 				*val = h->defaultval;
 			} else if (n) {
 				int *def = (int *)h->defaultval;

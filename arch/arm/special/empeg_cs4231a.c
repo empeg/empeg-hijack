@@ -372,12 +372,17 @@ void __init empeg_cs4231_init(void)
 
 	/* Read version */
 	INDEX(VERSION);
+	udelay(100);
+	if (READINDEX() != VERSION) {
+		printk(KERN_WARNING "Could not set index for CS4231A (wrote=%02x read=%02x)\n)",
+				VERSION, READINDEX());
+	}
 	version=(READDATA()&0xe7);
 
 	/* Check version */
 	if (version!=0xa0) {
 		printk(KERN_WARNING "Could not find CS4231A (version=%02x)\n",
-		       version);
+		       READDATA());
 		return;
 	}
 		

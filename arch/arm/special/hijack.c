@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v449"
+#define HIJACK_VERSION	"v450"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -58,6 +58,8 @@ extern int hijack_current_mixer_input;
 #define EMPEG_STALK_SUPPORTED	// Mk2 and later have a front-panel knob
 extern void hijack_tuner_rx_insert (const char *buf, int size); // drivers/char/serial_sa1100.c
 #endif
+int	cs4231a_not_found = 0;
+
 int	hijack_loopback;		// 1 == detected docked "loopback" mode
 int	kenwood_disabled;		// used by Nextsrc button
 int	empeg_on_dc_power;		// used in arch/arm/special/empeg_power.c
@@ -1154,11 +1156,28 @@ search:
 	return buf;
 }
 
+static int empeg_powerstate = 0;
+
 static void
 hijack_enq_button (hijack_buttonq_t *q, unsigned int button, unsigned long hold_time)
 {
 	unsigned short head;
 	unsigned long flags;
+
+	if (q == &hijack_playerq && cs4231a_not_found) {
+		/* try and prevent switching to analog sources */
+		switch (PRESSCODE(button)) {
+			case IR_RIO_SOURCE_PRESSED:
+				if (button == RELEASECODE(IR_RIO_SOURCE_PRESSED))
+					hold_time = empeg_powerstate ? LONGPRESS_DELAY : 0;
+				break;
+			case IR_KSOURCE_PRESSED:
+			case IR_RIO_TUNER_PRESSED:
+			case IR_KW_TUNER_PRESSED:
+			case IR_KW_TAPE_PRESSED:
+				return;
+		}
+	}
 
 #if 1 //fixme someday
 	// special case to allow embedding PopUp's
@@ -4015,11 +4034,11 @@ enum {poweringup, booting, booted, waiting, started} player_state = booting;
 // Display updates are (usually) triggered from the audio drivers,
 // using the tq_immediate task queue.  So we are running here on
 // interrupt context, not process context.  This limits what we can do.
-//
+
 void	// invoked from empeg_display.c
 hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 {
-	static unsigned int old_power = 0, power_changed = 0;	// jiffies since most recent change of dev->power, or 0 = none
+	static unsigned int power_changed = 0;	// jiffies since most recent change of dev->power, or 0 = none
 	unsigned char *buf = player_buf;
 	unsigned long flags;
 	int refresh = NEED_REFRESH;
@@ -4065,8 +4084,8 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 	}
 
 	// Adjust ButtonLED levels
-	if (dev->power != old_power) {
-		old_power = dev->power;
+	if (dev->power != empeg_powerstate) {
+		empeg_powerstate = dev->power;
 		power_changed = JIFFIES();
 	}
 

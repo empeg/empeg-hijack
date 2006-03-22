@@ -358,6 +358,8 @@ struct proc_dir_entry cs4231_proc_entry = {
 	&cs4231_read_procmem, 	/* function used to read data */
 };
 
+extern int cs4231a_not_found;	// hijack.c
+
 /* Device initialisation */
 void __init empeg_cs4231_init(void)
 {
@@ -372,17 +374,13 @@ void __init empeg_cs4231_init(void)
 
 	/* Read version */
 	INDEX(VERSION);
-	udelay(100);
-	if (READINDEX() != VERSION) {
-		printk(KERN_WARNING "Could not set index for CS4231A (wrote=%02x read=%02x)\n)",
-				VERSION, READINDEX());
-	}
 	version=(READDATA()&0xe7);
 
 	/* Check version */
 	if (version!=0xa0) {
 		printk(KERN_WARNING "Could not find CS4231A (version=%02x)\n",
 		       READDATA());
+		cs4231a_not_found = 1;
 		return;
 	}
 		

@@ -275,6 +275,7 @@ int empeg_state_restore (unsigned char *buffer)
 	   the power-down state saving: we work through here until
 	   we find the last entry which has a valid CRC - this is
 	   the one we use */
+	extern int cs4231a_not_found;
 	int a,calculated_crc,stored_crc, result = 0;
 	struct timeval t;
 
@@ -300,6 +301,9 @@ int empeg_state_restore (unsigned char *buffer)
 		memset(buffer,0,STATE_BLOCK_SIZE);
 		printk("empegr_state_restore: FAILED\n");
 	}
+
+	if (cs4231a_not_found)
+		buffer[14] = (buffer[14] & ~7) | 2;	/* force MP3 mode, since Tuner/Aux will lock-up */
 
 	/* Later empegs have an RTC */
 	if (empeg_hardwarerevision()<6) {

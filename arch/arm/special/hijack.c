@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v450"
+#define HIJACK_VERSION	"v451"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -3476,6 +3476,12 @@ static int hijack_check_buttonlist (unsigned long data, unsigned long delay)
 static char          message_text[40];
 static unsigned long message_time = 0;
 
+static void
+message_move (int direction)
+{
+	hijack_deactivate(HIJACK_IDLE);
+}
+
 static int
 message_display (int firsttime)
 {
@@ -3503,7 +3509,7 @@ show_message (const char *message, unsigned long time)
 	if (message && *message) {
 		unsigned long flags;
 		save_flags_cli(flags);
-		activate_dispfunc(message_display, NULL, 0);
+		activate_dispfunc(message_display, message_move, 0);
 		restore_flags(flags);
 	}
 }

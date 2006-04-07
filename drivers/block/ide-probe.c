@@ -178,8 +178,7 @@ static void ide_data_test (ide_drive_t *drive, u16 pattern)
 	outw(pattern,IDE_DATA_REG);
 	udelay(1);
 	result = inw(IDE_DATA_REG);
-	printk("ide_data_test: wrote 0x%04x read 0x%04x%s\n",
-		pattern, result, pattern == result ? "" : " -- FAILED");
+	printk("ide_data_test: wrote 0x%04x read 0x%04x\n", pattern, result);
 }
 #endif
 

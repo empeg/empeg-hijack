@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v452"
+#define HIJACK_VERSION	"v453"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -252,9 +252,7 @@ typedef struct button_name_s {
 #define IR_FAKE_RESTORESRC	(IR_NULL_BUTTON-20)
 #define IR_FAKE_AM		(IR_NULL_BUTTON-21)
 #define IR_FAKE_FM		(IR_NULL_BUTTON-22)
-#define IR_FAKE_WAKEUP		(IR_NULL_BUTTON-23)
-#define IR_FAKE_RESTORESLEEP	(IR_NULL_BUTTON-24)
-#define IR_FAKE_HIJACKMENU	(IR_NULL_BUTTON-25)	// This MUST be the lowest numbered FAKE code
+#define IR_FAKE_HIJACKMENU	(IR_NULL_BUTTON-23)	// This MUST be the lowest numbered FAKE code
 #define ALT			BUTTON_FLAGS_ALTNAME
 
 typedef struct ir_translation_s {
@@ -322,8 +320,6 @@ static button_name_t button_names[] = {
 	{"RestoreSrc",	IR_FAKE_RESTORESRC},
 	{"AM",		IR_FAKE_AM},
 	{"FM",		IR_FAKE_FM},
-	{"WakeUp",	IR_FAKE_WAKEUP},
-	{"RestoreSleep",IR_FAKE_RESTORESLEEP},
 	{"VolAdj",	IR_FAKE_VOLADJMENU},
 	{"QuickTimer",	IR_FAKE_QUICKTIMER},
 	{"HijackMenu",	IR_FAKE_HIJACKMENU},
@@ -3632,21 +3628,14 @@ hijack_handle_button (unsigned int button, unsigned long delay, unsigned int pla
 			hijacked = 1;
 			break;
 		case IR_FAKE_SAVESRC:
+			saved_powerstate = empeg_powerstate;
+			if (!empeg_powerstate)
+				hijack_enq_button_pair(IR_RIO_SELECTMODE_PRESSED);
 			save_restore_src(1);
 			hijacked = 1;
 			break;
 		case IR_FAKE_RESTORESRC:
 			save_restore_src(0);
-			hijacked = 1;
-			break;
-		case IR_FAKE_WAKEUP:
-			saved_powerstate = empeg_powerstate;
-			if (!empeg_powerstate)
-				hijack_enq_button_pair(IR_RIO_SELECTMODE_PRESSED);
-			hijacked = 1;
-			break;
-		case IR_FAKE_RESTORESLEEP:
-			saved_powerstate = empeg_powerstate;
 			if (empeg_powerstate && !saved_powerstate)
 				hijack_enq_button_pair(IR_RIO_SOURCE_PRESSED|BUTTON_FLAGS_LONGPRESS);
 			hijacked = 1;

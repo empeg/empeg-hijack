@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v453"
+#define HIJACK_VERSION	"v454"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -1156,7 +1156,7 @@ search:
 	return buf;
 }
 
-static int empeg_powerstate = 0, saved_powerstate = 0;
+static int empeg_powerstate = 0;
 
 static void
 hijack_enq_button (hijack_buttonq_t *q, unsigned int button, unsigned long hold_time)
@@ -3356,6 +3356,7 @@ switch_to_src (int from_src, int to_src)
 static void
 save_restore_src (int action)
 {
+	static int saved_powerstate = 0;
 	static int saved_src = 0;
 	int src, new;
 
@@ -3365,8 +3366,15 @@ save_restore_src (int action)
 		new = saved_src = src;
 		if (action == 2)
 			new = INPUT_AUX;
+		saved_powerstate = empeg_powerstate;
+		if (!empeg_powerstate)
+			hijack_enq_button_pair(IR_RIO_SELECTMODE_PRESSED);
 	}
 	switch_to_src(src, new);
+	if (!action) {
+		if (empeg_powerstate && !saved_powerstate)
+			hijack_enq_button_pair(IR_RIO_SOURCE_PRESSED|BUTTON_FLAGS_LONGPRESS);
+	}
 }
 
 static void
@@ -3623,21 +3631,16 @@ hijack_handle_button (unsigned int button, unsigned long delay, unsigned int pla
 			do_nextsrc();
 			hijacked = 1;
 			break;
-		case IR_FAKE_SAVEAUX:	// save current source, and then switch to aux
+		case IR_FAKE_SAVEAUX:	// power-on, save current source, switch to aux
 			save_restore_src(2);
 			hijacked = 1;
 			break;
 		case IR_FAKE_SAVESRC:
-			saved_powerstate = empeg_powerstate;
-			if (!empeg_powerstate)
-				hijack_enq_button_pair(IR_RIO_SELECTMODE_PRESSED);
 			save_restore_src(1);
 			hijacked = 1;
 			break;
 		case IR_FAKE_RESTORESRC:
 			save_restore_src(0);
-			if (empeg_powerstate && !saved_powerstate)
-				hijack_enq_button_pair(IR_RIO_SOURCE_PRESSED|BUTTON_FLAGS_LONGPRESS);
 			hijacked = 1;
 			break;
 		case IR_FAKE_AM:

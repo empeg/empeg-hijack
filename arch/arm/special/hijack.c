@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v454"
+#define HIJACK_VERSION	"v455"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -1115,7 +1115,7 @@ PRESSCODE (unsigned int button)
 	return button & ~1;
 }
 
-static unsigned long
+unsigned int
 RELEASECODE (unsigned int button)
 {
 	button &= ~BUTTON_FLAGS;
@@ -3367,8 +3367,16 @@ save_restore_src (int action)
 		if (action == 2)
 			new = INPUT_AUX;
 		saved_powerstate = empeg_powerstate;
-		if (!empeg_powerstate)
+		if (!empeg_powerstate) {
 			hijack_enq_button_pair(IR_RIO_SELECTMODE_PRESSED);
+			/*
+			 * The player just ignores buttons after wakeup
+			 * unless we delay them slightly.
+			 * So here we inject a NULL button with a 0.5 second delay,
+			 * in front of the subsequent switch_to_src() button codes.
+			 */
+			hijack_enq_button(&hijack_playerq, IR_NULL_BUTTON, 50);
+		}
 	}
 	switch_to_src(src, new);
 	if (!action) {

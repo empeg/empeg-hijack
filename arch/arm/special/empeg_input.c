@@ -871,8 +871,10 @@ static int input_release(struct inode *inode, struct file *filp)
 
 void input_wakeup_waiters (void)	// called from hijack.c
 {
+#if 0
 	if (hijack_ir_debug)
 		printk("Wakeup\n");
+#endif
 	wake_up_interruptible(&input_devices->wq);
 }
 

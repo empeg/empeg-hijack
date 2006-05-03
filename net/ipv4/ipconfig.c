@@ -1118,14 +1118,12 @@ static int __init ic_dynamic(void)
 	 *  applies.. - AC]
 	 */
         printk(KERN_NOTICE "Sending %s%s%s%s%s requests...",
-	       do_bootp
+	       do_bootp ? ((ic_proto_enabled & IC_USE_DHCP) ? "DHCP" : "BOOTP") : "",
                do_bootp && do_rarp ? " / " : "",
                do_rarp ? "RARP" : "",
                do_upnp && (do_bootp || do_rarp) ? " / " : "",
                do_upnp ? "UPnP" : "");
-		? ((ic_proto_enabled & IC_USE_DHCP) ? "DHCP" : "BOOTP") : "",
-	       (do_bootp && do_rarp) ? " and " : "",
-	       do_rarp ? "RARP" : "");
+
 	start_jiffies = jiffies;
 	retries = CONF_SEND_RETRIES;
 	get_random_bytes(&timeout, sizeof(timeout));

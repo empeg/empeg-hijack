@@ -915,6 +915,16 @@ asmlinkage int sys_open(const char * filename, int flags, int mode)
 		}
 		fd = sys_open2(tmp, flags, mode);
 
+#ifdef CONFIG_ROOT_NFS
+		if ((fd == -ENODEV && !strncmp(tmp, "/dev/hda", 8)) || 
+		    (fd == -ENOENT && !strcmp(tmp, "/proc/ide/hda/settings"))) 
+		{
+		    printk("NFS root hack: Redirecting access to %s\n", tmp);
+		    strcpy(tmp,"/dev/null");
+		    fd = sys_open2(tmp, flags, mode);
+		}
+#endif
+
 		// Ugly hack for use by sys_read():
 		if (fd >= 0 && !strcmp(current->comm, "player")) {
 			if (!strncmp(tmp, "/empeg/fids", 11))

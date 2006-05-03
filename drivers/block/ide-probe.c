@@ -902,6 +902,14 @@ int ideprobe_init (void)
 	int retries=0,on_if0=0;
 #endif
 
+#ifdef CONFIG_ROOT_NFS
+	// drive check disabled for root on NFS?
+	if (hijack_onedrive == 1) {
+	    printk("hijack: IDE probing disabled. Reenable via two drive mode.\n");
+	    return 0;
+	}
+#endif
+
 	MOD_INC_USE_COUNT;
 	memset(probe, 0, MAX_HWIFS * sizeof(int));
 	for (index = 0; index < MAX_HWIFS; ++index)

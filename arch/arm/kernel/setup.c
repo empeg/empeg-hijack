@@ -327,8 +327,14 @@ fixup_sa1100(struct machine_desc *desc, struct param_struct *params,
 	setup_initrd( 0xd0000000+((1024-320)*1024), (320*1024) );
 
 	/* Get command line parameters passed from the loader (if any) */
-	if( *((char*)0xc0000000) )
-		strcpy( default_command_line, ((char *)0xc0000000) );
+	if( *((char*)0xc0000000) ) {
+		if (strlen(default_command_line) > 0) {
+		    strcat( default_command_line, " ");
+		    strcat( default_command_line, ((char *)0xc0000000) );
+		} else {
+		    strcpy( default_command_line, ((char *)0xc0000000) );
+		}
+	}
 #elif defined(CONFIG_SA1100_THINCLIENT)
 	ROOT_DEV = MKDEV(RAMDISK_MAJOR,0);
 	setup_ramdisk( 1, 0, 0, 8192 );

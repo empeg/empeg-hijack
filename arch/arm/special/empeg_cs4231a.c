@@ -107,6 +107,29 @@ extern unsigned long get_rtc_time(void);
 #define READDMA()		(*reg_cs4231_dma)
 #define WRITEDMA()		*reg_cs4231_dma=(x)
 
+extern unsigned long jiffies_since(unsigned long past_jiffies);	// arch/arm/special/empeg_input.c
+static int cs4231a_not_found = 0;
+static struct timer_list simulate_timer;
+
+static void cs4231a_simulate_irq (unsigned long unused)
+{
+        struct cs4231_dev *dev=cs4231_devices;
+	static unsigned long timestamp = 0, ten_thousandths = 0;
+	unsigned long samples, elapsed;
+
+	elapsed = jiffies_since(timestamp);
+	timestamp = jiffies;
+	ten_thousandths += elapsed * (4 * 22792);	// (4 * 2.2792) samples/jiffie
+	samples = ten_thousandths / 10000;
+	ten_thousandths %= 10000;
+	dev->rx_used += samples;
+	if (dev->rx_used > CS4231_BUFFER_SIZE)
+		dev->rx_used = CS4231_BUFFER_SIZE;
+	wake_up_interruptible(&dev->rx_wq);
+	simulate_timer.expires  = jiffies + 1;
+	add_timer(&simulate_timer);
+}
+
 /**********************************************************************/
 /* This is the interrupt service routine for audio capture operations */
 /**********************************************************************/
@@ -175,6 +198,11 @@ static int setmode(struct cs4231_dev *dev, int channel, int rate, int stereo,
 {
 	int a=0,timeout=jiffies+HZ;
 	int stopped = 0;
+
+	if (cs4231a_not_found) {
+		dev->rx_used=0;
+		return 0;
+	}
 
 //printk("channel=%d, rate=%d, stereo=%d, gain=%d\n", channel, rate, stereo, gain);
 	if (stereo >= 0 || rate >= 0)
@@ -358,13 +386,17 @@ struct proc_dir_entry cs4231_proc_entry = {
 	&cs4231_read_procmem, 	/* function used to read data */
 };
 
-extern int cs4231a_not_found;	// hijack.c
-
 /* Device initialisation */
 void __init empeg_cs4231_init(void)
 {
         struct cs4231_dev *dev=cs4231_devices;
 	int result,version;
+
+	/* Initialise buffer bits */
+	dev->rx_head = dev->rx_tail = 0;
+	dev->rx_used = 0;
+	dev->rx_free = CS4231_BUFFER_SIZE;
+	dev->rx_wq   = NULL;
 
 	MECR=(MECR&0xffff0000)|0x0007;
 
@@ -378,10 +410,13 @@ void __init empeg_cs4231_init(void)
 
 	/* Check version */
 	if (version!=0xa0) {
-		printk(KERN_WARNING "Could not find CS4231A (version=%02x)\n",
-		       READDATA());
+		printk(KERN_WARNING "Could not find CS4231A (version=%02x) --> no visuals for Tuner/AUX.\n", READDATA());
 		cs4231a_not_found = 1;
-		return;
+		init_timer(&simulate_timer);
+		simulate_timer.expires  = jiffies + 1;
+		simulate_timer.function = cs4231a_simulate_irq;
+		add_timer(&simulate_timer);
+		goto skip_hw_init;
 	}
 		
 	/* Set SDC bit (single DMA channel) */
@@ -405,11 +440,6 @@ void __init empeg_cs4231_init(void)
 		printk(KERN_WARNING "Could not allocate memory for audio input buffer\n");
 		return;
 	}
-
-	/* Initialise buffer bits */
-	dev->rx_head=dev->rx_tail=0;
-	dev->rx_used=0; dev->rx_free=CS4231_BUFFER_SIZE;
-	dev->rx_wq = NULL;
 	
 	/* Claim IRQ: this gets called when the DMA (FIQ) buffer is full
 	   and does the less time-critical work */
@@ -461,7 +491,7 @@ void __init empeg_cs4231_init(void)
 		       EMPEG_CRYSTALDRQ);
 		return;
 	}
-
+   skip_hw_init:
 	/* Get the device */
 	result=register_chrdev(EMPEG_AUDIOIN_MAJOR,"empeg_cs4231",
 			       &cs4231_fops);
@@ -541,6 +571,10 @@ static ssize_t cs4231_read(struct file *flip, char *dest, size_t count, loff_t *
 	/* We can copy data out of the sound buffer without disabling IRQs, as
 	   we're the only people who will be fiddling with the tail */
 	if (count>dev->rx_used) count=dev->rx_used;
+	if (cs4231a_not_found) {
+		memset(dest, 0, count);
+		goto done;
+	}
 	bytes=count;
 	while (bytes--) {
 		*dest++ = dev->rx_buffer[dev->rx_tail++];
@@ -551,6 +585,7 @@ static ssize_t cs4231_read(struct file *flip, char *dest, size_t count, loff_t *
 	/* After the time consuming stuff has been done, we can now let the
 	   rest of the world (ie, the IRQ routine) know that there's more
 	   room in the buffer */
+   done:
 	save_flags_cli(flags);
 	dev->rx_free+=count;
 	dev->rx_used-=count;

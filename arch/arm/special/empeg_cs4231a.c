@@ -111,18 +111,27 @@ extern unsigned long jiffies_since(unsigned long past_jiffies);	// arch/arm/spec
 static int cs4231a_not_found = 0;
 static struct timer_list simulate_timer;
 
+/* When the cs4231a chip is "not found" (dead!),
+ * we have to simulate sampling from it at the same
+ * rate as the chip would have done.  This turns out
+ * to be a rate of 117582.018 bytes/second.
+ *
+ * If we get it wrong, then the player either locks up,
+ * or responds really slowly to mute/unmute ("pause").
+ */
 static void cs4231a_simulate_irq (unsigned long unused)
 {
         struct cs4231_dev *dev=cs4231_devices;
-	static unsigned long timestamp = 0, ten_thousandths = 0;
+	static unsigned long timestamp = 0, hundred_thousandths = 0;
 	unsigned long samples, elapsed;
 
 	elapsed = jiffies_since(timestamp);
-	timestamp = jiffies;
-	ten_thousandths += elapsed * (4 * 22792);	// (4 * 2.2792) samples/jiffie
-	samples = ten_thousandths / 10000;
-	ten_thousandths %= 10000;
+	timestamp += elapsed;
+	hundred_thousandths += elapsed * 117582018;	// 1175.82018 bytes / jiffie
+	samples = hundred_thousandths  /  100000;
+	hundred_thousandths %= 100000;
 	dev->rx_used += samples;
+	dev->samples += samples;
 	if (dev->rx_used > CS4231_BUFFER_SIZE)
 		dev->rx_used = CS4231_BUFFER_SIZE;
 	wake_up_interruptible(&dev->rx_wq);
@@ -200,7 +209,8 @@ static int setmode(struct cs4231_dev *dev, int channel, int rate, int stereo,
 	int stopped = 0;
 
 	if (cs4231a_not_found) {
-		dev->rx_used=0;
+		if ((stereo >= 0 || rate >= 0) && dev->open)
+			dev->rx_used=0;
 		return 0;
 	}
 
@@ -338,36 +348,10 @@ static int setmode(struct cs4231_dev *dev, int channel, int rate, int stereo,
 	return(0);
 }
 
-static unsigned int cs4231_get_rx_byte (struct cs4231_dev *dev, int *head_p)
-{
-	int head = *head_p;
-
-	if (--head < 0)
-		head = CS4231_BUFFER_SIZE - 1;
-	*head_p = head;
-	return dev->rx_buffer[head];
-}
-
 static int cs4231_read_procmem(char *buf, char **start, off_t offset, int len, int unused)
 {
 	struct cs4231_dev *dev = cs4231_devices;
-	int s1, s2, head;
-	unsigned long flags;
-
-	/*
-	 * Get most recent sample pair from the rx_buffer
-	 */
-	save_flags_clif(flags);
-	head = dev->rx_head;
-	s1  = cs4231_get_rx_byte(dev, &head) << 8;
-	s1 |= cs4231_get_rx_byte(dev, &head);
-	s2  = cs4231_get_rx_byte(dev, &head) << 8;
-	s2 |= cs4231_get_rx_byte(dev, &head);
-	restore_flags(flags);
-
-	len = 0;
-	len+=sprintf(buf+len,"samples: %d\n",dev->samples);
-	len+=sprintf(buf+len,"recent:  %04x %04x\n", s2, s1);
+	len = sprintf(buf,"samples: %d\n",dev->samples);
 
 	LOG(0);
 	len+=sprintf(buf+len,"Log: %s",log);

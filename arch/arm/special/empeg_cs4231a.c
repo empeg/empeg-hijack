@@ -112,30 +112,26 @@ static int cs4231a_not_found = 0;
 static struct timer_list simulate_timer;
 
 /* When the cs4231a chip is "not found" (dead!),
- * we have to simulate sampling from it at the same
- * rate as the chip would have done.  This turns out
- * to be a rate of 117582.018 bytes/second.
- *
- * If we get it wrong, then the player either locks up,
- * or responds really slowly to mute/unmute ("pause").
+ * we have to simulate sampling from it, normally
+ * the rate is 29400 stereo (4-byte) samples/sec.
  */
 static void cs4231a_simulate_irq (unsigned long unused)
 {
-        struct cs4231_dev *dev=cs4231_devices;
-	static unsigned long timestamp = 0, hundred_thousandths = 0;
+	struct cs4231_dev *dev = cs4231_devices;
+	static unsigned long timestamp = 0, hz_samples = 0;
 	unsigned long samples, elapsed;
 
 	elapsed = jiffies_since(timestamp);
-	timestamp += elapsed;
-	hundred_thousandths += elapsed * 117582018;	// 1175.82018 bytes / jiffie
-	samples = hundred_thousandths  /  100000;
-	hundred_thousandths %= 100000;
+	timestamp  += elapsed;
+	hz_samples += elapsed * dev->samplerate;
+	samples = (hz_samples / HZ) * 4;
+	hz_samples %= HZ;
 	dev->rx_used += samples;
 	dev->samples += samples;
 	if (dev->rx_used > CS4231_BUFFER_SIZE)
 		dev->rx_used = CS4231_BUFFER_SIZE;
 	wake_up_interruptible(&dev->rx_wq);
-	simulate_timer.expires  = jiffies + 1;
+	simulate_timer.expires = jiffies + 1;
 	add_timer(&simulate_timer);
 }
 
@@ -209,6 +205,8 @@ static int setmode(struct cs4231_dev *dev, int channel, int rate, int stereo,
 	int stopped = 0;
 
 	if (cs4231a_not_found) {
+		if (rate >= 0)
+			dev->samplerate = rate;
 		if ((stereo >= 0 || rate >= 0) && dev->open)
 			dev->rx_used=0;
 		return 0;
@@ -396,6 +394,7 @@ void __init empeg_cs4231_init(void)
 	if (version!=0xa0) {
 		printk(KERN_WARNING "Could not find CS4231A (version=%02x) --> no visuals for Tuner/AUX.\n", READDATA());
 		cs4231a_not_found = 1;
+		dev->samplerate = 22050;
 		init_timer(&simulate_timer);
 		simulate_timer.expires  = jiffies + 1;
 		simulate_timer.function = cs4231a_simulate_irq;

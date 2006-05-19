@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v459"
+#define HIJACK_VERSION	"v460"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -3717,13 +3717,17 @@ hijack_handle_button (unsigned int button, unsigned long delay, unsigned int pla
 			ir_knob_down = 0;
 			break;
 		case IR_KNOB_RIGHT:
-			if (hijack_status != HIJACK_IDLE) {
+			if (!empeg_powerstate) {
+				hijacked = 1;	// ignore knob when in standby
+			} else if (hijack_status != HIJACK_IDLE) {
 				hijack_move(1);
 				hijacked = 1;
 			}
 			break;
 		case IR_KNOB_LEFT:
-			if (hijack_status != HIJACK_IDLE) {
+			if (!empeg_powerstate) {
+				hijacked = 1;	// ignore knob when in standby
+			} else if (hijack_status != HIJACK_IDLE) {
 				hijack_move(-1);
 				hijacked = 1;
 			}

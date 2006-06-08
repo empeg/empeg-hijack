@@ -313,10 +313,10 @@ static _INLINE_ void rs_sched_event(struct async_struct *info,
 	mark_bh(SERIAL_BH);
 }
 
-#ifdef CONFIG_HIJACK_TUNER
-void hijack_tuner_rx_insert (const char *buf, int size)
+void hijack_serial_rx_insert (const char *buf, int size, int port)
 {
-	struct async_struct *info = IRQ_ports[15];
+#ifdef CONFIG_HIJACK_TUNER
+	struct async_struct *info = port ? IRQ_ports[17] : IRQ_ports[15];
 
 	if (info) {
 		struct tty_struct *tty = info->tty;
@@ -337,11 +337,13 @@ void hijack_tuner_rx_insert (const char *buf, int size)
 		tty_flip_buffer_push(tty);
 		restore_flags(flags);
 	}
-}
 #endif // CONFIG_HIJACK_TUNER
+}
 
 extern int hijack_fake_tuner, hijack_trace_tuner;
+#ifdef CONFIG_HIJACK_TUNER
 static int tuner_loopback = 0;
+#endif
 
 static _INLINE_ void receive_chars(struct async_struct *info,
 				 int *status0, int *status1)
@@ -532,7 +534,7 @@ fake_tuner (unsigned char c)
 			response |= ((response >> 16) + (response >> 8)) << 24;
 			if (hijack_trace_tuner)
 				printk("fake_tuner: insert=%08x\n", ntohl(response));
-			hijack_tuner_rx_insert ((char *)&response, 4);
+			hijack_serial_rx_insert ((char *)&response, 4, 0);
 	}
 }
 #endif CONFIG_HIJACK_TUNER
@@ -602,7 +604,7 @@ static _INLINE_ void transmit_chars(struct async_struct *info, int *intr_done)
 	}
 }
 
-#ifdef CONFIG_SMC9194_TIFON	// Mk2 or later? (Mk1 has no ethernet chip)
+#ifdef CONFIG_HIJACK_TUNER	// Mk2 or later? (Mk1 has no ethernet chip)
 extern unsigned long	jiffies_since(unsigned long);
 
 static int
@@ -685,7 +687,7 @@ hijack_read_tuner_id (int *loopback, int *tuner_id)
 		}
 	}
 }
-#endif // CONFIG_SMC9194_TIFON
+#endif // CONFIG_HIJACK_TUNER
 
 /*
  * This is the serial driver's interrupt routine for a single port
@@ -1220,7 +1222,8 @@ static void change_speed(struct async_struct *info)
 	}
 }
 
-#ifdef CONFIG_HIJACK_TUNER	// Mk2 or later
+#ifdef CONFIG_HIJACK_TUNER	// Mk2 or later? (Mk1 has no ethernet chip)
+extern int hijack_serial_notify (const unsigned char *, int);
 #include <asm/arch/hijack.h>
 #endif
 
@@ -1234,6 +1237,10 @@ static void rs_put_char(struct tty_struct *tty, unsigned char ch)
 
 	if (!tty || !info->xmit_buf)
 		return;
+#ifdef CONFIG_HIJACK_TUNER	// Mk2 or later? (Mk1 has no ethernet chip)
+	if (hijack_serial_notify(&ch, 1))
+		return;
+#endif
 
 	save_flags(flags); cli();
 	if (info->xmit_cnt >= SERIAL_XMIT_SIZE - 1) {
@@ -1282,6 +1289,11 @@ static int rs_write(struct tty_struct * tty, int from_user,
 
 	save_flags(flags);
 
+#ifdef CONFIG_HIJACK_TUNER	// Mk2 or later? (Mk1 has no ethernet chip)
+	if (!from_user && hijack_serial_notify(buf, count))
+		ret = count;
+	else
+#endif
 	if (from_user) {
 		down(&tmp_buf_sem);
 		while (1) {

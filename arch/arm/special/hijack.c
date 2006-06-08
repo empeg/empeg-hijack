@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v460"
+#define HIJACK_VERSION	"v461"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -56,7 +56,7 @@ extern int hijack_current_mixer_input;
 #ifdef CONFIG_HIJACK_TUNER	// Mk2 or later? (Mk1 has no ethernet chip)
 #define EMPEG_KNOB_SUPPORTED	// Mk2 and later have a front-panel knob
 #define EMPEG_STALK_SUPPORTED	// Mk2 and later have a front-panel knob
-extern void hijack_tuner_rx_insert (const char *buf, int size); // drivers/char/serial_sa1100.c
+extern void hijack_serial_rx_insert (const char *buf, int size, int port); // drivers/char/serial_sa1100.c
 #endif
 
 int	hijack_loopback;		// 1 == detected docked "loopback" mode
@@ -66,7 +66,7 @@ int	empeg_tuner_present = 0;	// used in many places
 int	hijack_volumelock_enabled = 0;	// used by arch/arm/special/empeg_state.c
 int	hijack_fsck_disabled = 0;	// used in fs/ext2/super.c
 int	hijack_onedrive = 0;		// used in drivers/block/ide-probe.c
-int	hijack_player_serial = 0;	// set to "1" to redirect player away from serial port
+int	hijack_saveserial = 0;		// set to "1" to pass "-s-" to player on startup
 int	hijack_reboot = 0;		// set to "1" to cause reboot on next display refresh
 pid_t	hijack_player_init_pid;		// used in fs/read_write.c, fs/exec.c
 unsigned int hijack_player_started = 0;	// set to jiffies when player startup is detected on serial port (notify.c)
@@ -555,6 +555,7 @@ static	int nextsrc_aux_enabled;		// "1" == include "AUX" when doing NextSrc
 static	int hijack_old_style;			// 1 == don't highlite menu items
 static	int hijack_quicktimer_minutes;		// increment size for quicktimer function
 static	int hijack_standby_minutes;		// number of minutes after screen blanks before we go into standby
+	int hijack_suppress_notify;		// 1 == suppress player "notify" and "dhcp" text on serial port
 	long hijack_time_offset;		// adjust system time-of-day clock by this many seconds
 	int hijack_temperature_correction;	// adjust all h/w temperature readings by this celcius amount
 	int hijack_trace_fs;			// trace major filesystem accesses, on serial console
@@ -680,7 +681,7 @@ static const hijack_option_t hijack_option_table[] =
 {"standbyLED_on",		&hijack_standbyLED_on,		-1,			1,	-1,	HZ*60},
 {"standbyLED_off",		&hijack_standbyLED_off,		10*HZ,			1,	0,	HZ*60},
 {"standby_minutes",		&hijack_standby_minutes,	30,			1,	0,	240},
-{"suppress_notify",		NULL,				0,			0,	0,	1},
+{"suppress_notify",		&hijack_suppress_notify,	1,			1,	0,	1},
 {"temperature_correction",	&hijack_temperature_correction,	-4,			1,	-20,	+20},
 {"trace_fs",			&hijack_trace_fs,		0,			1,	0,	1},
 {"trace_tuner",			&hijack_trace_tuner,		0,			1,	0,	1},
@@ -717,7 +718,7 @@ static const char knobdata_menu_label	[] = "Knob Press Redefinition";
 static const char carvisuals_menu_label	[] = "Restore DC/Car Visuals";
 static const char blankerfuzz_menu_label[] = "Screen Blanker Sensitivity";
 static const char blanker_menu_label	[] = "Screen Blanker Timeout";
-static const char player_serial_menu_label [] = "Serial Port Assignment";
+static const char saveserial_menu_label	[] = "Serial Port Assignment";
 static const char bass_menu_label       [] = "Tone: Bass Adjust";
 static const char treble_menu_label     [] = "Tone: Treble Adjust";
 static const char volumelock_menu_label	[] = "Volume Level on Boot";
@@ -1253,7 +1254,7 @@ inject_stalk_button (unsigned int button)
 	pkt[3] = pkt[1] + pkt[2];
 	if (hijack_stalk_debug)
 		printk("Stalk: out=%02x %02x %02x %02x == %08x\n", pkt[0], pkt[1], pkt[2], pkt[3], rawbutton);
-	hijack_tuner_rx_insert(pkt, sizeof(pkt));
+	hijack_serial_rx_insert(pkt, sizeof(pkt), 0);
 }
 #endif // EMPEG_STALK_SUPPORTED
 
@@ -2046,23 +2047,23 @@ onedrive_display (int firsttime)
 }
 
 static void
-player_serial_move (int direction)
+saveserial_move (int direction)
 {
-	hijack_player_serial = !hijack_player_serial;
+	hijack_saveserial = !hijack_saveserial;
 	empeg_state_dirty = 1;
 }
 
-static const char *player_serial_msg[2] = {"Apps Use Serial Port", "Player Uses Serial Port"};
+static const char *saveserial_msg[2] = {"Player Uses Serial Port", "Apps Use Serial Port"};
 
 static int
-player_serial_display (int firsttime)
+saveserial_display (int firsttime)
 {
 	if (!firsttime && !hijack_last_moved)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
-	(void)draw_string(ROWCOL(0,0), player_serial_menu_label, PROMPTCOLOR);
-	(void)draw_string_spaced(ROWCOL(2,0), player_serial_msg[hijack_player_serial], ENTRYCOLOR);
+	(void)draw_string(ROWCOL(0,0), saveserial_menu_label, PROMPTCOLOR);
+	(void)draw_string_spaced(ROWCOL(2,0), saveserial_msg[hijack_saveserial], ENTRYCOLOR);
 	return NEED_REFRESH;
 }
 
@@ -3086,7 +3087,7 @@ static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 	{ carvisuals_menu_label,	carvisuals_display,	carvisuals_move,	0},
 	{ blankerfuzz_menu_label,	blankerfuzz_display,	blankerfuzz_move,	0},
 	{ blanker_menu_label,		blanker_display,	blanker_move,		0},
-	{ player_serial_menu_label,	player_serial_display,	player_serial_move,	0},
+	{ saveserial_menu_label,	saveserial_display,	saveserial_move,	0},
 	{"Show Flash Savearea",		savearea_display,	savearea_move,		0},
 	{ bass_menu_label,		bass_display,		tone_move,		0},
 	{ treble_menu_label,		treble_display,		tone_move,		0},
@@ -4013,7 +4014,7 @@ hijack_intercept_stalk (unsigned int packet)
 		printk("stalk: in=%08x\n", htonl(packet));
 	if (hijack_option_stalk_enabled) {
 		if (!handle_stalk_packet((unsigned char *)&packet)) {
-			hijack_tuner_rx_insert((unsigned char *)&packet, sizeof(packet));
+			hijack_serial_rx_insert((unsigned char *)&packet, sizeof(packet), 0);
 		}
 	}
 }
@@ -4173,7 +4174,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 						if (hijack_dispfunc == menu_display) {
 							menu_item_t *item = &menu_table[menu_item];
 							activate_dispfunc(item->dispfunc, item->movefunc, 0);
-						} else if (hijack_dispfunc == forcepower_display || hijack_dispfunc == homework_display || hijack_dispfunc == player_serial_display) {
+						} else if (hijack_dispfunc == forcepower_display || hijack_dispfunc == homework_display || hijack_dispfunc == saveserial_display) {
 							activate_dispfunc(reboot_display, NULL, 0);
 						} else if (hijack_dispfunc == menuexec_display) {
 							activate_dispfunc(menuexec_display2, NULL, hijack_userdata);
@@ -5310,6 +5311,8 @@ hijack_process_config_ini (char *buf, off_t f_pos)
 		hijack_onedrive = 0;
 		empeg_state_dirty = 1;
 	}
+	if (!empeg_on_dc_power)
+		remove_menu_entry(saveserial_menu_label);
 	if (hijack_old_style) {
 		PROMPTCOLOR = COLOR2;
 		ENTRYCOLOR = COLOR3;
@@ -5352,7 +5355,7 @@ typedef struct hijack_savearea_acdc_s {	// 32-bits total
 	unsigned volumelock_enabled	: 1;			// 1 bit
 
 	unsigned voladj			: VOLADJ_BITS;		// 2 bits
-	unsigned player_serial		: 1;			// 1 bits
+	unsigned spare1			: 1;			// 1 bits
 	unsigned knob			: 1+KNOBDATA_BITS;	// 5 bits
 
 	unsigned bass_adj		: 4;			// 4 bits
@@ -5377,7 +5380,8 @@ typedef struct hijack_savearea_s {
 
 	unsigned timer_action		: TIMERACTION_BITS;	// 1 bit
 	unsigned homework		: 1;			// 1 bits
-	unsigned spare2a		: 2;			// 1 bit
+	unsigned saveserial		: 1;			// 1 bits
+	unsigned spare1			: 1;			// 1 bit
 	unsigned force_power		: FORCEPOWER_BITS;	// 4 bits
 
 	unsigned spare16		: 16;			// 16 bits
@@ -5415,7 +5419,6 @@ hijack_save_settings (unsigned char *buf)
 	acdc->voladj			= hijack_voladj_enabled;
 	acdc->bass_adj			= hijack_bass_adj;
 	acdc->treble_adj		= hijack_treble_adj;
-	acdc->player_serial		= hijack_player_serial;
 	savearea.blanker_timeout	= blanker_timeout;
 	savearea.force_power		= hijack_force_power;
 	savearea.blanker_sensitivity	= blanker_sensitivity;
@@ -5424,6 +5427,7 @@ hijack_save_settings (unsigned char *buf)
 	savearea.restore_carvisuals	= carvisuals_enabled;
 	savearea.fsck_disabled		= hijack_fsck_disabled;
 	savearea.onedrive		= hijack_onedrive;
+	savearea.saveserial		= hijack_saveserial;
 	savearea.timer_action		= timer_action;
 	savearea.homework		= hijack_homework;
 	savearea.layout_version		= SAVEAREA_LAYOUT;
@@ -5499,7 +5503,6 @@ hijack_restore_settings (char *buf, char *msg)
 	hijack_voladj_enabled		= acdc->voladj;
 	hijack_bass_adj			= acdc->bass_adj;
 	hijack_treble_adj		= acdc->treble_adj;
-	hijack_player_serial		= acdc->player_serial;
 	if ((knob & (1 << KNOBDATA_BITS)) == 0) {
 		popup0_index		= 0;
 		knobdata_index		= knob & KNOBDATA_MASK;
@@ -5515,6 +5518,7 @@ hijack_restore_settings (char *buf, char *msg)
 	carvisuals_enabled		= savearea.restore_carvisuals;
 	hijack_fsck_disabled		= savearea.fsck_disabled;
 	hijack_onedrive			= savearea.onedrive;
+	hijack_saveserial		= savearea.saveserial;
 	timer_action			= savearea.timer_action;
 	hijack_homework			= savearea.homework;
 

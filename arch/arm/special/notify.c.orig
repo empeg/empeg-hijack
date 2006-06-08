@@ -23,18 +23,19 @@ extern int hijack_current_mixer_input;
 extern int hijack_current_mixer_volume;
 extern int hijack_player_started;
 extern int hijack_do_command (void *sparms, char *buf);
-extern int strxcmp (const char *str, const char *pattern, int partial);					// hijack.c
-extern int hijack_glob_match (const char *n, const char *p);						// hijack.c
-extern int do_remount(const char *dir,int flags,char *data);						// fs/super.c
-extern int get_filesystem_info(char *);									// fs/super.c
-extern int hijack_suppress_notify, hijack_reboot;							// hijack.c
-extern void show_message (const char *message, unsigned long time);					// hijack.c
-extern long sleep_on_timeout(struct wait_queue **p, long timeout);					// kernel/sched.c
-extern signed long schedule_timeout(signed long timeout);						// kernel/sched.c
+extern int strxcmp (const char *str, const char *pattern, int partial);		// hijack.c
+extern int hijack_glob_match (const char *n, const char *p);			// hijack.c
+extern int do_remount(const char *dir,int flags,char *data);			// fs/super.c
+extern int get_filesystem_info(char *);						// fs/super.c
+extern int hijack_suppress_notify, hijack_reboot;				// hijack.c
+extern void show_message (const char *message, unsigned long time);		// hijack.c
+extern long sleep_on_timeout(struct wait_queue **p, long timeout);		// kernel/sched.c
+extern signed long schedule_timeout(signed long timeout);			// kernel/sched.c
 
 #define NOTIFY_MAX_LINES	11		// number of chars in notify_chars[] below
 const
-unsigned char *notify_names[NOTIFY_MAX_LINES] = {"FidTime", "Artist", "FID", "Genre", "MixerInput", "Track", "Sound", "Title", "Volume", "L", "Other"};
+unsigned char *notify_names[NOTIFY_MAX_LINES]
+	= {"FidTime", "Artist", "FID", "Genre", "MixerInput", "Track", "Sound", "Title", "Volume", "L", "Other"};
 unsigned char  notify_chars[NOTIFY_MAX_LINES] = "#AFGMNSTVLO";
 #define NOTIFY_FIDLINE		2		// index of 'F' in notify_chars[]
 #define NOTIFY_MAX_LENGTH	64
@@ -52,75 +53,35 @@ static char logbuf[2048 + 128];
 static unsigned int logx = 0;
 #endif
 
-int
+void
 hijack_serial_notify (const unsigned char *s, int size)
 {
-	// "return 0" means "send data to serial port"
-	// "return 1" means "discard without sending"
-	//
-	// Note that printk() will probably not work from within this routine
-	//
-	// FIXME: move this code to sys_write() to avoid printk conflicts!
-	//
-	static enum	{want_title, want_data, want_eol} state = want_title;
 	char		*line;
 	unsigned long	flags;
 
-#ifdef DEBUG_NOTIFY
-	if (logx >= 2048) logx = 0;
-	logx += sprintf(logbuf+logx, "len=%2u, data='", size);
-	memcpy(logbuf+logx, s, size);
-	logx += size;
-	logbuf[logx++] = '\'';
-	logbuf[logx++] = '\n';
-	logbuf[logx] = '\0';
-#endif
-	switch (state) {
-		default:
-			state = want_title;
-			// fall thru
-		case want_title:
-			if (!strxcmp(s, "  serial_notify_thread.cpp", 1)) {
-				state = want_data;
-				return hijack_suppress_notify;
-			} else if (!strxcmp(s, "  dhcp_thread.cpp", 1)) {
-				state = want_eol;
-				return hijack_suppress_notify;
-			} else if (!hijack_player_started && !strxcmp(s, "Vcb: 0x", 1)) {
-				hijack_player_started = jiffies;
-			} else if (!strxcmp(s, "Switching to baud rate: 4800, disabling logging", 1)) {
-				hijack_player_started = jiffies;
-				strcpy(notify_data[NOTIFY_MAX_LINES-1],"Needed in config.ini: [serial]car_rate=115200");
-			}
-			break;
-		case want_data:
-			if (size > 3 && *s == '@' && *++s == '@' && *++s == ' ' && *++s) {
-				size -= 3;
-				while (size > 0 && (s[size-1] <= ' ' || s[size-1] > '~'))
-					--size;
-				if (size > NOTIFY_MAX_LENGTH)
-					size = NOTIFY_MAX_LENGTH;
-				if (size > 0) {
-					unsigned char i, c = *s;
-					notify_chars[sizeof(notify_chars)-1] = c;	// overwrite 'O' to simplify search
-					for (i = 0; c != notify_chars[i]; ++i);	// search for correct entry
-					line = notify_data[i];			
-					save_flags_cli(flags);
-					if (--size > 0)
-						memcpy(line, s+1, size);
-					line[size] = '\0';
-					restore_flags(flags);
-				}
-				state = want_eol;
-				return hijack_suppress_notify;
-			}
-			break;
-		case want_eol:
-			if (s[size-1] == '\n')
-				state = want_title;
-			return hijack_suppress_notify;
+	if (!hijack_player_started && !strxcmp(s, "Vcb: 0x", 1)) {
+		hijack_player_started = jiffies;
+	} else if (!strxcmp(s, "Switching to baud rate: 4800, disabling logging", 1)) {
+		hijack_player_started = jiffies;
+		strcpy(notify_data[NOTIFY_MAX_LINES-1],"Needed in config.ini: [serial]car_rate=115200");
+	} else if (size > 3 && *s == '@' && *++s == '@' && *++s == ' ' && *++s) {
+		size -= 3;
+		while (size > 0 && (s[size-1] <= ' ' || s[size-1] > '~'))
+			--size;
+		if (size > NOTIFY_MAX_LENGTH)
+			size = NOTIFY_MAX_LENGTH;
+		if (size > 0) {
+			unsigned char i, c = *s;
+			notify_chars[sizeof(notify_chars)-1] = c;	// overwrite 'O' to simplify search
+			for (i = 0; c != notify_chars[i]; ++i);	// search for correct entry
+			line = notify_data[i];			
+			save_flags_cli(flags);
+			if (--size > 0)
+				memcpy(line, s+1, size);
+			line[size] = '\0';
+			restore_flags(flags);
+		}
 	}
-	return 0;
 }
 
 #define	EPOCH_YR		(1970)		/* Unix EPOCH = Jan 1 1970 00:00:00 */
@@ -387,6 +348,22 @@ static struct proc_dir_entry proc_flash5_entry = {
 	&kflash_ops,		/* inode operations */
 };
 
+extern struct file_operations  tty_fops;
+static struct inode_operations ktty_ops = {
+	&tty_fops,
+	NULL,
+};
+
+static struct proc_dir_entry proc_ttyH_entry = {
+	0,			/* inode (dynamic) */
+	4,			/* length of name */
+	"ttyH",			/* name */
+	S_IFCHR|S_IRUSR|S_IWUSR,/* mode */
+	1, 0, 0,		/* links, owner, group */
+	MKDEV(TTY_MAJOR,64 + 4),/* size holds device number */
+	&ktty_ops,		/* inode operations */
+};
+
 #ifdef CONFIG_NET_ETHERNET
 static struct proc_dir_entry proc_flash6_entry = {
 	0,			/* inode (dynamic) */
@@ -498,6 +475,7 @@ void hijack_notify_init (void)
 	proc_register(&proc_root, &proc_flash6_entry);
 #endif // CONFIG_NET_ETHERNET
 	proc_register(&proc_root, &proc_flash5_entry);
+	proc_register(&proc_root, &proc_ttyH_entry);
 }
 
 static int

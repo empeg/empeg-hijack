@@ -908,11 +908,6 @@ asmlinkage int sys_open(const char * filename, int flags, int mode)
 	fd = PTR_ERR(tmp);
 	if (!IS_ERR(tmp)) {
 		extern char hijack_zoneinfo[];
-		extern int  hijack_player_serial;
-		if (!hijack_player_serial && !strcmp(current->comm, "player")) {
-			if (!strcmp(tmp,"/dev/ttyS1"))
-				strcpy(tmp,"/proc/ttyH");
-		}
 		fd = sys_open2(tmp, flags, mode);
 
 #ifdef CONFIG_ROOT_NFS

@@ -661,7 +661,7 @@ static const char dirlist_header[] =
 	"<head><title>Index of %s</title></head>"
 	"<body>"
 	"<font size=+1><b>Index of %s</b></font>"
-	"<hr><pre>\r\n";
+	"<hr><pre style=\"font-family: monospace, Courier\">\r\n";
 
 static int
 send_dirlist (server_parms_t *parms, char *path, int full_listing)
@@ -729,9 +729,8 @@ send_dirlist (server_parms_t *parms, char *path, int full_listing)
 			p.name		= p.path + pathlen;
 			p.use_http	= parms->use_http;
 			p.sb		= dentry->d_sb;
-			if (parms->use_http) {
+			if (parms->use_http)
 				p.buf_used = sprintf(p.buf, dirlist_header, path, path);
-			}
 			do {
 				p.nam_used = 0;
 				p.filecount = 0;

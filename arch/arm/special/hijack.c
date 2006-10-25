@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v462"
+#define HIJACK_VERSION	"v463"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -2611,7 +2611,7 @@ popup_display (int firsttime)
 #define GAME_OVER		0x11
 #define GAME_PADDLE_SIZE	8
 
-static short game_over, game_row, game_col, game_hdir, game_vdir, game_paddle_col, game_paddle_lastdir, game_speed, game_bricks;
+static short game_over, game_row, game_col, game_hdir, game_vdir, game_paddle_col, game_paddle_lastdir, game_speed, game_bricks, game_moves;
 static unsigned long game_ball_last_moved, game_animtime;
        unsigned int *hijack_game_animptr = NULL;	// written by empeg_display.c
 
@@ -2620,23 +2620,24 @@ game_finale (void)
 {
 	static int framenr, frameadj;
 	unsigned char *d,*s;
-	int a;
+	unsigned long rowcol;
+	int a, score;
 
 	if (game_bricks) {  // Lost game?
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
 			return NO_REFRESH;
 		if (game_animtime++ == 0) {
 			(void)draw_string_spaced(ROWCOL(2,4), hijack_vXXX_by_Mark_Lord, -COLOR3);
-			return NEED_REFRESH;
+			goto draw_score;
 		}
-		if (jiffies_since(game_ball_last_moved) < (HZ*3))
+		if (jiffies_since(game_ball_last_moved) < (HZ*10))
 			return NO_REFRESH;
 		ir_selected = 1; // return to menu
 		return NEED_REFRESH;
 	}
 	if (jiffies_since(game_animtime) < (HZ/(ANIMATION_FPS-2))) {
-		(void)draw_string(ROWCOL(2,44), "You Win!", COLOR3);
-		return NEED_REFRESH;
+		rowcol = draw_string(ROWCOL(2,44), "You Win!", COLOR3);
+		goto draw_score;
 	}
 	if (game_animtime == 0) { // first frame?
 		framenr = 0;
@@ -2658,6 +2659,13 @@ game_finale (void)
 	framenr += frameadj;
 	game_animtime = JIFFIES();
 	return NEED_REFRESH;
+draw_score:
+	rowcol = draw_string(ROWCOL(1,8), "Score=", PROMPTCOLOR);
+	score = GAME_COLS - 2 - game_bricks;
+	rowcol = draw_number(rowcol, score, "%02d", PROMPTCOLOR);
+	rowcol = draw_string(rowcol, ", Moves=", PROMPTCOLOR);
+	(void)   draw_number(rowcol, game_moves, "%d", PROMPTCOLOR);
+	return NEED_REFRESH;
 }
 
 static void
@@ -2665,9 +2673,12 @@ game_move (int direction)
 {
 	unsigned char *paddlerow = hijack_displaybuf[EMPEG_SCREEN_ROWS-3];
 	int i = 3;
+
 	while (i-- > 0) {
 		if (direction < 0) {
 			if (game_paddle_col > 1) {
+				if (game_bricks)
+					game_moves++;
 				paddlerow[--game_paddle_col + GAME_PADDLE_SIZE] = 0;
 				if (paddlerow[game_paddle_col] != 0)
 					--game_row; // scoop up the ball
@@ -2675,6 +2686,8 @@ game_move (int direction)
 			}
 		} else {
 			if (game_paddle_col < (GAME_COLS - GAME_PADDLE_SIZE - 1)) {
+				if (game_bricks)
+					game_moves++;
 				paddlerow[game_paddle_col] = 0;
 				if (paddlerow[game_paddle_col + GAME_PADDLE_SIZE] != 0)
 					--game_row; // scoop up the ball
@@ -2771,6 +2784,7 @@ game_display (int firsttime)
 	game_ball_last_moved = 0;
 	game_paddle_lastdir = 0;
 	game_bricks = GAME_COLS - 2;
+	game_moves = 0;
 	game_over = 0;
 	game_speed = 16;
 	game_animtime = 0;

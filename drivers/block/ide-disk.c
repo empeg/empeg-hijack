@@ -82,6 +82,7 @@ static inline void idedisk_output_data (ide_drive_t *drive, void *buffer, unsign
 /*
  * lba_capacity_is_ok() performs a sanity check on the claimed "lba_capacity"
  * value for this drive (from its reported identification information).
+ * Be careful here --> this routine gets called multiple times per drive!!
  *
  * Returns:	1 if lba_capacity looks sensible
  *		0 otherwise
@@ -91,10 +92,15 @@ static int lba_capacity_is_ok (ide_drive_t *drive)
 	struct hd_driveid *id = drive->id;
 	unsigned long lba_sects, chs_sects, head, tail;
 	unsigned short *idw = (unsigned short *)id; 
+	const unsigned int lba28_max = (1<<28)-1;
 
 	if ((idw[83] & 0xc400) == 0x4400) { 		// Does drive support 48-bit LBA?
 		unsigned long capacity;
-		drive->lba28_limit = (idw[61]<<16) | idw[60];	// limit == "normal" lba_capacity value
+		if (!drive->lba28_limit) {
+			drive->lba28_limit = id->lba_capacity;	// limit == "normal" lba_capacity value
+			if (drive->lba28_limit > lba28_max)
+				drive->lba28_limit = lba28_max;
+		}
 		capacity = (idw[101]<<16) | idw[100];
 		// The rest of the kernel can only support 32-bit LBA, so round down:
 		if (idw[103] | idw[102])
@@ -102,7 +108,7 @@ static int lba_capacity_is_ok (ide_drive_t *drive)
 		id->lba_capacity = capacity;
 		return 1;
 	}
-	drive->lba28_limit = ~0;			// no limit unless 48-bit is supported
+	drive->lba28_limit = lba28_max;		// default limit unless 48-bit is supported
 	/*
 	 * The ATA spec tells large drives to return
 	 * C/H/S = 16383/16/63 independent of their size.
@@ -405,7 +411,6 @@ static ide_startstop_t do_rw_disk (ide_drive_t *drive, struct request *rq, unsig
 
 	if (IDE_CONTROL_REG)
 		OUT_BYTE(drive->ctl,IDE_CONTROL_REG);
-	OUT_BYTE(rq->nr_sectors,IDE_NSECTOR_REG);
 #ifdef CONFIG_BLK_DEV_PDC4030
 	if (IS_PDC4030_DRIVE) {
 		if (hwif->channel != 0 || rq->cmd == READ) {
@@ -425,12 +430,15 @@ static ide_startstop_t do_rw_disk (ide_drive_t *drive, struct request *rq, unsig
 			OUT_BYTE(block>>24,IDE_SECTOR_REG);
 			OUT_BYTE(0,IDE_LCYL_REG);
 			OUT_BYTE(0,IDE_HCYL_REG);
+			OUT_BYTE((rq->nr_sectors)>>8,IDE_NSECTOR_REG);
+			OUT_BYTE(drive->select.all,IDE_SELECT_REG);
 			lba48 = 1;
+		} else {
+			OUT_BYTE(drive->select.all|((block>>24)&0x0f),IDE_SELECT_REG);
 		}
-		OUT_BYTE(block,IDE_SECTOR_REG);
-		OUT_BYTE(block>>=8,IDE_LCYL_REG);
-		OUT_BYTE(block>>=8,IDE_HCYL_REG);
-		OUT_BYTE(((block>>8)&0x0f)|drive->select.all,IDE_SELECT_REG);
+		OUT_BYTE(block    ,IDE_SECTOR_REG);
+		OUT_BYTE(block>> 8,IDE_LCYL_REG);
+		OUT_BYTE(block>>16,IDE_HCYL_REG);
 	} else {
 		unsigned int sect,head,cyl,track;
 		track = block / drive->sect;
@@ -447,6 +455,7 @@ static ide_startstop_t do_rw_disk (ide_drive_t *drive, struct request *rq, unsig
 			head, sect, rq->nr_sectors, (unsigned long) rq->buffer);
 #endif
 	}
+	OUT_BYTE(rq->nr_sectors,IDE_NSECTOR_REG);
 #ifdef CONFIG_BLK_DEV_PDC4030
 	if (use_pdc4030_io) {
 		extern ide_startstop_t do_pdc4030_io(ide_drive_t *, struct request *);
@@ -879,6 +888,8 @@ static void idedisk_setup (ide_drive_t *drive)
 			printk(", DMA");
 		}
 	}
+	if (drive->lba28_limit < id->lba_capacity)
+		printk(", LBA48");
 	printk("\n");
 
 	drive->mult_count = 0;

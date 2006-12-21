@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v464"
+#define HIJACK_VERSION	"v465"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -251,7 +251,8 @@ typedef struct button_name_s {
 #define IR_FAKE_RESTORESRC	(IR_NULL_BUTTON-20)
 #define IR_FAKE_AM		(IR_NULL_BUTTON-21)
 #define IR_FAKE_FM		(IR_NULL_BUTTON-22)
-#define IR_FAKE_HIJACKMENU	(IR_NULL_BUTTON-23)	// This MUST be the lowest numbered FAKE code
+#define IR_FAKE_REBOOT		(IR_NULL_BUTTON-23)
+#define IR_FAKE_HIJACKMENU	(IR_NULL_BUTTON-24)	// This MUST be the lowest numbered FAKE code
 #define ALT			BUTTON_FLAGS_ALTNAME
 
 typedef struct ir_translation_s {
@@ -279,13 +280,13 @@ static struct {
 	{	{IR_FAKE_POPUP0, 0, 16, 0},
 		{IR_FAKE_CLOCK,
 		IR_RIO_INFO_PRESSED|ALT|BUTTON_FLAGS_LONGPRESS,	// "Detail"
-		IR_RIO_SOUND_PRESSED|ALT|BUTTON_FLAGS_LONGPRESS,// "Equalizer"
 		IR_RIO_PLAY_PRESSED|ALT|BUTTON_FLAGS_LONGPRESS,	// "Hush"
 		IR_RIO_INFO_PRESSED,
 		IR_KNOB_PRESSED,
 		IR_FAKE_KNOBSEEK,
 		IR_RIO_MARK_PRESSED|ALT,			// "Mark"
 		IR_FAKE_NEXTSRC,
+		IR_FAKE_QUICKTIMER,
 		IR_RIO_SELECTMODE_PRESSED,
 		IR_RIO_0_PRESSED|ALT,				// "Shuffle"
 		IR_RIO_SOURCE_PRESSED,
@@ -319,6 +320,7 @@ static button_name_t button_names[] = {
 	{"RestoreSrc",	IR_FAKE_RESTORESRC},
 	{"AM",		IR_FAKE_AM},
 	{"FM",		IR_FAKE_FM},
+	{"Reboot",	IR_FAKE_REBOOT},
 	{"VolAdj",	IR_FAKE_VOLADJMENU},
 	{"QuickTimer",	IR_FAKE_QUICKTIMER},
 	{"HijackMenu",	IR_FAKE_HIJACKMENU},
@@ -3557,6 +3559,8 @@ quicktimer_display (int firsttime)
 		hijack_last_moved = JIFFIES();
 		create_overlay(&geom);
 	} else if (jiffies_since(hijack_last_moved) >= (HZ*3)) {
+		if (timer_timeout)
+			hijack_beep(90, 70, 30);
 		hijack_deactivate(HIJACK_IDLE);
 	} else {
 		while (hijack_button_deq(&hijack_userq, &data, 0)) {
@@ -3657,6 +3661,9 @@ hijack_handle_button (unsigned int button, unsigned long delay, unsigned int pla
 		case IR_FAKE_FM:
 			switch_to_src(hijack_current_mixer_input, INPUT_RADIO_FM);
 			hijacked = 1;
+			break;
+		case IR_FAKE_REBOOT:
+			hijack_reboot = 1;
 			break;
 		case IR_FAKE_POPUP0:
 		case IR_FAKE_POPUP1:

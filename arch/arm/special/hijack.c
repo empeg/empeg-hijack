@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v465"
+#define HIJACK_VERSION	"v466"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -5623,7 +5623,7 @@ done:
 	set_fs(old_fs);
 }
 
-unsigned long	// invoked once from empeg_display.c
+void	// invoked once from empeg_display.c
 hijack_init (void *animptr)
 {
 	extern void hijack_notify_init (void);
@@ -5657,5 +5657,4 @@ hijack_init (void *animptr)
 		anistart = HZ/2;
 		show_message(hijack_vXXX_by_Mark_Lord, anistart);
 	}
-	return (HZ/2);
 }

@@ -152,9 +152,6 @@ inline void donothing(const char *s, ...)
 
 static struct display_dev devices[1];
 
-/* Timer to display boot animation */
-static struct timer_list animation_timer;
-
 /* Timer to display user's splash screen */
 static struct timer_list display_timer;
 
@@ -725,58 +722,68 @@ void display_bootfail(void)
 	display_user_splash((unsigned long)nohd_img);
 }
 
+extern void hijack_init (void *);
+static void display_animation (void *ani_ptr);
+
+static void schedule_animation (unsigned long nexttime, void *ani_ptr)
+{
+	static struct timer_list animation_timer;
+
+	init_timer(&animation_timer);
+	animation_timer.expires  = nexttime + jiffies;
+	animation_timer.data     = (unsigned long)ani_ptr;
+	animation_timer.function = (void *)display_animation;
+	add_timer(&animation_timer);
+}
+
+static inline unsigned int
+start_animation (unsigned int *ani_ptr)
+{
+	// look for custom animation at tail end of kernel flash partition:
+	void *kernel_start = (void *)EMPEG_FLASHBASE + 0x10000;
+	unsigned int duration, *ani_sig = (kernel_start + (0xa0000 - 4));
+
+	if (*ani_sig == ('A'|('N'<<8)|('I'<<16)|('M'<<24))) {
+		unsigned int offset = *(ani_sig - 1);
+		if (offset >= 0x90000 && offset < (0xa0000 - (1024 + 8 + 8)) && !(offset & 3)) {
+			printk("Found custom animation at offset 0x%x\n", offset);
+			ani_ptr = kernel_start + offset;
+		}
+	}
+	hijack_init(ani_ptr);
+	schedule_animation((HZ/2), ani_ptr);
+	duration = (HZ/2) + HZ;
+	while (*ani_ptr++)
+		duration += (HZ/ANIMATION_FPS);
+	return duration;
+}
+
 /* Deal with next animation frame */
-static unsigned long display_animation(unsigned long animation_base)
+static void display_animation (void *ani_ptr)
 {
 	struct display_dev *dev = devices;
-	unsigned int *frameptr=(unsigned int*)animation_base;
-	unsigned long nexttime;
+	unsigned int *frameptr = ani_ptr;
+	static int framenr = 0;
+	unsigned char *dbuf, *ani_frame;
+	unsigned int i, offset = frameptr[framenr++];
 
-	/* Used once only, so this can be static */
-	static int framenr=-1;
-
-	/* Called once to initialise */
-	if (framenr>=0) {
-		unsigned char *d,*s;
-		int a;
-
-		/* Find applicable frame to display */
-		s=(unsigned char*)(animation_base+frameptr[framenr]);
-
-		/* End of animation? */
-		if (!frameptr[framenr])
-			return 0;
-
+	if (offset) {
+		/* Get next frame to display */
+		ani_frame = ani_ptr + offset;
+	
 		/* Decompress and display */
-		d=dev->software_buffer;
-		for(a=0;a<2048;a+=2) {
-			*d++=((*s&0xc0)>>2)|((*s&0x30)>>4);
-			*d++=((*s&0x0c)<<2)|((*s&0x03));
-			s++;
+		dbuf = dev->software_buffer;
+		for (i = 0; i < (2048/2); i++) {
+			unsigned char b = *ani_frame++;
+			*dbuf++ = ((b & 0xc0) >> 2) | ((b & 0x30) >> 4);
+			*dbuf++ = ((b & 0x0c) << 2) | ((b & 0x03)     );
 		}
-
+	
 		/* Blat it: well, add it to the refresh buffer, otherwise when
 		   the audio DMA starts it all goes blank... */
 		display_refresh(dev);
+		schedule_animation(HZ/ANIMATION_FPS, ani_ptr);
 	}
-		
-	/* Re-queue ourselves at ANIMATION_FPS (0.5 seconds for the first
-	   frame) */
-	init_timer(&animation_timer);
-	animation_timer.data=animation_base;
-	animation_timer.function= (void (*)(unsigned long))display_animation;
-	if (framenr >= 0) {
-		nexttime = framenr ? (HZ/ANIMATION_FPS) : (HZ/2);
-	} else {
-		extern unsigned long hijack_init (void *);
-		nexttime = hijack_init(frameptr);
-	}
-	framenr++;	// Next frame
-
-	nexttime += jiffies;
-	animation_timer.expires = nexttime;
-	add_timer(&animation_timer);
-	return nexttime;
 }
 
 #define CHARS_TO_ULONG(A, B, C, D) ((A) | ((B) << 8) | ((C) << 16) | ((D) << 24))
@@ -788,9 +795,7 @@ static void handle_splash(struct display_dev *dev)
 	const int LOGO_CUSTOM = 0x10;	
 	int logo_type;
 	unsigned char *user_splash=(unsigned char*)(EMPEG_FLASHBASE+0xa000);
-	int animation_time;
-	unsigned long animation_start;
-	unsigned long *ani_ptr;
+	unsigned long ani_duration;
 
 	unsigned long splash_signature = *((unsigned long *)user_splash);
 
@@ -815,50 +820,29 @@ static void handle_splash(struct display_dev *dev)
 		logo_type = LOGO_EMPEG;
 	}
 	
-	ani_ptr=(unsigned long*)empeg_ani;
-{
-	// look for custom animation at tail end of kernel flash partition:
-	const unsigned int kernel_start = EMPEG_FLASHBASE + 0x10000;
-	unsigned int *p = (unsigned int *)(kernel_start + (0xa0000 - 4));
-	if (*p == ('A'|('N'<<8)|('I'<<16)|('M'<<24))) {
-		unsigned int offset = *(p - 1);
-		if (offset >= 0x90000 && offset < (0xa0000 - (1024 + 8 + 8)) && !(offset & 3)) {
-			printk("Found custom animation at offset 0x%x\n", offset);
-			ani_ptr = (unsigned long *)(kernel_start + offset);
-		}
-	}
-}
 	// Mmm.. bit of a race condition here:  we shouldn't be accessing
 	// the flash memory directly (playing the animation), in case empeg_state
 	// wants to write to it when accessed via hijack_init() from display_animation().
 	// So what we do about it is.. nothing.  Probably not an issue anyway.
 
-	animation_start = display_animation((unsigned long)ani_ptr);
+	ani_duration = start_animation((void *)empeg_ani);
 
-	/* Setup timer to display user's image (if present) after the animation finishes */
-	if (logo_type & LOGO_CUSTOM) {
-		/* Work out time to play animation: 1s (0.5 start & end) + frames */
-		animation_time = HZ;
-		while (*ani_ptr++)
-			animation_time += (HZ/ANIMATION_FPS);
-
-		printk("Scheduling custom logo.\n");
+	/* Set up timer to display user's image (if present) after the animation finishes */
+	if ((logo_type & LOGO_CUSTOM)) {
 		init_timer(&display_timer);
-		display_timer.expires=(animation_start + animation_time);
+		display_timer.expires = jiffies + ani_duration;
 
 		/* On AC or DC power? AC is first image, DC is second */
 		display_timer.data=(unsigned long)(user_splash+4);
 		if (empeg_on_dc_power)
-			display_timer.data+=EMPEG_SCREEN_SIZE;
+			display_timer.data += EMPEG_SCREEN_SIZE;
 
 		/* Set up function pointer & add to timer queue (it will remove
 		   itself when the timer expires) */
-		display_timer.function=display_user_splash;
+		display_timer.function = display_user_splash;
 		add_timer(&display_timer);
 	}
 }
-
-
 
 /* This handles the mmap call. To be able to mmap RAM we need to swing
    through hoops a little. See p283 of Linux Device Drivers for details */

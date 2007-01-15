@@ -660,11 +660,18 @@ hijack_read_tuner_id (int *loopback, int *tuner_id)
 		*loopback = 1;
 		tuner_loopback = 1;
 	} else if (rc != -1) {
+		unsigned long timestamp = jiffies;
 		//
 		// Tuner appears to be present.  It starts up with a stream of data,
 		// but we ignore that and just issue the "read knob/jumpers" command.
 		//
-		while (-1 != hijack_read_serial(tuner_port, HZ/16));
+		while (-1 != hijack_read_serial(tuner_port, HZ/16)) {
+			if (jiffies_since(timestamp) > (2*HZ)) {
+	blabbering:
+				printk("ERROR: too much tuner serial data; id-detect skipped\n");
+				return;
+			}
+		}
 
 		tuner_port[UART_TX] = 0x01;
 		tuner_port[UART_TX] = 0x09;
@@ -673,6 +680,8 @@ hijack_read_tuner_id (int *loopback, int *tuner_id)
 		//
 		do {
 			rc = hijack_read_serial(tuner_port, HZ/8);
+			if (jiffies_since(timestamp) > (2*HZ))
+				goto blabbering;
 		} while (rc != -1 && rc != 0x01);
 		//
 		// Now grab the entire 4-byte response, check validity, and extract the tuner_id

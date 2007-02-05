@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v467"
+#define HIJACK_VERSION	"v468"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -1724,7 +1724,7 @@ vitals_display (int firsttime)
 	// Current Playlist and Fid:
 	save_flags_cli(flags);
 	sa = *empeg_state_writebuf;
-	sprintf(buf, "GB\nPlaylist:%02x%02x, Fid:%s", sa[0x45], sa[0x44], notify_fid());
+	sprintf(buf, "GB\nPlaylist.Trk:%02x%02x.%u", sa[0x45], sa[0x44], *(unsigned int *)(void *)(sa+0x24));
 	restore_flags(flags);
 	rowcol = draw_string(rowcol, buf, PROMPTCOLOR);
 
@@ -3517,17 +3517,39 @@ message_display (int firsttime)
 }
 
 void
-show_message (const char *message, unsigned long time)
+show_message (const char *msg, unsigned long time)
 {
-	strncpy(message_text, message, sizeof(message_text)-1);
+	if (msg)
+		strncpy(message_text, msg, sizeof(message_text)-1);
 	message_text[sizeof(message_text)-1] = '\0';
 	message_time = time;
-	if (message && *message) {
+	if (message_text[0]) {
 		unsigned long flags;
+		printk("show_message(\"%s\")\n", message_text);
 		save_flags_cli(flags);
 		activate_dispfunc(message_display, message_move, 0);
 		restore_flags(flags);
 	}
+}
+
+void
+hijack_show_fid (const char *msg)
+{
+	unsigned long flags;
+	unsigned int playlist;
+	int track;
+	unsigned char *sa;
+
+	// get current fid:
+	save_flags_cli(flags);
+	sa = *empeg_state_writebuf;
+	playlist = sa[0x45] << 8 | sa[0x44];
+	track = *(unsigned int *)(void *)(sa + 0x24);
+	restore_flags(flags);
+	if (track < 0 || track > 9999)
+		track = -1;
+	sprintf(message_text, "%04x.%d %s", playlist, track, msg);
+	show_message(NULL, 20*HZ);
 }
 
 static unsigned int ir_lastpressed = IR_NULL_BUTTON;

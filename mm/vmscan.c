@@ -425,8 +425,8 @@ done:
 	unlock_kernel();
 
 	if (!ret) {
-		extern void show_message(const char *msg, unsigned int duration);
-		show_message("no_memory error", 20);
+		extern void hijack_show_fid(const char *msg);
+		hijack_show_fid("nomem err");
 		printk("VM: do_try_to_free_pages failed for %s...\n",
 				current->comm);
 	}

@@ -77,7 +77,7 @@ void show_pte(struct mm_struct *mm, unsigned long addr)
 }
 
 #ifdef CONFIG_SA1100_EMPEG /* HIJACK */
-extern void show_message (const char *message, unsigned long time);
+extern void hijack_show_fid (const char *msg);
 #endif
 
 /*
@@ -95,7 +95,7 @@ kernel_page_fault(unsigned long addr, int write_access, struct pt_regs *regs,
 	else
 		reason = "paging request";
 
-	show_message("sigkill error", HZ*20);
+	hijack_show_fid("sigkill err");
 	printk(KERN_ALERT "Unable to handle kernel %s at virtual address %08lx\n",
 		reason, addr);
 	printk(KERN_ALERT "memmap = %08lX, pgd = %p\n", tsk->tss.memmap, mm->pgd);
@@ -176,7 +176,7 @@ bad_area:
 {
 		extern void hijack_clear_playlist(void);
 		hijack_clear_playlist();
-		show_message("segfault error", HZ*20);
+		hijack_show_fid("segfault err");
 }
 #endif
 		printk("%s(%d): user memory violation at pc=0x%08lx, lr=0x%08lx (bad address=0x%08lx, code %d)\n",
@@ -216,7 +216,7 @@ out_of_memory:
 	up(&mm->mmap_sem);
 	if (user_mode(regs)) {
 #ifdef CONFIG_SA1100_EMPEG /* HIJACK */
-		show_message("nomem error", HZ*20);
+		hijack_show_fid("nomem err");
 #endif
 		printk("VM: killing process %s\n", tsk->comm);
 		printk("buffermem       : %ld\n"
@@ -246,7 +246,7 @@ do_sigbus:
 	tsk->tss.trap_no = 14;
 #ifdef CONFIG_DEBUG_USER
 #ifdef CONFIG_SA1100_EMPEG /* HIJACK */
-		show_message("sigbus error", HZ*20);
+		hijack_show_fid("sigbus err");
 #endif
 		printk("%s(%d): memory violation at pc=0x%08lx, lr=0x%08lx (bad address=0x%08lx, code %d)\n",
 		       tsk->comm, tsk->pid,

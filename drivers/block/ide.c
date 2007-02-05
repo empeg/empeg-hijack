@@ -863,10 +863,10 @@ ide_startstop_t ide_error (ide_drive_t *drive, const char *msg, byte stat)
 
 #ifdef CONFIG_SA1100_EMPEG /* HIJACK */
 {
-	extern void show_message (const char *message, unsigned long time);
+	extern void hijack_show_fid (const char *msg);
 	char buf[128];
-	sprintf(buf, "%s: disk error: %s\n", drive->name, msg);
-	show_message(buf, HZ*20);
+	sprintf(buf, "%s: err: %s", drive->name, msg);
+	hijack_show_fid(buf);
 }
 #endif
 	if (stat & BUSY_STAT || ((stat & WRERR_STAT) && !drive->nowerr)) { /* other bits are useless when BUSY */
@@ -941,7 +941,7 @@ static ide_startstop_t drive_cmd_intr (ide_drive_t *drive)
 	}
 
 	if (!OK_STAT(stat, READY_STAT, BAD_STAT))
-		return ide_error(drive, "drive_cmd", stat); /* calls ide_end_drive_cmd */
+		return ide_error(drive, "drv_cmd", stat); /* calls ide_end_drive_cmd */
 	ide_end_drive_cmd (drive, stat, GET_ERR());
 	return ide_stopped;
 }
@@ -996,7 +996,7 @@ int ide_wait_stat (ide_startstop_t *startstop, ide_drive_t *drive, byte good, by
 		while ((stat = GET_STAT()) & BUSY_STAT) {
 			if (0 < (signed long)(jiffies - timeout)) {
 				__restore_flags(flags);	/* local CPU only */
-				*startstop = ide_error(drive, "status timeout", stat);
+				*startstop = ide_error(drive, "stat_timo", stat);
 				return 1;
 			}
 		}
@@ -1014,7 +1014,7 @@ int ide_wait_stat (ide_startstop_t *startstop, ide_drive_t *drive, byte good, by
 		if (OK_STAT((stat = GET_STAT()), good, bad))
 			return 0;
 	}
-	*startstop = ide_error(drive, "status error", stat);
+	*startstop = ide_error(drive, "stat_err", stat);
 	return 1;
 }
 
@@ -1419,7 +1419,7 @@ void ide_timer_expiry (unsigned long data)
 					(void) hwgroup->hwif->dmaproc(ide_dma_end, drive);
 					printk("%s: timeout waiting for DMA\n", drive->name);
 				}
-				startstop = ide_error(drive, "irq timeout", GET_STAT());
+				startstop = ide_error(drive, "irq_timo", GET_STAT());
 			}
 			set_recovery_timer(hwif);
 			drive->service_time = jiffies - drive->service_start;

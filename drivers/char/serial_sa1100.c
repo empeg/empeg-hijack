@@ -345,6 +345,8 @@ extern int hijack_fake_tuner, hijack_trace_tuner;
 static int tuner_loopback = 0;
 #endif
 
+static unsigned char tuner_state = 0;
+
 static _INLINE_ void receive_chars(struct async_struct *info,
 				 int *status0, int *status1)
 {
@@ -369,6 +371,7 @@ static _INLINE_ void receive_chars(struct async_struct *info,
 			extern int hijack_stalk_enabled;
 			if (tuner_loopback || !hijack_stalk_enabled)
 				goto ignore_char;
+			tuner_state = 0;
 			if (hijack_trace_tuner)
 				printk("tuner: in=%02x\n", ch);
 			if (pktlen) {
@@ -479,63 +482,104 @@ static _INLINE_ void receive_chars(struct async_struct *info,
 
 static char cmd4[] = {0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,0x18,0x39,0x43,0x4a,0x4e,0x51,0x3f,0x40,0x48,0x00};
 static char rsp4[] = {0x07,0x00,0x35,0x22,0x3a,0x44,0x40,0x66,0x48,0x89,0x51,0xab,0x5a,0xcd,0x66,0x64,0x74,0x36,0x07,0x08,0x03,0xde,0x6c,0x00};
-
-static void
+/*
+ * Tuner command protocol:
+ *
+ * First byte  == 0x01 == "begin message"
+ * Second byte == 0x01 == program tuner registers 0,1,2,3,4,5,6,7 (full setup).
+ *                        Note: registers 0,1,2 are zeros here, because the empeg
+ *                        module has extra logic to manage two sets of tuner frequencies
+ *                        independently, for RDS scanning and the like.  See next command:
+ *             == 0x03 == program tuner registers 0,1,2 (tune to frequency).
+ *             ...
+ * For 0x01, the next 8 bytes are the tuner register values.
+ */
+static unsigned char
 fake_tuner (unsigned char c)
 {
-	static unsigned char state = 0, ctype = 0, eat = 0;
+#ifdef CONFIG_HIJACK_TUNER_ADJUST
+	static unsigned char fm_am = 0;
+#endif
+	static unsigned char ctype = 0, eat = 0;
 	unsigned int response, i;
 
-	switch (state) {
+	switch (tuner_state) {
 		case 0:
 			if (c == 0x01)
-				state = 1;
-			else if (hijack_trace_tuner)
+				tuner_state = 1;
+			else if (hijack_fake_tuner && hijack_trace_tuner)
 				printk("fake_tuner: ignored=%02x\n", c);
-			return;
+			return c;
 		case 1:
-			state = 2;
+			tuner_state = 2;
 			ctype = c;
 			switch (ctype) {
-				default:
-					printk("fake_tuner: unknown msg type, ignored=%02x\n", c);
-					state = 0;
-					return;
+				case 0x00: eat =10; break; // read module id, and set LED on/off
+				case 0x01: eat = 9; break; // program tuner (8 registers)
+				case 0x03: eat = 4; break;
 				case 0x04: eat = 2; break;
 				case 0x05: eat = 1; break;
-				case 0x03: eat = 4; break;
-				case 0x01: eat = 9; break;
-				case 0x00: eat =10; break; // read module id, and set LED on/off
-				case 0xff: eat = 1; break;
 				case 0x09: eat = 1; break; // read tuner dial (tuner ID)
-			}
-			// fall thru
-		default:
-			if (--eat)
-				return;
-			state = 0;
-			switch (ctype) {
-				case 0x04:
-					cmd4[sizeof(cmd4)-1] = c;
-					for (i = 0; cmd4[i] != c; ++i);
-					c = rsp4[i];
-					response = 0x00000401 | (c << 16);
-					break;
-				case 0x05: response = 0x00000501; break;
-				case 0x03: response = 0x00000301; break;
-				case 0x01: response = 0x00000101; break;
-				case 0x00: response = 0x00030001; break; // read module id, and set LED on/off: tuner == 0x03
-				case 0xff: response = 0x0027ff01; break;
-				case 0x09: response = 0x00080901; break; // read tuner dial: pretend it's set to '8'
+				case 0xff: eat = 1; break;
 				default:
-					printk("fake_tuner: unknown ctype=%02x\n", ctype);
-					return;
+					if (hijack_fake_tuner)
+						printk("fake_tuner: unknown msg type, ignored=%02x\n", c);
+					tuner_state = 0;
+					return c;
 			}
-			response |= ((response >> 16) + (response >> 8)) << 24;
-			if (hijack_trace_tuner)
-				printk("fake_tuner: insert=%08x\n", ntohl(response));
-			hijack_serial_rx_insert ((char *)&response, 4, 0);
 	}
+#ifdef CONFIG_HIJACK_TUNER_ADJUST
+	if (ctype == 0x01) {
+		switch (eat) {
+			case 5: // AM/FM switching
+				fm_am = (c & 1);
+				//printk(" Switching to %cM\n", fm_am ? 'A' : 'F');
+				break;
+			case 4: // AGC settings
+				if (!fm_am) {
+					extern int hijack_if2_bw, hijack_agc, hijack_dx_lo;
+					if (hijack_if2_bw) {
+						c = (c & 0xec) | (hijack_if2_bw - 1);
+						//printk(" inserted if2_bw=%d\n", hijack_if2_bw-1);
+					}
+					if (hijack_agc) {
+						c = (c & 0x9f) | ((hijack_agc - 1) << 5);
+						//printk(" inserted agc=%d\n", hijack_agc-1);
+					}
+					if (hijack_dx_lo) {
+						c |= 0x08;
+						//printk(" selected LO mode\n");
+					}
+				}
+		}
+	}
+#endif
+	if (--eat)
+		return c;
+	tuner_state = 0;
+	if (!hijack_fake_tuner)
+		return c;
+	switch (ctype) {
+		case 0x04:
+			cmd4[sizeof(cmd4)-1] = c;
+			for (i = 0; cmd4[i] != c; ++i);
+			response = 0x00000401 | (rsp4[i] << 16);
+			break;
+		case 0x05: response = 0x00000501; break;
+		case 0x03: response = 0x00000301; break;
+		case 0x01: response = 0x00000101; break;
+		case 0x00: response = 0x00030001; break; // read module id, and set LED on/off: tuner == 0x03
+		case 0xff: response = 0x0027ff01; break;
+		case 0x09: response = 0x00080901; break; // read tuner dial: pretend it's set to '8'
+		default:
+			printk("fake_tuner: unknown ctype=%02x\n", ctype);
+			return c;
+	}
+	response |= ((response >> 16) + (response >> 8)) << 24;
+	if (hijack_trace_tuner)
+		printk("fake_tuner: insert=%08x\n", ntohl(response));
+	hijack_serial_rx_insert ((char *)&response, 4, 0);
+	return c;
 }
 #endif CONFIG_HIJACK_TUNER
 
@@ -571,10 +615,9 @@ static _INLINE_ void transmit_chars(struct async_struct *info, int *intr_done)
 		char ch = info->xmit_buf[info->xmit_tail++];
 #ifdef CONFIG_HIJACK_TUNER
 		if (info == IRQ_ports[15]) {
+			ch = fake_tuner(ch);
 			if (hijack_trace_tuner)
 				printk("tuner:out=%02x\n", ch);
-			if (hijack_fake_tuner)
-				fake_tuner(ch);
 		}
 #endif // CONFIG_HIJACK_TUNER
 		serial_out(info, UART_TX, ch);

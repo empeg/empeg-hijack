@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v468"
+#define HIJACK_VERSION	"v469"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -723,6 +723,15 @@ static const char blanker_menu_label	[] = "Screen Blanker Timeout";
 static const char saveserial_menu_label	[] = "Serial Port Assignment";
 static const char bass_menu_label       [] = "Tone: Bass Adjust";
 static const char treble_menu_label     [] = "Tone: Treble Adjust";
+
+#ifdef CONFIG_HIJACK_TUNER
+#ifdef CONFIG_HIJACK_TUNER_ADJUST
+static const char dx_lo_menu_label      [] = "Tuner: DX/LO Mode";
+static const char if2_bw_menu_label     [] = "Tuner: IF2 Bandwidth";
+static const char agc_menu_label        [] = "Tuner: Wideband AGC";
+#endif
+#endif
+
 static const char volumelock_menu_label	[] = "Volume Level on Boot";
 
 #define HIJACK_USERQ_SIZE	8
@@ -2853,6 +2862,105 @@ hijack_tone_init (void)
 	//printk("hijack_tone_init completed.\n");
 }
 
+#ifdef CONFIG_HIJACK_TUNER
+#ifdef CONFIG_HIJACK_TUNER_ADJUST
+static void
+retune_radio (void)
+{
+	switch (hijack_current_mixer_input) {
+		case INPUT_RADIO_AM:
+		case INPUT_RADIO_FM:
+			hijack_enq_button_pair(IR_RIO_TUNER_PRESSED);
+			hijack_enq_button_pair(IR_RIO_TUNER_PRESSED);
+			break;
+	}
+}
+
+static int ir_numeric_limit;
+
+static void
+numeric_move (int direction)
+{
+	int val = *ir_numeric_input;
+	if (direction == 0)
+		val = 0;
+	else
+		val += direction;
+	if (val < 0)
+		val = ir_numeric_limit;
+	else if (val > ir_numeric_limit)
+		val = 0;
+	*ir_numeric_input = val;
+	empeg_state_dirty = 1;
+}
+
+int hijack_if2_bw = 0;
+
+static int
+if2_bw_display (int firsttime)
+{
+	static const char *if2_bw_table[5] = {"default", "Dynamic", "Wide", "Medium", "Narrow"};
+	unsigned int rowcol;
+
+	if (firsttime) {
+		ir_numeric_input = &hijack_if2_bw;
+		ir_numeric_limit = 4;
+	} else if (!hijack_last_moved)
+		return NO_REFRESH;
+	hijack_last_moved = 0;
+	clear_hijack_displaybuf(COLOR0);
+	(void) draw_string(ROWCOL(0,0), if2_bw_menu_label, PROMPTCOLOR);
+	rowcol = draw_string(ROWCOL(2,30), "Bandwidth: ", PROMPTCOLOR);
+	(void) draw_string_spaced(rowcol, if2_bw_table[hijack_if2_bw], ENTRYCOLOR);
+	retune_radio();
+	return NEED_REFRESH;
+}
+
+int hijack_agc = 0;
+
+static int
+agc_display (int firsttime)
+{
+	static const char *agc_table[5] = {"default", "16mV", "12mV", "8mV", "4mV"};
+	unsigned int rowcol;
+
+	if (firsttime) {
+		ir_numeric_input = &hijack_agc;
+		ir_numeric_limit = 4;
+	} else if (!hijack_last_moved)
+		return NO_REFRESH;
+	hijack_last_moved = 0;
+	clear_hijack_displaybuf(COLOR0);
+	(void) draw_string(ROWCOL(0,0), agc_menu_label, PROMPTCOLOR);
+	rowcol = draw_string(ROWCOL(2,30), "Threshold: ", PROMPTCOLOR);
+	(void) draw_string_spaced(rowcol, agc_table[hijack_agc], ENTRYCOLOR);
+	retune_radio();
+	return NEED_REFRESH;
+}
+
+int hijack_dx_lo = 0;
+
+static int
+dx_lo_display (int firsttime)
+{
+	unsigned int rowcol;
+
+	if (firsttime) {
+		ir_numeric_input = &hijack_dx_lo;
+		ir_numeric_limit = 1;
+	} else if (!hijack_last_moved)
+		return NO_REFRESH;
+	hijack_last_moved = 0;
+	clear_hijack_displaybuf(COLOR0);
+	(void) draw_string(ROWCOL(0,0), dx_lo_menu_label, PROMPTCOLOR);
+	rowcol = draw_string(ROWCOL(2,30), "Mode: ", PROMPTCOLOR);
+	rowcol = draw_string_spaced(rowcol, hijack_dx_lo ? "LO(local)" : "DX(distant)", ENTRYCOLOR);
+	retune_radio();
+	return NEED_REFRESH;
+}
+#endif // CONFIG_HIJACK_TUNER
+#endif // CONFIG_HIJACK_TUNER_ADJUST
+
 static void
 tone_move (int direction)
 {
@@ -3107,6 +3215,13 @@ static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 	{"Show Flash Savearea",		savearea_display,	savearea_move,		0},
 	{ bass_menu_label,		bass_display,		tone_move,		0},
 	{ treble_menu_label,		treble_display,		tone_move,		0},
+#ifdef CONFIG_HIJACK_TUNER
+#ifdef CONFIG_HIJACK_TUNER_ADJUST
+	{ dx_lo_menu_label,		dx_lo_display,		numeric_move,		0},
+	{ if2_bw_menu_label,		if2_bw_display,		numeric_move,		0},
+	{ agc_menu_label,		agc_display,		numeric_move,		0},
+#endif
+#endif
 	{"Vital Signs",			vitals_display,		NULL,			0},
 	{ volumelock_menu_label,	volumelock_display,	volumelock_move,	0},
 	{NULL,				NULL,			NULL,			0},};
@@ -5354,6 +5469,15 @@ hijack_process_config_ini (char *buf, off_t f_pos)
 		hijack_onedrive = 0;
 		empeg_state_dirty = 1;
 	}
+#ifdef CONFIG_HIJACK_TUNER
+#ifdef CONFIG_HIJACK_TUNER_ADJUST
+	if (!empeg_tuner_present) {
+		remove_menu_entry(if2_bw_menu_label);
+		remove_menu_entry(agc_menu_label);
+		remove_menu_entry(dx_lo_menu_label);
+	}
+#endif
+#endif
 	if (!empeg_on_dc_power)
 		remove_menu_entry(saveserial_menu_label);
 	if (hijack_old_style) {

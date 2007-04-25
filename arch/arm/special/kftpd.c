@@ -1042,8 +1042,11 @@ khttp_send_file_header (server_parms_t *parms, char *path, off_t length, char *b
 		if (parms->end_offset != -1)
 			len += sprintf(buf+len, "Content-Range: bytes %lu-%lu/%lu\r\n", parms->start_offset, parms->end_offset, length);
 	}
-	if (parms->nocache || !strxcmp(path, "/proc/", 1) || !strxcmp(path, "/dev/", 1))
-		len += sprintf(buf+len, "Cache-control: no-cache\r\nPragma: no-cache\r\nExpires: Tue, 01 Jan 1999 01:00:00 GMT\r\n");
+	if (parms->nocache || !strxcmp(path, "/proc/", 1) || !strxcmp(path, "/dev/", 1)) {
+		len += sprintf(buf+len,	"Cache-Control: no-cache,must-revalidate,max-age=0,no-store\r\n"
+					"Pragma: no-cache,no-store\r\n"
+					"Expires: -1\r\n" );
+	}
 	if (mimetype)
 		len += sprintf(buf+len, "Content-Type: %s\r\n", mimetype);
 	if (artist_title[0]) {	// tune title for WinAmp, XMMS, Save-To-Disk, etc..
@@ -1758,6 +1761,10 @@ hijack_do_command (void *sparms, char *buf)
 			}
 		}
 		khttpd_fix_hexcodes(s);		// process %xx escapes
+		if (!strxcmp(s, "IGNORE=", 1)) {
+			parms->nocache = 1;
+			break;
+		}
 		if (!parms || parms->auth == auth_full) {
 			if (!strxcmp(s, "BUTTON=", 1)) {
 				s = do_button(s+7, 0);

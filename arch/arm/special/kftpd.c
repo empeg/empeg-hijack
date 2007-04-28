@@ -489,9 +489,20 @@ filldir (void *data, const char *name, int namelen, off_t offset, ino_t ino)
 	return 0;			// continue reading directory entries
 }
 
-static const char dirlist_html_trailer1[] = "</pre><hr>\r\n%s<font size=-2>%s</font></body></html>\r\n";
-static const char dirlist_html_trailer2[] = "<a href=\"/?FID=101&EXT=.htm\"><font size=-1>[Click here for playlists]</font></a><br>\r\n";
-#define DIRLIST_TRAILER_MAX (sizeof(dirlist_html_trailer1) + sizeof(dirlist_html_trailer1) + 25) // 25 is for version string
+static int
+classify_path (char *path)
+{
+	struct stat st;
+
+	if (0 > sys_newstat(path, &st))	// in theory, this "follows" symlinks for us
+		return 0;		// does not exist
+	if ((st.st_mode & S_IFMT) != S_IFDIR)
+		return 1;		// non-directory
+	return 2;			// directory
+}
+
+static const char dirlist_html_trailer[] = "</pre><hr>\r\n<a href=\"/?FID=101&EXT=.%s\"><font size=-1>[Click here for playlists]</font></a><br>\r\n<font size=-2>%s</font></body></html>\r\n";
+#define DIRLIST_TRAILER_MAX (sizeof(dirlist_html_trailer) + 1 + 25) // 25 is for version string
 
 static int
 send_dirlist_buf (server_parms_t *parms, filldir_parms_t *p, int send_trailer)
@@ -500,7 +511,10 @@ send_dirlist_buf (server_parms_t *parms, filldir_parms_t *p, int send_trailer)
 
 	if (p->full_listing && send_trailer) {
 		if (parms->use_http) {
-			p->buf_used += sprintf(p->buf + p->buf_used, dirlist_html_trailer1, dirlist_html_trailer2, hijack_vXXX_by_Mark_Lord);
+			const char *ext = "htm";
+			if (1 == classify_path(hijack_khttpd_style))
+				ext = "xml";
+			p->buf_used += sprintf(p->buf + p->buf_used, dirlist_html_trailer, ext, hijack_vXXX_by_Mark_Lord);
 		} else {
 			p->buf_used += sprintf(p->buf + p->buf_used, "total %lu\r\n", p->blockcount);
 		}
@@ -1632,18 +1646,6 @@ receive_file (server_parms_t *parms, char *path)
 	}
 	cleanup_file_xfer(parms, &xfer);
 	return response;
-}
-
-static int
-classify_path (char *path)
-{
-	struct stat st;
-
-	if (0 > sys_newstat(path, &st))	// in theory, this "follows" symlinks for us
-		return 0;		// does not exist
-	if ((st.st_mode & S_IFMT) != S_IFDIR)
-		return 1;		// non-directory
-	return 2;			// directory
 }
 
 static void

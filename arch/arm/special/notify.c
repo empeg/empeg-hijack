@@ -222,10 +222,10 @@ pngcpy (char *png, const void *src, int len)
 }
 
 static inline char *
-deflate0 (char *p, const char *screen, unsigned long *checksum)
+deflate0 (char *p, const char *screen, unsigned int *checksum)
 {
 	const char *end_of_screen = screen + EMPEG_SCREEN_BYTES;
-	unsigned long s1 = 1, s2 = 0;
+	unsigned int s1 = 1, s2 = 0;
 
 	// "type 0" zlib deflate algorithm: null filter, no compression
 	do {
@@ -250,25 +250,72 @@ deflate0 (char *p, const char *screen, unsigned long *checksum)
 	return p;
 }
 
-static const char png_hdr[] = {137,'P','N','G','\r','\n',26,'\n',0,0,0,13,'I','H','D','R',
-			0,0,0,EMPEG_SCREEN_COLS,0,0,0,EMPEG_SCREEN_ROWS,2,0,0,0,0,0xb5,0xf9,0x37,0x58,
-			0,0,4,0x2b,'I','D','A','T',0x48,0x0d,0x01,0x20,0x04,0xdf,0xfb};
-static const char png_iend[] = {0,0,0,0,'I','E','N','D',0xae,0x42,0x60,0x82};
+/*
+ * PNG structure:
+ *	PNG file signature (8 bytes)
+ *
+ *	len	(4 bytes)
+ *	"IHDR"	(4 bytes)
+ *		image info (13 bytes)
+ *		CRC (4 bytes)
+ *
+ *	len	(4 bytes)
+ *	"tRNS"	(4 bytes)
+ *		transparency information (2 bytes)
+ *		CRC (4 bytes)
+ *
+ *	len	(4 bytes)
+ *	"IDATA"	(4 bytes)
+ *		pixel header info (7 bytes)
+ *		32 rows of pixels, 33 bytes/row (1056 bytes):
+ *			"filter type 0" (1 byte)
+ *			128 pixels, packed 4/byte, msb to lsb, (32 bytes)
+ *		checksum (4 bytes)
+ *		CRC (4 bytes)
+ *
+ *	len	(4 bytes)
+ *	"IEND"	(4 bytes)
+ *		CRC (4 bytes)
+ */
+
+static const char png_hdr[] = {
+	137,'P','N','G','\r','\n',26,'\n',	/* PNG file signature */
+/*    chunk_length  chunk_type       chunk_data							chunk_crc */
+	0,0,0,0x0d, 'I','H','D','R', 0,0,0,EMPEG_SCREEN_COLS,0,0,0,EMPEG_SCREEN_ROWS,2,0,0,0,0,	0xb5,0xf9,0x37,0x58,
+	0,0,0,0x02, 'b','K','G','D', 0x00,0x00,	/* default background colour: black */		0xaa,0x8d,0x23,0x32,
+	0,0,0,0x02, 't','R','N','S', 0x00,0x00,	/* transparent background */			0x76,0x93,0xcd,0x38,
+	0,0,4,0x2b, 'I','D','A','T', 0x48,0x0d,0x01,0x20,0x04,0xdf,0xfb
+};
+static const char png_iend[] = {
+	0,0,0,0x00, 'I','E','N','D',								0xae,0x42,0x60,0x82
+};
+
+#define PNG_BYTES	( sizeof(png_hdr) + ((32 * (1 + 128/4)) + 4 + 4) + sizeof(png_iend) )
 
 // these two are shared with arch/arm/special/hijack.c
 struct semaphore	notify_screen_grab_sem = MUTEX_LOCKED;
 unsigned char		*notify_screen_grab_buffer = NULL;
 static struct semaphore	one_at_a_time = MUTEX;
 
+static void *
+append_chunk_crc (unsigned char *chunk)
+{
+	unsigned int crc, len;
 
-#define PNG_BYTES 1124
+	len = 4 + ((chunk[2] << 8) | chunk[3]);
+	chunk += 4;
+	crc = htonl(crc32(chunk, len) ^ 0xffffffff);
+	pngcpy(chunk + len, &crc, 4);
+	return chunk + len + 4;
+}
 
 // /proc/empeg_screen read() routine:
 static int
 hijack_proc_screen_png_read (char *buf, char **start, off_t offset, int len, int unused)
 {
-	unsigned long		flags, crc, checksum;
-	unsigned char		*displaybuf, *p, *crcstart;
+	unsigned long	flags;
+	unsigned int	checksum;
+	unsigned char	*displaybuf, *p, *idat;
 
 	if (offset || !buf)
 		return -EINVAL;
@@ -284,18 +331,21 @@ hijack_proc_screen_png_read (char *buf, char **start, off_t offset, int len, int
 
 	// Prepare an "image/png" snapshot of the screen:
 	p = pngcpy(buf, png_hdr, sizeof(png_hdr));
-	crcstart = p - 11;		// len field is not part of IDAT CRC
+	idat = p - 15;			// start (the length field) of IDAT chunk
 
 	down(&notify_screen_grab_sem);	// wait for screen capture
 	up(&one_at_a_time);		// allow other processes to grab the screen
 
-	p = deflate0(p, displaybuf, &checksum);
-	p = pngcpy(p, &checksum, 4);
-	crc = crc32(crcstart, p - crcstart) ^ 0xffffffff;
-	crc = htonl(crc);
-	p = pngcpy(p, &crc, 4);
+	p = pngcpy( deflate0(p, displaybuf, &checksum), &checksum, 4);
+#if 1
+	p = append_chunk_crc(buf + 8);	// IHDR crc
+	p = append_chunk_crc(p);	// bKGD crc
+	p = append_chunk_crc(p);	// tRNS crc
+	p = append_chunk_crc(p);	// IDAT crc
+#else
+	p = append_chunk_crc(idat);	// IDAT crc
+#endif
 	p = pngcpy(p, png_iend, sizeof(png_iend));
-
 	return PNG_BYTES;	// same as (p - buf)
 }
 

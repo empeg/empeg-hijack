@@ -97,6 +97,7 @@ typedef struct server_parms_s {
 	char			show_dotfiles;		// bool
 	char			nodata;			// bool
 	char			method_head;		// bool
+	char			running_playlist;	// bool
 	char			auth;			// khttpd_auth_t
 	char			is_mozilla;		// HTTP only
 	unsigned short		data_port;
@@ -1114,24 +1115,26 @@ prepare_file_xfer (server_parms_t *parms, char *path, file_xfer_t *xfer, int wri
 		response = 550;
 	} else if (!(xfer->buf = (unsigned char *)__get_free_page(GFP_KERNEL))) {
 		response = 451;
-	} else if (sys_newfstat(fd, &xfer->st)) {
-		printk("%s: fstat(%s) failed\n", parms->servername, path);
-		response = 550;
-	} else if (S_ISDIR(xfer->st.st_mode)) {
-		if (writing || !parms->use_http || parms->generate_playlist) {
+	} else if (!parms->running_playlist) {
+		if (sys_newfstat(fd, &xfer->st)) {
+			printk("%s: fstat(%s) failed\n", parms->servername, path);
 			response = 550;
-		} else {
-			khttpd_redirect(parms, path, "/");
-			xfer->redirected = 1;
+		} else if (S_ISDIR(xfer->st.st_mode)) {
+			if (writing || !parms->use_http || parms->generate_playlist) {
+				response = 550;
+			} else {
+				khttpd_redirect(parms, path, "/");
+				xfer->redirected = 1;
+			}
+		} else if (end_offset != -1 && (xfer->st.st_size && end_offset >= xfer->st.st_size)) {
+			response = parms->use_http ? 416 : 553;
+		} else if (start_offset && ((xfer->st.st_size && start_offset > xfer->st.st_size) || start_offset != lseek(fd, start_offset, 0))) {
+			printk("%s: lseek(%s,%lu/%lu) failed\n", parms->servername, path, start_offset, xfer->st.st_size);
+			response = parms->use_http ? 416 : 553;
 		}
-	} else if (end_offset != -1 && (xfer->st.st_size && end_offset >= xfer->st.st_size)) {
-		response = parms->use_http ? 416 : 553;
-	} else if (start_offset && ((xfer->st.st_size && start_offset > xfer->st.st_size) || start_offset != lseek(fd, start_offset, 0))) {
-		printk("%s: lseek(%s,%lu/%lu) failed\n", parms->servername, path, start_offset, xfer->st.st_size);
-		response = parms->use_http ? 416 : 553;
-	} else {
-		response = open_datasock(parms);
 	}
+	if (!response)
+		response = open_datasock(parms);
 	return response;
 }
 
@@ -1254,7 +1257,7 @@ send_playlist (server_parms_t *parms, char *path)
 	http_response_t	*response = NULL;
 	unsigned int	secs = 0, entries = 0;
 	unsigned char	*p, subpath[] = "/empeg/fids0/XXXXXXXXXX", artist_title[128], fidtype;
-	int		pfid, fid, size, used = 0, xmit_threshold, fidfiles[16], fidx = -1;	// up to 16 levels of nesting
+	int		limit = 0x7fffffff, pfid, fid, size, used = 0, xmit_threshold, fidfiles[16], fidx = -1;	// up to 16 levels of nesting
 	static const char *playlist_format[3] = {text_html, audio_m3u, text_xml};
 	static char	*tagtypes[2] = {"playlist", "tune"};
 	static char	*labels[] = {"type=", "artist=", "title=", "codec=", "duration=", "source=", "length=", "genre=", "year=", "comment=", "tracknr=", "offset=", "options=", "bitrate=", "samplerate=", NULL};
@@ -1268,44 +1271,79 @@ send_playlist (server_parms_t *parms, char *path)
 		return &invalid_playlist_path;
 	fid = pfid |= 1;	// we know the fid ends in "1", but make sure anyway..
 
-	// read the tagfile:
-	if ((response = convert_rcode(prepare_file_xfer(parms, path, &xfer, 0))))
-		return response;
-	size = read(xfer.fd, parms->tmp3, sizeof(parms->tmp3));
-	close(xfer.fd); xfer.fd = -1;
-	if (size < 0)
-		size = 0;
-	parms->tmp3[size] = '\0';	// Ensure zero-termination of the data
-
-	// parse the tagfile for the tags we are interested in:
-	find_tags(parms->tmp3, size, labels, (char **)&tags);
-	fidtype = TOUPPER(tags.type[0]);
-	if (fidtype != 'T' && fidtype != 'P') {
-		response = &(http_response_t){408, "Invalid tag file"};
-		goto cleanup;
-	}
-	tagtype = tagtypes[fidtype == 'T'];
-	if (!tags.title[0])
-		tags.title = path;
-	combine_artist_title(tags.artist, tags.title, artist_title, sizeof(artist_title));
-
-	// If tagfile is for a "tune", then send a .m3u playlist for it, and quit
-	if (fidtype == 'T') {
-		if (parms->generate_playlist != xml) {
-			secs = str_val(tags.duration) / 1000;
-			used  = sprintf(xfer.buf, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s\r\n\r\n"
-				"#EXTM3U\r\n#EXTINF:%u,%s\r\nhttp://%s%s/", audio_m3u, secs, artist_title, parms->user_passwd, parms->hostname);
-			used += encode_url(xfer.buf+used, artist_title, 0);
-			used += sprintf(xfer.buf+used, ".%s?FID=%x&EXT=.%s\r\n", tags.codec, pfid^1, tags.codec);
-			(void)ksock_rw(parms->datasock, xfer.buf, used, -1);
+	memset(&tags, 0, sizeof(tags));
+	if (fid == 1) {
+		unsigned int playlist_len, running_len, start = 0;
+		path = "/dev/hda3";
+		parms->running_playlist = 1;
+		fidtype = 'P';
+		tagtype = tagtypes[0];
+		if ((response = convert_rcode(prepare_file_xfer(parms, path, &xfer, 0))))
 			goto cleanup;
+		/*
+		 * FIXME: Adding "FID=001" for Mark Cushman: dump part of current running order.
+		 * FIXME: Ideally, he needs a way to specify a starting index into the list,
+		 * FIXME: and a length(count) of items to return from there.
+		 * FIXME
+		 * FIXME: seek to dynamic data area, then to specific fid/starting point
+		 * FIXME: we need a way to pass start/len into here!
+		 * FIXME: we need to feed playlist_len/running_len back into the xml output.
+		 * FIXME: check for errors here and set response=451.
+		 * FIXME: use running_len as a limit for playlist traversal later (down below).
+		 */
+		lseek(xfer.fd, 0x10, 0);
+		read(xfer.fd, (void *)&playlist_len, sizeof(playlist_len));
+		lseek(xfer.fd, 0x18, 0);
+		read(xfer.fd, (void *)&running_len, sizeof(running_len));
+		lseek(xfer.fd, 0x200 + 8 * playlist_len + start * 4, 0);
+
+		fidfiles[fidx] = xfer.fd; xfer.fd = -1;
+		strcpy(artist_title, "Current Running Order");
+		limit = 5;
+		tags.length = "";
+		tags.year = "";
+		tags.options = "";
+	} else {
+
+		// read the tagfile:
+		if ((response = convert_rcode(prepare_file_xfer(parms, path, &xfer, 0))))
+			goto cleanup;
+		size = read(xfer.fd, parms->tmp3, sizeof(parms->tmp3));
+		close(xfer.fd); xfer.fd = -1;
+		if (size < 0)
+			size = 0;
+		parms->tmp3[size] = '\0';	// Ensure zero-termination of the data
+
+		// parse the tagfile for the tags we are interested in:
+		find_tags(parms->tmp3, size, labels, (char **)&tags);
+		fidtype = TOUPPER(tags.type[0]);
+		if (fidtype != 'T' && fidtype != 'P') {
+			response = &(http_response_t){408, "Invalid tag file"};
+			goto cleanup;
+		}
+		tagtype = tagtypes[fidtype == 'T'];
+		if (!tags.title[0])
+			tags.title = path;
+		combine_artist_title(tags.artist, tags.title, artist_title, sizeof(artist_title));
+
+		// If tagfile is for a "tune", then send a .m3u playlist for it, and quit
+		if (fidtype == 'T') {
+			if (parms->generate_playlist != xml) {
+				secs = str_val(tags.duration) / 1000;
+				used  = sprintf(xfer.buf, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s\r\n\r\n"
+					"#EXTM3U\r\n#EXTINF:%u,%s\r\nhttp://%s%s/", audio_m3u, secs, artist_title, parms->user_passwd, parms->hostname);
+				used += encode_url(xfer.buf+used, artist_title, 0);
+				used += sprintf(xfer.buf+used, ".%s?FID=%x&EXT=.%s\r\n", tags.codec, pfid^1, tags.codec);
+				(void)ksock_rw(parms->datasock, xfer.buf, used, -1);
+				goto cleanup;
+			}
 		}
 	}
 
 	// Send the playlist header, in either html, m3u, or xml format:
 	encoding = (player_version >= MK2_PLAYER_v3a1) ? "UTF-8" : "ISO-8859-1";
 	used += sprintf(xfer.buf+used, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: %s; charset=%s\r\n\r\n",
-		playlist_format[parms->generate_playlist - 1], encoding);
+					playlist_format[parms->generate_playlist - 1], encoding);
 
 	switch (parms->generate_playlist) {
 		case html:
@@ -1361,25 +1399,27 @@ send_playlist (server_parms_t *parms, char *path)
 		default:
 	}
 
+	if (!parms->running_playlist) {
 open_fidfile:
-	// Read the playlist's fidfile, and process each fid in turn:
-	if (++fidx >= (sizeof(fidfiles) / sizeof(fidfiles[0]))) {
-		--fidx;
-		used += sprintf(xfer.buf+used, "<font color=red>playlists nested too deep</font>\n");
-		goto aborted;
-	}
-	sprintf(subpath+13, "%x", fid^1);
-	fidfiles[fidx] = open_fid_file(subpath);
-	if (fidfiles[fidx] < 0) {
-		int rc = fidfiles[fidx--];
-		if (rc != -ENOENT) {
-			used += sprintf(xfer.buf+used, "<font color=red>open(\"%s\") failed, rc=%d</font>\n", subpath, rc);
+		// Read the playlist's fidfile, and process each fid in turn:
+		if (++fidx >= (sizeof(fidfiles) / sizeof(fidfiles[0]))) {
+			--fidx;
+			used += sprintf(xfer.buf+used, "<font color=red>playlists nested too deep</font>\n");
 			goto aborted;
-		} // else: empty playlist; just continue..
+		}
+		sprintf(subpath+13, "%x", fid^1);
+		fidfiles[fidx] = open_fid_file(subpath);
+		if (fidfiles[fidx] < 0) {
+			int rc = fidfiles[fidx--];	/* FIXME? why -- here ??? */
+			if (rc != -ENOENT) {
+				used += sprintf(xfer.buf+used, "<font color=red>open(\"%s\") failed, rc=%d</font>\n", subpath, rc);
+				goto aborted;
+			} // else: empty playlist; just continue..
+		}
+		path[11] = subpath[11];	// update the drive number '0'|'1'
 	}
-	path[11] = subpath[11];	// update the drive number '0'|'1'
 	xmit_threshold = (parms->generate_playlist == xml) ? 1536 : 512;
-	while (fidx >= 0) {
+	while (fidx >= 0 && --limit > 0) {
 		while (sizeof(fid) == read(fidfiles[fidx], (char *)&fid, sizeof(fid))) {
 			int sublen, fd;
 
@@ -2359,7 +2399,11 @@ child_thread (void *arg)
 		while (!kftpd_handle_command(parms));
 		sync();	// useful for flash upgrades
 	}
+#if 1
 	sock_release(parms->clientsock);
+#else
+	parms->clientsock->ops->shutdown(parms->clientsock, 2); // SHUT_RDWR
+#endif
 	free_pages((unsigned long)parms, 1);
 	sys_exit(0);	// never returns
 	return 0;

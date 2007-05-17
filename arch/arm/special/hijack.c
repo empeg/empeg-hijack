@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v473"
+#define HIJACK_VERSION	"v474"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -4294,7 +4294,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 #endif // EMPEG_STALK_SUPPORTED
 
 #ifdef EMPEG_KNOB_SUPPORTED
-	if (ir_knob_down && jiffies_since(ir_knob_down) > (HZ*2)) {
+	if (ir_knob_down && jiffies_since(ir_knob_down) > (HZ*3)) {
 		ir_knob_busy = 1;
 		ir_knob_down = jiffies - HZ;  // allow repeated cycling if knob is held down
 		if (!ir_knob_down)

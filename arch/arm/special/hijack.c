@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v472"
+#define HIJACK_VERSION	"v473"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -4523,6 +4523,11 @@ get_button_code (unsigned char **s_p, unsigned int *button, int eol_okay, int ra
 			if ((!c && eol_okay) || strchr(nextchars, c)) {
 				*s_p = t;
 				*button = bn->code;
+				/*
+				 * Give a way to do button.R for "button release" from web interface:
+				 */
+				if (raw && c == '.' && t[1] == 'R')
+					*button = RELEASECODE(*button);
 				return 1;	// success
 			}
 		}

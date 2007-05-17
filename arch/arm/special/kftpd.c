@@ -686,6 +686,7 @@ send_dirlist (server_parms_t *parms, char *path, int full_listing)
 	unsigned int	response = 0;
 	filldir_parms_t	p;
 
+	current->policy = SCHED_OTHER;
 	memset(&p, 0, sizeof(p));
 	p.show_dotfiles	= parms->show_dotfiles;
 	pathlen = strlen(path);
@@ -783,6 +784,7 @@ send_dirlist (server_parms_t *parms, char *path, int full_listing)
 		}
 		filp_close(filp,NULL);
 	}
+	current->policy = SCHED_RR;
 	return response;
 }
 
@@ -968,6 +970,7 @@ find_tags (char *buf, int buflen, char *labels[], char *values[])
 			++buf;
 		*buf++ = '\0';
 	}
+	schedule(); // give the music player a chance to run
 }
 
 static void
@@ -1030,6 +1033,7 @@ khttp_send_file_header (server_parms_t *parms, char *path, off_t length, char *b
 			size = read(fd, buf, bufsize/2);
 			buf[size] = '\0';
 			close(fd);
+			schedule(); // give the music player a chance to run
 			find_tags(buf, size, labels, (char **)&tags);
 			buf += size + 1;
 			c = tags.type[0];
@@ -1574,6 +1578,8 @@ send_file (server_parms_t *parms, char *path)
 	unsigned int	response = 0;
 	file_xfer_t	xfer;
 
+	if (0 != strxcmp(path, "/proc/", 1))
+		current->policy = SCHED_OTHER;
 	response = prepare_file_xfer(parms, path, &xfer, 0);
 	if (!response && !xfer.redirected) {
 		off_t	filepos, filesize = xfer.st.st_size;
@@ -1610,6 +1616,7 @@ send_file (server_parms_t *parms, char *path)
 		}
 	}
 	cleanup_file_xfer(parms, &xfer);
+	current->policy = SCHED_RR;
 	return response;
 }
 
@@ -1671,6 +1678,7 @@ receive_file (server_parms_t *parms, char *path)
 	unsigned int	response = 0;
 	file_xfer_t	xfer;
 
+	current->policy = SCHED_OTHER;
 	response = prepare_file_xfer(parms, path, &xfer, 1);
 	if (!response) {
 		do {
@@ -1685,6 +1693,7 @@ receive_file (server_parms_t *parms, char *path)
 		} while (!response && size > 0);
 	}
 	cleanup_file_xfer(parms, &xfer);
+	current->policy = SCHED_RR;
 	return response;
 }
 
@@ -1781,6 +1790,7 @@ do_button (unsigned char *s, int raw)
 			}
 		}
 	}
+	schedule(); // give the music player a chance to run
 	return s;
 }
 
@@ -1973,6 +1983,7 @@ kftpd_handle_command (server_parms_t *parms)
 			goto got_response;
 		}
 	}
+	schedule(); // give the music player a chance to run
 
 	// now look for commands involving more complex handling:
 	if (!strxcmp(buf, "USER ", 1)) {
@@ -2291,6 +2302,7 @@ khttpd_handle_connection (server_parms_t *parms)
 				break;
 			}
 		}
+		schedule(); // give the music player a chance to run
 	}
 	*p = '\0'; // zero-terminate the GET line
 	if (parms->verbose)
@@ -2475,8 +2487,13 @@ kftpd_daemon (unsigned long use_http)	// invoked twice from init/main.c
 	set_fs(KERNEL_DS);
 	current->session = 1;
 	current->pgrp = 1;
+
 	strcpy(current->comm, parms.servername);
 	sigfillset(&current->blocked);
+
+	// Prevent starvation due to player disk I/O
+	current->rt_priority = 50;
+	current->policy = SCHED_RR;
 
 	down(sema);	// wait for Hijack to get our port number from config.ini
 

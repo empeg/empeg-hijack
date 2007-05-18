@@ -1578,8 +1578,6 @@ send_file (server_parms_t *parms, char *path)
 	unsigned int	response = 0;
 	file_xfer_t	xfer;
 
-	if (0 != strxcmp(path, "/proc/", 1))
-		current->policy = SCHED_OTHER;
 	response = prepare_file_xfer(parms, path, &xfer, 0);
 	if (!response && !xfer.redirected) {
 		off_t	filepos, filesize = xfer.st.st_size;
@@ -1589,6 +1587,8 @@ send_file (server_parms_t *parms, char *path)
 			else if (parms->start_offset && parms->end_offset == -1)
 				parms->end_offset = filesize - 1;
 		}
+		if (0 != strxcmp(path, "/proc/", 1) && (!(parms->use_http) || filesize > 0x10000))
+			current->policy = SCHED_OTHER;
 		if (!parms->use_http || !khttp_send_file_header(parms, path, filesize, xfer.buf, xfer.buf_size)) {
 			if (!parms->method_head) {
 				filepos = parms->start_offset;
@@ -1601,6 +1601,8 @@ send_file (server_parms_t *parms, char *path)
 					}
 					schedule(); // give the music player a chance to run
 					size = read(xfer.fd, xfer.buf, read_size);
+					if (parms->use_http)
+						schedule(); // give the music player a chance to run
 					filepos += size;
 					if (size < 0) {
 						printk("%s: read() failed; rc=%d\n", parms->servername, size);

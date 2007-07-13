@@ -146,16 +146,16 @@ asmlinkage ssize_t do_sys_read(unsigned int fd, char * buf, size_t count)
 	// into the player's buffer, we have to kmalloc() our own buffer for the ENTIRE file
 	// each time through, in order to do the macro edits before passing it on to the player.
 	//
-	extern pid_t hijack_player_init_pid;  // set to -1 by do_execve("/empeg/bin/player")
+	extern pid_t hijack_player_config_ini_pid;  // set to -1 by do_execve("/empeg/bin/player")
 	extern void  hijack_process_config_ini (char *, off_t);
 
-	if (hijack_player_init_pid == -1 && !strcmp(current->comm, "player")) {
+	if (hijack_player_config_ini_pid == -1 && !strcmp(current->comm, "player")) {
 		if (file->f_pos == 0 && !strcmp(file->f_dentry->d_name.name, "config.ini")) {
-			hijack_player_init_pid = current->pid;
+			hijack_player_config_ini_pid = current->pid;
 			printk("Hijack: intercepting config.ini\n");
 		}
 	}
-	if (hijack_player_init_pid != current->pid) {
+	if (hijack_player_config_ini_pid != current->pid) {
 normal_read:	ret = read(file, buf, count, &file->f_pos);
 	} else {
 		char *kbuf;
@@ -165,7 +165,7 @@ normal_read:	ret = read(file, buf, count, &file->f_pos);
 		} else if ((kbuf = kmalloc(i_size + 1, GFP_KERNEL)) == NULL) {
 			printk("hijack: no memory for parsing config.ini; skipped\n");
 			hijack_process_config_ini("[hijack]\nno memory\n", file->f_pos);
-			hijack_player_init_pid = 0;
+			hijack_player_config_ini_pid = 0;
 			goto normal_read;
 		} else {
 			mm_segment_t old_fs = get_fs();
@@ -189,7 +189,7 @@ normal_read:	ret = read(file, buf, count, &file->f_pos);
 			kfree(kbuf);
 		}
 		if (file->f_pos >= i_size) {
-			hijack_player_init_pid = 0;
+			hijack_player_config_ini_pid = 0;
 		}
 	}
 }

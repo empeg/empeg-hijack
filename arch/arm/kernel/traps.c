@@ -131,9 +131,14 @@ static void dump_instr(unsigned long pc, int user)
 
 spinlock_t die_lock;
 
-#ifdef CONFIG_SA1100_EMPEG /* HIJACK */
 extern void show_message (const char *message, unsigned long time);
-#endif
+extern int hijack_force_pause_player;
+
+static void show_crash (const char *message)
+{
+	hijack_force_pause_player = 1;
+	show_message(message, 20*HZ);
+}
 
 /*
  * This function is protected against re-entrancy.
@@ -201,7 +206,7 @@ static void die_if_kernel(const char *str, struct pt_regs *regs, int err)
 
 void bad_user_access_alignment(const void *ptr)
 {
-	show_message("sigbus error", HZ*20);
+	show_crash("sigbus error");
 	printk(KERN_ERR "bad user access alignment: ptr = %p, pc = %p\n", ptr, 
 		__builtin_return_address(0));
 	current->tss.error_code = 0;
@@ -212,7 +217,7 @@ void bad_user_access_alignment(const void *ptr)
 
 asmlinkage void do_undefinstr(int address, struct pt_regs *regs, int mode)
 {
-	show_message("sigill error", HZ*20);
+	show_crash("sigill error");
 #ifdef CONFIG_DEBUG_USER
 	printk(KERN_INFO "%s (%d): undefined instruction: pc=%08lx\n",
 		current->comm, current->pid, instruction_pointer(regs));
@@ -227,7 +232,7 @@ asmlinkage void do_undefinstr(int address, struct pt_regs *regs, int mode)
 
 asmlinkage void do_excpt(int address, struct pt_regs *regs, int mode)
 {
-	show_message("sigbus error", HZ*20);
+	show_crash("sigbus error");
 #ifdef CONFIG_DEBUG_USER
 	printk(KERN_INFO "%s (%d): address exception: pc=%08lx\n",
 		current->comm, current->pid, instruction_pointer(regs));
@@ -321,13 +326,13 @@ asmlinkage int arm_syscall (int no, struct pt_regs *regs)
 		/* experiance shows that these seem to indicate that
 		 * something catastrophic has happened
 		 */
-		show_message("enosys error", HZ*20);
 		printk("[%d] %s: arm syscall %d\n", current->pid, current->comm, no);
 		if (user_mode(regs)) {
 			show_regs(regs);
 			c_backtrace(regs->ARM_fp, processor_mode(regs));
 		}
 #endif
+		show_crash("enosys error");
 		force_sig(SIGILL, current);
 		die_if_kernel("Oops", regs, no);
 		break;

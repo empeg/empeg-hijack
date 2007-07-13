@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v476"
+#define HIJACK_VERSION	"v477"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -68,7 +68,9 @@ int	hijack_fsck_disabled = 0;	// used in fs/ext2/super.c
 int	hijack_onedrive = 0;		// used in drivers/block/ide-probe.c
 int	hijack_saveserial = 0;		// set to "1" to pass "-s-" to player on startup
 int	hijack_reboot = 0;		// set to "1" to cause reboot on next display refresh
-pid_t	hijack_player_init_pid;		// used in fs/read_write.c, fs/exec.c
+int	hijack_force_pause_player = 0;	// set to "1" to force PAUSE on next player startup
+pid_t	hijack_player_pid;		// set in fs/exec.c
+pid_t	hijack_player_config_ini_pid;	// used in fs/read_write.c, fs/exec.c
 unsigned int hijack_player_started = 0;	// set to jiffies when player startup is detected on serial port (notify.c)
 static unsigned char *last_player_buf;
 
@@ -3126,6 +3128,19 @@ reboot_display (int firsttime)
 }
 
 static int
+kill_and_pause_player (int firsttime)
+{
+	static int last_pid = 0;
+	int signal = (hijack_player_pid == last_pid) ? SIGKILL : SIGTERM;
+
+	last_pid = hijack_player_pid;
+	hijack_force_pause_player = 1;
+	hijack_deactivate(HIJACK_IDLE);
+	kill_proc(hijack_player_pid, signal, 1);
+	return NO_REFRESH;
+}
+
+static int
 showbutton_display (int firsttime)
 {
 	static unsigned int *saved_table, prev[4], counter;
@@ -3203,6 +3218,7 @@ static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 	{ onedrive_menu_label,		onedrive_display,	onedrive_move,		0},
 	{ hightemp_menu_label,		hightemp_display,	hightemp_move,		0},
 	{ homework_menu_label,		homework_display,	homework_move,		0},
+	{"Kill/Pause Player",		kill_and_pause_player,	NULL,			0},
 #ifdef EMPEG_KNOB_SUPPORTED
 	{ knobdata_menu_label,		knobdata_display,	knobdata_move,		0},
 #endif // EMPEG_KNOB_SUPPORTED
@@ -5785,7 +5801,7 @@ hijack_init (void *animptr)
 	hijack_time_offset = 0;
 	hijack_zoneinfo[0] = '\0';
 	hijack_khttpd_new_fid_dirs = 1;	// look for new fids directory structure
-	hijack_player_init_pid = 0;
+	hijack_player_config_ini_pid = 0;
 	hijack_game_animptr = animptr;
 	hijack_buttonled_level = 0;	// turn off button LEDs
 	msg[0] = '\0';

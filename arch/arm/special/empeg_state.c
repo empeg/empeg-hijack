@@ -639,6 +639,8 @@ static int state_release(struct inode *inode, struct file *filp)
  * they'll get EINVAL.
  */
 
+extern int hijack_force_pause_player;
+
 static ssize_t state_read(struct file *filp, char *dest, size_t count,
 			  loff_t *ppos)
 {
@@ -646,6 +648,11 @@ static ssize_t state_read(struct file *filp, char *dest, size_t count,
 
 	if (count > STATE_BLOCK_SIZE || count <= 0)
 		count = STATE_BLOCK_SIZE;
+
+	if (hijack_force_pause_player) {
+		hijack_force_pause_player = 0;
+		dev->read_buffer[0x0c] &= ~0x02;
+	}
 
 	copy_to_user_ret(dest, dev->read_buffer, count, -EFAULT);
 
@@ -663,6 +670,10 @@ static ssize_t state_write(struct file *filp, const char *source, size_t count,
 		return -EINVAL;
 
 	copy_from_user_ret(dev->write_buffer, source, count, -EFAULT);
+
+	if (hijack_force_pause_player) {
+		dev->write_buffer[0x0c] &= ~0x02;
+	}
 
 	/* Now we've written, switch the buffers and copy */
 	save_flags_cli(flags);

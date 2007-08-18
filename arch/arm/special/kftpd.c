@@ -104,6 +104,8 @@ typedef struct server_parms_s {
 	off_t			start_offset;		// starting offset for next FTP/HTTP file transfer
 	off_t			end_offset;		// for current HTTP file read
 	unsigned int		umask;
+	unsigned int		offset;			// for HTTP "OFFSET=nnnn" value
+	unsigned int		count;			// for HTTP "COUNT=nnnn" value
 	struct sockaddr_in	portaddr;
 	char			clientip[INET_ADDRSTRLEN];
 	char			user_passwd[24];	// khttpd
@@ -715,7 +717,7 @@ send_dirlist (server_parms_t *parms, char *path, int full_listing)
 	filp = filp_open(path,O_RDONLY,0);
 	if (IS_ERR(filp) || !filp) {
 		if (parms->verbose || parms->use_http || (int)filp != -ENOENT) {
-			printk("%s: filp_open(%s) failed (%d)\n", parms->servername, path, (int)filp);
+			printk("%s: filp_open(\"%s\") failed (%d)\n", parms->servername, path, (int)filp);
 		}
 		response = 550;
 	} else {
@@ -1115,7 +1117,7 @@ prepare_file_xfer (server_parms_t *parms, char *path, file_xfer_t *xfer, int wri
 		fd = open(path, flags, 0666 & ~parms->umask);
 	xfer->fd = fd;
 	if (fd < 0) {
-		printk("%s: open(%s) failed, rc=%d\n", parms->servername, path, fd);
+		printk("%s: open(\"%s\") failed, rc=%d\n", parms->servername, path, fd);
 		response = 550;
 	} else if (!(xfer->buf = (unsigned char *)__get_free_page(GFP_KERNEL))) {
 		response = 451;
@@ -1259,9 +1261,9 @@ static const http_response_t *
 send_playlist (server_parms_t *parms, char *path)
 {
 	http_response_t	*response = NULL;
-	unsigned int	secs = 0, entries = 0;
+	unsigned int	secs = 0, start = 0, count = 0, limit = 0x7fffffff, playlist_len = 0, running_len = 0;
 	unsigned char	*p, subpath[] = "/empeg/fids0/XXXXXXXXXX", artist_title[128], fidtype;
-	int		limit = 0x7fffffff, pfid, fid, size, used = 0, xmit_threshold, fidfiles[16], fidx = -1;	// up to 16 levels of nesting
+	int		pfid, fid, size, used = 0, xmit_threshold, fidfiles[16], fidx = -1;	// up to 16 levels of nesting
 	static const char *playlist_format[3] = {text_html, audio_m3u, text_xml};
 	static char	*tagtypes[2] = {"playlist", "tune"};
 	static char	*labels[] = {"type=", "artist=", "title=", "codec=", "duration=", "source=", "length=", "genre=", "year=", "comment=", "tracknr=", "offset=", "options=", "bitrate=", "samplerate=", NULL};
@@ -1275,9 +1277,12 @@ send_playlist (server_parms_t *parms, char *path)
 		return &invalid_playlist_path;
 	fid = pfid |= 1;	// we know the fid ends in "1", but make sure anyway..
 
+	start = parms->offset;
+	if (parms->count)
+		limit = parms->count;
+
 	memset(&tags, 0, sizeof(tags));
 	if (fid == 1) {
-		unsigned int playlist_len, running_len, start = 0;
 		path = "/dev/hda3";
 		parms->running_playlist = 1;
 		fidtype = 'P';
@@ -1285,25 +1290,18 @@ send_playlist (server_parms_t *parms, char *path)
 		if ((response = convert_rcode(prepare_file_xfer(parms, path, &xfer, 0))))
 			goto cleanup;
 		/*
-		 * FIXME: Adding "FID=001" for Mark Cushman: dump part of current running order.
-		 * FIXME: Ideally, he needs a way to specify a starting index into the list,
-		 * FIXME: and a length(count) of items to return from there.
-		 * FIXME
-		 * FIXME: seek to dynamic data area, then to specific fid/starting point
-		 * FIXME: we need a way to pass start/len into here!
-		 * FIXME: we need to feed playlist_len/running_len back into the xml output.
-		 * FIXME: check for errors here and set response=451.
-		 * FIXME: use running_len as a limit for playlist traversal later (down below).
+		 * "FID=001" for Mark Cushman: dump part of current running order.
+		 * FIXME: check for errors here and set response=451?
 		 */
 		lseek(xfer.fd, 0x10, 0);
 		read(xfer.fd, (void *)&playlist_len, sizeof(playlist_len));
 		lseek(xfer.fd, 0x18, 0);
 		read(xfer.fd, (void *)&running_len, sizeof(running_len));
-		lseek(xfer.fd, 0x200 + 8 * playlist_len + start * 4, 0);
+		if (limit > running_len)
+			limit = running_len;
 
-		fidfiles[fidx] = xfer.fd; xfer.fd = -1;
+		fidfiles[++fidx] = xfer.fd; xfer.fd = -1;
 		strcpy(artist_title, "Current Running Order");
-		limit = 5;
 		tags.length = "";
 		tags.year = "";
 		tags.options = "";
@@ -1384,6 +1382,8 @@ send_playlist (server_parms_t *parms, char *path)
 			used += encode_tag1(xfer.buf+used, "artist",  tags.artist);
 			used += encode_tag1(xfer.buf+used, "source",  tags.source);
 			used += encode_tag1(xfer.buf+used, "comment", tags.comment);
+			if (parms->running_playlist)
+				used += sprintf(xfer.buf+used, " runOrderLen=\"%u\" playListLen=\"%u\"", running_len, playlist_len);
 			if (fidtype == 'T') {
 				char dbuf[32];
 				used += encode_tag1(xfer.buf+used, "tracknr", tags.tracknr);
@@ -1423,9 +1423,34 @@ open_fidfile:
 		path[11] = subpath[11];	// update the drive number '0'|'1'
 	}
 	xmit_threshold = (parms->generate_playlist == xml) ? 1536 : 512;
-	while (fidx >= 0 && --limit > 0) {
-		while (sizeof(fid) == read(fidfiles[fidx], (char *)&fid, sizeof(fid))) {
-			int sublen, fd;
+	while (fidx >= 0) {
+		while (count < limit) {
+			int sublen, fd, entries = 0;
+			if (parms->running_playlist && fidx == 0) {
+				unsigned int fidTableIndex, rc;
+		 		/*
+		 		 * "FID=001" for Mark Cushman: dump part of current running order.
+		 		 * FIXME: check for errors here and set response=451?
+		 		 *
+		 		 * Here we do some fancy seeking to find/position the next fid within
+		 		 * the current running order.  Then we let the mainline code just read it
+		 		 * as if it was from an ordinary playlist file.
+		 		 */
+				lseek(fidfiles[0], 0x200 + 8 * playlist_len + (start + count) * 4, 0);
+				rc = read(fidfiles[0], (void *)&fidTableIndex, sizeof(fidTableIndex));
+				if (rc != sizeof(fidTableIndex)) {
+					printk("read(fidTableIndex(%d) failed, rc=%d\n", start + count, rc);
+					break;
+				}
+				lseek(fidfiles[0], 0x200 + 8 * fidTableIndex, 0);
+			}
+			if (sizeof(fid) != read(fidfiles[fidx], (char *)&fid, sizeof(fid)))
+				break;
+			if ((!parms->running_playlist || fidx != 0) && start) {
+				--start;
+				continue;
+			}
+			++count;
 
 			if (used >= xmit_threshold && (used -= ksock_rw(parms->datasock, xfer.buf, used, -1)))
 				goto cleanup;
@@ -1864,6 +1889,12 @@ hijack_do_command (void *sparms, char *buf)
 				parms->nodata = 1;
 			} else if (!strxcmp(s, "FID=", 1)) {
 				sprintf(parms->cwd, "/empeg/fids0/%s", s+4);
+			} else if (!strxcmp(s, "OFFSET=", 1)) {
+				unsigned char *t = s + 7;
+				get_number(&t, &parms->offset, 10, NULL);
+			} else if (!strxcmp(s, "COUNT=", 1)) {
+				unsigned char *t = s + 6;
+				get_number(&t, &parms->count, 10, NULL);
 			} else if (!strxcmp(s, "STYLE=", 1) && *(s += 6) && strlen(s) < sizeof(parms->style)) {
 				strcpy(parms->style, s);
 			} else if (strxcmp(s, "EXT=", 1) || !*(s += 4)) {

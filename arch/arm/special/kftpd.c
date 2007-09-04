@@ -1435,6 +1435,21 @@ open_fidfile:
 		 		 * Here we do some fancy seeking to find/position the next fid within
 		 		 * the current running order.  Then we let the mainline code just read it
 		 		 * as if it was from an ordinary playlist file.
+		 		 *
+		 		 * FIXME: M.Cushman probably expects us to automatically skip ahead
+		 		 * here to the "currently playing FID", possibly adjusted with a
+		 		 * negative OFFSET=nn.
+		 		 *
+		 		 * FIXME: Allow negative OFFSET=nn (?)
+		 		 *
+		 		 * FIXME: Number the returned "<item>" lines, like this:
+		 		 *
+		 		 * 	<item number="2">
+		 		 *
+		 		 * FIXME: When dumping XML for the currently playing FID,
+		 		 * change the "<item>" line to this:
+		 		 *
+		 		 * 	<item number="3" playing="yes">
 		 		 */
 				lseek(fidfiles[0], 0x200 + 8 * playlist_len + (start + count) * 4, 0);
 				rc = read(fidfiles[0], (void *)&fidTableIndex, sizeof(fidTableIndex));

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v478"
+#define HIJACK_VERSION	"v479"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -331,6 +331,7 @@ static button_name_t button_names[] = {
 	{"Initial",	IR_FAKE_INITIAL},
 	{"null",	IR_NULL_BUTTON},
 	{"Source",	IR_RIO_SOURCE_PRESSED},
+	{"Src",		IR_KW_SRC_PRESSED},	// the player s/w treats this similarly to our "NextSrc" button
 	{"Power",	IR_RIO_SOURCE_PRESSED|ALT|BUTTON_FLAGS_LONGPRESS},
 	{"Time",	IR_RIO_1_PRESSED|ALT},
 	{"One",		IR_RIO_1_PRESSED},

@@ -163,6 +163,7 @@ typedef struct hijack_geom_s {
 #define IR_KW_CD_PRESSED		0x00b9461E
 #define IR_KW_CDMDCH_PRESSED		0x00b9461F
 #define IR_KW_DNPP_PRESSED		0x00b9465E
+#define IR_KW_SRC_PRESSED		0x00b96413	// Kenwood RC-600 remote
 #define IR_KW_0_RELEASED		0x80b94600
 #define IR_KW_1_RELEASED		0x80b94601
 #define IR_KW_2_RELEASED		0x80b94602
@@ -189,6 +190,7 @@ typedef struct hijack_geom_s {
 #define IR_KW_CD_RELEASED		0x80b9461E
 #define IR_KW_CDMDCH_RELEASED		0x80b9461F
 #define IR_KW_DNPP_RELEASED		0x80b9465E
+#define IR_KW_SRC_RELEASED		0x80b96413	// Kenwood RC-600 remote
 
 // Rio ERC-1A codes (list not completed yet)
 //

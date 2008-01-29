@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v479"
+#define HIJACK_VERSION	"v480"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -254,7 +254,8 @@ typedef struct button_name_s {
 #define IR_FAKE_AM		(IR_NULL_BUTTON-21)
 #define IR_FAKE_FM		(IR_NULL_BUTTON-22)
 #define IR_FAKE_REBOOT		(IR_NULL_BUTTON-23)
-#define IR_FAKE_HIJACKMENU	(IR_NULL_BUTTON-24)	// This MUST be the lowest numbered FAKE code
+#define IR_FAKE_FIDENTRY	(IR_NULL_BUTTON-24)
+#define IR_FAKE_HIJACKMENU	(IR_NULL_BUTTON-25)	// This MUST be the lowest numbered FAKE code
 #define ALT			BUTTON_FLAGS_ALTNAME
 
 typedef struct ir_translation_s {
@@ -282,6 +283,7 @@ static struct {
 	{	{IR_FAKE_POPUP0, 0, 16, 0},
 		{IR_FAKE_CLOCK,
 		IR_RIO_INFO_PRESSED|ALT|BUTTON_FLAGS_LONGPRESS,	// "Detail"
+		IR_FAKE_FIDENTRY,
 		IR_RIO_PLAY_PRESSED|ALT|BUTTON_FLAGS_LONGPRESS,	// "Hush"
 		IR_RIO_INFO_PRESSED,
 		IR_KNOB_PRESSED,
@@ -292,8 +294,7 @@ static struct {
 		IR_RIO_SELECTMODE_PRESSED,
 		IR_RIO_0_PRESSED|ALT,				// "Shuffle"
 		IR_RIO_SOURCE_PRESSED,
-		IR_FAKE_AM,
-		IR_FAKE_FM,
+		IR_RIO_TUNER_PRESSED,
 		IR_FAKE_VISUALSEEK,
 		IR_FAKE_VOLADJMENU}
 	};
@@ -311,7 +312,7 @@ static button_name_t button_names[] = {
 	{"VolAdjLow",	IR_FAKE_VOLADJ1},	// index 4 assumed later in hijack_option_table[]
 	{"VolAdjMed",	IR_FAKE_VOLADJ2},	// index 5 assumed later in hijack_option_table[]
 	{"VolAdjHigh",	IR_FAKE_VOLADJ3},	// index 6 assumed later in hijack_option_table[]
-	{"BassAdj",	IR_FAKE_BASSADJ},	// ...
+	{"BassAdj",	IR_FAKE_BASSADJ},
 	{"TrebleAdj",	IR_FAKE_TREBLEADJ},
 	{"VolAdjOff",	IR_FAKE_VOLADJOFF},
 	{"KnobSeek",	IR_FAKE_KNOBSEEK},
@@ -322,6 +323,7 @@ static button_name_t button_names[] = {
 	{"RestoreSrc",	IR_FAKE_RESTORESRC},
 	{"AM",		IR_FAKE_AM},
 	{"FM",		IR_FAKE_FM},
+	{"FidEntry",	IR_FAKE_FIDENTRY},
 	{"Reboot",	IR_FAKE_REBOOT},
 	{"VolAdj",	IR_FAKE_VOLADJMENU},
 	{"QuickTimer",	IR_FAKE_QUICKTIMER},
@@ -1773,6 +1775,7 @@ void hijack_clear_playlist (void)
 	sa[0x44] = sa[0x45] = 0;
 	sa = hijack_get_state_read_buffer();
 	sa[0x44] = sa[0x45] = 0;
+	empeg_state_dirty = 1;
 	restore_flags(flags);
 }
 
@@ -3730,6 +3733,160 @@ quicktimer_display (int firsttime)
 	return NO_REFRESH;	// gets overridden if overlay still active
 }
 
+static char
+fidentry_incr (char b, int incr)
+{
+	int i;
+
+	for (i = 0; i <= 0xf; ++i) {
+		if (b == hexchars[i])
+			return hexchars[(i + incr) & 0xf];
+	}
+	return (incr > 0) ? '0' : 'F';
+}
+
+static int
+fidentry_display (int firsttime)
+{
+	static char fidx[7], b, lastb;
+	static int d, cycling;
+	static unsigned int buttonlist[1];
+	static const hijack_geom_t geom = {8, 8+6+KFONT_HEIGHT, 10, EMPEG_SCREEN_COLS-10};
+	hijack_buttondata_t data;
+	unsigned int rowcol;
+
+	timer_started = JIFFIES();
+	if (firsttime) {
+		cycling = 0;
+		d = 0;
+		fidx[0] = lastb = b = '_';
+		fidx[1] = '\0';
+		if (ir_lastpressed != IR_NULL_BUTTON) {
+			buttonlist[0] = 0;
+			hijack_buttonlist = buttonlist;
+		}
+		hijack_last_moved = JIFFIES();
+		create_overlay(&geom);
+	} else if (jiffies_since(hijack_last_moved) >= (HZ*15)) {
+		hijack_beep(90, 70, 30);
+		hijack_deactivate(HIJACK_IDLE);
+	} else {
+		if (cycling && jiffies_since(hijack_last_moved) >= (HZ + (HZ/2))) {
+			cycling = 0;
+			lastb = '_';
+			if (d < 5)
+				fidx[++d] = lastb;
+		} else if (hijack_button_deq(&hijack_userq, &data, 0) && !(data.button & 0x80000000)) {
+			int incr = 1, was_cycling = cycling;
+			cycling = 0;
+			switch (data.button) {
+				case IR_KW_0_PRESSED:
+				case IR_RIO_0_PRESSED: b = '0'; break;
+				case IR_KW_1_PRESSED:
+				case IR_RIO_1_PRESSED: b = '1'; break;
+				case IR_KW_2_PRESSED:
+				case IR_RIO_2_PRESSED:
+					cycling = 1;
+					switch (lastb) {
+						case '2': b = 'A'; break;
+						case 'A': b = 'B'; break;
+						case 'B': b = 'C'; break;
+						case 'C': b = '2'; break;
+						default:  b = '2';
+							if (was_cycling && d < 5)
+								++d;
+							break;
+					}
+					break;
+				case IR_KW_3_PRESSED:
+				case IR_RIO_3_PRESSED:
+					cycling = 1;
+					switch (lastb) {
+						case '3': b = 'D'; break;
+						case 'D': b = 'E'; break;
+						case 'E': b = 'F'; break;
+						case 'F': b = '3'; break;
+						default:  b = '3';
+							if (was_cycling && d < 5)
+								++d;
+							break;
+					}
+					break;
+				case IR_KW_4_PRESSED:
+				case IR_RIO_4_PRESSED: b = '4'; break;
+				case IR_KW_5_PRESSED:
+				case IR_RIO_5_PRESSED: b = '5'; break;
+				case IR_KW_6_PRESSED:
+				case IR_RIO_6_PRESSED: b = '6'; break;
+				case IR_KW_7_PRESSED:
+				case IR_RIO_7_PRESSED: b = '7'; break;
+				case IR_KW_8_PRESSED:
+				case IR_RIO_8_PRESSED: b = '8'; break;
+				case IR_KW_9_PRESSED:
+				case IR_RIO_9_PRESSED: b = '9'; break;
+
+				case IR_KW_NEXTTRACK_PRESSED:
+				case IR_RIO_NEXTTRACK_PRESSED:
+				case IR_RIGHT_BUTTON_PRESSED:
+					b = '_';
+					break;
+				case IR_KW_PREVTRACK_PRESSED:
+				case IR_RIO_PREVTRACK_PRESSED:
+				case IR_LEFT_BUTTON_PRESSED:
+					if (d > 0) {
+						if (!was_cycling)
+							--d;
+						fidx[d] = lastb = '_';
+					}
+					goto refresh;
+				case IR_KNOB_LEFT:
+					cycling = 1;
+					b = fidentry_incr(lastb, -1);
+					break;
+				case IR_KNOB_RIGHT:
+					cycling = 1;
+					b = fidentry_incr(lastb, +1);
+					break;
+				case IR_KW_STAR_PRESSED:
+				case IR_RIO_CANCEL_PRESSED:
+				case IR_TOP_BUTTON_PRESSED:
+					hijack_deactivate(HIJACK_IDLE);
+					break;
+				case IR_KNOB_PRESSED:
+				case IR_KW_DNPP_PRESSED:
+				case IR_RIO_MENU_PRESSED:
+					was_cycling = incr = 0;
+					while (d > 0 && fidx[d] == '_')
+						--d;
+					if (d < 2)
+						hijack_deactivate(HIJACK_IDLE);
+					fidx[d] = '0';
+					hijack_beep(90, 70, 30);
+					hijack_serial_rx_insert("#", 1, 1);
+					hijack_serial_rx_insert(fidx, d+1, 1);
+					hijack_serial_rx_insert("\n", 1, 1);
+					hijack_deactivate(HIJACK_IDLE);
+					return NO_REFRESH;
+				default:
+					goto refresh;
+			}
+			if (was_cycling && !cycling && d < 5)
+				++d;
+			fidx[d] = lastb = b;
+			if (!cycling && incr && d < 5 && fidx[d] != '_')
+				fidx[++d] = '_';
+			hijack_last_moved = JIFFIES();
+		}
+	refresh:
+		fidx[d+1] = '\0';
+		rowcol = (geom.first_row+4)|((geom.first_col+6)<<16);
+		rowcol = draw_string(rowcol, "FidEntry: ", COLOR3);
+		clear_text_row(rowcol, geom.last_col-4, 1);
+		rowcol = draw_string(rowcol, fidx, ENTRYCOLOR);
+	}
+	return NO_REFRESH;	// gets overridden if overlay still active
+}
+
 // This routine gets first shot at IR codes as soon as they leave the translator.
 //
 // In an ideal world, we would never use "jiffies" here, relying on the inter-code "delay" instead.
@@ -3841,6 +3998,10 @@ hijack_handle_button (unsigned int button, unsigned long delay, unsigned int pla
 		}
 		case IR_FAKE_QUICKTIMER:
 			activate_dispfunc(quicktimer_display, timer_move, 0);
+			hijacked = 1;
+			break;
+		case IR_FAKE_FIDENTRY:
+			activate_dispfunc(fidentry_display, NULL, 0);
 			hijacked = 1;
 			break;
 		case IR_FAKE_KNOBSEEK:
@@ -4142,8 +4303,13 @@ handle_stalk_packet (unsigned char *pkt)
 	unsigned int button;
 
 	// Check for valid stalk packet, and convert into a button press/release code:
-	if (pkt[0] != 0x02 || (pkt[1] | 1) != 0x01 || (pkt[1] + pkt[2]) != pkt[3])
+	if (pkt[0] != 0x02 || (pkt[1] | 1) != 0x01)
 		return 0;	// not a valid Stalk packet
+	if (((pkt[1] + pkt[2]) & 0xff) != pkt[3]) {
+		if (hijack_stalk_debug)
+			printk("Stalk: in=%02x %02x %02x %02x == bad checksum\n", pkt[0], pkt[1], pkt[2], pkt[3]);
+		return 0;	// bad checksum
+	}
 
 	if (current_button != -1) {
 		button = current_button | 0x80000000;

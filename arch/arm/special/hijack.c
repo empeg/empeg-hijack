@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v480"
+#define HIJACK_VERSION	"v481"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -51,6 +51,7 @@ extern void hijack_tone_set(int, int, int, int, int, int);					// arch/arm/speci
 extern int empeg_readtherm(volatile unsigned int *timerbase, volatile unsigned int *gpiobase);	// arch/arm/special/empeg_therm.S
 extern int empeg_inittherm(volatile unsigned int *timerbase, volatile unsigned int *gpiobase);	// arch/arm/special/empeg_therm.S
        int display_ioctl (struct inode *inode, struct file *filp, unsigned int cmd, unsigned long arg); //arch/arm/special/empeg_display.c
+       int get_number (unsigned char **src, int *target, unsigned int base, const char *nextchars);
 extern int hijack_current_mixer_input;
 
 #ifdef CONFIG_HIJACK_TUNER	// Mk2 or later? (Mk1 has no ethernet chip)
@@ -534,6 +535,7 @@ int hijack_khttpd_new_fid_dirs;			// 0 == don't look for new fids sub-directorie
 static	int hijack_buttonled_off_level;		// button brightness when player is "off"
 static	int hijack_buttonled_dim_level;		// when non-zero, button brightness when headlights are on
 static	int hijack_dc_servers;			// 1 == allow kftpd/khttpd when on DC power
+static	int hijack_decimal_fidentry;		// 1 == fidentry uses base10 instead of hex
 	int hijack_disable_emplode;		// 1 == block TCP port 8300 (Emplode/Emptool)
 	int hijack_extmute_off;			// buttoncode to inject when EXT-MUTE goes inactive
 	int hijack_extmute_on;			// buttoncode to inject when EXT-MUTE goes active
@@ -644,6 +646,7 @@ static const hijack_option_t hijack_option_table[] =
 {"buttonled_off",		&hijack_buttonled_off_level,	1,			1,	0,	7},
 {"buttonled_dim",		&hijack_buttonled_dim_level,	0,			1,	0,	7},
 {"dc_servers",			&hijack_dc_servers,		0,			1,	0,	1},
+{"decimal_fidentry",		&hijack_decimal_fidentry,	0,			1,	0,	1},
 {"disable_emplode",		&hijack_disable_emplode,	0,			1,	0,	1},
 {"spindown_seconds",		&hijack_spindown_seconds,	30,			1,	0,	(239 * 5)},
 {"extmute_off",			&hijack_extmute_off,		0,			-1,	0,	IR_NULL_BUTTON},
@@ -3748,7 +3751,7 @@ fidentry_incr (char b, int incr)
 static int
 fidentry_display (int firsttime)
 {
-	static char fidx[7], b, lastb;
+	static char fidx[9], b, lastb;
 	static int d, cycling;
 	static unsigned int buttonlist[1];
 	static const hijack_geom_t geom = {8, 8+6+KFONT_HEIGHT, 10, EMPEG_SCREEN_COLS-10};
@@ -3774,7 +3777,7 @@ fidentry_display (int firsttime)
 		if (cycling && jiffies_since(hijack_last_moved) >= (HZ + (HZ/2))) {
 			cycling = 0;
 			lastb = '_';
-			if (d < 5)
+			if (d < 7)
 				fidx[++d] = lastb;
 		} else if (hijack_button_deq(&hijack_userq, &data, 0) && !(data.button & 0x80000000)) {
 			int incr = 1, was_cycling = cycling;
@@ -3786,6 +3789,10 @@ fidentry_display (int firsttime)
 				case IR_RIO_1_PRESSED: b = '1'; break;
 				case IR_KW_2_PRESSED:
 				case IR_RIO_2_PRESSED:
+					if (hijack_decimal_fidentry) {
+						b = '1';
+						break;
+					}
 					cycling = 1;
 					switch (lastb) {
 						case '2': b = 'A'; break;
@@ -3793,13 +3800,17 @@ fidentry_display (int firsttime)
 						case 'B': b = 'C'; break;
 						case 'C': b = '2'; break;
 						default:  b = '2';
-							if (was_cycling && d < 5)
+							if (was_cycling && d < 7)
 								++d;
 							break;
 					}
 					break;
 				case IR_KW_3_PRESSED:
 				case IR_RIO_3_PRESSED:
+					if (hijack_decimal_fidentry) {
+						b = '3';
+						break;
+					}
 					cycling = 1;
 					switch (lastb) {
 						case '3': b = 'D'; break;
@@ -3807,7 +3818,7 @@ fidentry_display (int firsttime)
 						case 'E': b = 'F'; break;
 						case 'F': b = '3'; break;
 						default:  b = '3';
-							if (was_cycling && d < 5)
+							if (was_cycling && d < 7)
 								++d;
 							break;
 					}
@@ -3860,7 +3871,15 @@ fidentry_display (int firsttime)
 						--d;
 					if (d < 2)
 						hijack_deactivate(HIJACK_IDLE);
-					fidx[d] = '0';
+					if (hijack_decimal_fidentry) {
+						int fid;
+						unsigned char *f = fidx;
+printk("fidx='%s'\n", fidx);
+						get_number(&f, &fid, 10, NULL);
+						d = sprintf(fidx, "%X", fid) - 1;
+printk("fid=%d(0x%x) fidx='%s', d=%d\n", fid, fid, fidx, d);
+					} else
+						fidx[d] = '0';
 					hijack_beep(90, 70, 30);
 					hijack_serial_rx_insert("#", 1, 1);
 					hijack_serial_rx_insert(fidx, d+1, 1);
@@ -3870,10 +3889,10 @@ fidentry_display (int firsttime)
 				default:
 					goto refresh;
 			}
-			if (was_cycling && !cycling && d < 5)
+			if (was_cycling && !cycling && d < 7)
 				++d;
 			fidx[d] = lastb = b;
-			if (!cycling && incr && d < 5 && fidx[d] != '_')
+			if (!cycling && incr && d < 7 && fidx[d] != '_')
 				fidx[++d] = '_';
 			hijack_last_moved = JIFFIES();
 		}

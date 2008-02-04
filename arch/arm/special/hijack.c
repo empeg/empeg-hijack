@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v481"
+#define HIJACK_VERSION	"v482"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -3790,7 +3790,7 @@ fidentry_display (int firsttime)
 				case IR_KW_2_PRESSED:
 				case IR_RIO_2_PRESSED:
 					if (hijack_decimal_fidentry) {
-						b = '1';
+						b = '2';
 						break;
 					}
 					cycling = 1;

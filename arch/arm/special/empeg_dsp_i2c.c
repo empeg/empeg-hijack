@@ -120,6 +120,7 @@ static int i2c_getdatabit(void)
 static void i2c_putdatabit(int bit)
 {
 	unsigned int old_bit;
+
 	/* First set the data bit (clock low) */
 	GPCR = IIC_CLOCK;
 	old_bit = !(GPLR & IIC_DATAOUT);
@@ -129,11 +130,10 @@ static void i2c_putdatabit(int bit)
 		else
 			GPSR = IIC_DATAOUT;
 		i2c_delay_long();
-	} else {
-		i2c_delay_short();
 	}
 
 	/* Now trigger the clock */
+	i2c_delay_short();
 	GPSR = IIC_CLOCK;
 	i2c_delay_short();
 	
@@ -162,14 +162,11 @@ static int i2c_getbyte(unsigned char *byte, int nak)
 			(*byte) |= (1 << i);
 	
 	/* Well, I got it so respond with an ack, or nak */
-	
 	/* Send data low to indicate success */
-	if(!nak) {
-		GPSR = IIC_DATAOUT;
-	}
-	else {
+	if (nak)
 		GPCR = IIC_DATAOUT;
-	}
+	else
+		GPSR = IIC_DATAOUT;
 	i2c_delay_long();
 
 	/* Trigger clock since data is ready */
@@ -177,7 +174,6 @@ static int i2c_getbyte(unsigned char *byte, int nak)
 	i2c_delay_long();
 
 	/* Take clock low */
-
 	GPCR = IIC_CLOCK;
 	i2c_delay_long();
 
@@ -202,10 +198,11 @@ static int i2c_putbyte(int byte)
 
 	/* Clock out the data */
 	for(i = 7; i >= 0; --i)
-		i2c_putdatabit(byte & (1 << i));
+		i2c_putdatabit((byte >> i) & 1);
 	
 	/* data high (ie, no drive) */
 	GPCR = IIC_DATAOUT;
+	i2c_delay_short();
 	GPCR = IIC_CLOCK;
 
 	i2c_delay_long();

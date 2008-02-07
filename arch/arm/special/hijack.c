@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v484"
+#define HIJACK_VERSION	"v485"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 // mainline code is in hijack_handle_display() way down in this file
@@ -60,6 +60,7 @@ extern int hijack_current_mixer_input;
 extern void hijack_serial_rx_insert (const char *buf, int size, int port); // drivers/char/serial_sa1100.c
 #endif
 
+int	hijack_cs4231a_failed;		// non-zero for a failed cs4231a chip
 int	hijack_loopback;		// 1 == detected docked "loopback" mode
 int	kenwood_disabled;		// used by Nextsrc button
 int	empeg_on_dc_power;		// used in arch/arm/special/empeg_power.c
@@ -1719,7 +1720,7 @@ vitals_display (int firsttime)
 	extern const char *notify_fid(void);
 	unsigned int *permset=(unsigned int*)(EMPEG_FLASHBASE+0x2000);
 	unsigned char buf[80];
-	int rowcol, i, count, model = 0x2a;
+	int rowcol, i, count = 0, model = 0x2a;
 	unsigned char *sa;
 	unsigned long flags;
 
@@ -1732,7 +1733,9 @@ vitals_display (int firsttime)
 		model = 1;
 	else if (permset[0] < 9)
 		model = 2;
-	count = sprintf(buf, "Mk%x: %luMB, %d", model, (memory_end - PAGE_OFFSET) >> 20, get_drive_size(0,0));
+	if (hijack_cs4231a_failed)
+		buf[count++] = '*';
+	count += sprintf(buf+count, "Mk%x: %luMB, %d", model, (memory_end - PAGE_OFFSET) >> 20, get_drive_size(0,0));
 	model = (model == 1);	// 0 == Mk2(a); 1 == Mk1
 	if (ide_hwifs[model].drives[!model].present)
 		sprintf(buf+count, "+%d", get_drive_size(model,!model));

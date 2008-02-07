@@ -373,6 +373,7 @@ void __init empeg_cs4231_init(void)
 {
         struct cs4231_dev *dev=cs4231_devices;
 	int result,version;
+	extern int hijack_cs4231a_failed;	// hijack.c
 
 	/* Initialise buffer bits */
 	dev->rx_head = dev->rx_tail = 0;
@@ -393,6 +394,7 @@ void __init empeg_cs4231_init(void)
 
 	/* Check version */
 	if (version != 0xa0) {
+		hijack_cs4231a_failed = 1;
 		printk(KERN_WARNING "CS4231A: not responding (%02x) --> no visuals for Tuner/AUX\n", result);
 		if (result == 0x80)
 			printk(KERN_WARNING "CS4231A: this can be fixed --> search empegbbs.com for PDOWN\n");

@@ -111,7 +111,7 @@ extern unsigned long jiffies_since(unsigned long past_jiffies);	// arch/arm/spec
 static int cs4231a_not_found = 0;
 static struct timer_list simulate_timer;
 
-/* When the cs4231a chip is "not found" (dead!),
+/* When the cs4231a chip is "not responding" (hung or not present),
  * we have to simulate sampling from it, normally
  * the rate is 29400 stereo (4-byte) samples/sec.
  */
@@ -388,11 +388,14 @@ void __init empeg_cs4231_init(void)
 
 	/* Read version */
 	INDEX(VERSION);
-	version=(READDATA()&0xe7);
+	result = READDATA();
+	version = result & 0xe7;
 
 	/* Check version */
-	if (version!=0xa0) {
-		printk(KERN_WARNING "Could not find CS4231A (version=%02x) --> no visuals for Tuner/AUX.\n", READDATA());
+	if (version != 0xa0) {
+		printk(KERN_WARNING "CS4231A: not responding (%02x) --> no visuals for Tuner/AUX\n", result);
+		if (result == 0x80)
+			printk(KERN_WARNING "CS4231A: this can be fixed --> search empegbbs.com for PDOWN\n");
 		cs4231a_not_found = 1;
 		dev->samplerate = 22050;
 		init_timer(&simulate_timer);

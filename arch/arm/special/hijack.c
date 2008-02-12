@@ -1,7 +1,9 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v485"
+#define HIJACK_VERSION	"v486"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
+
+#undef EMPEG_FIXTEMP	// #define this for special "fix temperature sensor" builds
 
 // mainline code is in hijack_handle_display() way down in this file
 
@@ -3049,9 +3051,12 @@ hightemp_display (int firsttime)
 {
 	unsigned int rowcol;
 
-	if (firsttime)
+	if (firsttime) {
+#ifdef EMPEG_FIXTEMP
+		init_temperature(1);
+#endif
 		ir_numeric_input = &hightemp_threshold;
-	else if (jiffies_since(hijack_last_refresh) < (HZ*2) && !hijack_last_moved)
+	} else if (jiffies_since(hijack_last_refresh) < (HZ*2) && !hijack_last_moved)
 		return NO_REFRESH;
 	hijack_last_moved = 0;
 	clear_hijack_displaybuf(COLOR0);
@@ -3067,6 +3072,82 @@ hightemp_display (int firsttime)
 	(void)draw_temperature(rowcol, hijack_temperature_correction, 0, PROMPTCOLOR);
 	return NEED_REFRESH;
 }
+
+#ifdef EMPEG_FIXTEMP
+static void
+fixtemp_pulse16 (void)
+{
+	unsigned long flags;
+	int i;
+
+	GPSR = EMPEG_DS1821;
+	udelay(20);
+	save_flags_clif(flags);
+	for (i = 0; i < 16; ++i) {
+		udelay(1);
+		GPCR = EMPEG_DS1821;
+		udelay(1);
+		GPSR = EMPEG_DS1821;
+	}
+	restore_flags(flags);
+}
+
+static void
+fixtemp_eeprom (void)
+{
+	unsigned long flags;
+	extern void empeg_fixtherm(volatile unsigned int *, volatile unsigned int *);
+
+	save_flags_clif(flags);
+	(void)empeg_fixtherm(&OSMR0,&GPLR);
+	restore_flags(flags);
+}
+
+static int fixtemp_state;
+
+static void
+fixtemp_move (int direction)
+{
+	fixtemp_state = direction;
+}
+
+static int
+fixtemp_display (int firsttime)
+{
+	if (firsttime) {
+		/*
+		 * On entry, we assume user has pin-8 pulled to GND.
+		 * So now pulse DQ low 16 times:
+		 */
+		fixtemp_state = 0;
+		fixtemp_pulse16();
+		/*
+		 * Now prompt user to pull pin-8 high again:
+		 */
+		clear_hijack_displaybuf(COLOR0);
+		(void) draw_string(ROWCOL(1,0), "Apply +5V to pin-8,", PROMPTCOLOR);
+		(void) draw_string(ROWCOL(2,0), "and press any button.", PROMPTCOLOR);
+		hijack_last_moved = 0;
+		return NEED_REFRESH;
+	} else if (fixtemp_state == 1) {
+		/*
+		 * Now rewrite the config register in the internal eeprom:
+		 */
+		fixtemp_state = 2;
+		fixtemp_eeprom();
+		clear_hijack_displaybuf(COLOR0);
+		hijack_last_moved = JIFFIES();
+		return NEED_REFRESH;
+	} else if (fixtemp_state == 2) {
+		/*
+		 * Wait one second, to allow eeprom update to complete:
+		 */
+		if (jiffies_since(hijack_last_moved) >= HZ)
+			activate_dispfunc(hightemp_display, hightemp_move, 0);
+	}
+	return NO_REFRESH;
+}
+#endif /* EMPEG_FIXTEMP */
 
 static void
 do_reboot (struct display_dev *dev)
@@ -3223,6 +3304,9 @@ static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 	{ timeraction_menu_label,	timeraction_display,	timeraction_move,	0},
 	{ timer_menu_label,		timer_display,		timer_move,		0},
 	{ fsck_menu_label,		fsck_display,		fsck_move,		0},
+#ifdef EMPEG_FIXTEMP
+	{ "Fix Temperature Sensor",	fixtemp_display,	fixtemp_move,		0},
+#endif
 	{"Font Display",		kfont_display,		NULL,			0},
 	{ forcepower_menu_label,	forcepower_display,	forcepower_move,	0},
 	{ onedrive_menu_label,		onedrive_display,	onedrive_move,		0},
@@ -4443,7 +4527,9 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 			if (dev->power) {
 				if (carvisuals_enabled && empeg_on_dc_power)
 					hijack_enq_button_pair(IR_BOTTOM_BUTTON_PRESSED|BUTTON_FLAGS_LONGPRESS);
+#ifndef EMPEG_FIXTEMP
 				init_temperature(1);
+#endif
 				// Send initial button sequences, if any
 				input_append_code(IR_INTERNAL, IR_FAKE_INITIAL);
 				input_append_code(IR_INTERNAL, RELEASECODE(IR_FAKE_INITIAL));

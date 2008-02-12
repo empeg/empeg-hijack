@@ -1,5 +1,6 @@
 .global empeg_readtherm
 .global empeg_inittherm
+.global empeg_fixtherm
 	
 .set	OSMR0,		0x00
 .set	OSCR,		0x10
@@ -15,6 +16,24 @@
 @ TEMPERATURE SENSOR TESTS
 @ r0=timerbase
 @ r1=gpiobase
+empeg_fixtherm:
+	stmfd	r13!,{r1-r12,r14}
+	mov	r9,r0
+	mov	r10,r1
+
+	@ Start conversions
+	bl	onewire_reset
+	mvnne	r0,#0			@ Reset fail?
+	ldmnefd r13!,{r1-r12,pc}	@ Return -1
+
+	mov	r0,#0x0c
+	bl	onewire_writebyte
+	mov	r0,#0
+	bl	onewire_writebyte
+
+	mov	r0,#0
+	ldmfd	r13!,{r1-r12,pc}
+	
 empeg_inittherm:
 	stmfd	r13!,{r1-r12,r14}
 	mov	r9,r0

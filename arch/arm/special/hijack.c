@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v487"
+#define HIJACK_VERSION	"v488"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #undef EMPEG_FIXTEMP	// #define this for special "fix temperature sensor" builds
@@ -1585,10 +1585,11 @@ init_temperature (int force)
 		restore_flags(flags);	// give other interrupts a chance
 		if (was_dead) {
 			const char *msg = "Dead temp.sensor";
-			if ((status & 0x45) == 0x40)
+			if ((status & 0x45) == 0x40) {
 				msg = "Fixed temp.sensor";
+				show_message(msg, 5*HZ);
+			}
 			printk("%s, status=0x%02x\n", msg, status);
-			show_message(msg, 5*HZ);
 		}
 		save_flags_clif(flags);
 		empeg_inittherm(&OSMR0,&GPLR);

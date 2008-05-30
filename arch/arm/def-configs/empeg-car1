@@ -64,6 +64,7 @@ CONFIG_CMDLINE=""
 #
 # CONFIG_BLK_DEV_FD is not set
 CONFIG_BLK_DEV_IDE=y
+# CONFIG_IDE_SGIO is not set
 
 #
 # Please see Documentation/ide.txt for help/info on IDE drives

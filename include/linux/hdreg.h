@@ -141,6 +141,8 @@ struct hd_geometry {
 #define HDIO_DRIVE_TASK		0x031e	/* execute task and special drive command */
 #define HDIO_DRIVE_CMD		0x031f	/* execute a special drive command */
 
+#define SG_IO			0x2285
+
 /* hd/ide ctl's that pass (arg) non-ptr values are numbered 0x032n/0x033n */
 #define HDIO_SET_MULTCOUNT	0x0321	/* change IDE blockmode */
 #define HDIO_SET_UNMASKINTR	0x0322	/* permit other irqs during I/O */
@@ -153,7 +155,6 @@ struct hd_geometry {
 #define HDIO_SET_NICE		0x0329	/* set nice flags */
 #define HDIO_UNREGISTER_HWIF	0x032a  /* unregister interface */
 
-#define SG_IO			0x2285
 
 /* structure returned by HDIO_GET_IDENTITY, as per ANSI ATA2 rev.2f spec */
 struct hd_driveid {

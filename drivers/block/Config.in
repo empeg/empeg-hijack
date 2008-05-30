@@ -24,6 +24,7 @@ else
   dep_tristate '   Include IDE/ATAPI FLOPPY support' CONFIG_BLK_DEV_IDEFLOPPY $CONFIG_BLK_DEV_IDE
   dep_tristate '   SCSI emulation support' CONFIG_BLK_DEV_IDESCSI $CONFIG_BLK_DEV_IDE
   if [ "$CONFIG_BLK_DEV_IDE" != "n" ]; then
+    bool '   Support for the SG_IO SAT Passthru ioctl (for hdparm)' CONFIG_IDE_SGIO
     bool '   CMD640 chipset bugfix/support' CONFIG_BLK_DEV_CMD640
     if [ "$CONFIG_BLK_DEV_CMD640" = "y" ]; then
       bool '     CMD640 enhanced support' CONFIG_BLK_DEV_CMD640_ENHANCED

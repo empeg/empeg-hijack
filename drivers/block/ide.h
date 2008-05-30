@@ -74,6 +74,10 @@ void cmd640_dump_regs (void);
 /*
  * IDE_DRIVE_CMD is used to implement many features of the hdparm utility
  */
+#ifdef CONFIG_IDE_SGIO
+#define IDE_DRIVE_SGIO		97	/* from SG_IO ioctl() */
+#include "sgio.h"
+#endif
 #define IDE_DRIVE_TASK		98
 #define IDE_DRIVE_CMD		99	/* (magic) undef to reduce kernel size*/
 

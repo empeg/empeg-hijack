@@ -745,6 +745,43 @@ void ide_end_drive_cmd (ide_drive_t *drive, byte stat, byte err)
 			args[5] = IN_BYTE(IDE_HCYL_REG);
 			args[6] = IN_BYTE(IDE_SELECT_REG);
 		}
+#ifdef CONFIG_IDE_SGIO
+	} else if (rq->cmd == IDE_DRIVE_SGIO) {
+		struct scsi_sg_io_hdr *io_hdr = (void *)(rq->buffer);
+		unsigned char *cdb = io_hdr->cmdp;
+		unsigned char *sb  = io_hdr->sbp, *desc;
+
+		io_hdr->host_status   = 0;
+		io_hdr->driver_status = SG_DRIVER_SENSE;
+
+		if (!OK_STAT(stat,READY_STAT,BAD_STAT))
+			io_hdr->status = SG_CHECK_CONDITION;
+		else
+			io_hdr->status = 0;
+
+		sb[0]    = 0x72;
+		sb[7]    = 14;
+		desc     = sb + 8;
+		desc[ 0] =  9;
+		desc[ 1] = 12;
+		desc[ 2] =  0;
+		desc[ 3] = err;
+		desc[ 5] = IN_BYTE(IDE_NSECTOR_REG);
+		desc[ 7] = IN_BYTE(IDE_SECTOR_REG);
+		desc[ 9] = IN_BYTE(IDE_LCYL_REG);
+		desc[11] = IN_BYTE(IDE_HCYL_REG);
+		desc[12] = IN_BYTE(IDE_SELECT_REG);
+		desc[13] = stat;
+		if (cdb[1] & SG_ATA_LBA48) {
+			OUT_BYTE(drive->ctl | (1<<7), IDE_CONTROL_REG);
+			desc[2] |= 0x01;
+			desc[4] = IN_BYTE(IDE_NSECTOR_REG);
+			desc[6] = IN_BYTE(IDE_SECTOR_REG);
+			desc[8] = IN_BYTE(IDE_LCYL_REG);
+			desc[10] = IN_BYTE(IDE_HCYL_REG);
+			OUT_BYTE(drive->ctl, IDE_CONTROL_REG);
+		}
+#endif
 	}
 	spin_lock_irqsave(&io_request_lock, flags);
 	drive->queue = rq->next;
@@ -855,7 +892,11 @@ ide_startstop_t ide_error (ide_drive_t *drive, const char *msg, byte stat)
 	if (drive == NULL || (rq = HWGROUP(drive)->rq) == NULL)
 		return ide_stopped;
 	/* retry only "normal" I/O: */
-	if (rq->cmd == IDE_DRIVE_CMD || rq->cmd == IDE_DRIVE_TASK) {
+	if (rq->cmd == IDE_DRIVE_CMD
+#ifdef CONFIG_IDE_SGIO
+	 || rq->cmd == IDE_DRIVE_SGIO
+#endif
+	 || rq->cmd == IDE_DRIVE_TASK) {
 		rq->errors = 1;
 		ide_end_drive_cmd(drive, stat, err);
 		return ide_stopped;
@@ -931,10 +972,20 @@ static ide_startstop_t drive_cmd_intr (ide_drive_t *drive)
 	int retries = 10;
 
 	ide__sti();	/* local CPU only */
-	if ((stat & DRQ_STAT) && args && args[3]) {
+	if (stat & DRQ_STAT) {
 		byte io_32bit = drive->io_32bit;
 		drive->io_32bit = 0;
-		ide_input_data(drive, &args[4], args[3] * SECTOR_WORDS);
+#ifdef CONFIG_IDE_SGIO
+		if (rq->cmd == IDE_DRIVE_SGIO) {
+			struct scsi_sg_io_hdr *io_hdr = (void *)(rq->buffer);
+			if (io_hdr->dxfer_direction == SG_DXFER_FROM_DEV)
+				ide_input_data(drive,  io_hdr->dxferp, io_hdr->dxfer_len / 4);
+			else if (io_hdr->dxfer_direction == SG_DXFER_TO_DEV)
+				ide_output_data(drive, io_hdr->dxferp, io_hdr->dxfer_len / 4);
+		} else
+#endif
+		if (args && args[3])
+			ide_input_data(drive, &args[4], args[3] * SECTOR_WORDS);
 		drive->io_32bit = io_32bit;
 		while (((stat = GET_STAT()) & BUSY_STAT) && retries--)
 			udelay(100);
@@ -1039,6 +1090,38 @@ static ide_startstop_t execute_drive_cmd (ide_drive_t *drive, struct request *rq
  			ide_cmd(drive, args[0], args[2], &drive_cmd_intr);
  			return ide_started;
 		}
+#ifdef CONFIG_IDE_SGIO
+		if (rq->cmd == IDE_DRIVE_SGIO) {
+			struct scsi_sg_io_hdr *io_hdr = (void *)(rq->buffer);
+			unsigned char *cdb = io_hdr->cmdp;
+			byte sel;
+
+			if (cdb[1] & SG_ATA_LBA48) {
+				OUT_BYTE(cdb[ 3], IDE_FEATURE_REG);
+				OUT_BYTE(cdb[ 6], IDE_NSECTOR_REG);
+				OUT_BYTE(cdb[ 7], IDE_SECTOR_REG);
+				OUT_BYTE(cdb[ 9], IDE_LCYL_REG);
+				OUT_BYTE(cdb[11], IDE_HCYL_REG);
+			}
+			OUT_BYTE(cdb[ 4], IDE_FEATURE_REG);
+			//OUT_BYTE(cdb[ 6], IDE_NSECTOR_REG);
+			OUT_BYTE(cdb[ 8], IDE_SECTOR_REG);
+			OUT_BYTE(cdb[10], IDE_LCYL_REG);
+			OUT_BYTE(cdb[12], IDE_HCYL_REG);
+ 			sel = (cdb[13] & ~0x10) | (drive->select.b.unit << 4);
+			OUT_BYTE(sel, IDE_SELECT_REG);
+			ide_cmd(drive, cdb[14], cdb[6], &drive_cmd_intr);
+			if (io_hdr->dxfer_direction == SG_DXFER_TO_DEV) {
+				ide_startstop_t startstop;
+				if (ide_wait_stat(&startstop, drive, DATA_READY, drive->bad_wstat, WAIT_DRQ)) {
+					printk(KERN_ERR "%s: no DRQ for SGIO write\n", drive->name);
+					return startstop;
+				}
+				ide_output_data(drive, io_hdr->dxferp, io_hdr->dxfer_len / 4);
+			}
+			return ide_started;
+		}
+#endif
 #ifdef DEBUG
 		printk("%s: DRIVE_CMD cmd=0x%02x sc=0x%02x fr=0x%02x xx=0x%02x\n",
 		 drive->name, args[0], args[1], args[2], args[3]);
@@ -1152,7 +1235,11 @@ static ide_startstop_t start_request (ide_drive_t *drive)
 		return startstop;
 	}
 	if (!drive->special.all) {
-		if (rq->cmd == IDE_DRIVE_CMD || rq->cmd == IDE_DRIVE_TASK) {
+		if (rq->cmd == IDE_DRIVE_CMD
+#ifdef CONFIG_IDE_SGIO
+		 || rq->cmd == IDE_DRIVE_SGIO
+#endif
+		 || rq->cmd == IDE_DRIVE_TASK) {
 			return execute_drive_cmd(drive, rq);
 		}
 		if (drive->driver != NULL) {
@@ -2362,6 +2449,73 @@ int ide_wait_cmd_task (ide_drive_t *drive, byte *buf)
 	return ide_do_drive_cmd(drive, &rq, ide_wait);
 }
 
+#ifdef CONFIG_IDE_SGIO
+static int ide_do_sgio (ide_drive_t *drive, void *u_io_hdr)
+{
+	struct scsi_sg_io_hdr io_hdr;
+	void *u_sbp, *u_cmdp, *u_dxferp;
+	unsigned char sb[32];
+	unsigned char cdb[SG_ATA_16_LEN];
+	struct request rq;
+	int err;
+
+	memset(sb, 0, sizeof(sb));
+
+	if (copy_from_user(&io_hdr, u_io_hdr, sizeof(struct scsi_sg_io_hdr)))
+		return -EFAULT;
+	if (io_hdr.interface_id != 'S' || io_hdr.cmd_len != SG_ATA_16_LEN)
+		return -EINVAL;
+
+	u_cmdp = io_hdr.cmdp;
+	io_hdr.cmdp = cdb;
+
+	if (copy_from_user(cdb, u_cmdp, io_hdr.cmd_len))
+		err = -EFAULT;
+	if (cdb[0] != SG_ATA_16)
+		return -EINVAL;
+
+	u_dxferp = io_hdr.dxferp;
+	io_hdr.dxferp = NULL;
+	if (u_dxferp && io_hdr.dxfer_len) {
+		io_hdr.dxferp = kmalloc(io_hdr.dxfer_len, GFP_KERNEL);
+		if (!io_hdr.dxferp)
+			return -ENOMEM;
+		if (io_hdr.dxfer_direction == SG_DXFER_TO_DEV)
+			copy_from_user(io_hdr.dxferp, u_dxferp, io_hdr.dxfer_len);
+		else
+			memset(io_hdr.dxferp, 0, io_hdr.dxfer_len);
+	}
+
+	u_sbp = io_hdr.sbp;
+	io_hdr.sbp = sb;
+
+	ide_init_drive_cmd(&rq);
+	rq.cmd = IDE_DRIVE_SGIO;
+	rq.buffer = (void *)&io_hdr;
+
+	err = ide_do_drive_cmd(drive, &rq, ide_wait);
+	if (err == -EIO)
+		err = 0;
+	io_hdr.cmdp = u_cmdp;
+
+	if (io_hdr.dxferp) {
+		if (!err && io_hdr.dxfer_direction != SG_DXFER_TO_DEV) {
+			if (copy_to_user(u_dxferp, io_hdr.dxferp, io_hdr.dxfer_len))
+				err = -EFAULT;
+		}
+		kfree(io_hdr.dxferp);
+		io_hdr.dxferp = u_dxferp;
+	}
+
+	if (!err && u_sbp && copy_to_user(u_sbp, sb, io_hdr.mx_sb_len))
+		err = -EFAULT;
+	io_hdr.sbp = u_sbp;
+	if (!err && copy_to_user(u_io_hdr, &io_hdr, sizeof(struct scsi_sg_io_hdr)))
+		err = -EFAULT;
+	return err;
+}
+#endif
+
 static int ide_ioctl (struct inode *inode, struct file *file,
 			unsigned int cmd, unsigned long arg)
 {
@@ -2472,6 +2626,10 @@ static int ide_ioctl (struct inode *inode, struct file *file,
 				err = -EFAULT;
 			return err;
 		}
+#ifdef CONFIG_IDE_SGIO
+		case SG_IO:
+			return ide_do_sgio(drive, (void *)arg);
+#endif
 		case HDIO_SCAN_HWIF:
 		{
 			int args[3];

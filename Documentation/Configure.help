@@ -323,6 +323,13 @@ CONFIG_BLK_DEV_IDE
   could say N here, and select the "Old hard disk driver" below
   instead to save about 13 KB of memory in the kernel.
 
+Support for SAT passthrough (hdparm) in IDE driver
+CONFIG_IDE_SGIO
+  Say Y here to add support for SG_IO SAT Passthru ioctl commands
+  in the IDE driver.  This allows most of the functionality of
+  newer hdparm options to function with the empeg kernel,
+  at the cost of a couple of kilobytes of added kernel code.
+
 Old hard disk (MFM/RLL/IDE) driver
 CONFIG_BLK_DEV_HD_ONLY
   There are two drivers for MFM/RLL/IDE hard disks. Most people use

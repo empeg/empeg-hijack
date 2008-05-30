@@ -215,6 +215,8 @@ ksock_rw (struct socket *sock, const char *buf, int buf_size, int minimum)
 				}
 				break;
 			case -EPIPE:
+				if (bytecount)
+					return bytecount;
 			case -ECONNRESET:
 				return rc;
 			default:
@@ -1727,6 +1729,7 @@ receive_file (server_parms_t *parms, char *path)
 			schedule(); // give the music player a chance to run
 			size = ksock_rw(parms->datasock, xfer.buf, xfer.buf_size, 1);
 			if (size < 0) {
+				printk(KERN_ERR "receive_file: ksock_rw returned %d\n", size);
 				response = 426;
 			} else if (size && size != write(xfer.fd, xfer.buf, size)) {
 				printk(KFTPD": write(%d) failed\n", size);

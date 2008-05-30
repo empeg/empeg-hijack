@@ -1078,6 +1078,7 @@ static ide_startstop_t start_request (ide_drive_t *drive)
 	unsigned int minor = MINOR(rq->rq_dev), unit = minor >> PARTN_BITS;
 	ide_hwif_t *hwif = HWIF(drive);
 
+	minor &= PARTN_MASK;
 #ifdef DEBUG
 	printk("%s: start_request: current=0x%08lx\n", hwif->name, (unsigned long) rq);
 #endif
@@ -1093,12 +1094,51 @@ static ide_startstop_t start_request (ide_drive_t *drive)
 #endif
 	block    = rq->sector;
 	blockend = block + rq->nr_sectors;
-	if ((blockend < block) || (blockend > drive->part[minor&PARTN_MASK].nr_sects)) {
+	if ((blockend < block) || (blockend > drive->part[minor].nr_sects)) {
 		printk("%s%c: bad access: block=%ld, count=%ld\n", drive->name,
-		 (minor&PARTN_MASK)?'0'+(minor&PARTN_MASK):' ', block, rq->nr_sectors);
+		 minor ? '0' + minor : ' ', block, rq->nr_sectors);
 		goto kill_rq;
 	}
-	block += drive->part[minor&PARTN_MASK].start_sect + drive->sect0;
+	block += drive->part[minor].start_sect + drive->sect0;
+{
+	/*
+	 * Empeg: prevent initrd/linuxrc from destroying partition tables
+	 * during installation of a software .upgrade package
+	 * (see also the code in init/main.c for this).
+	 *
+	 * We block early writes to the master partition table in the MBR,
+	 * as well as to the linked list of extended partition entries.
+	 */
+	static char buf[64];
+	extern int prevent_hda_direct_writes;	// init/main.c
+	extern void show_message(char *, int);
+
+	if (prevent_hda_direct_writes) {
+		int prevent = drive->part[1].sys_ind == 0x05
+			   && drive->part[2].sys_ind == 0x83
+			   && drive->part[3].sys_ind == 0x10
+			   && drive->part[4].sys_ind == 0x83
+			   && drive->part[5].sys_ind == 0x83
+			   && drive->part[6].sys_ind == 0x82
+			   && drive->part[5].nr_sects >= (16*1024*1024/512);
+
+		sprintf(buf, "pump hd%c%u %lu:%lu", 'a' + unit, minor,
+			block, rq->nr_sectors);
+		show_message(buf, 1*HZ);
+		
+		if (prevent && rq->cmd == WRITE) {
+			if (minor == 0) {
+				sprintf(buf, "stop hd%c%u %lu:%lu", 'a' + unit, minor,
+					block, rq->nr_sectors);
+				show_message(buf, 1*HZ);
+				{int i; for (i = 0; i < 500; ++i) udelay(1000);}
+				ide_end_request(1, HWGROUP(drive));
+				return ide_stopped;
+			}
+		}
+	}
+}
+
 #if FAKE_FDISK_FOR_EZDRIVE
 	if (block == 0 && drive->remap_0_to_1)
 		block = 1;  /* redirect MBR access to EZ-Drive partn table */
@@ -1706,10 +1746,14 @@ int ide_revalidate_disk(kdev_t i_rdev)
 	hwgroup = HWGROUP(drive);
 	spin_lock_irqsave(&io_request_lock, flags);
 	if (drive->busy || (drive->usage > 1)) {
+#if 0
 		spin_unlock_irqrestore(&io_request_lock, flags);
 		return -EBUSY;
+#else
+		printk(KERN_WARNING "%s: revalidating while in use!!\n", drive->name);
+#endif
 	};
-	drive->busy = 1;
+	drive->busy++;
 	MOD_INC_USE_COUNT;
 	spin_unlock_irqrestore(&io_request_lock, flags);
 
@@ -1733,7 +1777,7 @@ int ide_revalidate_disk(kdev_t i_rdev)
 		drive->part[0].start_sect = -1;
 	resetup_one_dev(HWIF(drive)->gd, drive->select.b.unit);
 
-	drive->busy = 0;
+	drive->busy--;
 	wake_up(&drive->wqueue);
 	MOD_DEC_USE_COUNT;
 	return 0;

@@ -1497,6 +1497,16 @@ static void __init no_initrd(char *s,int *ints)
 }
 #endif
 
+/*
+ * The empeg "linuxrc" always overwrites the partition table
+ * with the factory default layout during .upgrade's.
+ * We need to prevent that here, if we want a different layout
+ * (eg. larger swap partition).
+ *
+ * See also the code in drivers/block/ide.c for this.
+ */
+int prevent_hda_direct_writes;
+
 struct task_struct *child_reaper = &init_task;
 
 /*
@@ -1627,10 +1637,20 @@ static void __init do_basic_setup(void)
 	    && MAJOR(ROOT_DEV) == RAMDISK_MAJOR && MINOR(ROOT_DEV) == 0) {
 		int error;
 		int i, pid;
+		/*
+		 * The empeg "linuxrc" always overwrites the partition table
+		 * with the factory default layout during .upgrade's.
+		 * We need to prevent that here, if we want a different layout
+		 * (eg. larger swap partition).
+		 *
+		 * See also the code in drivers/block/ide.c for this.
+		 */
+		prevent_hda_direct_writes = 1;
 
 		pid = kernel_thread(do_linuxrc, "/linuxrc", SIGCHLD);
 		if (pid>0)
 			while (pid != wait(&i));
+
 		if (MAJOR(real_root_dev) != RAMDISK_MAJOR
 		     || MINOR(real_root_dev) != 0) {
 			error = change_root(real_root_dev,"/initrd");
@@ -1646,6 +1666,10 @@ static int init(void * unused)
 {
 	lock_kernel();
 	do_basic_setup();
+	/*
+	 * Okay, enable full drive write access now.
+	 */
+	prevent_hda_direct_writes = 0;
 
 	/*
 	 * Ok, we have completed the initial bootup, and

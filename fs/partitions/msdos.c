@@ -128,6 +128,7 @@ static void extended_partition(struct gendisk *hd, kdev_t dev)
 
 			add_gd_partition(hd, current_minor, this_sector+START_SECT(p)*sector_size,
 				      NR_SECTS(p)*sector_size, ptype(SYS_IND(p)));
+			hd->part[current_minor].sys_ind = SYS_IND(p);	// Hijack
 			current_minor++;
 			if ((current_minor & mask) == 0)
 				goto done;
@@ -427,6 +428,7 @@ check_table:
 			continue;
 		add_gd_partition(hd, minor, first_sector+START_SECT(p)*sector_size, NR_SECTS(p)*sector_size,
 				ptype(SYS_IND(p)));
+		hd->part[minor].sys_ind = SYS_IND(p);	// Hijack
 		if (is_extended_partition(p)) {
 			printk(" <");
 			/*

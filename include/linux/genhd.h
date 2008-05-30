@@ -50,6 +50,7 @@ struct hd_struct {
 	long start_sect;
 	long nr_sects;
 	int type;		/* RAID or normal */
+	unsigned char sys_ind;	// Hijack
 };
 
 /*

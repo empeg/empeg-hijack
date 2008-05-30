@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v488"
+#define HIJACK_VERSION	"v489"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #undef EMPEG_FIXTEMP	// #define this for special "fix temperature sensor" builds
@@ -1589,7 +1589,7 @@ init_temperature (int force)
 				msg = "Fixed temp.sensor";
 				show_message(msg, 5*HZ);
 			}
-			printk("%s, status=0x%02x\n", msg, status);
+			printk("%s, status=0x%02x\n", msg, status & 0xff);
 		}
 		save_flags_clif(flags);
 		empeg_inittherm(&OSMR0,&GPLR);
@@ -4101,11 +4101,17 @@ hijack_handle_button (unsigned int button, unsigned long delay, unsigned int pla
 			hijacked = 1;
 			break;
 		case IR_FAKE_KNOBSEEK:
-			activate_dispfunc(knobseek_display, NULL, 0);
+			if (hijack_dispfunc == knobseek_display)
+				ir_selected = 1;
+			else
+				activate_dispfunc(knobseek_display, NULL, 0);
 			hijacked = 1;
 			break;
 		case IR_FAKE_VISUALSEEK:
-			activate_dispfunc(knobseek_display, knobseek_move_visuals, 0);
+			if (hijack_dispfunc == knobseek_display)
+				ir_selected = 1;
+			else
+				activate_dispfunc(knobseek_display, knobseek_move_visuals, 0);
 			hijacked = 1;
 			break;
 #ifdef EMPEG_KNOB_SUPPORTED

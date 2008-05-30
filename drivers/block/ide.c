@@ -1094,6 +1094,7 @@ static ide_startstop_t execute_drive_cmd (ide_drive_t *drive, struct request *rq
 		if (rq->cmd == IDE_DRIVE_SGIO) {
 			struct scsi_sg_io_hdr *io_hdr = (void *)(rq->buffer);
 			unsigned char *cdb = io_hdr->cmdp;
+			unsigned int timeout;
 			byte sel;
 
 			if (cdb[1] & SG_ATA_LBA48) {
@@ -1104,13 +1105,26 @@ static ide_startstop_t execute_drive_cmd (ide_drive_t *drive, struct request *rq
 				OUT_BYTE(cdb[11], IDE_HCYL_REG);
 			}
 			OUT_BYTE(cdb[ 4], IDE_FEATURE_REG);
-			//OUT_BYTE(cdb[ 6], IDE_NSECTOR_REG);
+			OUT_BYTE(cdb[ 6], IDE_NSECTOR_REG);
 			OUT_BYTE(cdb[ 8], IDE_SECTOR_REG);
 			OUT_BYTE(cdb[10], IDE_LCYL_REG);
 			OUT_BYTE(cdb[12], IDE_HCYL_REG);
  			sel = (cdb[13] & ~0x10) | (drive->select.b.unit << 4);
 			OUT_BYTE(sel, IDE_SELECT_REG);
-			ide_cmd(drive, cdb[14], cdb[6], &drive_cmd_intr);
+
+			timeout = WAIT_CMD;
+			if (!io_hdr->timeout) {
+				timeout = WAIT_CMD;
+			} else {
+				/* io_hdr->timeout is in msecs; we need jiffies */
+				timeout = (io_hdr->timeout * HZ) / 1000;
+			}
+			ide_set_handler (drive, drive_cmd_intr, timeout, NULL);
+
+			if (IDE_CONTROL_REG)
+				OUT_BYTE(drive->ctl, IDE_CONTROL_REG);	/* clear nIEN */
+			OUT_BYTE(cdb[14], IDE_COMMAND_REG);
+
 			if (io_hdr->dxfer_direction == SG_DXFER_TO_DEV) {
 				ide_startstop_t startstop;
 				if (ide_wait_stat(&startstop, drive, DATA_READY, drive->bad_wstat, WAIT_DRQ)) {

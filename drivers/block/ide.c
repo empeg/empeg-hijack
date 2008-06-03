@@ -1210,7 +1210,7 @@ static ide_startstop_t start_request (ide_drive_t *drive)
 	extern int prevent_hda_direct_writes;	// init/main.c
 	extern void show_message(char *, int);
 
-	if (prevent_hda_direct_writes) {
+	if (minor == 0 && rq->cmd == WRITE && prevent_hda_direct_writes) {
 		int prevent = drive->part[1].sys_ind == 0x05
 			   && drive->part[2].sys_ind == 0x83
 			   && drive->part[3].sys_ind == 0x10
@@ -1218,20 +1218,13 @@ static ide_startstop_t start_request (ide_drive_t *drive)
 			   && drive->part[5].sys_ind == 0x83
 			   && drive->part[6].sys_ind == 0x82
 			   && drive->part[5].nr_sects >= (16*1024*1024/512);
-
-		sprintf(buf, "pump hd%c%u %lu:%lu", 'a' + unit, minor,
-			block, rq->nr_sectors);
-		show_message(buf, 1*HZ);
-		
-		if (prevent && rq->cmd == WRITE) {
-			if (minor == 0) {
-				sprintf(buf, "stop hd%c%u %lu:%lu", 'a' + unit, minor,
-					block, rq->nr_sectors);
-				show_message(buf, 1*HZ);
-				{int i; for (i = 0; i < 500; ++i) udelay(1000);}
-				ide_end_request(1, HWGROUP(drive));
-				return ide_stopped;
-			}
+		if (prevent) {
+			sprintf(buf, "stop hd%c%u %lu:%lu", 'a' + unit, minor,
+				block, rq->nr_sectors);
+			show_message(buf, 1*HZ);
+			{int i; for (i = 0; i < 500; ++i) udelay(1000);}
+			ide_end_request(1, HWGROUP(drive));
+			return ide_stopped;
 		}
 	}
 }

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v493"
+#define HIJACK_VERSION	"v494"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #undef EMPEG_FIXTEMP	// #define this for special "fix temperature sensor" builds
@@ -53,6 +53,7 @@ extern void hijack_beep (int pitch, int duration_msecs, int vol_percent);// arch
 extern unsigned long jiffies_since(unsigned long past_jiffies);		// arch/arm/special/empeg_input.c
 extern void display_blat(struct display_dev *dev, unsigned char *source_buffer); // empeg_display.c
 extern tm_t *hijack_convert_time(time_t, tm_t *);			// from arch/arm/special/notify.c
+static void remove_menu_entry (const char *label);
 
 extern void empeg_mixer_select_input(int input);			// arch/arm/special/empeg_mixer.c
 extern void hijack_tone_set(int, int, int, int, int, int);					// arch/arm/special/empeg_mixer.c
@@ -1444,6 +1445,7 @@ static const unsigned int voladj_thresholds[VOLADJ_THRESHSIZE] = {
 
 // Plot a nice moving history of voladj multipliers, VOLADJ_THRESHSIZE pixels in height.
 // The effective resolution (height) is tripled by using brighter color shades for the in-between values.
+#include "wam.h"
 //
 static unsigned int
 voladj_plot (unsigned short text_row, unsigned short pixel_col, unsigned int multiplier, int *prev)
@@ -2886,7 +2888,7 @@ bootg_display (int firsttime)
 {
 	unsigned int rowcol;
 	hijack_buttondata_t data;
-	
+
 	if (firsttime || bootg_domenu) {
 		// Show the menu text
 		clear_hijack_displaybuf(COLOR0);
@@ -2969,7 +2971,7 @@ bootg_display (int firsttime)
 		// ongoing animation
 		if 	(jiffies_since(bootg_framet) < (HZ/ANIMATION_FPS))
 			return NO_REFRESH;
-		
+
 		if (!bootg_anim[bootg_frame]) {
 			bootg_frame = 0;
 			bootg_dodisplay = 0; //stop animation
@@ -3478,6 +3480,7 @@ static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 #endif
 	{"Vital Signs",			vitals_display,		NULL,			0},
 	{ volumelock_menu_label,	volumelock_display,	volumelock_move,	0},
+	WAMm
 	{NULL,				NULL,			NULL,			0},};
 
 static void
@@ -4684,6 +4687,7 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 				input_append_code(IR_INTERNAL, IR_FAKE_INITIAL);
 				input_append_code(IR_INTERNAL, RELEASECODE(IR_FAKE_INITIAL));
 				init_notify();
+				WAMi
 				wake_up(&hijack_player_init_waitq);	// wake up any waiters
 				player_state = started;
 			}
@@ -5131,6 +5135,7 @@ remove_menu_entry (const char *label)
 			if (!item->label)
 				break;
 		} else if (!strxcmp(item->label, label, 0)) {
+			WAMr
 			printk("hijack: removed menu entry: \"%s\"\n", label);
 			found = 1;
 		}
@@ -5334,7 +5339,7 @@ int hijack_ioctl  (struct inode *inode, struct file *filp, unsigned int cmd, uns
 	switch (cmd) {
 		case EMPEG_HIJACK_TAKEOVER:	// take over the screen (possibly waits for another app to release it first)
 			return hijack_takeover_screen();
-			
+
 		case EMPEG_HIJACK_WAITMENU:	// (re)create menu item(s) and wait for them to be selected
 		{
 			// Invocation:  char *menulabels[] = {"Label1", "Label2", NULL};

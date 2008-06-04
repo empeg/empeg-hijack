@@ -1206,7 +1206,6 @@ static ide_startstop_t start_request (ide_drive_t *drive)
 	 * We block early writes to the master partition table in the MBR,
 	 * as well as to the linked list of extended partition entries.
 	 */
-	static char buf[64];
 	extern int prevent_hda_direct_writes;	// init/main.c
 	extern void show_message(char *, int);
 
@@ -1219,10 +1218,7 @@ static ide_startstop_t start_request (ide_drive_t *drive)
 			   && drive->part[6].sys_ind == 0x82
 			   && drive->part[5].nr_sects >= (16*1024*1024/512);
 		if (prevent) {
-			sprintf(buf, "stop hd%c%u %lu:%lu", 'a' + unit, minor,
-				block, rq->nr_sectors);
-			show_message(buf, 1*HZ);
-			{int i; for (i = 0; i < 500; ++i) udelay(1000);}
+			printk("hd%c: prevented ptable write %lu:%lu\n", 'a' + unit, block, rq->nr_sectors);
 			ide_end_request(1, HWGROUP(drive));
 			return ide_stopped;
 		}

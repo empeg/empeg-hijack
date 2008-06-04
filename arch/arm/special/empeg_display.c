@@ -758,27 +758,33 @@ start_animation (unsigned int *ani_ptr)
 	return duration;
 }
 
+// Decompress and write an animation frame to the buffer
+void display_animation_frame(unsigned char *buf, unsigned char *frame)
+{
+	int a;
+	
+	for(a=0;a<(2048/2);a++) {
+		*buf++=((*frame&0xc0)>>2)|((*frame&0x30)>>4);
+		*buf++=((*frame&0x0c)<<2)|((*frame&0x03));
+		frame++;
+	}
+}
+
+
 /* Deal with next animation frame */
 static void display_animation (void *ani_ptr)
 {
 	struct display_dev *dev = devices;
 	unsigned int *frameptr = ani_ptr;
 	static int framenr = 0;
-	unsigned char *dbuf, *ani_frame;
-	unsigned int i, offset = frameptr[framenr++];
+	unsigned offset = frameptr[framenr++];
 
 	if (offset) {
 		/* Get next frame to display */
-		ani_frame = ani_ptr + offset;
-	
 		/* Decompress and display */
-		dbuf = dev->software_buffer;
-		for (i = 0; i < (2048/2); i++) {
-			unsigned char b = *ani_frame++;
-			*dbuf++ = ((b & 0xc0) >> 2) | ((b & 0x30) >> 4);
-			*dbuf++ = ((b & 0x0c) << 2) | ((b & 0x03)     );
-		}
-	
+		display_animation_frame((unsigned char *)dev->software_buffer,
+								(unsigned char *)(ani_ptr + offset));
+
 		/* Blat it: well, add it to the refresh buffer, otherwise when
 		   the audio DMA starts it all goes blank... */
 		display_refresh(dev);

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v492"
+#define HIJACK_VERSION	"v493"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #undef EMPEG_FIXTEMP	// #define this for special "fix temperature sensor" builds
@@ -19,6 +19,7 @@ const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 #include <linux/kernel_stat.h>
 #include <linux/unistd.h>
 #include <linux/dirent.h>
+#include <linux/random.h>
 
 #include <linux/empeg.h>
 #include <asm/uaccess.h>
@@ -29,12 +30,17 @@ const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 #include "empeg_display.h"
 #include "empeg_mixer.h"
 
+extern unsigned char empeg_ani[];			            // arch/arm/special/empeg_display.c
+extern unsigned char nohd_img[];		               	// arch/arm/special/empeg_display.c
 extern int hijack_exec(const char *, const char *);			// arch/arm/special/kexec.c
 extern void *hijack_get_state_read_buffer (void);			// arch/arm/special/empeg_state.c
 extern void save_current_volume(void);					// arch/arm/special/empeg_state.c
 extern void input_wakeup_waiters(void);					// arch/arm/special/empeg_input.c
 extern int display_sendcontrol_part1(int);				// arch/arm/special/empeg_display.c
 extern int display_sendcontrol_part2(int);				// arch/arm/special/empeg_display.c
+extern void display_animation_frame(unsigned char *buf, unsigned char *frame);
+                                                        // arch/arm/special/empeg_display.c
+
 extern int remount_drives (int writeable);				// arch/arm/special/notify.c
 extern void init_notify (void);						// arch/arm/special/notify.c
 extern int sys_sync(void);						// fs/buffer.c
@@ -793,7 +799,18 @@ static volatile short menu_item = 0, menu_size = 0, menu_top = 0;
 
 static unsigned char hijack_displaybuf[EMPEG_SCREEN_ROWS][EMPEG_SCREEN_COLS/2];
 
-const unsigned char kfont [1 + '~' - ' '][KFONT_WIDTH] = {  // variable width font
+// Font characters are specified in an 6x8 (wxh) matrix
+// each byte represents a column msb at the bottom
+// no antialiasing <sigh>
+
+#define FIRST_CHAR (unsigned char)0x1e  // was ' '. Reduce if adding chars to start of list
+#define LAST_CHAR (unsigned char)0x7f  // was '~'. Increase if adding chars to end of list
+
+#define HENRY_LEFTC  0x1e
+#define HENRY_RIGHTC 0x1f
+const unsigned char kfont [1 + LAST_CHAR - FIRST_CHAR][KFONT_WIDTH] = {  // variable width font
+	{0x20,0x38,0x26,0x21,0xc5,0x81},  // henry-left
+	{0xc5,0x21,0x26,0x38,0x20,0x20},  // henry-right
 	{0x00,0x00,0x00,0x00,0x00,0x00}, // space
 	{0x5f,0x00,0x00,0x00,0x00,0x00}, // !
 	{0x03,0x00,0x03,0x00,0x00,0x00}, // "
@@ -1004,6 +1021,7 @@ clear_text_row (unsigned int rowcol, unsigned short last_col, int do_top_row)
 
 static unsigned char kfont_spacing = 0;  // 0 == proportional
 
+// Note the colors here are not the same as the colors used by draw_string()
 static int
 draw_char (unsigned short pixel_row, short pixel_col, unsigned char c, unsigned char foreground, unsigned char background)
 {
@@ -1014,9 +1032,9 @@ draw_char (unsigned short pixel_row, short pixel_col, unsigned char c, unsigned 
 	if (pixel_row >= EMPEG_SCREEN_ROWS)
 		return 0;
 	displayrow = &hijack_displaybuf[pixel_row][0];
-	if (c > '~' || c < ' ')
+	if (c > LAST_CHAR || c < FIRST_CHAR)
 		c = ' ';
-	font_entry = &kfont[c - ' '][0];
+	font_entry = &kfont[c - FIRST_CHAR][0];
 	if (!(num_cols = kfont_spacing)) {  // variable width font spacing?
 		if (c == ' ')
 			num_cols = 3;
@@ -1595,6 +1613,7 @@ init_temperature (int force)
 		empeg_inittherm(&OSMR0,&GPLR);
 	}
 	restore_flags(flags);
+
 }
 
 int
@@ -2661,9 +2680,8 @@ static int
 game_finale (void)
 {
 	static int framenr, frameadj;
-	unsigned char *d,*s;
 	unsigned long rowcol;
-	int a, score;
+	int score;
 
 	if (game_bricks) {  // Lost game?
 		if (jiffies_since(game_ball_last_moved) < (HZ*3/2))
@@ -2691,13 +2709,8 @@ game_finale (void)
 		frameadj = -1;  // play it again, backwards
 		framenr += frameadj;
 	}
-	s = (unsigned char *)hijack_game_animptr + hijack_game_animptr[framenr];
-	d = (unsigned char *)hijack_displaybuf;
-	for(a=0;a<2048;a+=2) {
-		*d++=((*s&0xc0)>>2)|((*s&0x30)>>4);
-		*d++=((*s&0x0c)<<2)|((*s&0x03));
-		s++;
-	}
+	display_animation_frame((unsigned char *)hijack_displaybuf,
+							(unsigned char *)(hijack_game_animptr + hijack_game_animptr[framenr]));
 	framenr += frameadj;
 	game_animtime = JIFFIES();
 	return NEED_REFRESH;
@@ -2831,6 +2844,146 @@ game_display (int firsttime)
 	game_speed = 16;
 	game_animtime = 0;
 	return NEED_REFRESH;
+}
+
+// LittleBlueThing's Boot Graphic menu entry
+typedef struct bootg_s {
+	const char		*label;
+	unsigned char   type;
+	unsigned char   *data;
+} bootg_t;
+
+static bootg_t bootg_options[] = {
+	{"Boot Animation",'A', NULL},
+	{"Empeg Animation",'A',empeg_ani},
+	{"Car Logo",'L',(unsigned char*)(EMPEG_FLASHBASE+0xa000+4+EMPEG_SCREEN_SIZE)},
+	{"Home Logo",'L',(unsigned char*)(EMPEG_FLASHBASE+0xa000+4)},
+	{"BSOD",'L',nohd_img},
+	{0,0,0 } };  // 0 termination required
+#define BOOTG_MAX_OPTION 4
+
+
+short bootg_sel = 0;
+short bootg_dodisplay = 0;  // 0:nothing 1:logo/frame#1 2:animation
+short bootg_domenu = 0;     // menu selection changed: redisplay
+short bootg_inmenu = 0;     // showing menu?
+int	bootg_frame = 0; // frame count in animation
+unsigned int  bootg_framet = 0;  // time frame displayed
+unsigned int* bootg_anim; // start of animation in memory
+
+static void
+bootg_move (int direction)
+{
+	bootg_sel += direction;
+	if (bootg_sel < 0)
+		bootg_sel = BOOTG_MAX_OPTION;
+	else if (bootg_options[bootg_sel].type == 0)
+		bootg_sel   = 0;
+}
+
+static int
+bootg_display (int firsttime)
+{
+	unsigned int rowcol;
+	hijack_buttondata_t data;
+	
+	if (firsttime || bootg_domenu) {
+		// Show the menu text
+		clear_hijack_displaybuf(COLOR0);
+		(void) draw_string(ROWCOL(0,0), "==View boot graphics==\nKnob-press/Down to view\nRight/Left: change  Up: Exit", PROMPTCOLOR);
+		rowcol = draw_string(ROWCOL(3,0), "[", PROMPTCOLOR);
+		rowcol = draw_string_spaced(rowcol, bootg_options[bootg_sel].label, ENTRYCOLOR);
+		(void)  draw_string(rowcol, "]", PROMPTCOLOR);
+		bootg_inmenu = 1;
+
+		// Do our own button handling
+		hijack_buttonlist = intercept_all_buttons;
+		hijack_initq(&hijack_userq, 'U');
+		bootg_domenu= 0;
+		bootg_dodisplay=0; // stop any ongoing animation
+		return NEED_REFRESH;
+	}	
+	// Do our own button handling
+	// modified to hijack standard behaviour
+	if (hijack_button_deq(&hijack_userq, &data, 0)) {
+		switch (data.button) {
+		case IR_RIO_CANCEL_PRESSED:
+		case IR_KW_STAR_PRESSED:
+		case IR_TOP_BUTTON_PRESSED:
+			if (bootg_inmenu==0)
+				bootg_domenu = 1;
+			else
+				hijack_deactivate(HIJACK_IDLE_PENDING);
+			break;
+		case IR_KW_NEXTTRACK_PRESSED:
+		case IR_RIO_NEXTTRACK_PRESSED:
+		case IR_RIGHT_BUTTON_PRESSED:
+		case IR_KNOB_RIGHT:
+			bootg_move(1);
+			bootg_domenu = 1;
+			break;
+		case IR_KW_PREVTRACK_PRESSED:
+		case IR_RIO_PREVTRACK_PRESSED:
+		case IR_LEFT_BUTTON_PRESSED:
+		case IR_KNOB_LEFT:
+			bootg_move(-1);
+			bootg_domenu = 1;
+			break;
+		case IR_KW_CD_PRESSED:
+		case IR_RIO_MENU_PRESSED:
+		case IR_BOTTOM_BUTTON_PRESSED:
+		case IR_KNOB_PRESSED:
+			bootg_inmenu = 0;
+			bootg_dodisplay = 1;
+			break;
+		}
+	}
+
+	if (bootg_dodisplay == 1 ) {
+		// Logo or animation preparation
+		switch (bootg_options[bootg_sel].type) {
+		case 'L':
+			// logo
+			memcpy(hijack_displaybuf, bootg_options[bootg_sel].data, EMPEG_SCREEN_SIZE);
+			bootg_dodisplay=0;
+			return NEED_REFRESH;
+		case 'A':
+			// animation
+			bootg_frame = 0;
+			if (bootg_options[bootg_sel].data)
+				bootg_anim = (unsigned int*)bootg_options[bootg_sel].data ;
+			else
+				bootg_anim = hijack_game_animptr; // aha - reuse :)
+			if (bootg_anim)
+				bootg_dodisplay=2; // 2 means ongoing display
+			else
+			{
+				bootg_dodisplay=0; // No animation (maybe display message)
+				clear_hijack_displaybuf(COLOR0);
+				(void)draw_string(ROWCOL(0,0), "No boot animation found", PROMPTCOLOR);
+			}
+			return NEED_REFRESH;
+		}
+	}
+	if (bootg_dodisplay == 2 ) {
+		// ongoing animation
+		if 	(jiffies_since(bootg_framet) < (HZ/ANIMATION_FPS))
+			return NO_REFRESH;
+		
+		if (!bootg_anim[bootg_frame]) {
+			bootg_frame = 0;
+			bootg_dodisplay = 0; //stop animation
+			return NO_REFRESH;  // Leave last frame on screen... (blanker still works)
+		}
+
+		// use consolidated code
+		display_animation_frame((unsigned char *)hijack_displaybuf,
+								(unsigned char *)bootg_anim + bootg_anim[bootg_frame]);
+		bootg_frame += 1;
+		bootg_framet = JIFFIES();
+		return NEED_REFRESH;
+	}
+	return NO_REFRESH;
 }
 
 /* Time Alignment Setup Code - Christian Hack 2002 - christianh@pdd.edmi.com.au */
@@ -3288,6 +3441,7 @@ showbutton_display (int firsttime)
 
 static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 	{"Auto Volume Adjust",		voladj_display,		voladj_move,		0},
+	{"Boot Graphics",		    bootg_display,	bootg_move,		0},
 	{"Break-Out Game",		game_display,		game_move,		0},
 	{ showbutton_menu_label,	showbutton_display,	NULL,			0},
 	{ buttonled_menu_label,		buttonled_display,	buttonled_move,		0},

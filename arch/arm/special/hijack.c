@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v494"
+#define HIJACK_VERSION	"v495"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #undef EMPEG_FIXTEMP	// #define this for special "fix temperature sensor" builds
@@ -1445,7 +1445,6 @@ static const unsigned int voladj_thresholds[VOLADJ_THRESHSIZE] = {
 
 // Plot a nice moving history of voladj multipliers, VOLADJ_THRESHSIZE pixels in height.
 // The effective resolution (height) is tripled by using brighter color shades for the in-between values.
-#include "wam.h"
 //
 static unsigned int
 voladj_plot (unsigned short text_row, unsigned short pixel_col, unsigned int multiplier, int *prev)
@@ -3480,7 +3479,6 @@ static menu_item_t menu_table [MENU_MAX_ITEMS] = {
 #endif
 	{"Vital Signs",			vitals_display,		NULL,			0},
 	{ volumelock_menu_label,	volumelock_display,	volumelock_move,	0},
-	WAMm
 	{NULL,				NULL,			NULL,			0},};
 
 static void
@@ -4687,7 +4685,6 @@ hijack_handle_display (struct display_dev *dev, unsigned char *player_buf)
 				input_append_code(IR_INTERNAL, IR_FAKE_INITIAL);
 				input_append_code(IR_INTERNAL, RELEASECODE(IR_FAKE_INITIAL));
 				init_notify();
-				WAMi
 				wake_up(&hijack_player_init_waitq);	// wake up any waiters
 				player_state = started;
 			}
@@ -5135,7 +5132,6 @@ remove_menu_entry (const char *label)
 			if (!item->label)
 				break;
 		} else if (!strxcmp(item->label, label, 0)) {
-			WAMr
 			printk("hijack: removed menu entry: \"%s\"\n", label);
 			found = 1;
 		}

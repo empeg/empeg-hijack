@@ -2482,6 +2482,9 @@ ktelnetd_handle_connection (server_parms_t *parms)
 	// toss garbage (unsupported protocol leftovers) from client side
 	read(sockfd, parms->buf, sizeof(parms->buf));
 
+	// free the client parms structure now that we're done with it
+	free_pages((unsigned long)parms, 1);
+
 	// launch the shell.  FIXME: do this on a pty someday, to get job control goodies working
 	errno = execve(shell, argv, envp);	// never returns
 	printk(KERN_ERR "ktelnetd_handle_connection: failed, errno = %d\n", errno);
@@ -2528,7 +2531,6 @@ kxxxd_daemon (void *protocolp)	// invoked thrice on startup
 	server_parms_t		parms, *clientparms = NULL;
 	int			server_port, protocol = (int)(long)protocolp;
 	extern unsigned long	sys_signal(int, void *);
-	int			max_connections;
 	unsigned int		flags = CLONE_FS | CLONE_FILES | CLONE_SIGHAND;
 
 	if (sizeof(server_parms_t) > PAGE_SIZE) {	// we allocate client parms as single pages
@@ -2542,7 +2544,6 @@ kxxxd_daemon (void *protocolp)	// invoked thrice on startup
 	if (*hijack_kftpd_password)
 		parms.need_password = 1;
 
-	max_connections = hijack_max_connections;
 	switch (protocol) {
 		case kftpd:
 			parms.servername = KFTPD;
@@ -2559,7 +2560,6 @@ kxxxd_daemon (void *protocolp)	// invoked thrice on startup
 			parms.servername = KTELNETD;
 			server_port	= hijack_ktelnetd_port;
 			parms.verbose	= 1;
-			max_connections	= 1;
 			flags		= CLONE_FS | CLONE_SIGHAND;;
 			break;
 		default:
@@ -2578,7 +2578,7 @@ kxxxd_daemon (void *protocolp)	// invoked thrice on startup
 	current->rt_priority = 50;
 	current->policy = SCHED_RR;
 
-	if (server_port && max_connections > 0) {
+	if (server_port && hijack_max_connections > 0) {
 		if (make_socket(&parms, &parms.servsock, server_port)) {
 			printk("%s: make_socket(port=%d) failed\n", parms.servername, server_port);
 		} else if (parms.servsock->ops->listen(parms.servsock, 10) < 0) {	// queued=10
@@ -2590,14 +2590,11 @@ kxxxd_daemon (void *protocolp)	// invoked thrice on startup
 				int child;
 				do {
 					int status, flags = WUNTRACED | __WCLONE;
-					if (childcount < max_connections)
+					if (childcount < hijack_max_connections)
 						flags |= WNOHANG;
 					child = sys_wait4(-1, &status, flags, NULL);
-					if (child > 0) {
+					if (child > 0)
 						--childcount;
-						if (protocol == ktelnetd)
-							free_pages((unsigned long)clientparms, 1);
-					}
 				} while (child > 0);
 				if (!ksock_accept(&parms)) {
 					if (!(clientparms = (server_parms_t *)__get_free_pages(GFP_KERNEL,1))) {

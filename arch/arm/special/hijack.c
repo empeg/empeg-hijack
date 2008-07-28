@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v498"
+#define HIJACK_VERSION	"v499"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #undef EMPEG_FIXTEMP	// #define this for special "fix temperature sensor" builds
@@ -570,6 +570,7 @@ static	int hijack_stalk_debug;			// trace button in/out actions to/from Stalk?
 	int hijack_max_connections;		// restricts memory use
 	int hijack_khttpd_port;			// khttpd port
 	int hijack_khttpd_verbose;		// khttpd verbosity
+	int hijack_ktelnetd_port;		// ktelnetd port
 #endif // CONFIG_NET_ETHERNET
 static	int nextsrc_aux_enabled;		// "1" == include "AUX" when doing NextSrc
 static	int hijack_old_style;			// 1 == don't highlite menu items
@@ -688,6 +689,7 @@ static const hijack_option_t hijack_option_table[] =
 {"khttpd_port",			&hijack_khttpd_port,		80,			1,	0,	65535},
 {"khttpd_style",		&hijack_khttpd_style,		(int)"/default.xsl",	0,	0,	sizeof(hijack_khttpd_style)-1},
 {"khttpd_verbose",		&hijack_khttpd_verbose,		0,			1,	0,	2},
+{"ktelnetd_port",		&hijack_ktelnetd_port,		0,			1,	0,	65535},
 {"max_connections",		&hijack_max_connections,	4,			1,	0,	20},
 #endif // CONFIG_NET_ETHERNET
 {"nextsrc_aux_enabled",		&nextsrc_aux_enabled,		0,			1,	0,	1},
@@ -6235,6 +6237,7 @@ hijack_process_config_ini (char *buf, off_t f_pos)
 		// disable servers on DC power to free more buffer space
 		hijack_kftpd_control_port = 0;
 		hijack_khttpd_port = 0;
+		hijack_ktelnetd_port = 0;
 	}
 	up(&hijack_kxxxd_startup_sem);	// start daemons now that we've parsed config.ini for port numbers
 #endif // CONFIG_NET_ETHERNET

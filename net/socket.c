@@ -182,7 +182,7 @@ int move_addr_to_user(void *kaddr, int klen, void *uaddr, int *ulen)
  *	Obtains the first available file descriptor and sets it up for use. 
  */
 
-static int get_fd(struct inode *inode)
+int get_fd(struct inode *inode)
 {
 	int fd;
 

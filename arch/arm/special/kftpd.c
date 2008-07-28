@@ -1,4 +1,4 @@
-// kftpd / khttpd, by Mark Lord
+// kftpd / khttpd / ktelnetd, by Mark Lord
 //
 // This version can UPLOAD and DOWNLOAD files, directories, serve playlists, remote commands, ..
 
@@ -30,6 +30,7 @@
 
 #define KHTTPD		"khttpd"
 #define KFTPD		"kftpd"
+#define KTELNETD	"ktelnetd"
 
 extern int get_number (unsigned char **src, int *target, unsigned int base, const char *nextchars);	// hijack.c
 extern void input_append_code(void *dev, unsigned long button);						// hijack.c
@@ -50,6 +51,7 @@ extern void show_message (const char *message, unsigned long time);	// hijack.c
 extern void printline (const char *msg, char *s);	// from arch/arm/special/hijack.c
 extern int hijack_khttpd_port;				// from arch/arm/special/hijack.c
 extern int hijack_khttpd_verbose;			// from arch/arm/special/hijack.c
+extern int hijack_ktelnetd_port;			// from arch/arm/special/hijack.c
 extern int hijack_khttpd_new_fid_dirs;			// from arch/arm/special/hijack.c
 extern int hijack_kftpd_control_port;			// from arch/arm/special/hijack.c
 extern int hijack_kftpd_data_port;			// from arch/arm/special/hijack.c
@@ -81,6 +83,7 @@ extern int sys_wait4 (pid_t pid,unsigned int * stat_addr, int options, struct ru
 typedef enum {
 	kftpd    = 0,
 	khttpd   = 1,
+	ktelnetd = 2,
 } protocol_t;
 
 // This data structure is allocated as a full page to prevent memory fragmentation:
@@ -2451,6 +2454,40 @@ ksock_accept (server_parms_t *parms)
 	return 1;	// failure
 }
 
+asmlinkage int sys_chdir(const char *);
+int get_fd(struct inode *inode);	// net/socket.c
+
+static int
+ktelnetd_handle_connection (server_parms_t *parms)
+{
+	static char shell[] = "/bin/bash";
+	static char *envp[] = { "HOME=/", "TERM=ansi", "PATH=/sbin:/usr/sbin:/bin:/usr/bin", NULL };
+	char *argv[] = { shell, "--login", "-i", NULL };
+	int sockfd, errno;
+
+	// we don't need the original server socket here
+	close(parms->servsock);
+
+	// Allow syscall args to come from kernel space
+	set_fs(KERNEL_DS);
+
+	// cd to home directory
+	(void)sys_chdir("/");
+
+	// set up stdin,stdout,stderr to all point at the socket
+	sockfd = get_fd(parms->clientsock->inode);
+	dup(sockfd);
+	dup(sockfd);
+
+	// toss garbage (unsupported protocol leftovers) from client side
+	read(sockfd, parms->buf, sizeof(parms->buf));
+
+	// launch the shell.  FIXME: do this on a pty someday, to get job control goodies working
+	errno = execve(shell, argv, envp);	// never returns
+	printk(KERN_ERR "ktelnetd_handle_connection: failed, errno = %d\n", errno);
+	return -errno;
+}
+
 static int
 child_thread (void *arg)
 {
@@ -2470,6 +2507,9 @@ child_thread (void *arg)
 			break;
 		case khttpd:
 			khttpd_handle_connection(parms);
+			break;
+		case ktelnetd:
+			ktelnetd_handle_connection(parms);
 			break;
 	}
 #if 1
@@ -2515,6 +2555,13 @@ kxxxd_daemon (void *protocolp)	// invoked thrice on startup
 			server_port	= hijack_khttpd_port;
 			parms.verbose	= hijack_khttpd_verbose;
 			break;
+		case ktelnetd:
+			parms.servername = KTELNETD;
+			server_port	= hijack_ktelnetd_port;
+			parms.verbose	= 1;
+			max_connections	= 1;
+			flags		= CLONE_FS | CLONE_SIGHAND;;
+			break;
 		default:
 			return 0;
 	}
@@ -2548,6 +2595,8 @@ kxxxd_daemon (void *protocolp)	// invoked thrice on startup
 					child = sys_wait4(-1, &status, flags, NULL);
 					if (child > 0) {
 						--childcount;
+						if (protocol == ktelnetd)
+							free_pages((unsigned long)clientparms, 1);
 					}
 				} while (child > 0);
 				if (!ksock_accept(&parms)) {
@@ -2574,5 +2623,7 @@ kxxxd_starter (unsigned long arg)	// invoked once on startup
 		kernel_thread(kxxxd_daemon, (void *)0, CLONE_FS | CLONE_FILES | CLONE_SIGHAND); // kftpd
 	if (hijack_khttpd_port)
 		kernel_thread(kxxxd_daemon, (void *)1, CLONE_FS | CLONE_FILES | CLONE_SIGHAND); // khttpd
+	if (hijack_ktelnetd_port)
+		kernel_thread(kxxxd_daemon, (void *)2, CLONE_FS | CLONE_FILES | CLONE_SIGHAND); // ktelnetd
 	return menuexec_daemon(NULL);
 }

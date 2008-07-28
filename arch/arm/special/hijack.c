@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v497"
+#define HIJACK_VERSION	"v498"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #undef EMPEG_FIXTEMP	// #define this for special "fix temperature sensor" builds
@@ -686,8 +686,8 @@ static const hijack_option_t hijack_option_table[] =
 {"khttpd_show_dotfiles",	&hijack_khttpd_show_dotfiles,	1,			1,	0,	1},
 {"khttpd_root_index",		&hijack_khttpd_root_index,	(int)"/index.html",	0,	0,	sizeof(hijack_khttpd_root_index)-1},
 {"khttpd_port",			&hijack_khttpd_port,		80,			1,	0,	65535},
-{"khttpd_verbose",		&hijack_khttpd_verbose,		0,			1,	0,	2},
 {"khttpd_style",		&hijack_khttpd_style,		(int)"/default.xsl",	0,	0,	sizeof(hijack_khttpd_style)-1},
+{"khttpd_verbose",		&hijack_khttpd_verbose,		0,			1,	0,	2},
 {"max_connections",		&hijack_max_connections,	4,			1,	0,	20},
 #endif // CONFIG_NET_ETHERNET
 {"nextsrc_aux_enabled",		&nextsrc_aux_enabled,		0,			1,	0,	1},

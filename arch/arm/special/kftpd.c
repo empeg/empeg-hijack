@@ -28,8 +28,8 @@
 
 #include <asm/arch/hijack.h>
 
-#define KHTTPD	"khttpd"
-#define KFTPD	"kftpd"
+#define KHTTPD		"khttpd"
+#define KFTPD		"kftpd"
 
 extern int get_number (unsigned char **src, int *target, unsigned int base, const char *nextchars);	// hijack.c
 extern void input_append_code(void *dev, unsigned long button);						// hijack.c
@@ -78,7 +78,10 @@ extern int sys_wait4 (pid_t pid,unsigned int * stat_addr, int options, struct ru
 
 #define INET_ADDRSTRLEN		16
 
-typedef enum {kftpd = 0, khttpd = 1} protocol_t;
+typedef enum {
+	kftpd    = 0,
+	khttpd   = 1,
+} protocol_t;
 
 // This data structure is allocated as a full page to prevent memory fragmentation:
 typedef struct server_parms_s {
@@ -2482,9 +2485,11 @@ child_thread (void *arg)
 static int
 kxxxd_daemon (void *protocolp)	// invoked thrice on startup
 {
-	server_parms_t		parms, *clientparms;
+	server_parms_t		parms, *clientparms = NULL;
 	int			server_port, protocol = (int)(long)protocolp;
 	extern unsigned long	sys_signal(int, void *);
+	int			max_connections;
+	unsigned int		flags = CLONE_FS | CLONE_FILES | CLONE_SIGHAND;
 
 	if (sizeof(server_parms_t) > PAGE_SIZE) {	// we allocate client parms as single pages
 		printk("%s: ERROR: parms too large (%u)\n", __FUNCTION__, sizeof(server_parms_t));
@@ -2497,6 +2502,7 @@ kxxxd_daemon (void *protocolp)	// invoked thrice on startup
 	if (*hijack_kftpd_password)
 		parms.need_password = 1;
 
+	max_connections = hijack_max_connections;
 	switch (protocol) {
 		case kftpd:
 			parms.servername = KFTPD;
@@ -2525,7 +2531,7 @@ kxxxd_daemon (void *protocolp)	// invoked thrice on startup
 	current->rt_priority = 50;
 	current->policy = SCHED_RR;
 
-	if (server_port && hijack_max_connections > 0) {
+	if (server_port && max_connections > 0) {
 		if (make_socket(&parms, &parms.servsock, server_port)) {
 			printk("%s: make_socket(port=%d) failed\n", parms.servername, server_port);
 		} else if (parms.servsock->ops->listen(parms.servsock, 10) < 0) {	// queued=10
@@ -2537,11 +2543,12 @@ kxxxd_daemon (void *protocolp)	// invoked thrice on startup
 				int child;
 				do {
 					int status, flags = WUNTRACED | __WCLONE;
-					if (childcount < hijack_max_connections)
+					if (childcount < max_connections)
 						flags |= WNOHANG;
 					child = sys_wait4(-1, &status, flags, NULL);
-					if (child > 0)
+					if (child > 0) {
 						--childcount;
+					}
 				} while (child > 0);
 				if (!ksock_accept(&parms)) {
 					if (!(clientparms = (server_parms_t *)__get_free_pages(GFP_KERNEL,1))) {
@@ -2549,7 +2556,7 @@ kxxxd_daemon (void *protocolp)	// invoked thrice on startup
 						sock_release(parms.clientsock);
 					} else {
 						memcpy(clientparms, &parms, sizeof(parms));
-						if (0 < kernel_thread(child_thread, clientparms, CLONE_FS|CLONE_FILES|CLONE_SIGHAND))
+						if (0 < kernel_thread(child_thread, clientparms, flags))
 							++childcount;
 					}
 				}
@@ -2563,7 +2570,9 @@ int
 kxxxd_starter (unsigned long arg)	// invoked once on startup
 {
 	down(&hijack_kxxxd_startup_sem);	// wait for Hijack to get our port numbers from config.ini
-	kernel_thread(menuexec_daemon, NULL,      CLONE_FS|CLONE_FILES|CLONE_SIGHAND);
-	kernel_thread(kxxxd_daemon,    (void *)1, CLONE_FS|CLONE_FILES|CLONE_SIGHAND); // khttpd
-	return kxxxd_daemon((void *)0);	// kftpd
+	if (hijack_kftpd_control_port)
+		kernel_thread(kxxxd_daemon, (void *)0, CLONE_FS | CLONE_FILES | CLONE_SIGHAND); // kftpd
+	if (hijack_khttpd_port)
+		kernel_thread(kxxxd_daemon, (void *)1, CLONE_FS | CLONE_FILES | CLONE_SIGHAND); // khttpd
+	return menuexec_daemon(NULL);
 }

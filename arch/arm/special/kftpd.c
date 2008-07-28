@@ -61,8 +61,8 @@ extern int hijack_max_connections;			// from arch/arm/special/hijack.c
 extern char hijack_kftpd_password[];			// from arch/arm/special/hijack.c
 extern char hijack_khttpd_basic[];			// from arch/arm/special/hijack.c
 extern char hijack_khttpd_full[];			// from arch/arm/special/hijack.c
-extern struct semaphore hijack_khttpd_startup_sem;	// from arch/arm/special/hijack.c
-extern struct semaphore hijack_kftpd_startup_sem;	// from arch/arm/special/hijack.c
+extern struct semaphore hijack_kxxxd_startup_sem;	// from arch/arm/special/hijack.c
+extern int menuexec_daemon(void *);     // Hijack
 extern int sys_rmdir(const char *path); // fs/namei.c
 extern int sys_readlink(const char *path, char *buf, int bufsiz);
 extern int sys_chmod(const char *path, mode_t mode); // fs/open.c
@@ -78,6 +78,8 @@ extern int sys_wait4 (pid_t pid,unsigned int * stat_addr, int options, struct ru
 
 #define INET_ADDRSTRLEN		16
 
+typedef enum {kftpd = 0, khttpd = 1} protocol_t;
+
 // This data structure is allocated as a full page to prevent memory fragmentation:
 typedef struct server_parms_s {
 	char			*servername;
@@ -87,7 +89,7 @@ typedef struct server_parms_s {
 	struct sockaddr_in	clientaddr;
 	enum {nolist, html, m3u, xml} generate_playlist;
 	char			verbose;		// bool
-	char			use_http;		// bool
+	char			protocol;		// protocol_t
 	char			have_portaddr;		// bool
 	char			icy_metadata;		// bool
 	char			streaming;		// bool
@@ -362,7 +364,7 @@ open_datasock (server_parms_t *parms)
 	int		flags = 0;
 	unsigned int	response = 0;
 
-	if (parms->use_http) {
+	if (parms->protocol == khttpd) {
 		parms->datasock = parms->clientsock;
 	} else if (!parms->have_portaddr) {
 		response = 425;
@@ -515,7 +517,7 @@ send_dirlist_buf (server_parms_t *parms, filldir_parms_t *p, int send_trailer)
 	int sent;
 
 	if (p->full_listing && send_trailer) {
-		if (parms->use_http) {
+		if (parms->protocol) {
 			const char *ext = "htm";
 			if (1 == classify_path(hijack_khttpd_style))
 				ext = "xml";
@@ -616,13 +618,13 @@ format_dir (server_parms_t *parms, filldir_parms_t *p, ino_t ino, char *name, in
 	lname[linklen] = '\0';
 
 	p->buf_used = b - p->buf;
-	if ((p->buf_size - p->buf_used) < ((parms->use_http ? (24+namelen) : 7) + namelen + (linklen ? (2 * linklen) : namelen))) {
+	if ((p->buf_size - p->buf_used) < ((parms->protocol ? (24+namelen) : 7) + namelen + (linklen ? (2 * linklen) : namelen))) {
 		if ((rc = send_dirlist_buf(parms, p, 0)))	// empty the buffer
 			goto exit;
 		b = p->buf;
 	}
 
-	if (parms->use_http) {
+	if (parms->protocol) {
 		*b++ = '<';
 		*b++ = 'A';
 		*b++ = ' ';
@@ -640,7 +642,7 @@ format_dir (server_parms_t *parms, filldir_parms_t *p, ino_t ino, char *name, in
 	}
 
 	b = append_string(b, name, 0);
-	if (parms->use_http) {
+	if (parms->protocol) {
 		*b++ = '<';
 		*b++ = '/';
 		*b++ = 'A';
@@ -718,7 +720,7 @@ send_dirlist (server_parms_t *parms, char *path, int full_listing)
 	}
 	filp = filp_open(path,O_RDONLY,0);
 	if (IS_ERR(filp) || !filp) {
-		if (parms->verbose || parms->use_http || (int)filp != -ENOENT) {
+		if (parms->verbose || parms->protocol || (int)filp != -ENOENT) {
 			printk("%s: filp_open(\"%s\") failed (%d)\n", parms->servername, path, (int)filp);
 		}
 		response = 550;
@@ -747,9 +749,9 @@ send_dirlist (server_parms_t *parms, char *path, int full_listing)
 			if (p.path[pathlen - 1] != '/')
 				p.path[pathlen++] = '/';
 			p.name		= p.path + pathlen;
-			p.use_http	= parms->use_http;
 			p.sb		= dentry->d_sb;
-			if (parms->use_http)
+			p.use_http	= (parms->protocol == khttpd);
+			if (p.use_http)
 				p.buf_used = sprintf(p.buf, dirlist_header, path, path);
 			do {
 				p.nam_used = 0;
@@ -779,7 +781,7 @@ send_dirlist (server_parms_t *parms, char *path, int full_listing)
 			} while (!rc && p.filecount);
 			if (rc || (rc = send_dirlist_buf(parms, &p, 1)))
 				response = 426;
-			if (!parms->use_http)
+			if (!p.use_http)
 				sock_release(parms->datasock);
 			if (p.nam)
 				free_page((unsigned long)p.nam);
@@ -1113,7 +1115,7 @@ prepare_file_xfer (server_parms_t *parms, char *path, file_xfer_t *xfer, int wri
 		flags = start_offset ? O_RDWR : O_RDWR|O_CREAT|O_TRUNC;
 	else
 		flags = O_RDONLY;
-	if (!writing && parms->use_http && hijack_glob_match(path, "/empeg/fids?/*"))
+	if (!writing && parms->protocol && hijack_glob_match(path, "/empeg/fids?/*"))
 		fd = open_fid_file(path);
 	else
 		fd = open(path, flags, 0666 & ~parms->umask);
@@ -1128,17 +1130,17 @@ prepare_file_xfer (server_parms_t *parms, char *path, file_xfer_t *xfer, int wri
 			printk("%s: fstat(%s) failed\n", parms->servername, path);
 			response = 550;
 		} else if (S_ISDIR(xfer->st.st_mode)) {
-			if (writing || !parms->use_http || parms->generate_playlist) {
+			if (writing || !parms->protocol || parms->generate_playlist) {
 				response = 550;
 			} else {
 				khttpd_redirect(parms, path, "/");
 				xfer->redirected = 1;
 			}
 		} else if (end_offset != -1 && (xfer->st.st_size && end_offset >= xfer->st.st_size)) {
-			response = parms->use_http ? 416 : 553;
+			response = parms->protocol ? 416 : 553;
 		} else if (start_offset && ((xfer->st.st_size && start_offset > xfer->st.st_size) || start_offset != lseek(fd, start_offset, 0))) {
 			printk("%s: lseek(%s,%lu/%lu) failed\n", parms->servername, path, start_offset, xfer->st.st_size);
-			response = parms->use_http ? 416 : 553;
+			response = parms->protocol ? 416 : 553;
 		}
 	}
 	if (!response)
@@ -1155,7 +1157,7 @@ cleanup_file_xfer (server_parms_t *parms, file_xfer_t *xfer)
 			sys_fsync(fd);
 		close(fd);
 	}
-	if (!parms->use_http && parms->datasock) {
+	if (!parms->protocol && parms->datasock) {
 		sock_release(parms->datasock);
 		parms->datasock = NULL;
 	}
@@ -1623,15 +1625,15 @@ send_file (server_parms_t *parms, char *path)
 	response = prepare_file_xfer(parms, path, &xfer, 0);
 	if (!response && !xfer.redirected) {
 		off_t	filepos, filesize = xfer.st.st_size;
-		if (parms->use_http) {
+		if (parms->protocol) {
 			if (!filesize)
 				parms->end_offset = -1;
 			else if (parms->start_offset && parms->end_offset == -1)
 				parms->end_offset = filesize - 1;
 		}
-		if (0 != strxcmp(path, "/proc/", 1) && (!(parms->use_http) || filesize > 0x10000))
+		if (0 != strxcmp(path, "/proc/", 1) && (!(parms->protocol) || filesize > 0x10000))
 			current->policy = SCHED_OTHER;
-		if (!parms->use_http || !khttp_send_file_header(parms, path, filesize, xfer.buf, xfer.buf_size)) {
+		if (!parms->protocol || !khttp_send_file_header(parms, path, filesize, xfer.buf, xfer.buf_size)) {
 			if (!parms->method_head) {
 				filepos = parms->start_offset;
 				do {
@@ -1643,15 +1645,15 @@ send_file (server_parms_t *parms, char *path)
 					}
 					schedule(); // give the music player a chance to run
 					size = read(xfer.fd, xfer.buf, read_size);
-					if (parms->use_http)
+					if (parms->protocol)
 						schedule(); // give the music player a chance to run
 					filepos += size;
 					if (size < 0) {
 						printk("%s: read() failed; rc=%d\n", parms->servername, size);
-						if (!parms->use_http)
+						if (!parms->protocol)
 							response = 451;
 					} else if (size && size != ksock_rw(parms->datasock, xfer.buf, size, -1)) {
-						if (!parms->use_http)
+						if (!parms->protocol)
 							response = 426;
 						break;
 					}
@@ -2454,13 +2456,18 @@ child_thread (void *arg)
 	if (parms->verbose)
 		printk("%s: %s connection from %s\n", parms->servername, parms->hostname, parms->clientip);
 	(void) set_sockopt(parms, parms->servsock, SOL_TCP, TCP_NODELAY, 1); // don't care
-	if (parms->use_http) {
-		khttpd_handle_connection(parms);
-	} else if (!kftpd_send_response(parms, 220)) {
-		strcpy(parms->cwd, "/");
-		parms->umask = 0022;
-		while (!kftpd_handle_command(parms));
-		sync();	// useful for flash upgrades
+	switch (parms->protocol) {
+		case kftpd:
+			if (!kftpd_send_response(parms, 220)) {
+				strcpy(parms->cwd, "/");
+				parms->umask = 0022;
+				while (!kftpd_handle_command(parms));
+				sync();	// useful for flash upgrades
+			}
+			break;
+		case khttpd:
+			khttpd_handle_connection(parms);
+			break;
 	}
 #if 1
 	sock_release(parms->clientsock);
@@ -2472,66 +2479,38 @@ child_thread (void *arg)
 	return 0;
 }
 
-#if 0
-static char *
-encode_base64 (const char *s)
-{
-	unsigned char c, tmp = 0, *result, *rp, state = 0;
-
-	if (!s || !*s)
-		return NULL;
-	rp = result = kmalloc(((strlen(s) + 2) / 3 * 4) + 1, GFP_KERNEL);
-	if (!result)
-		return NULL;
-	while ((c = *s++) != '\0') {
-		switch (state) {
-			case 0:
-				*rp++ = base64[c >> 2];
-				tmp = (c << 4) & 63;
-				state = 1;
-				break;
-			case 1:
-				*rp++ = base64[tmp | c >> 4];
-				tmp = (c << 2) & 63;
-				state = 2;
-				break;
-			case 2:
-				*rp++ = base64[tmp | c >> 6];
-				*rp++ = base64[c & 63];
-				state = 0;
-				break;
-		}
-	}
-	if (state) {
-		*rp++ = base64[tmp];
-		while (++state < 4)
-			*rp++ = '=';
-	}
-	*rp = '\0';
-	return result;
-}
-#endif
-
-int
-kftpd_daemon (unsigned long use_http)	// invoked twice from init/main.c
+static int
+kxxxd_daemon (void *protocolp)	// invoked thrice on startup
 {
 	server_parms_t		parms, *clientparms;
-	int			server_port;
-	struct semaphore	*sema;
+	int			server_port, protocol = (int)(long)protocolp;
 	extern unsigned long	sys_signal(int, void *);
 
 	if (sizeof(server_parms_t) > PAGE_SIZE) {	// we allocate client parms as single pages
-		printk("kftpd: ERROR: parms too large (%u)\n", sizeof(server_parms_t));
+		printk("%s: ERROR: parms too large (%u)\n", __FUNCTION__, sizeof(server_parms_t));
 		return 0;
 	}
 	memset(&parms, 0, sizeof(parms));
 
-	if (use_http) {
-		parms.servername = KHTTPD;
-		sema = &hijack_khttpd_startup_sem;
-	} else {
-		parms.servername = KFTPD;
-		sema = &hijack_kftpd_startup_sem;
+	parms.end_offset = -1;
+	parms.protocol = protocol;
+	if (*hijack_kftpd_password)
+		parms.need_password = 1;
+
+	switch (protocol) {
+		case kftpd:
+			parms.servername = KFTPD;
+			server_port	= hijack_kftpd_control_port;
+			parms.data_port	= hijack_kftpd_data_port;
+			parms.verbose	= hijack_kftpd_verbose;
+			break;
+		case khttpd:
+			parms.servername = KHTTPD;
+			server_port	= hijack_khttpd_port;
+			parms.verbose	= hijack_khttpd_verbose;
+			break;
+		default:
+			return 0;
 	}
 
 	// kthread setup
@@ -2545,21 +2524,6 @@ kftpd_daemon (unsigned long use_http)	// invoked twice from init/main.c
 	// Prevent starvation due to player disk I/O
 	current->rt_priority = 50;
 	current->policy = SCHED_RR;
-
-	down(sema);	// wait for Hijack to get our port number from config.ini
-
-	parms.end_offset = -1;
-	if (*hijack_kftpd_password)
-		parms.need_password = 1;
-	if (use_http) {
-		server_port	= hijack_khttpd_port;
-		parms.verbose	= hijack_khttpd_verbose;
-		parms.use_http	= 1;
-	} else {
-		server_port	= hijack_kftpd_control_port;
-		parms.data_port	= hijack_kftpd_data_port;
-		parms.verbose	= hijack_kftpd_verbose;
-	}
 
 	if (server_port && hijack_max_connections > 0) {
 		if (make_socket(&parms, &parms.servsock, server_port)) {
@@ -2580,7 +2544,6 @@ kftpd_daemon (unsigned long use_http)	// invoked twice from init/main.c
 						--childcount;
 				} while (child > 0);
 				if (!ksock_accept(&parms)) {
-					parms.verbose = use_http ? hijack_khttpd_verbose : hijack_kftpd_verbose;
 					if (!(clientparms = (server_parms_t *)__get_free_pages(GFP_KERNEL,1))) {
 						printk("%s: no memory for client parms\n", parms.servername);
 						sock_release(parms.clientsock);
@@ -2594,4 +2557,13 @@ kftpd_daemon (unsigned long use_http)	// invoked twice from init/main.c
 		}
 	}
 	return 0;
+}
+
+int
+kxxxd_starter (unsigned long arg)	// invoked once on startup
+{
+	down(&hijack_kxxxd_startup_sem);	// wait for Hijack to get our port numbers from config.ini
+	kernel_thread(menuexec_daemon, NULL,      CLONE_FS|CLONE_FILES|CLONE_SIGHAND);
+	kernel_thread(kxxxd_daemon,    (void *)1, CLONE_FS|CLONE_FILES|CLONE_SIGHAND); // khttpd
+	return kxxxd_daemon((void *)0);	// kftpd
 }

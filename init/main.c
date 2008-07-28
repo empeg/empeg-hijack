@@ -87,8 +87,7 @@ extern int kupdate(void *);
 extern int kswapd(void *);
 extern int kpiod(void *);
 extern void kswapd_setup(void);
-extern int kftpd_daemon(void *);	// Hijack
-extern int menuexec_daemon(void *);	// Hijack
+extern int kxxxd_starter(void *);	// Hijack
 extern unsigned long init_IRQ( unsigned long);
 extern void init_modules(void);
 extern long console_init(long, long);
@@ -1602,10 +1601,8 @@ static void __init do_basic_setup(void)
 	}
 #endif
 #ifdef CONFIG_NET_ETHERNET
-	kernel_thread(kftpd_daemon, (void *)0, CLONE_FS | CLONE_FILES | CLONE_SIGHAND);
-	kernel_thread(kftpd_daemon, (void *)1, CLONE_FS | CLONE_FILES | CLONE_SIGHAND);
+	kernel_thread(kxxxd_starter, NULL, CLONE_FS | CLONE_FILES | CLONE_SIGHAND);
 #endif
-	kernel_thread(menuexec_daemon, NULL, CLONE_FS | CLONE_FILES | CLONE_SIGHAND);
 
 #ifdef CONFIG_BLK_DEV_INITRD
 

@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v496"
+#define HIJACK_VERSION	"v497"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #undef EMPEG_FIXTEMP	// #define this for special "fix temperature sensor" builds
@@ -534,8 +534,7 @@ static int voladj_mdefault[] = {0x1700,	 600,	0x1000,	200,	 600}; // Medium
 static int voladj_hdefault[] = {0x2200,	1000,	0x1000,	100,	 500}; // High
 
 #ifdef CONFIG_NET_ETHERNET
-struct semaphore hijack_kftpd_startup_sem	= MUTEX_LOCKED;	// sema for waking up kftpd after we read config.ini
-struct semaphore hijack_khttpd_startup_sem	= MUTEX_LOCKED;	// sema for waking up khttpd after we read config.ini
+struct semaphore hijack_kxxxd_startup_sem	= MUTEX_LOCKED; // sema for starting daemons after we read config.ini
 #endif // CONFIG_NET_ETHERNET
 struct semaphore hijack_menuexec_sem		= MUTEX_LOCKED;	// sema for waking up menuxec when we issue a command
 
@@ -4262,6 +4261,7 @@ quicktimer_display (int firsttime)
 	return NO_REFRESH;	// gets overridden if overlay still active
 }
 
+#ifdef CONFIG_HIJACK_TUNER
 static char
 fidentry_incr (char b, int incr)
 {
@@ -4400,10 +4400,8 @@ fidentry_display (int firsttime)
 					if (hijack_decimal_fidentry) {
 						int fid;
 						unsigned char *f = fidx;
-printk("fidx='%s'\n", fidx);
 						get_number(&f, &fid, 10, NULL);
 						d = sprintf(fidx, "%X", fid) - 1;
-printk("fid=%d(0x%x) fidx='%s', d=%d\n", fid, fid, fidx, d);
 					} else
 						fidx[d] = '0';
 					hijack_beep(90, 70, 30);
@@ -4431,6 +4429,7 @@ printk("fid=%d(0x%x) fidx='%s', d=%d\n", fid, fid, fidx, d);
 	}
 	return NO_REFRESH;	// gets overridden if overlay still active
 }
+#endif CONFIG_HIJACK_TUNER
 
 // This routine gets first shot at IR codes as soon as they leave the translator.
 //
@@ -4545,10 +4544,12 @@ hijack_handle_button (unsigned int button, unsigned long delay, unsigned int pla
 			activate_dispfunc(quicktimer_display, timer_move, 0);
 			hijacked = 1;
 			break;
+#ifdef CONFIG_EMPEG_TUNER
 		case IR_FAKE_FIDENTRY:
 			activate_dispfunc(fidentry_display, NULL, 0);
 			hijacked = 1;
 			break;
+#endif
 		case IR_FAKE_KNOBSEEK:
 			if (hijack_dispfunc == knobseek_display)
 				ir_selected = 1;
@@ -6235,8 +6236,7 @@ hijack_process_config_ini (char *buf, off_t f_pos)
 		hijack_kftpd_control_port = 0;
 		hijack_khttpd_port = 0;
 	}
-	up(&hijack_kftpd_startup_sem);	// wake-up kftpd now that we've parsed config.ini for port numbers
-	up(&hijack_khttpd_startup_sem);	// wake-up khttpd now that we've parsed config.ini for port numbers
+	up(&hijack_kxxxd_startup_sem);	// start daemons now that we've parsed config.ini for port numbers
 #endif // CONFIG_NET_ETHERNET
 	set_drive_spindown_times();
 #ifdef CONFIG_EMPEG_I2C_FAN_CONTROL

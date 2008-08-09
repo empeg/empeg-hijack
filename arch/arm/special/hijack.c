@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v500"
+#define HIJACK_VERSION	"v501"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #undef EMPEG_FIXTEMP	// #define this for special "fix temperature sensor" builds
@@ -4546,7 +4546,7 @@ hijack_handle_button (unsigned int button, unsigned long delay, unsigned int pla
 			activate_dispfunc(quicktimer_display, timer_move, 0);
 			hijacked = 1;
 			break;
-#ifdef CONFIG_EMPEG_TUNER
+#ifdef CONFIG_HIJACK_TUNER
 		case IR_FAKE_FIDENTRY:
 			activate_dispfunc(fidentry_display, NULL, 0);
 			hijacked = 1;

@@ -1114,6 +1114,35 @@ int udp_rcv(struct sk_buff *skb, unsigned short len)
 		skb->csum = csum_tcpudp_nofold(saddr, daddr, ulen, IPPROTO_UDP, 0);
 #endif
 
+if (1) { // Hijack workaround for v3alpha11 DHCP client bug
+	u16 dport = ntohs(uh->dest);
+	if (dport == 68) {	/* bootpc */
+		/*
+		 * The empeg DHCP client mistakenly accepts/processes *all* DHCP replies
+		 * which match the client/transaction ID we used, without checking the
+		 * received bootp client MAC address against our own.
+		 *
+		 * Problem is, a randomization bug (v3alpha11) means that all empegs
+		 * will generate the exact same client/transaction ID after power-up,
+		 * so *any* empeg DHCP broadcast will be taken in..
+		 *
+		 * So here, we must also filter by bootp client MAC address,
+		 * and drop packets that are not really intended for us.
+		 */
+		u8 *cmac = ((char *)uh) + 36;
+		u8 *emac = skb->dev->dev_addr;
+		if (cmac[0] != emac[0] || cmac[1] != emac[1]
+		 || cmac[2] != emac[2] || cmac[3] != emac[3]
+		 || cmac[4] != emac[4] || cmac[5] != emac[5])
+		{
+			/* not intended for us: drop it */
+			//printk(KERN_INFO "%s: bootp packet not for us: dropped\n", __FUNCTION__);
+			kfree_skb(skb);
+			return(0);
+		}
+	}
+}
+
 	if(rt->rt_flags & (RTCF_BROADCAST|RTCF_MULTICAST))
 		return udp_v4_mcast_deliver(skb, uh, saddr, daddr);
 

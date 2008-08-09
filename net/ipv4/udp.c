@@ -1116,7 +1116,8 @@ int udp_rcv(struct sk_buff *skb, unsigned short len)
 
 if (1) { // Hijack workaround for v3alpha11 DHCP client bug
 	u16 dport = ntohs(uh->dest);
-	if (dport == 68) {	/* bootpc */
+	u8  mtype = *(((char *)uh) + 8);
+	if (dport == 68 && mtype == 2) {	/* bootp reply */
 		/*
 		 * The empeg DHCP client mistakenly accepts/processes *all* DHCP replies
 		 * which match the client/transaction ID we used, without checking the

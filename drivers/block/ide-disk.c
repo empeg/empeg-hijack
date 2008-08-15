@@ -98,8 +98,8 @@ static int lba_capacity_is_ok (ide_drive_t *drive)
 		unsigned long capacity;
 		if (!drive->lba28_limit) {
 			drive->lba28_limit = id->lba_capacity;	// limit == "normal" lba_capacity value
-			if (drive->lba28_limit > lba28_max)
-				drive->lba28_limit = lba28_max;
+			if (drive->lba28_limit >= lba28_max)
+				drive->lba28_limit = lba28_max - 1;
 		}
 		capacity = (idw[101]<<16) | idw[100];
 		// The rest of the kernel can only support 32-bit LBA, so round down:

@@ -174,7 +174,7 @@ typedef unsigned char	byte;	/* used everywhere */
 /*
  * Timeouts for various operations:
  */
-#define WAIT_DRQ	(5*HZ/100)	/* 50msec - spec allows up to 20ms */
+#define WAIT_DRQ	(5*HZ)		/* 5sec (for SSDs) - spec requires only 20ms */
 #ifdef CONFIG_APM
 #define WAIT_READY	(5*HZ)		/* 5sec - some laptops are very slow */
 #else

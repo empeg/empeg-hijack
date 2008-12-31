@@ -65,10 +65,14 @@ static void i2c_startseq(void)
 
 	/* Put data low */
 	GPSR = IIC_DATAOUT;
+
+/* Ben Kamen (i2c fan controller dude) says this step is not needed: */
+#if 0
 	i2c_delay_short();
 
 	/* Clock low again */
 	GPCR = IIC_CLOCK;
+#endif
 	i2c_delay_long();
 }
 

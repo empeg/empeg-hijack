@@ -17,22 +17,15 @@
 
 #include "empeg_dsp_i2c.h"
 
-static void i2c_startseq(void);
-static void i2c_stopseq(void);
-static int i2c_getdatabit(void);
-static void i2c_putdatabit(int bit);
-static int i2c_getbyte(unsigned char *byte, int nak);
-static int i2c_putbyte(int byte);
-
 #ifdef CONFIG_EMPEG_I2C_FAN_CONTROL
-// semaphore to serialize access on the i2c bus:
-#include <asm/semaphore.h>
-static struct semaphore i2c_busy = MUTEX;
-#define GRAB_I2C_SEMA		down(&i2c_busy)
-#define RELEASE_I2C_SEMA	up(&i2c_busy)
+	// semaphore to serialize access on the i2c bus:
+	#include <asm/semaphore.h>
+	static struct semaphore i2c_busy = MUTEX;
+	#define GRAB_I2C_SEMA		down(&i2c_busy)
+	#define RELEASE_I2C_SEMA	up(&i2c_busy)
 #else
-#define GRAB_I2C_SEMA
-#define RELEASE_I2C_SEMA
+	#define GRAB_I2C_SEMA
+	#define RELEASE_I2C_SEMA
 #endif
 
 /*
@@ -51,28 +44,23 @@ static __inline__ void i2c_delay_short(void)
 	udelay(1);	// any lower and the lines don't float
 }
 
+static int i2c_stopped = 0;
+
 /* Pulse out the start sequence */
 
 static void i2c_startseq(void)
 {
-	/* Clock low, data high */
-	GPCR = IIC_CLOCK | IIC_DATAOUT;
-	i2c_delay_long();
-
-	/* Put clock high */
-	GPSR = IIC_CLOCK;
-	i2c_delay_short();
+	/* avoid long initial delay if we were properly stopped last time */
+	if (!i2c_stopped) {
+		/* clock high, data high */
+		GPSR = IIC_CLOCK;
+		GPCR = IIC_DATAOUT;
+		i2c_delay_long();
+	}
+	i2c_stopped = 0;
 
 	/* Put data low */
 	GPSR = IIC_DATAOUT;
-
-/* Ben Kamen (i2c fan controller dude) says this step is not needed: */
-#if 0
-	i2c_delay_short();
-
-	/* Clock low again */
-	GPCR = IIC_CLOCK;
-#endif
 	i2c_delay_long();
 }
 
@@ -92,6 +80,8 @@ static void i2c_stopseq(void)
 	/* Let data float high */
 	GPCR = IIC_DATAOUT;
 	i2c_delay_long();
+
+	i2c_stopped = 1; /* permits a faster i2c_startseq() next time around */
 }
 
 /*
@@ -126,14 +116,22 @@ static void i2c_putdatabit(int bit)
 	unsigned int old_bit;
 
 	/* First set the data bit (clock low) */
-	GPCR = IIC_CLOCK;
 	old_bit = !(GPLR & IIC_DATAOUT);
 	if (bit != old_bit) {
-		if (bit)
+		if (bit) {
 			GPCR = IIC_DATAOUT;
-		else
+			/* The 100K pull-up resistor will float
+			 * the data line high here, but very slowly,
+			 * so allow lots of time for it to do so.
+			 */
+			i2c_delay_long();
+		} else {
+			/* The CPU drives the data line low here,
+			 * very quickly, so only a short delay needed
+			 */
 			GPSR = IIC_DATAOUT;
-		i2c_delay_long();
+		}
+		i2c_delay_short();
 	}
 
 	/* Now trigger the clock */
@@ -151,19 +149,20 @@ static void i2c_putdatabit(int bit)
  * Returns byte read.
  */
 
-static int i2c_getbyte(unsigned char *byte, int nak)
+static unsigned char i2c_getbyte(int nak)
 {
 	int i;
+	unsigned char byte = 0;
 
 	/* Let data line float */
 	GPCR = IIC_DATAOUT;
 	i2c_delay_long();
 
-	*byte = 0;
 	/* Clock in the data */
-	for(i = 7; i >= 0; --i)
+	for (i = 7; i >= 0; --i) {
 		if (i2c_getdatabit())
-			(*byte) |= (1 << i);
+			byte |= (1 << i);
+	}
 	
 	/* Well, I got it so respond with an ack, or nak */
 	/* Send data low to indicate success */
@@ -185,16 +184,16 @@ static int i2c_getbyte(unsigned char *byte, int nak)
 	GPCR = IIC_DATAOUT;
 	i2c_delay_long();
 
-	return 0; /* success */
+	return byte;
 }
 	
 /*
  * Pulse out a complete byte and receive acknowledge.
  * Returns 0 on success, non-zero on failure.
  */
-static int i2c_putbyte(int byte)
+static int i2c_putbyte(unsigned char byte)
 {
-	int i, ack;
+	int i, ack_failed;
 
 	/* Clock/data low */
 	GPCR = IIC_CLOCK;
@@ -217,7 +216,7 @@ static int i2c_putbyte(int byte)
 	/* Wait for ack to arrive */
 	i2c_delay_long();
 
-	ack = !(GPLR & IIC_DATAIN);
+	ack_failed = !(GPLR & IIC_DATAIN);
 
 	i2c_delay_long();
 	/* Clock low */
@@ -225,15 +224,46 @@ static int i2c_putbyte(int byte)
 	
 	i2c_delay_long();
 
-	if (ack) {
+	if (ack_failed) {
 		i2c_stopseq();
 		udelay(3000);
 		printk(KERN_ERR "i2c: Failed to receive ACK for data!\n");
 	}
 
-	return ack;
+	return ack_failed;
 }	
 
+/* Start a new i2c transaction */
+
+static int i2c_start (unsigned char device, int cmd1, int cmd2, int reading)
+{
+	/* Send start sequence */
+	i2c_startseq();
+
+	/* Select the device in write mode */
+	if (i2c_putbyte(device & 0xfe))
+		goto abort;
+
+	/* Send the command/address bytes */
+	if (cmd1 != -1 && i2c_putbyte(cmd1))
+		goto abort;
+	if (cmd2 != -1 && i2c_putbyte(cmd2))
+		goto abort;
+
+	if (reading) {
+		/* Repeat the start sequence */
+		i2c_stopped = 1;
+		i2c_startseq();
+	
+		/* Select the device but this time in read mode */
+		if (i2c_putbyte(device | 0x01))
+			goto abort;
+	}
+	return 0; /* success */
+abort:
+	printk("i2c_start(%u,%d,%d,%d) failed\n", device, cmd1, cmd2, reading);
+	return 1; /* failure */
+}
 
 /*
  * This stuff gets called from empeg_audio2.c and friends
@@ -248,41 +278,17 @@ int i2c_read(unsigned char device, unsigned short address,
 
 	GRAB_I2C_SEMA;
 
-	/* Send start sequence */
-	i2c_startseq();
-
-	/* Set the device */
-	if (i2c_putbyte(device & 0xFE))
-		goto i2c_error;
-
-	/* Set the address (higher then lower) */
-	if (i2c_putbyte(address >> 8) || i2c_putbyte(address & 0xFF))
-		goto i2c_error;
-
-	/* Repeat the start sequence */
-	i2c_startseq();
-	
-	/* Set the device but this time in read mode */
-	if (i2c_putbyte(device | 0x01))
-		goto i2c_error;
+	/* Select the device */
+	if (i2c_start(device, address >> 8, address, 1))
+		goto done;
 
 	/* Now read in the actual data */
 	while(count--)
 	{
-		unsigned char b1, b2, b3;
-		if(address < 0x200) {
-			if (i2c_getbyte(&b1, 0) ||
-			    i2c_getbyte(&b2, 0) ||
-			    i2c_getbyte(&b3, 1))
-				goto i2c_error;
-			*data++ = (b1 << 16) | (b2 << 8) | b3;
-		} else {
-			/* Receive the 16 bit quantity */
-			if (i2c_getbyte(&b1, 0) ||
-			    i2c_getbyte(&b2, 1))
-				goto i2c_error;
-			*data++ = (b1 << 8) | b2;
-		}
+		unsigned int msb = 0;
+		if (address < 0x200)
+			msb = i2c_getbyte(0) << 16;
+		*data++ = msb | (i2c_getbyte(0) << 8) | i2c_getbyte(1);
 	}
 
 	/* Now say we don't want any more: NAK (send bit 1) */
@@ -290,8 +296,7 @@ int i2c_read(unsigned char device, unsigned short address,
 
 	i2c_stopseq();	
 	rc = 0;		// success
-
- i2c_error:
+ done:
 	RELEASE_I2C_SEMA;
 	return rc;
 }
@@ -309,57 +314,24 @@ int i2c_write(unsigned char device, unsigned short address,
 
 	GRAB_I2C_SEMA;
 
-	/* Pulse out the start sequence */
-	i2c_startseq();
-
-	/* Say who we're talking to */
-	if (i2c_putbyte(device & 0xFE)) {
-		printk("i2c_write: device select failed\n");
+	/* Select the device */
+	if (i2c_start(device, address >> 8, address, 0))
 		goto i2c_error;
-	}
-
-	/* Set the address (higher then lower) */
-	if (i2c_putbyte(address >> 8) || i2c_putbyte(address & 0xFF)) {
-		printk("i2c_write: address select failed\n");
-		goto i2c_error;
-	}
 
 	/* Now send the actual data */
 	while(count--)
 	{
 		if (address < 0x200) {
-			/* Send out the 24 bit quantity */
-			
-			/* Mask off the top 8 bits in certain situations! */
-			if (i2c_putbyte((*data >> 16) & 0xff)) {
-				printk("i2c_write: write first byte failed"
-				       ", count:%d\n", count);
-				goto i2c_error;
-			}
-			if (i2c_putbyte((*data >> 8) & 0xFF)) {
-				printk("i2c_write: write second byte failed"
-				       ", count:%d\n", count);
-				goto i2c_error;
-			}
-			if (i2c_putbyte(*data & 0xFF)) {
-				printk("i2c_write: write third byte failed"
-				       ", count:%d\n", count);
+			/* Send out top byte for a 24-bit quantity */
+			if (i2c_putbyte(*data >> 16)) {
+				printk("i2c_write: write top byte failed, count:%d\n", count);
 				goto i2c_error;
 			}
 		}
-		else {
-			/* Send out 16 bit quantity */
-			/* Mask off the top 8 bits in certain situations! */
-			if (i2c_putbyte(*data >> 8)) {
-				printk("i2c_write: write first byte failed"
-				       ", count:%d\n", count);
-				goto i2c_error;
-			}
-			if (i2c_putbyte(*data & 0xFF)) {
-				printk("i2c_write: write second byte failed"
-				       ", count:%d\n", count);
-				goto i2c_error;
-			}
+		/* Send out lower 16-bits */
+		if (i2c_putbyte(*data >> 8) || i2c_putbyte(*data)) {
+			printk("i2c_write: write lower 16-bits failed, count:%d\n", count);
+			goto i2c_error;
 		}
 		++data;
 	}
@@ -430,34 +402,16 @@ int dsp_patchmulti(dsp_setup *setup, int address, int new_data)
 
 int i2c_read8 (unsigned char device, unsigned char command, unsigned char *data, int count)
 {
-	int	rc = -1;	// failure
+	int rc = -1;	// failure
 
 	GRAB_I2C_SEMA;
 
-	/* Send start sequence */
-	i2c_startseq();
-
-	/* Set the device */
-	if (i2c_putbyte(device & 0xFE))
-		goto done;
-
-	/* Set the command */
-	if (i2c_putbyte(command))
-		goto done;
-
-	/* Repeat the start sequence */
-	i2c_startseq();
-	
-	/* Set the device but this time in read mode */
-	if (i2c_putbyte(device | 0x01))
+	if (i2c_start(device, command, -1, 1))
 		goto done;
 
 	/* Now read in the actual data */
-	while (count--) {
-		if (i2c_getbyte(data, 1))
-			goto done;
-		++data;
-	}
+	while (count--)
+		*data++ = i2c_getbyte(1);
 
 	/* Now say we don't want any more: NAK (send bit 1) */
 	i2c_putdatabit(1);
@@ -470,32 +424,19 @@ int i2c_read8 (unsigned char device, unsigned char command, unsigned char *data,
 
 int i2c_write8 (unsigned char device, unsigned char command, unsigned char *data, int count)
 {
-	int	rc = -1;	// failure
+	int rc = -1;	// failure
 
 	GRAB_I2C_SEMA;
 
-	/* Pulse out the start sequence */
-	i2c_startseq();
-
-	/* Say who we're talking to */
-	if (i2c_putbyte(device & 0xFE)) {
-		printk("i2c_write8: device select failed\n");
+	if (i2c_start(device, command, -1, 0))
 		goto done;
-	}
-
-	/* Set the command */
-	if (i2c_putbyte(command)) {
-		printk("i2c_write8: command issue failed\n");
-		goto done;
-	}
 
 	/* Now send the actual data */
 	while (count--) {
-		if (i2c_putbyte(*data)) {
+		if (i2c_putbyte(*data++)) {
 			printk("i2c_write8: write byte failed, count:%d\n", count);
 			goto done;
 		}
-		++data;
 	}
 
 	i2c_stopseq();

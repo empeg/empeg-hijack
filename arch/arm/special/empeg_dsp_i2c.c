@@ -125,13 +125,13 @@ static void i2c_putdatabit(int bit)
 			 * so allow lots of time for it to do so.
 			 */
 			i2c_delay_long();
+			i2c_delay_short();
 		} else {
 			/* The CPU drives the data line low here,
-			 * very quickly, so only a short delay needed
+			 * very quickly, so only a short delay is needed.
 			 */
 			GPSR = IIC_DATAOUT;
 		}
-		i2c_delay_short();
 	}
 
 	/* Now trigger the clock */

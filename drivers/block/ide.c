@@ -1095,22 +1095,34 @@ static ide_startstop_t execute_drive_cmd (ide_drive_t *drive, struct request *rq
 			struct scsi_sg_io_hdr *io_hdr = (void *)(rq->buffer);
 			unsigned char *cdb = io_hdr->cmdp;
 			unsigned int timeout;
-			byte sel;
+			byte sel, cmd;
 
-			if (cdb[1] & SG_ATA_LBA48) {
-				OUT_BYTE(cdb[ 3], IDE_FEATURE_REG);
+			if (cdb[0] == SG_ATA_16) {
+				if (cdb[1] & SG_ATA_LBA48) {
+					OUT_BYTE(cdb[ 3], IDE_FEATURE_REG);
+					OUT_BYTE(cdb[ 6], IDE_NSECTOR_REG);
+					OUT_BYTE(cdb[ 7], IDE_SECTOR_REG);
+					OUT_BYTE(cdb[ 9], IDE_LCYL_REG);
+					OUT_BYTE(cdb[11], IDE_HCYL_REG);
+				}
+				OUT_BYTE(cdb[ 4], IDE_FEATURE_REG);
 				OUT_BYTE(cdb[ 6], IDE_NSECTOR_REG);
-				OUT_BYTE(cdb[ 7], IDE_SECTOR_REG);
-				OUT_BYTE(cdb[ 9], IDE_LCYL_REG);
-				OUT_BYTE(cdb[11], IDE_HCYL_REG);
+				OUT_BYTE(cdb[ 8], IDE_SECTOR_REG);
+				OUT_BYTE(cdb[10], IDE_LCYL_REG);
+				OUT_BYTE(cdb[12], IDE_HCYL_REG);
+	 			sel = (cdb[13] & ~0x10) | (drive->select.b.unit << 4);
+				OUT_BYTE(sel, IDE_SELECT_REG);
+				cmd = cdb[14];
+			} else { /* SG_ATA_12 */
+				OUT_BYTE(cdb[ 3], IDE_FEATURE_REG);
+				OUT_BYTE(cdb[ 4], IDE_NSECTOR_REG);
+				OUT_BYTE(cdb[ 5], IDE_SECTOR_REG);
+				OUT_BYTE(cdb[ 6], IDE_LCYL_REG);
+				OUT_BYTE(cdb[ 7], IDE_HCYL_REG);
+	 			sel = (cdb[8] & ~0x10) | (drive->select.b.unit << 4);
+				OUT_BYTE(sel, IDE_SELECT_REG);
+				cmd = cdb[9];
 			}
-			OUT_BYTE(cdb[ 4], IDE_FEATURE_REG);
-			OUT_BYTE(cdb[ 6], IDE_NSECTOR_REG);
-			OUT_BYTE(cdb[ 8], IDE_SECTOR_REG);
-			OUT_BYTE(cdb[10], IDE_LCYL_REG);
-			OUT_BYTE(cdb[12], IDE_HCYL_REG);
- 			sel = (cdb[13] & ~0x10) | (drive->select.b.unit << 4);
-			OUT_BYTE(sel, IDE_SELECT_REG);
 
 			timeout = WAIT_CMD;
 			if (!io_hdr->timeout) {
@@ -1123,7 +1135,7 @@ static ide_startstop_t execute_drive_cmd (ide_drive_t *drive, struct request *rq
 
 			if (IDE_CONTROL_REG)
 				OUT_BYTE(drive->ctl, IDE_CONTROL_REG);	/* clear nIEN */
-			OUT_BYTE(cdb[14], IDE_COMMAND_REG);
+			OUT_BYTE(cmd, IDE_COMMAND_REG);
 
 			if (io_hdr->dxfer_direction == SG_DXFER_TO_DEV) {
 				ide_startstop_t startstop;
@@ -2466,7 +2478,9 @@ static int ide_do_sgio (ide_drive_t *drive, void *u_io_hdr)
 
 	if (copy_from_user(&io_hdr, u_io_hdr, sizeof(struct scsi_sg_io_hdr)))
 		return -EFAULT;
-	if (io_hdr.interface_id != 'S' || io_hdr.cmd_len != SG_ATA_16_LEN)
+	if (io_hdr.interface_id != 'S')
+		return -EINVAL;
+	if (io_hdr.cmd_len != SG_ATA_16_LEN && io_hdr.cmd_len != SG_ATA_12_LEN )
 		return -EINVAL;
 
 	u_cmdp = io_hdr.cmdp;
@@ -2474,7 +2488,10 @@ static int ide_do_sgio (ide_drive_t *drive, void *u_io_hdr)
 
 	if (copy_from_user(cdb, u_cmdp, io_hdr.cmd_len))
 		err = -EFAULT;
-	if (cdb[0] != SG_ATA_16)
+	if ((cdb[0] == SG_ATA_16 && io_hdr.cmd_len == SG_ATA_16_LEN)
+	  ||(cdb[0] == SG_ATA_12 && io_hdr.cmd_len == SG_ATA_12_LEN))
+		/* all is well */;
+	else
 		return -EINVAL;
 
 	u_dxferp = io_hdr.dxferp;

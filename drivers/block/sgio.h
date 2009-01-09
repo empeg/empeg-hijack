@@ -192,6 +192,9 @@ struct scsi_sg_io_hdr {
 #define SG_ATA_16		0x85
 #define SG_ATA_16_LEN		16
 
+#define SG_ATA_12		0xa1
+#define SG_ATA_12_LEN		12
+
 #define SG_ATA_LBA48		1
 #define SG_ATA_PROTO_NON_DATA	( 3 << 1)
 #define SG_ATA_PROTO_PIO_IN	( 4 << 1)

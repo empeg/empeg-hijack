@@ -19,6 +19,7 @@
 
 #include "empeg_mixer.h"
 
+extern int hijack_silent;
 extern int hijack_current_mixer_input;
 extern int hijack_current_mixer_volume;
 extern int hijack_player_started;
@@ -200,7 +201,8 @@ remount_drives (int writeable)
 		if (hijack_glob_match(fstype, "ext? r?*") && fstype[6] == cur_rw) {
 			did_something = 1;
 			(void)do_remount(fsname, flags, mount_opts);
-			printk("hijack: %s: %s\n", message, fsname); 
+			if (!hijack_silent)
+				printk("hijack: %s: %s\n", message, fsname); 
 		}
 		while (*b && *b++ != '\n');
 	}

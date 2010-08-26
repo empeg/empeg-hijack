@@ -32,6 +32,7 @@
 #define KFTPD		"kftpd"
 #define KTELNETD	"ktelnetd"
 
+extern int hijack_silent;
 extern int get_number (unsigned char **src, int *target, unsigned int base, const char *nextchars);	// hijack.c
 extern void input_append_code(void *dev, unsigned long button);						// hijack.c
 extern int get_button_code (unsigned char **s_p, unsigned int *button, int eol_okay, int raw, const char *nextchars); // hijack.c
@@ -215,7 +216,8 @@ ksock_rw (struct socket *sock, const char *buf, int buf_size, int minimum)
 				break;
 			case -ENOMEM:
 			case -ENOBUFS:
-				printk("ksock_rw(): low memory\n");
+				if (!hijack_silent)
+					printk("ksock_rw(): low memory\n");
 				if (retries--) {
 					current->state = TASK_INTERRUPTIBLE;
 					schedule_timeout(HZ);
@@ -229,7 +231,8 @@ ksock_rw (struct socket *sock, const char *buf, int buf_size, int minimum)
 				return rc;
 			default:
 				if (rc < 0) {
-					printk("ksock_rw(%s): error: %d\n", sending ? "send" : "recv", rc);
+					if (!hijack_silent)
+						printk("ksock_rw(%s): error: %d\n", sending ? "send" : "recv", rc);
 					return rc;
 				}
 		}
@@ -286,11 +289,12 @@ kftpd_send_response2 (server_parms_t *parms, int rcode, const char *text, const 
 	char		buf[512];
 	int		len, rc;
 
-	if (parms->verbose)
+	if (parms->verbose && !hijack_silent)
 		printk(KFTPD": %d%s%s\n", rcode, text, extra);
 	len = sprintf(buf, "%d%s%s\r\n", rcode, text, extra);
 	if ((rc = ksock_rw(parms->clientsock, buf, len, -1)) != len) {
-		printk(KFTPD": ksock_rw(response) failed, rc=%d\n", rc);
+		if (!hijack_silent)
+			printk(KFTPD": ksock_rw(response) failed, rc=%d\n", rc);
 		return -1;
 	}
 	return 0;
@@ -316,10 +320,11 @@ kftpd_dir_response (server_parms_t *parms, int rcode, const char *dir, char *suf
 		len = sprintf(buf, "%d \"%s\" %s\r\n", rcode, dir, suffix);
 	else
 		len = sprintf(buf, "%d \"%s\"\r\n", rcode, dir);
-	if (parms->verbose)
+	if (parms->verbose && !hijack_silent)
 		printk(KFTPD": %s", buf);
 	if ((rc = ksock_rw(parms->clientsock, buf, len, -1)) != len) {
-		printk(KFTPD": ksock_rw(dir_response) failed, rc=%d\n", rc);
+		if (!hijack_silent)
+			printk(KFTPD": ksock_rw(dir_response) failed, rc=%d\n", rc);
 		return 1;
 	}
 	return 0;
@@ -331,7 +336,7 @@ set_sockopt (server_parms_t *parms, struct socket *sock, int protocol, int optio
 	int	rc;
 
 	rc = sock_setsockopt(sock, protocol, option, (char *)&off_on, sizeof(off_on));
-	if (rc)
+	if (rc && !hijack_silent)
 		printk("%s: setsockopt(%d,%d) failed, rc=%d\n", parms->servername, protocol, option, rc);
 	return rc;
 }
@@ -345,7 +350,8 @@ make_socket (server_parms_t *parms, struct socket **sockp, int port)
 
 	*sockp = NULL;
 	if ((rc = sock_create(AF_INET, SOCK_STREAM, 0, &sock))) {
-		printk("%s: sock_create() failed, rc=%d\n", parms->servername, rc);
+		if (!hijack_silent)
+			printk("%s: sock_create() failed, rc=%d\n", parms->servername, rc);
 	} else if ((rc = set_sockopt(parms, sock, SOL_SOCKET, SO_REUSEADDR, 1))) {
 		sock_release(sock);
 	} else {
@@ -355,7 +361,8 @@ make_socket (server_parms_t *parms, struct socket **sockp, int port)
 		addr.sin_port        = htons(port);
 		rc = sock->ops->bind(sock, (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
 		if (rc) {
-			printk("%s: bind(port=%d) failed: %d\n", parms->servername, port, rc);
+			if (!hijack_silent)
+				printk("%s: bind(port=%d) failed: %d\n", parms->servername, port, rc);
 			sock_release(sock);
 		} else {
 			*sockp = sock;
@@ -534,7 +541,7 @@ send_dirlist_buf (server_parms_t *parms, filldir_parms_t *p, int send_trailer)
 	}
 	sent = ksock_rw(parms->datasock, p->buf, p->buf_used, -1);
 	if (sent != p->buf_used) {
-		if (parms->verbose)
+		if (parms->verbose && !hijack_silent)
 			printk("%s: send_dirlist_buf(): ksock_rw(%u) returned %d\n", parms->servername, p->buf_used, sent);
 		if (sent >= 0)
 			sent = -ECOMM;
@@ -564,11 +571,13 @@ format_dir (server_parms_t *parms, filldir_parms_t *p, ino_t ino, char *name, in
 	if (p->sb->s_magic == PROC_SUPER_MAGIC) {	// iget() doesn't work properly for /proc fs
 		dentry = lnamei(p->path);
 		if (IS_ERR(dentry) || !(inode = dentry->d_inode)) {
-                	printk("%s: lnamei(%s) failed, rc=%ld\n", parms->servername, p->path, PTR_ERR(dentry));
+			if (!hijack_silent)
+                		printk("%s: lnamei(%s) failed, rc=%ld\n", parms->servername, p->path, PTR_ERR(dentry));
                 	return -ENOENT;
 		}
         } else if (!(inode = iget(p->sb, ino))) {	// iget() is magnitudes faster than lnamei()
-		printk("%s: iget(%lu) failed\n", parms->servername, ino);
+		if (!hijack_silent)
+			printk("%s: iget(%lu) failed\n", parms->servername, ino);
 		return -ENOENT;
 	}
 	mode = inode->i_mode;
@@ -727,7 +736,8 @@ send_dirlist (server_parms_t *parms, char *path, int full_listing)
 	filp = filp_open(path,O_RDONLY,0);
 	if (IS_ERR(filp) || !filp) {
 		if (parms->verbose || parms->protocol || (int)filp != -ENOENT) {
-			printk("%s: filp_open(\"%s\") failed (%d)\n", parms->servername, path, (int)filp);
+			if (!hijack_silent)
+				printk("%s: filp_open(\"%s\") failed (%d)\n", parms->servername, path, (int)filp);
 		}
 		response = 550;
 	} else {
@@ -767,7 +777,8 @@ send_dirlist (server_parms_t *parms, char *path, int full_listing)
 				rc = readdir(filp, &p, filldir);	// anything "< 0" is an error
 				up(&inode->i_sem);
 				if (rc < 0) {
-					printk("%s: readdir() returned %d\n", parms->servername, rc);
+					if (!hijack_silent)
+						printk("%s: readdir() returned %d\n", parms->servername, rc);
 				} else {
 					unsigned int pos = 0;
 					rc = 0;
@@ -778,7 +789,7 @@ send_dirlist (server_parms_t *parms, char *path, int full_listing)
 						pos = (pos + namelen + (1 + 3)) & ~3;
 						rc = format_dir(parms, &p, ino, name, namelen);
 						if (rc < 0) {
-							if (parms->verbose)
+							if (parms->verbose && !hijack_silent)
 								printk("%s: format_dir(\"%s\") returned %d\n", parms->servername, p.name, rc);
 							break;
 						}
@@ -794,7 +805,7 @@ send_dirlist (server_parms_t *parms, char *path, int full_listing)
 			if (p.buf)
 				free_page((unsigned long)p.buf);
 		}
-		filp_close(filp,NULL);
+		filp_close(filp, NULL);
 	}
 	current->policy = SCHED_RR;
 	return response;
@@ -828,7 +839,7 @@ khttpd_check_auth (server_parms_t *parms, khttpd_auth_t authtype)
 
 		len = sprintf(buf, khttpd_response, auths, auths);
 		rc = ksock_rw(parms->clientsock, buf, len, -1);
-		if (rc != len && parms->verbose)
+		if (rc != len && parms->verbose && !hijack_silent)
 			printk(KHTTPD": respond(): ksock_rw(%d) returned %d, data=\"%s\"\n", len, rc, buf);
 		return 1;
 	}
@@ -855,7 +866,7 @@ khttpd_respond (server_parms_t *parms, int rcode, const char *title, const char 
 
 	len = sprintf(buf, khttpd_response, rcode, title, rcode, title, rcode, title, text ? text : "");
 	rc = ksock_rw(parms->clientsock, buf, len, -1);
-	if (rc != len && parms->verbose)
+	if (rc != len && parms->verbose && !hijack_silent)
 		printk(KHTTPD": respond(): ksock_rw(%d) returned %d, data=\"%s\"\n", len, rc, buf);
 }
 
@@ -880,7 +891,7 @@ khttpd_redirect (server_parms_t *parms, const char *path, char *slash)
 
 	len = sprintf(buf, http_redirect, path, slash, path, slash);
 	rc = ksock_rw(parms->clientsock, buf, len, -1);
-	if (rc != len)
+	if (rc != len && !hijack_silent)
 		printk(KHTTPD": redirect(): ksock_rw(%d) returned %d\n", len, rc);
 }
 
@@ -1127,13 +1138,15 @@ prepare_file_xfer (server_parms_t *parms, char *path, file_xfer_t *xfer, int wri
 		fd = open(path, flags, 0666 & ~parms->umask);
 	xfer->fd = fd;
 	if (fd < 0) {
-		printk("%s: open(\"%s\") failed, rc=%d\n", parms->servername, path, fd);
+		if (!hijack_silent)
+			printk("%s: open(\"%s\") failed, rc=%d\n", parms->servername, path, fd);
 		response = 550;
 	} else if (!(xfer->buf = (unsigned char *)__get_free_page(GFP_KERNEL))) {
 		response = 451;
 	} else if (!parms->running_playlist) {
 		if (sys_newfstat(fd, &xfer->st)) {
-			printk("%s: fstat(%s) failed\n", parms->servername, path);
+			if (!hijack_silent)
+				printk("%s: fstat(%s) failed\n", parms->servername, path);
 			response = 550;
 		} else if (S_ISDIR(xfer->st.st_mode)) {
 			if (writing || !parms->protocol || parms->generate_playlist) {
@@ -1145,7 +1158,8 @@ prepare_file_xfer (server_parms_t *parms, char *path, file_xfer_t *xfer, int wri
 		} else if (end_offset != -1 && (xfer->st.st_size && end_offset >= xfer->st.st_size)) {
 			response = parms->protocol ? 416 : 553;
 		} else if (start_offset && ((xfer->st.st_size && start_offset > xfer->st.st_size) || start_offset != lseek(fd, start_offset, 0))) {
-			printk("%s: lseek(%s,%lu/%lu) failed\n", parms->servername, path, start_offset, xfer->st.st_size);
+			if (!hijack_silent)
+				printk("%s: lseek(%s,%lu/%lu) failed\n", parms->servername, path, start_offset, xfer->st.st_size);
 			response = parms->protocol ? 416 : 553;
 		}
 	}
@@ -1464,7 +1478,8 @@ open_fidfile:
 				lseek(fidfiles[0], 0x200 + 8 * playlist_len + (start + count) * 4, 0);
 				rc = read(fidfiles[0], (void *)&fidTableIndex, sizeof(fidTableIndex));
 				if (rc != sizeof(fidTableIndex)) {
-					printk("read(fidTableIndex(%d) failed, rc=%d\n", start + count, rc);
+					if (!hijack_silent)
+						printk("read(fidTableIndex(%d) failed, rc=%d\n", start + count, rc);
 					break;
 				}
 				lseek(fidfiles[0], 0x200 + 8 * fidTableIndex, 0);
@@ -1488,7 +1503,7 @@ open_fidfile:
 			if (fd < 0) {
 				// Hmmm.. missing tags file.  This IS a database error, and should never happen.  But it does..
 				// But we'll just ignore it here.
-				if (parms->generate_playlist == html)
+				if (parms->generate_playlist == html && !hijack_silent)
 					printk(KHTTPD": open(\"%s\") failed, rc=%d\n", subpath, fd);
 				continue;
 			}
@@ -1498,7 +1513,7 @@ open_fidfile:
 			if (size <= 0) {
 				// Hmmm.. empty tags file.  This IS a database error, and should never happen.
 				// But we'll just ignore it here.
-				if (parms->generate_playlist == html)
+				if (parms->generate_playlist == html && !hijack_silent)
 					printk(KHTTPD": read(\"%s\") failed, rc=%d\n", subpath, size);
 				continue;
 			}
@@ -1655,7 +1670,8 @@ send_file (server_parms_t *parms, char *path)
 						schedule(); // give the music player a chance to run
 					filepos += size;
 					if (size < 0) {
-						printk("%s: read() failed; rc=%d\n", parms->servername, size);
+						if (!hijack_silent)
+							printk("%s: read() failed; rc=%d\n", parms->servername, size);
 						if (!parms->protocol)
 							response = 451;
 					} else if (size && size != ksock_rw(parms->datasock, xfer.buf, size, -1)) {
@@ -1678,7 +1694,8 @@ kftpd_do_rmdir (server_parms_t *parms, const char *path)
 	int	rc, response = 250;;
 
 	if ((rc = sys_rmdir(path))) {
-		printk(KFTPD": rmdir(\"%s\") failed, rc=%d\n", path, rc);
+		if (!hijack_silent)
+			printk(KFTPD": rmdir(\"%s\") failed, rc=%d\n", path, rc);
 		response = 550;
 	}
 	return response;
@@ -1690,7 +1707,8 @@ kftpd_do_mkdir (server_parms_t *parms, const char *path)
 	int	rc, response = 0;
 
 	if ((rc = sys_mkdir(path, 0777 & ~parms->umask))) {
-		printk(KFTPD": mkdir(\"%s\") failed, rc=%d\n", path, rc);
+		if (!hijack_silent)
+			printk(KFTPD": mkdir(\"%s\") failed, rc=%d\n", path, rc);
 		response = 550;
 	} else {
 		(void) kftpd_dir_response(parms, 257, path, "directory created");
@@ -1704,7 +1722,7 @@ kftpd_do_chmod (server_parms_t *parms, unsigned int mode, const char *path)
 	int	rc, response = 200;
 
 	if ((rc = sys_chmod(path, mode))) {
-		if (rc != -ENOENT && parms->verbose)
+		if (rc != -ENOENT && parms->verbose && !hijack_silent)
 			printk(KFTPD": chmod(\"%s\",%d) failed, rc=%d\n", path, mode, rc);
 		response = 550;
 	}
@@ -1717,7 +1735,8 @@ kftpd_do_delete (server_parms_t *parms, const char *path)
 	int	rc, response = 250;
 
 	if ((rc = sys_unlink(path))) {
-		printk(KFTPD": unlink(\"%s\") failed, rc=%d\n", path, rc);
+		if (!hijack_silent)
+			printk(KFTPD": unlink(\"%s\") failed, rc=%d\n", path, rc);
 		response = 550;
 	}
 	return response;
@@ -1737,10 +1756,12 @@ receive_file (server_parms_t *parms, char *path)
 			schedule(); // give the music player a chance to run
 			size = ksock_rw(parms->datasock, xfer.buf, xfer.buf_size, 1);
 			if (size < 0) {
-				printk(KERN_ERR "receive_file: ksock_rw returned %d\n", size);
+				if (!hijack_silent)
+					printk(KERN_ERR "receive_file: ksock_rw returned %d\n", size);
 				response = 426;
 			} else if (size && size != write(xfer.fd, xfer.buf, size)) {
-				printk(KFTPD": write(%d) failed\n", size);
+				if (!hijack_silent)
+					printk(KFTPD": write(%d) failed\n", size);
 				response = 451;
 			}
 		} while (!response && size > 0);
@@ -2015,11 +2036,11 @@ kftpd_handle_command (server_parms_t *parms)
 		bufsize = 511;	// limit path lengths, so we can use the other half for other stuff
 	n = ksock_rw(parms->clientsock, buf, bufsize, 0);
 	if (n < 0) {
-		if (parms->verbose)
+		if (parms->verbose && !hijack_silent)
 			printk(KFTPD": ksock_rw() failed, rc=%d\n", n);
 		return -1;
 	} else if (n == 0) {
-		if (parms->verbose)
+		if (parms->verbose && !hijack_silent)
 			printk(KFTPD": EOF on client sock\n");
 		return -1;
 	}
@@ -2030,7 +2051,7 @@ kftpd_handle_command (server_parms_t *parms)
 		buf[--n] = '\0';
 	if (buf[n - 1] == '\r')
 		buf[--n] = '\0';
-	if (parms->verbose)
+	if (parms->verbose && !hijack_silent)
 		printk(KFTPD": \"%s\"\n", buf);
 
 	// first look for commands that have hardcoded reponses:
@@ -2282,7 +2303,7 @@ khttpd_handle_connection (server_parms_t *parms)
 	do {
 		int rc = ksock_rw(parms->clientsock, buf+size, buflen-size, 0);
 		if (rc <= 0) {
-			if (parms->verbose)
+			if (parms->verbose && !hijack_silent)
 				printk(KHTTPD": receive failed: %d\n", rc);
 			return;
 		}
@@ -2293,7 +2314,7 @@ khttpd_handle_connection (server_parms_t *parms)
 		}
 	} while (size < 5 || buf[size-1] != '\n' || (buf[size-2] != '\n' && buf[size-3] != '\n'));
 	buf[size] = '\0';
-	if (parms->verbose > 1)
+	if (parms->verbose > 1 && !hijack_silent)
 		printk(KHTTPD": request_header = \"%s\"\n", buf);
 	if (!strxcmp(buf, "GET ", 1) && buf[4]) {
 		path = buf + 4;
@@ -2364,7 +2385,7 @@ khttpd_handle_connection (server_parms_t *parms)
 		schedule(); // give the music player a chance to run
 	}
 	*p = '\0'; // zero-terminate the GET line
-	if (parms->verbose)
+	if (parms->verbose && !hijack_silent)
 		printk(KHTTPD": GET \"%s\"\n", path);
 	if (khttpd_check_auth(parms, auth_basic))
 		return;
@@ -2441,11 +2462,14 @@ ksock_accept (server_parms_t *parms)
 	if ((parms->clientsock = sock_alloc())) {
 		parms->clientsock->type = parms->servsock->type;
 		if (parms->servsock->ops->dup(parms->clientsock, parms->servsock) < 0) {
-			printk("%s: sock_accept: dup() failed\n", parms->servername);
+			if (!hijack_silent)
+				printk("%s: sock_accept: dup() failed\n", parms->servername);
 		} else if ((rc = parms->clientsock->ops->accept(parms->servsock, parms->clientsock, parms->servsock->file->f_flags)) < 0) {
-			printk("%s: sock_accept: accept() failed, rc=%d\n", parms->servername, rc);
+			if (!hijack_silent)
+				printk("%s: sock_accept: accept() failed, rc=%d\n", parms->servername, rc);
 		} else if (get_ipaddr(parms->clientsock, parms->clientip, 1) || get_ipaddr(parms->clientsock, parms->hostname, 0)) {
-			printk("%s: sock_accept: get_ipaddr() failed\n", parms->servername);
+			if (!hijack_silent)
+				printk("%s: sock_accept: get_ipaddr() failed\n", parms->servername);
 		} else {
 			return 0;	// success
 		}
@@ -2466,7 +2490,7 @@ ktelnetd_handle_connection (server_parms_t *parms)
 	int sockfd, errno;
 
 	// we don't need the original server socket here
-	close(parms->servsock);
+	//close(parms->servsock);  /* not a file descriptor */
 
 	// Allow syscall args to come from kernel space
 	set_fs(KERNEL_DS);
@@ -2487,7 +2511,8 @@ ktelnetd_handle_connection (server_parms_t *parms)
 
 	// launch the shell.  FIXME: do this on a pty someday, to get job control goodies working
 	errno = execve(shell, argv, envp);	// never returns
-	printk(KERN_ERR "ktelnetd_handle_connection: failed, errno = %d\n", errno);
+	if (!hijack_silent)
+		printk(KERN_ERR "ktelnetd_handle_connection: failed, errno = %d\n", errno);
 	return -errno;
 }
 
@@ -2496,7 +2521,7 @@ child_thread (void *arg)
 {
 	server_parms_t	*parms = arg;
 
-	if (parms->verbose)
+	if (parms->verbose && !hijack_silent)
 		printk("%s: %s connection from %s\n", parms->servername, parms->hostname, parms->clientip);
 	(void) set_sockopt(parms, parms->servsock, SOL_TCP, TCP_NODELAY, 1); // don't care
 	switch (parms->protocol) {
@@ -2534,7 +2559,8 @@ kxxxd_daemon (void *protocolp)	// invoked thrice on startup
 	unsigned int		flags = CLONE_FS | CLONE_FILES | CLONE_SIGHAND;
 
 	if (sizeof(server_parms_t) > PAGE_SIZE) {	// we allocate client parms as single pages
-		printk("%s: ERROR: parms too large (%u)\n", __FUNCTION__, sizeof(server_parms_t));
+		if (!hijack_silent)
+			printk("%s: ERROR: parms too large (%u)\n", __FUNCTION__, sizeof(server_parms_t));
 		return 0;
 	}
 	memset(&parms, 0, sizeof(parms));
@@ -2580,12 +2606,15 @@ kxxxd_daemon (void *protocolp)	// invoked thrice on startup
 
 	if (server_port && hijack_max_connections > 0) {
 		if (make_socket(&parms, &parms.servsock, server_port)) {
-			printk("%s: make_socket(port=%d) failed\n", parms.servername, server_port);
+			if (!hijack_silent)
+				printk("%s: make_socket(port=%d) failed\n", parms.servername, server_port);
 		} else if (parms.servsock->ops->listen(parms.servsock, 10) < 0) {	// queued=10
-			printk("%s: listen(port=%d) failed\n", parms.servername, server_port);
+			if (!hijack_silent)
+				printk("%s: listen(port=%d) failed\n", parms.servername, server_port);
 		} else {
 			int childcount = 0;
-			printk("%s: listening on port %d\n", parms.servername, server_port);
+			if (!hijack_silent)
+				printk("%s: listening on port %d\n", parms.servername, server_port);
 			while (1) {
 				int child;
 				do {
@@ -2598,7 +2627,8 @@ kxxxd_daemon (void *protocolp)	// invoked thrice on startup
 				} while (child > 0);
 				if (!ksock_accept(&parms)) {
 					if (!(clientparms = (server_parms_t *)__get_free_pages(GFP_KERNEL,1))) {
-						printk("%s: no memory for client parms\n", parms.servername);
+						if (!hijack_silent)
+							printk("%s: no memory for client parms\n", parms.servername);
 						sock_release(parms.clientsock);
 					} else {
 						memcpy(clientparms, &parms, sizeof(parms));

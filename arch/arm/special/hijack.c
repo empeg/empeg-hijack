@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v508"
+#define HIJACK_VERSION	"v509"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #undef EMPEG_FIXTEMP	// #define this for special "fix temperature sensor" builds
@@ -183,7 +183,7 @@ static min_max_t rhs_stalk_default[] = {
 	{0x68, 0x7a},	// IR_KVOLUP_PRESSED
 	{0x7e, 0x8a},	// IR_KVOLDOWN_PRESSED
 	{0x94, 0xa0},	// IR_KREAR_PRESSED
-	{0xa0, 0xb5}};	// IR_KBOTTOM_PRESSED
+	{0xa1, 0xb5}};	// IR_KBOTTOM_PRESSED
 
 static min_max_t lhs_stalk_default[] = {
 	{0x00, 0x07},	// IR_KOFF_PRESSED
@@ -195,7 +195,7 @@ static min_max_t lhs_stalk_default[] = {
 	{0x68, 0x7a},	// IR_KVOLDOWN_PRESSED
 	{0x7e, 0x8a},	// IR_KVOLUP_PRESSED
 	{0x94, 0xa0},	// IR_KFRONT_PRESSED
-	{0xa0, 0xb5}};	// IR_KBOTTOM_PRESSED
+	{0xa1, 0xb5}};	// IR_KBOTTOM_PRESSED
 #endif // EMPEG_STALK_SUPPORTED
 
 static unsigned long ir_lastevent = 0, ir_lasttime = 0, ir_selected = 0;
@@ -576,6 +576,7 @@ static	int nextsrc_aux_enabled;		// "1" == include "AUX" when doing NextSrc
 static	int hijack_old_style;			// 1 == don't highlite menu items
 static	int hijack_quicktimer_minutes;		// increment size for quicktimer function
 static	int hijack_standby_minutes;		// number of minutes after screen blanks before we go into standby
+	int hijack_silent;			// 1 == avoid printing messages to serial port
 	int hijack_suppress_notify;		// 1 == suppress player "notify" and "dhcp" text on serial port
 	long hijack_time_offset;		// adjust system time-of-day clock by this many seconds
 	int hijack_temperature_correction;	// adjust all h/w temperature readings by this celcius amount
@@ -699,6 +700,7 @@ static const hijack_option_t hijack_option_table[] =
 {button_names[2].name,		button_names[2].name,		(int)"PopUp2",		0,	0,	8},
 {button_names[3].name,		button_names[3].name,		(int)"PopUp3",		0,	0,	8},
 {"quicktimer_minutes",		&hijack_quicktimer_minutes,	30,			1,	1,	120},
+{"silent",			&hijack_silent,			0,			1,	0,	1},
 #ifdef EMPEG_STALK_SUPPORTED
 {"stalk_debug",			&hijack_stalk_debug,		0,			1,	0,	1},
 {"stalk_lhs",			lhs_stalk_vals,			(int)lhs_stalk_default,	20,	0,	0xff},
@@ -1900,13 +1902,13 @@ init_temperature (int force)
 				msg = "Fixed temp.sensor";
 				show_message(msg, 5*HZ);
 			}
-			printk("%s, status=0x%02x\n", msg, status & 0xff);
+			if (!hijack_silent)
+				printk("%s, status=0x%02x\n", msg, status & 0xff);
 		}
 		save_flags_clif(flags);
 		empeg_inittherm(&OSMR0,&GPLR);
 	}
 	restore_flags(flags);
-
 }
 
 int
@@ -1983,7 +1985,8 @@ savearea_display (int firsttime)
 		if (!last_updated)
 			last_updated = kmalloc(128 * sizeof(long), GFP_KERNEL);
 		if (!last_savearea || !last_updated) {
-			printk("savearea_display: no memory\n");
+			if (!hijack_silent)
+				printk("savearea_display: no memory\n");
 			ir_selected = 1;
 			return NO_REFRESH;
 		}
@@ -4190,7 +4193,8 @@ show_message (const char *msg, unsigned long time)
 	message_time = time;
 	if (message_text[0]) {
 		unsigned long flags;
-		printk("show_message(\"%s\")\n", message_text);
+		if (!hijack_silent)
+			printk("show_message(\"%s\")\n", message_text);
 		save_flags_cli(flags);
 		activate_dispfunc(message_display, message_move, 0);
 		restore_flags(flags);
@@ -5245,7 +5249,8 @@ printline (const char *msg, char *s)
 	e = findchars(s, "\n\r");
 	c = *e;
 	*e = '\0';
-	printk("%s: \"%s\"\n", msg, s);
+	if (!hijack_silent)
+		printk("%s: \"%s\"\n", msg, s);
 	*e = c;
 }
 
@@ -5389,7 +5394,8 @@ ir_setup_translations (unsigned char *buf)
 	if (size > 0) {
 		table = kmalloc(size, GFP_KERNEL);
 		if (!table) {
-			printk("ir_setup_translations failed: no memory\n");
+			if (!hijack_silent)
+				printk("ir_setup_translations failed: no memory\n");
 		} else {
 			memset(table, 0, size);
 			(void)ir_setup_translations2(buf, table, &had_errors);// second pass actually saves the data
@@ -5429,7 +5435,8 @@ remove_menu_entry (const char *label)
 			if (!item->label)
 				break;
 		} else if (!strxcmp(item->label, label, 0)) {
-			printk("hijack: removed menu entry: \"%s\"\n", label);
+			if (!hijack_silent)
+				printk("hijack: removed menu entry: \"%s\"\n", label);
 			found = 1;
 		}
 	}
@@ -6152,7 +6159,8 @@ static void
 fan_write8 (unsigned char command, unsigned char *data, int count)
 {
 	if (i2c_write8(FAN_CONTROL_DEVADDR, command, data, count)) {
-		printk("Fan control error\n");
+		if (!hijack_silent)
+			printk("Fan control error\n");
 		show_message("Fan control error", 10*HZ);
 	}
 }

@@ -295,10 +295,17 @@ int empeg_state_restore (unsigned char *buffer)
 	}
 
 	/* Nothing valid found? Return nulls */
-	if (a<0) {
+#if 1	/* FIXME: 1 == normal ; 0 == nuke savearea */
+	if (a<0)
+#else
+	dirty = 1;
+	printk("empeg_state_restore: NUKED\n");
+#endif
+	{
+
 		result = 1;	// failed
 		memset(buffer,0,STATE_BLOCK_SIZE);
-		printk("empegr_state_restore: FAILED\n");
+		printk("empeg_state_restore: FAILED\n");
 	}
 
 	/* Later empegs have an RTC */

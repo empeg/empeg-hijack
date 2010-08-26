@@ -875,6 +875,7 @@ static ide_module_t ideprobe_module = {
 #ifdef CONFIG_SA1100_EMPEG
 static int release_and_probe(int hwif)
 {
+	int ndrives;
 	/* We don't want drive autotuning on the empeg */
 	//ide_hwifs[hwif].drives[0].autotune=2;
 	//ide_hwifs[hwif].drives[1].autotune=2;
@@ -889,7 +890,28 @@ static int release_and_probe(int hwif)
 	probe_hwif(&ide_hwifs[hwif]);
 
 	/* Count drives */
-	return ide_hwifs[hwif].drives[0].present + ide_hwifs[hwif].drives[1].present;
+	ndrives = ide_hwifs[hwif].drives[0].present + ide_hwifs[hwif].drives[1].present;
+
+#ifdef CONFIG_SA1100_EMPEG
+    #if 0 // Useful for debugging the Empeg
+	if (ndrives == 0) {
+		u16 pattern = 0xaaaa;
+		ide_hwif_t  *hwif  = &ide_hwifs[0];
+		ide_drive_t *drive = &hwif->drives[0];
+		unsigned long timeout = jiffies + (HZ/10);
+		while (1) {
+			outw(pattern,IDE_DATA_REG);
+			pattern = ~pattern;
+			if (jiffies >= timeout) {
+				timeout = jiffies + (HZ/10);
+				pattern = ~pattern;
+			}
+		}
+	}
+    #endif
+#endif
+
+	return ndrives;
 }
 #endif
 

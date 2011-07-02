@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v509"
+#define HIJACK_VERSION	"v5010"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #undef EMPEG_FIXTEMP	// #define this for special "fix temperature sensor" builds
@@ -30,16 +30,16 @@ const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 #include "empeg_display.h"
 #include "empeg_mixer.h"
 
-extern unsigned char empeg_ani[];			            // arch/arm/special/empeg_display.c
-extern unsigned char nohd_img[];		               	// arch/arm/special/empeg_display.c
+extern int hijack_is_dsp_alive (void);					// arch/arm/special/empeg_mixer.c
+extern unsigned char empeg_ani[];					// arch/arm/special/empeg_display.c
+extern unsigned char nohd_img[];					// arch/arm/special/empeg_display.c
 extern int hijack_exec(const char *, const char *);			// arch/arm/special/kexec.c
 extern void *hijack_get_state_read_buffer (void);			// arch/arm/special/empeg_state.c
 extern void save_current_volume(void);					// arch/arm/special/empeg_state.c
 extern void input_wakeup_waiters(void);					// arch/arm/special/empeg_input.c
 extern int display_sendcontrol_part1(int);				// arch/arm/special/empeg_display.c
 extern int display_sendcontrol_part2(int);				// arch/arm/special/empeg_display.c
-extern void display_animation_frame(unsigned char *buf, unsigned char *frame);
-                                                        // arch/arm/special/empeg_display.c
+extern void display_animation_frame(unsigned char *buf, unsigned char *frame); // arch/arm/special/empeg_display.c
 
 extern int remount_drives (int writeable);				// arch/arm/special/notify.c
 extern void init_notify (void);						// arch/arm/special/notify.c
@@ -2060,12 +2060,15 @@ vitals_display (int firsttime)
 	unsigned int *permset=(unsigned int*)(EMPEG_FLASHBASE+0x2000);
 	unsigned char buf[80];
 	int rowcol, i, count = 0, model = 0x2a;
+	char *dsp;
 	unsigned char *sa;
 	unsigned long flags;
 
 	if (!firsttime && jiffies_since(hijack_last_refresh) < HZ)
 		return NO_REFRESH;
 	clear_hijack_displaybuf(COLOR0);
+
+ 	dsp = hijack_is_dsp_alive() ? "" : "-";
 
 	// Model, DRAM, Drives
 	if (permset[0] < 7)
@@ -2074,7 +2077,7 @@ vitals_display (int firsttime)
 		model = 2;
 	if (hijack_cs4231a_failed)
 		buf[count++] = '*';
-	count += sprintf(buf+count, "Mk%x: %luMB, %d", model, (memory_end - PAGE_OFFSET) >> 20, get_drive_size(0,0));
+	count += sprintf(buf+count, "%sMk%x: %luMB, %d", dsp, model, (memory_end - PAGE_OFFSET) >> 20, get_drive_size(0,0));
 	model = (model == 1);	// 0 == Mk2(a); 1 == Mk1
 	if (ide_hwifs[model].drives[!model].present)
 		sprintf(buf+count, "+%d", get_drive_size(model,!model));
@@ -4284,8 +4287,10 @@ static int
 fidentry_display (int firsttime)
 {
 	static char fidx[9], b, lastb;
-	static int d, cycling;
+	static int d, cycling, fidentry_mode;
 	static unsigned int buttonlist[1];
+	static const char *fidentry_modes[] = {""      "-",    "+",    "!"};
+	static const char *fidentry_label[] = {" REP", " ENQ", " APP", " INS"};
 	static const hijack_geom_t geom = {8, 8+6+KFONT_HEIGHT, 10, EMPEG_SCREEN_COLS-10};
 	hijack_buttondata_t data;
 	unsigned int rowcol;
@@ -4293,6 +4298,7 @@ fidentry_display (int firsttime)
 	timer_started = JIFFIES();
 	if (firsttime) {
 		cycling = 0;
+		fidentry_mode = 0;
 		d = 0;
 		fidx[0] = lastb = b = '_';
 		fidx[1] = '\0';
@@ -4390,6 +4396,9 @@ fidentry_display (int firsttime)
 					cycling = 1;
 					b = fidentry_incr(lastb, +1);
 					break;
+				case IR_RIO_SELECTMODE_PRESSED:
+					fidentry_mode = (fidentry_mode + 1) & 3;
+					break;
 				case IR_KW_STAR_PRESSED:
 				case IR_RIO_CANCEL_PRESSED:
 				case IR_TOP_BUTTON_PRESSED:
@@ -4413,6 +4422,8 @@ fidentry_display (int firsttime)
 					hijack_beep(90, 70, 30);
 					hijack_serial_rx_insert("#", 1, 1);
 					hijack_serial_rx_insert(fidx, d+1, 1);
+					if (fidentry_mode)
+						hijack_serial_rx_insert(fidentry_modes[fidentry_mode], 1, 1);
 					hijack_serial_rx_insert("\n", 1, 1);
 					hijack_deactivate(HIJACK_IDLE);
 					return NO_REFRESH;
@@ -4429,9 +4440,10 @@ fidentry_display (int firsttime)
 	refresh:
 		fidx[d+1] = '\0';
 		rowcol = (geom.first_row+4)|((geom.first_col+6)<<16);
-		rowcol = draw_string(rowcol, "FidEntry: ", COLOR3);
-		clear_text_row(rowcol, geom.last_col-4, 1);
+		rowcol = draw_string(rowcol, "Fid: ", COLOR3);
 		rowcol = draw_string(rowcol, fidx, ENTRYCOLOR);
+		rowcol = draw_string(rowcol, fidentry_label[fidentry_mode], COLOR3);
+		clear_text_row(rowcol, geom.last_col-4, 1);
 	}
 	return NO_REFRESH;	// gets overridden if overlay still active
 }

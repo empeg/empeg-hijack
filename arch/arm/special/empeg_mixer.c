@@ -781,6 +781,12 @@ static int empeg_mixer_ioctl(struct inode *inode, struct file *file,
 	}
 }
 
+int hijack_is_dsp_alive (void)	//FIXME
+{
+	unsigned int val;
+	return (dsp_read_yram(Y_VAT, &val) >= 0);
+}
+
 static void empeg_mixer_setloudness(mixer_dev *dev, int level)
 {
 	static dsp_setup dynlou_44100[] = {

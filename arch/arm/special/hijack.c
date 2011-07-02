@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v5010"
+#define HIJACK_VERSION	"v511"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #undef EMPEG_FIXTEMP	// #define this for special "fix temperature sensor" builds
@@ -30,7 +30,6 @@ const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 #include "empeg_display.h"
 #include "empeg_mixer.h"
 
-extern int hijack_is_dsp_alive (void);					// arch/arm/special/empeg_mixer.c
 extern unsigned char empeg_ani[];					// arch/arm/special/empeg_display.c
 extern unsigned char nohd_img[];					// arch/arm/special/empeg_display.c
 extern int hijack_exec(const char *, const char *);			// arch/arm/special/kexec.c
@@ -2060,15 +2059,12 @@ vitals_display (int firsttime)
 	unsigned int *permset=(unsigned int*)(EMPEG_FLASHBASE+0x2000);
 	unsigned char buf[80];
 	int rowcol, i, count = 0, model = 0x2a;
-	char *dsp;
 	unsigned char *sa;
 	unsigned long flags;
 
 	if (!firsttime && jiffies_since(hijack_last_refresh) < HZ)
 		return NO_REFRESH;
 	clear_hijack_displaybuf(COLOR0);
-
- 	dsp = hijack_is_dsp_alive() ? "" : "-";
 
 	// Model, DRAM, Drives
 	if (permset[0] < 7)
@@ -2077,7 +2073,7 @@ vitals_display (int firsttime)
 		model = 2;
 	if (hijack_cs4231a_failed)
 		buf[count++] = '*';
-	count += sprintf(buf+count, "%sMk%x: %luMB, %d", dsp, model, (memory_end - PAGE_OFFSET) >> 20, get_drive_size(0,0));
+	count += sprintf(buf+count, "Mk%x: %luMB, %d", model, (memory_end - PAGE_OFFSET) >> 20, get_drive_size(0,0));
 	model = (model == 1);	// 0 == Mk2(a); 1 == Mk1
 	if (ide_hwifs[model].drives[!model].present)
 		sprintf(buf+count, "+%d", get_drive_size(model,!model));

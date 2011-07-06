@@ -1,6 +1,6 @@
 // Empeg hacks by Mark Lord <mlord@pobox.com>
 //
-#define HIJACK_VERSION	"v512"
+#define HIJACK_VERSION	"v513"
 const char hijack_vXXX_by_Mark_Lord[] = "Hijack "HIJACK_VERSION" by Mark Lord";
 
 #undef EMPEG_FIXTEMP	// #define this for special "fix temperature sensor" builds
@@ -4285,7 +4285,7 @@ fidentry_display (int firsttime)
 	static char fidx[9], b, lastb;
 	static int d, cycling, fidentry_mode;
 	static unsigned int buttonlist[1];
-	static const char *fidentry_modes[] = {""      "-",    "+",    "!"};
+	static const char *fidentry_modes[] = {"",     "-",    "+",    "!"};
 	static const char *fidentry_label[] = {" RPL", " ENQ", " APP", " INS"};
 	static const hijack_geom_t geom = {8, 8+6+KFONT_HEIGHT, 10, EMPEG_SCREEN_COLS-10};
 	hijack_buttondata_t data;

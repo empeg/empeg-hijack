@@ -397,6 +397,8 @@ irq_prio_ebsa110:
 		   run on an ARM7 and we can save a couple of instructions.  
 									--pb */
 		.macro	arm700_bug_check, instr, temp
+		.endm
+		.macro	arm700_bug_check, instr, temp
 #ifndef __ARM_ARCH_4__
 		and	\temp, \instr, #0x0f000000	@ check for SWI
 		teq	\temp, #0x0f000000
